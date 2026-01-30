@@ -1,0 +1,8 @@
+{
+  "name": "espnow_transmitter",
+  "version": "1.0.0",
+  "description": "ESP-NOW transmitter library with channel discovery",
+  "keywords": "esp-now, esp32, wireless",
+  "frameworks": "arduino",
+  "platforms": "espressif32"
+}

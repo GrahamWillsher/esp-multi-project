@@ -1,0 +1,36 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+lib_deps/
+build/
+
+# Visual Studio Code
+.vscode/
+
+# Python
+*.pyc
+__pycache__/
+
+# Build artifacts
+*.o
+*.a
+*.bin
+*.elf
+*.map
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Dependencies
+node_modules/
+
+# Logs
+*.log

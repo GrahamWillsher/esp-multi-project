@@ -1,0 +1,3344 @@
+#include "webserver.h"
+#include <Preferences.h>
+#include <ctime>
+#include <vector>
+#include "../../battery/BATTERIES.h"
+#include "../../battery/Battery.h"
+#include "../../charger/CHARGERS.h"
+#include "../../communication/can/comm_can.h"
+#include "../../communication/contactorcontrol/comm_contactorcontrol.h"
+#include "../../communication/equipmentstopbutton/comm_equipmentstopbutton.h"
+#include "../../communication/nvm/comm_nvm.h"
+#include "../../datalayer/datalayer.h"
+#include "../../datalayer/datalayer_extended.h"
+#include "../../inverter/INVERTERS.h"
+#include "../../lib/bblanchon-ArduinoJson/ArduinoJson.h"
+#include "../sdcard/sdcard.h"
+#include "../utils/events.h"
+#include "../utils/led_handler.h"
+#include "../utils/timer.h"
+#include "LittleFS.h"
+#include "esp_task_wdt.h"
+#include "html_escape.h"
+#include "settings_html.h"
+
+#include "Ethernet.h"
+#include "../hal/hal.h"
+#include "ESP32_W5500_AsyncWebServer.h"
+#include "ElegantOTA_Ethernet.h"
+
+#include <string>
+extern std::string http_username;
+extern std::string http_password;
+
+// Comparator for C-string map keys
+struct CStringCompare {
+  bool operator()(const char* a, const char* b) const {
+    return strcmp(a, b) < 0;
+  }
+};
+
+bool webserver_auth = false;
+
+// Create AsyncWebServer object on port 80
+AsyncWebServer server(80);
+
+// Measure OTA progress
+unsigned long ota_progress_millis = 0;
+
+#include "advanced_battery_html.h"
+#include "can_logging_html.h"
+#include "can_replay_html.h"
+#include "cellmonitor_html.h"
+#include "debug_logging_html.h"
+#include "events_html.h"
+#include "index_html.h"
+
+MyTimer ota_timeout_timer = MyTimer(15000);
+bool ota_active = false;
+
+const char get_firmware_info_html[] = R"rawliteral(%X%)rawliteral";
+
+String importedLogs = "";      // Store the uploaded logfile contents in RAM
+bool isReplayRunning = false;  // Global flag to track replay state
+
+// True when user has updated settings that need a reboot to be effective.
+bool settingsUpdated = false;
+
+CAN_frame currentFrame = {.FD = true, .ext_ID = false, .DLC = 64, .ID = 0x12F, .data = {0}};
+
+void handleFileUpload(AsyncWebServerRequest* request, String filename, size_t index, uint8_t* data, size_t len,
+                      bool final) {
+  if (!index) {
+    importedLogs = "";  // Clear previous logs
+    logging.printf("Receiving file: %s\n", filename.c_str());
+  }
+
+  // Append received data to the string (RAM storage)
+  importedLogs += String((char*)data).substring(0, len);
+
+  if (final) {
+    logging.println("Upload Complete!");
+    request->send(200, "text/plain", "File uploaded successfully");
+  }
+}
+
+void canReplayTask(void* param) {
+  std::vector<String> messages;
+  messages.reserve(1000);  // Pre-allocate memory to reduce fragmentation
+
+  if (!importedLogs.isEmpty()) {
+    int lastIndex = 0;
+
+    while (true) {
+      int nextIndex = importedLogs.indexOf("\n", lastIndex);
+      if (nextIndex == -1) {
+        messages.push_back(importedLogs.substring(lastIndex));
+        break;
+      }
+      messages.push_back(importedLogs.substring(lastIndex, nextIndex));
+      lastIndex = nextIndex + 1;
+    }
+
+    do {
+      float firstTimestamp = -1.0f;
+      float lastTimestamp = 0.0f;
+      bool firstMessageSent = false;  // Track first message
+
+      for (size_t i = 0; i < messages.size(); i++) {
+        String line = messages[i];
+        line.trim();
+        if (line.length() == 0)
+          continue;
+
+        int timeStart = line.indexOf("(") + 1;
+        int timeEnd = line.indexOf(")");
+        if (timeStart == 0 || timeEnd == -1)
+          continue;
+
+        float currentTimestamp = line.substring(timeStart, timeEnd).toFloat();
+
+        if (firstTimestamp < 0) {
+          firstTimestamp = currentTimestamp;
+        }
+
+        // Send first message immediately
+        if (!firstMessageSent) {
+          firstMessageSent = true;
+          firstTimestamp = currentTimestamp;  // Adjust reference time
+        } else {
+          // Delay only if this isn't the first message
+          float deltaT = (currentTimestamp - lastTimestamp) * 1000;
+          vTaskDelay((int)deltaT / portTICK_PERIOD_MS);
+        }
+
+        lastTimestamp = currentTimestamp;
+
+        int interfaceStart = timeEnd + 2;
+        int interfaceEnd = line.indexOf(" ", interfaceStart);
+        if (interfaceEnd == -1)
+          continue;
+
+        int idStart = interfaceEnd + 1;
+        int idEnd = line.indexOf(" [", idStart);
+        if (idStart == -1 || idEnd == -1)
+          continue;
+
+        String messageID = line.substring(idStart, idEnd);
+        int dlcStart = idEnd + 2;
+        int dlcEnd = line.indexOf("]", dlcStart);
+        if (dlcEnd == -1)
+          continue;
+
+        String dlc = line.substring(dlcStart, dlcEnd);
+        int dataStart = dlcEnd + 2;
+        String dataBytes = line.substring(dataStart);
+
+        currentFrame.ID = strtol(messageID.c_str(), NULL, 16);
+        currentFrame.DLC = dlc.toInt();
+
+        int byteIndex = 0;
+        char* token = strtok((char*)dataBytes.c_str(), " ");
+        while (token != NULL && byteIndex < currentFrame.DLC) {
+          currentFrame.data.u8[byteIndex++] = strtol(token, NULL, 16);
+          token = strtok(NULL, " ");
+        }
+
+        currentFrame.FD = (datalayer.system.info.can_replay_interface == CANFD_NATIVE) ||
+                          (datalayer.system.info.can_replay_interface == CANFD_ADDON_MCP2518);
+        currentFrame.ext_ID = (currentFrame.ID > 0x7F0);
+
+        transmit_can_frame_to_interface(&currentFrame, (CAN_Interface)datalayer.system.info.can_replay_interface);
+      }
+    } while (datalayer.system.info.loop_playback);
+
+    messages.clear();          // Free vector memory
+    messages.shrink_to_fit();  // Release excess memory
+  }
+
+  isReplayRunning = false;  // Mark replay as stopped
+  vTaskDelete(NULL);
+}
+
+void def_route_with_auth(const char* uri, AsyncWebServer& serv, WebRequestMethodComposite method,
+                         std::function<void(AsyncWebServerRequest*)> handler) {
+  serv.on(uri, method, [handler](AsyncWebServerRequest* request) {
+    if (webserver_auth && !request->authenticate(http_username.c_str(), http_password.c_str())) {
+      return request->requestAuthentication();
+    }
+    handler(request);
+  });
+}
+
+void init_webserver() {
+  // Initialize webserver if either WiFi is enabled OR Ethernet is present
+  if(wifi_enabled || ethernetPresent) {
+
+    // // Initialize LittleFS for HTML file storage
+    // if (!LittleFS.begin()) {
+    //   logging.println("Failed to mount LittleFS");
+    //   // Continue without filesystem - will show error messages in HTML
+    // } else {
+    //   logging.println("LittleFS mounted successfully");
+    // }
+
+    // // Build the settings HTML from LittleFS files
+    // settings_html_string = buildSettingsHtml();
+    // settings_html = settings_html_string.c_str();
+
+delay(1000); // Wait for network to stabilize
+    logging.printf("Starting web server... (WiFi: %s, Ethernet: %s)\n", 
+                   wifi_enabled ? "enabled" : "disabled",
+                   ethernetPresent ? "connected" : "not connected");
+
+    // Check if any network interface is available
+    const bool wifi_ready = wifi_enabled && (WiFi.status() == WL_CONNECTED || WiFi.getMode() == WIFI_AP);
+    const bool ethernet_ready = ethernetPresent && ethernet_connected && (Ethernet.linkStatus() == LinkON);
+    
+    if (!wifi_ready && !ethernet_ready) {
+      logging.println("No network interface ready - AsyncWebServer not started");
+      return;
+    }
+    
+    // Set up AsyncWebServer routes (works with both WiFi and Ethernet)
+    if (wifi_ready || ethernet_ready) {
+      logging.println("Network interface available - initializing AsyncWebServer");
+      printNetworkInfo();
+      server.on("/logout", HTTP_GET, [](AsyncWebServerRequest* request) { request->send(401); });
+
+  // Simple Ethernet IP page - only available when Ethernet is present
+
+  // Route for firmware info from ota update page
+  def_route_with_auth("/GetFirmwareInfo", server, HTTP_GET, [](AsyncWebServerRequest* request) {
+    request->send(200, "application/json", get_firmware_info_html, get_firmware_info_processor);
+  });
+
+  // Route for root / web page
+  def_route_with_auth("/", server, HTTP_GET,
+                      [](AsyncWebServerRequest* request) { request->send(200, "text/html", index_html, processor); });
+
+  // Route for going to settings web page
+  def_route_with_auth("/settings", server, HTTP_GET, [](AsyncWebServerRequest* request) {
+    // Using make_shared to ensure lifetime for the settings object during send() lambda execution
+    auto settings = std::make_shared<BatteryEmulatorSettingsStore>(true);
+
+    request->send(200, "text/html", settings_html,
+                  [settings](const String& content) { return settings_processor(content, *settings); });
+  });
+
+  // Route for going to advanced battery info web page
+  def_route_with_auth("/advanced", server, HTTP_GET, [](AsyncWebServerRequest* request) {
+    request->send(200, "text/html", index_html, advanced_battery_processor);
+  });
+
+  // Route for going to CAN logging web page
+  def_route_with_auth("/canlog", server, HTTP_GET, [](AsyncWebServerRequest* request) {
+    request->send(request->beginResponse(200, "text/html", can_logger_processor()));
+  });
+
+  // Route for going to CAN replay web page
+  def_route_with_auth("/canreplay", server, HTTP_GET, [](AsyncWebServerRequest* request) {
+    request->send(request->beginResponse(200, "text/html", can_replay_processor()));
+  });
+
+  def_route_with_auth("/startReplay", server, HTTP_GET, [](AsyncWebServerRequest* request) {
+    // Prevent multiple replay tasks from being created
+    if (isReplayRunning) {
+      request->send(400, "text/plain", "Replay already running!");
+      return;
+    }
+
+    datalayer.system.info.loop_playback = request->hasParam("loop") && request->getParam("loop")->value().toInt() == 1;
+    isReplayRunning = true;  // Set flag before starting task
+
+    xTaskCreatePinnedToCore(canReplayTask, "CAN_Replay", 8192, NULL, 1, NULL, 1);
+
+    request->send(200, "text/plain", "CAN replay started!");
+  });
+
+  // Route for stopping the CAN replay
+  def_route_with_auth("/stopReplay", server, HTTP_GET, [](AsyncWebServerRequest* request) {
+    datalayer.system.info.loop_playback = false;
+
+    request->send(200, "text/plain", "CAN replay stopped!");
+  });
+
+  // Route to handle setting the CAN interface for CAN replay
+  def_route_with_auth("/setCANInterface", server, HTTP_GET, [](AsyncWebServerRequest* request) {
+    if (request->hasParam("interface")) {
+      String canInterface = request->getParam("interface")->value();
+
+      // Convert the received value to an integer
+      int interfaceValue = canInterface.toInt();
+
+      // Update the datalayer with the selected interface
+      datalayer.system.info.can_replay_interface = interfaceValue;
+
+      // Respond with success message
+      request->send(200, "text/plain", "New interface selected");
+    } else {
+      request->send(400, "text/plain", "Error: updating interface failed");
+    }
+  });
+
+  if (datalayer.system.info.web_logging_active || datalayer.system.info.SD_logging_active) {
+    // Route for going to debug logging web page
+    server.on("/log", HTTP_GET, [](AsyncWebServerRequest* request) {
+      AsyncWebServerResponse* response = request->beginResponse(200, "text/html", debug_logger_processor());
+      request->send(response);
+    });
+  }
+
+  // Define the handler to stop can logging
+  server.on("/stop_can_logging", HTTP_GET, [](AsyncWebServerRequest* request) {
+    datalayer.system.info.can_logging_active = false;
+    request->send(200, "text/plain", "Logging stopped");
+  });
+
+  // Define the handler to import can log
+  server.on(
+      "/import_can_log", HTTP_POST,
+      [](AsyncWebServerRequest* request) {
+        request->send(200, "text/plain", "Ready to receive file.");  // Response when request is made
+      },
+      handleFileUpload);
+
+  if (datalayer.system.info.CAN_SD_logging_active) {
+    // Define the handler to export can log
+    server.on("/export_can_log", HTTP_GET, [](AsyncWebServerRequest* request) {
+      pause_can_writing();
+      request->send(SD_MMC, CAN_LOG_FILE, String(), true);
+      resume_can_writing();
+    });
+
+    // Define the handler to delete can log
+    server.on("/delete_can_log", HTTP_GET, [](AsyncWebServerRequest* request) {
+      delete_can_log();
+      request->send(200, "text/plain", "Log file deleted");
+    });
+  } else {
+    // Define the handler to export can log
+    server.on("/export_can_log", HTTP_GET, [](AsyncWebServerRequest* request) {
+      String logs = String(datalayer.system.info.logged_can_messages);
+      if (logs.length() == 0) {
+        logs = "No logs available.";
+      }
+
+      // Get the current time
+      time_t now = time(nullptr);
+      struct tm timeinfo;
+      localtime_r(&now, &timeinfo);
+
+      // Ensure time retrieval was successful
+      char filename[32];
+      if (strftime(filename, sizeof(filename), "canlog_%H-%M-%S.txt", &timeinfo)) {
+        // Valid filename created
+      } else {
+        // Fallback filename if automatic timestamping failed
+        strcpy(filename, "battery_emulator_can_log.txt");
+      }
+
+      // Use request->send with dynamic headers
+      AsyncWebServerResponse* response = request->beginResponse(200, "text/plain", logs);
+      response->addHeader("Content-Disposition", String("attachment; filename=\"") + String(filename) + "\"");
+      request->send(response);
+    });
+  }
+
+  if (datalayer.system.info.SD_logging_active) {
+    // Define the handler to delete log file
+    server.on("/delete_log", HTTP_GET, [](AsyncWebServerRequest* request) {
+      delete_log();
+      request->send(200, "text/plain", "Log file deleted");
+    });
+
+    // Define the handler to export debug log
+    server.on("/export_log", HTTP_GET, [](AsyncWebServerRequest* request) {
+      pause_log_writing();
+      request->send(SD_MMC, LOG_FILE, String(), true);
+      resume_log_writing();
+    });
+  } else {
+    // Define the handler to export debug log
+    server.on("/export_log", HTTP_GET, [](AsyncWebServerRequest* request) {
+      String logs = String(datalayer.system.info.logged_can_messages);
+      if (logs.length() == 0) {
+        logs = "No logs available.";
+      }
+
+      // Get the current time
+      time_t now = time(nullptr);
+      struct tm timeinfo;
+      localtime_r(&now, &timeinfo);
+
+      // Ensure time retrieval was successful
+      char filename[32];
+      if (strftime(filename, sizeof(filename), "log_%H-%M-%S.txt", &timeinfo)) {
+        // Valid filename created
+      } else {
+        // Fallback filename if automatic timestamping failed
+        strcpy(filename, "battery_emulator_log.txt");
+      }
+
+      // Use request->send with dynamic headers
+      AsyncWebServerResponse* response = request->beginResponse(200, "text/plain", logs);
+      response->addHeader("Content-Disposition", String("attachment; filename=\"") + String(filename) + "\"");
+      request->send(response);
+    });
+  }
+
+  // Route for going to cellmonitor web page
+  def_route_with_auth("/cellmonitor", server, HTTP_GET, [](AsyncWebServerRequest* request) {
+    request->send(200, "text/html", index_html, cellmonitor_processor);
+  });
+
+  // Route for going to event log web page
+  def_route_with_auth("/events", server, HTTP_GET, [](AsyncWebServerRequest* request) {
+    request->send(200, "text/html", index_html, events_processor);
+  });
+
+  // Route for clearing all events
+  def_route_with_auth("/clearevents", server, HTTP_GET, [](AsyncWebServerRequest* request) {
+    reset_all_events();
+    // Send back a response that includes an instant redirect to /events
+    String response = "<html><body>";
+    response += "<script>window.location.href = '/events';</script>";  // Instant redirect
+    response += "</body></html>";
+    request->send(200, "text/html", response);
+  });
+
+  def_route_with_auth("/factoryReset", server, HTTP_POST, [](AsyncWebServerRequest* request) {
+    // Reset all settings to factory defaults
+    BatteryEmulatorSettingsStore settings;
+    settings.clearAll();
+
+    request->send(200, "text/html", "OK");
+  });
+
+  struct BoolSetting {
+    const char* name;
+    bool existingValue;
+    bool newValue;
+  };
+
+  const char* boolSettingNames[] = {
+      "DBLBTR",        "CNTCTRL",      "CNTCTRLDBL",  "PWMCNTCTRL",   "PERBMSRESET",  "SDLOGENABLED", "STATICIP",
+      "REMBMSRESET",   "EXTPRECHARGE", "USBENABLED",  "CANLOGUSB",    "WEBENABLED",   "CANFDASCAN",   "CANLOGSD",
+      "WIFIAPENABLED", "MQTTENABLED",  "NOINVDISC",   "HADISC",       "MQTTTOPICS",   "MQTTCELLV",    "INVICNT",
+      "GTWRHD",        "DIGITALHVIL",  "PERFPROFILE", "INTERLOCKREQ", "SOCESTIMATED", "PYLONOFFSET",  "PYLONORDER",
+      "DEYEBYD",       "NCCONTACTOR",  "TRIBTR",      "CNTCTRLTRI",
+  };
+
+  // Handles the form POST from UI to save settings of the common image
+  server.on("/saveSettings", HTTP_POST, [boolSettingNames](AsyncWebServerRequest* request) {
+    BatteryEmulatorSettingsStore settings;
+
+    std::vector<BoolSetting> boolSettings;
+
+    for (auto& name : boolSettingNames) {
+      boolSettings.push_back({name, settings.getBool(name, name == std::string("WIFIAPENABLED")), false});
+    }
+
+    int numParams = request->params();
+    for (int i = 0; i < numParams; i++) {
+      auto p = request->getParam(i);
+      if (p->name() == "inverter") {
+        auto type = static_cast<InverterProtocolType>(atoi(p->value().c_str()));
+        settings.saveUInt("INVTYPE", (int)type);
+      } else if (p->name() == "INVCOMM") {
+        auto type = static_cast<comm_interface>(atoi(p->value().c_str()));
+        settings.saveUInt("INVCOMM", (int)type);
+      } else if (p->name() == "battery") {
+        auto type = static_cast<BatteryType>(atoi(p->value().c_str()));
+        settings.saveUInt("BATTTYPE", (int)type);
+      } else if (p->name() == "BATTCHEM") {
+        auto type = static_cast<battery_chemistry_enum>(atoi(p->value().c_str()));
+        settings.saveUInt("BATTCHEM", (int)type);
+      } else if (p->name() == "BATTCOMM") {
+        auto type = static_cast<comm_interface>(atoi(p->value().c_str()));
+        settings.saveUInt("BATTCOMM", (int)type);
+      } else if (p->name() == "BATTPVMAX") {
+        auto type = p->value().toFloat() * 10.0f;
+        settings.saveUInt("BATTPVMAX", (int)type);
+      } else if (p->name() == "BATTPVMIN") {
+        auto type = p->value().toFloat() * 10.0f;
+        settings.saveUInt("BATTPVMIN", (int)type);
+      } else if (p->name() == "BATTCVMAX") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("BATTCVMAX", type);
+      } else if (p->name() == "BATTCVMIN") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("BATTCVMIN", type);
+      } else if (p->name() == "charger") {
+        auto type = static_cast<ChargerType>(atoi(p->value().c_str()));
+        settings.saveUInt("CHGTYPE", (int)type);
+      } else if (p->name() == "CHGCOMM") {
+        auto type = static_cast<comm_interface>(atoi(p->value().c_str()));
+        settings.saveUInt("CHGCOMM", (int)type);
+      } else if (p->name() == "EQSTOP") {
+        auto type = static_cast<STOP_BUTTON_BEHAVIOR>(atoi(p->value().c_str()));
+        settings.saveUInt("EQSTOP", (int)type);
+      } else if (p->name() == "BATT2COMM") {
+        auto type = static_cast<comm_interface>(atoi(p->value().c_str()));
+        settings.saveUInt("BATT2COMM", (int)type);
+      } else if (p->name() == "BATT3COMM") {
+        auto type = static_cast<comm_interface>(atoi(p->value().c_str()));
+        settings.saveUInt("BATT3COMM", (int)type);
+      } else if (p->name() == "shunt") {
+        auto type = static_cast<ShuntType>(atoi(p->value().c_str()));
+        settings.saveUInt("SHUNTTYPE", (int)type);
+      } else if (p->name() == "SHUNTCOMM") {
+        auto type = static_cast<comm_interface>(atoi(p->value().c_str()));
+        settings.saveUInt("SHUNTCOMM", (int)type);
+      } else if (p->name() == "MAXPRETIME") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("MAXPRETIME", type);
+      } else if (p->name() == "WIFICHANNEL") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("WIFICHANNEL", type);
+      } else if (p->name() == "DCHGPOWER") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("DCHGPOWER", type);
+      } else if (p->name() == "CHGPOWER") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("CHGPOWER", type);
+      } else if (p->name() == "LOCALIP1") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("LOCALIP1", type);
+      } else if (p->name() == "LOCALIP2") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("LOCALIP2", type);
+      } else if (p->name() == "LOCALIP3") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("LOCALIP3", type);
+      } else if (p->name() == "LOCALIP4") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("LOCALIP4", type);
+      } else if (p->name() == "GATEWAY1") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("GATEWAY1", type);
+      } else if (p->name() == "GATEWAY2") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("GATEWAY2", type);
+      } else if (p->name() == "GATEWAY3") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("GATEWAY3", type);
+      } else if (p->name() == "GATEWAY4") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("GATEWAY4", type);
+      } else if (p->name() == "SUBNET1") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("SUBNET1", type);
+      } else if (p->name() == "SUBNET2") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("SUBNET2", type);
+      } else if (p->name() == "SUBNET3") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("SUBNET3", type);
+      } else if (p->name() == "SUBNET4") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("SUBNET4", type);
+      } else if (p->name() == "SSID") {
+        settings.saveString("SSID", p->value().c_str());
+        ssid = settings.getString("SSID", "").c_str();
+      } else if (p->name() == "PASSWORD") {
+        settings.saveString("PASSWORD", p->value().c_str());
+        password = settings.getString("PASSWORD", "").c_str();
+      } else if (p->name() == "APNAME") {
+        settings.saveString("APNAME", p->value().c_str());
+      } else if (p->name() == "APPASSWORD") {
+        settings.saveString("APPASSWORD", p->value().c_str());
+      } else if (p->name() == "HOSTNAME") {
+        settings.saveString("HOSTNAME", p->value().c_str());
+      } else if (p->name() == "MQTTSERVER") {
+        settings.saveString("MQTTSERVER", p->value().c_str());
+      } else if (p->name() == "MQTTPORT") {
+        auto port = atoi(p->value().c_str());
+        settings.saveUInt("MQTTPORT", port);
+      } else if (p->name() == "MQTTUSER") {
+        settings.saveString("MQTTUSER", p->value().c_str());
+      } else if (p->name() == "MQTTPASSWORD") {
+        settings.saveString("MQTTPASSWORD", p->value().c_str());
+      } else if (p->name() == "MQTTTOPIC") {
+        settings.saveString("MQTTTOPIC", p->value().c_str());
+      } else if (p->name() == "MQTTTIMEOUT") {
+        auto port = atoi(p->value().c_str());
+        settings.saveUInt("MQTTTIMEOUT", port);
+      } else if (p->name() == "MQTTOBJIDPREFIX") {
+        settings.saveString("MQTTOBJIDPREFIX", p->value().c_str());
+      } else if (p->name() == "MQTTDEVICENAME") {
+        settings.saveString("MQTTDEVICENAME", p->value().c_str());
+      } else if (p->name() == "HADEVICEID") {
+        settings.saveString("HADEVICEID", p->value().c_str());
+      } else if (p->name() == "SOFAR_ID") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("SOFAR_ID", type);
+      } else if (p->name() == "PYLONSEND") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("PYLONSEND", type);
+      } else if (p->name() == "INVCELLS") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("INVCELLS", type);
+      } else if (p->name() == "INVMODULES") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("INVMODULES", type);
+      } else if (p->name() == "INVCELLSPER") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("INVCELLSPER", type);
+      } else if (p->name() == "INVVLEVEL") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("INVVLEVEL", type);
+      } else if (p->name() == "INVCAPACITY") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("INVCAPACITY", type);
+      } else if (p->name() == "INVBTYPE") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("INVBTYPE", (int)type);
+      } else if (p->name() == "CANFREQ") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("CANFREQ", type);
+      } else if (p->name() == "CANFDFREQ") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("CANFDFREQ", type);
+      } else if (p->name() == "PRECHGMS") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("PRECHGMS", type);
+      } else if (p->name() == "PWMFREQ") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("PWMFREQ", type);
+      } else if (p->name() == "PWMHOLD") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("PWMHOLD", type);
+      } else if (p->name() == "GTWCOUNTRY") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("GTWCOUNTRY", type);
+      } else if (p->name() == "GTWMAPREG") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("GTWMAPREG", type);
+      } else if (p->name() == "GTWCHASSIS") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("GTWCHASSIS", type);
+      } else if (p->name() == "GTWPACK") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("GTWPACK", type);
+      } else if (p->name() == "LEDMODE") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("LEDMODE", type);
+      } else if (p->name() == "GPIOOPT1") {
+        auto type = atoi(p->value().c_str());
+        settings.saveUInt("GPIOOPT1", type);
+      }
+
+      for (auto& boolSetting : boolSettings) {
+        if (p->name() == boolSetting.name) {
+          boolSetting.newValue = p->value() == "on";
+        }
+      }
+    }
+
+    for (auto& boolSetting : boolSettings) {
+      if (boolSetting.existingValue != boolSetting.newValue) {
+        settings.saveBool(boolSetting.name, boolSetting.newValue);
+      }
+    }
+
+    settingsUpdated = settings.were_settings_updated();
+    request->redirect("/settings");
+  });
+
+  auto update_string = [](const char* route, std::function<void(String)> setter,
+                          std::function<bool(String)> validator = nullptr) {
+    def_route_with_auth(route, server, HTTP_GET, [=](AsyncWebServerRequest* request) {
+      if (request->hasParam("value")) {
+        String value = request->getParam("value")->value();
+
+        if (validator && !validator(value)) {
+          request->send(400, "text/plain", "Invalid value");
+          return;
+        }
+
+        setter(value);
+        request->send(200, "text/plain", "Updated successfully");
+      } else {
+        request->send(400, "text/plain", "Bad Request");
+      }
+    });
+  };
+
+  auto update_string_setting = [=](const char* route, std::function<void(String)> setter,
+                                   std::function<bool(String)> validator = nullptr) {
+    update_string(
+        route,
+        [setter](String value) {
+          setter(value);
+          store_settings();
+        },
+        validator);
+  };
+
+  auto update_int_setting = [=](const char* route, std::function<void(int)> setter) {
+    update_string_setting(route, [setter](String value) { setter(value.toInt()); });
+  };
+
+  // Route for editing Wh
+  update_int_setting("/updateBatterySize", [](int value) { datalayer.battery.info.total_capacity_Wh = value; });
+
+  // Route for editing USE_SCALED_SOC
+  update_int_setting("/updateUseScaledSOC", [](int value) { datalayer.battery.settings.soc_scaling_active = value; });
+
+  // Route for editing SOCMax
+  update_string_setting("/updateSocMax", [](String value) {
+    datalayer.battery.settings.max_percentage = static_cast<uint16_t>(value.toFloat() * 100);
+  });
+
+  // Route for editing CAN ID cutoff filter
+  update_int_setting("/set_can_id_cutoff", [](int value) { user_selected_CAN_ID_cutoff_filter = value; });
+
+  // Route for pause/resume Battery emulator
+  update_string("/pause", [](String value) { setBatteryPause(value == "true" || value == "1", false); });
+
+  // Route for equipment stop/resume
+  update_string("/equipmentStop", [](String value) {
+    if (value == "true" || value == "1") {
+      setBatteryPause(true, false, true);  //Pause battery, do not pause CAN, equipment stop on (store to flash)
+    } else {
+      setBatteryPause(false, false, false);
+    }
+  });
+
+  // Route for editing SOCMin
+  update_string_setting("/updateSocMin", [](String value) {
+    datalayer.battery.settings.min_percentage = static_cast<uint16_t>(value.toFloat() * 100);
+  });
+
+  // Route for editing MaxChargeA
+  update_string_setting("/updateMaxChargeA", [](String value) {
+    datalayer.battery.settings.max_user_set_charge_dA = static_cast<uint16_t>(value.toFloat() * 10);
+  });
+
+  // Route for editing MaxDischargeA
+  update_string_setting("/updateMaxDischargeA", [](String value) {
+    datalayer.battery.settings.max_user_set_discharge_dA = static_cast<uint16_t>(value.toFloat() * 10);
+  });
+
+  for (const auto& cmd : battery_commands) {
+    auto route = String("/") + cmd.identifier;
+    server.on(
+        route.c_str(), HTTP_PUT,
+        [cmd](AsyncWebServerRequest* request) {
+          if (webserver_auth && !request->authenticate(http_username.c_str(), http_password.c_str())) {
+            return request->requestAuthentication();
+          }
+        },
+        nullptr,
+        [cmd](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+          String battIndex = "";
+          if (len > 0) {
+            battIndex += (char)data[0];
+          }
+          Battery* batt = battery;
+          if (battIndex == "1") {
+            batt = battery2;
+          }
+          if (battIndex == "2") {
+            batt = battery3;
+          }
+          if (batt) {
+            cmd.action(batt);
+          }
+          request->send(200, "text/plain", "Command performed.");
+        });
+  }
+
+  // Route for editing BATTERY_USE_VOLTAGE_LIMITS
+  update_int_setting("/updateUseVoltageLimit",
+                     [](int value) { datalayer.battery.settings.user_set_voltage_limits_active = value; });
+
+  // Route for editing MaxChargeVoltage
+  update_string_setting("/updateMaxChargeVoltage", [](String value) {
+    datalayer.battery.settings.max_user_set_charge_voltage_dV = static_cast<uint16_t>(value.toFloat() * 10);
+  });
+
+  // Route for editing MaxDischargeVoltage
+  update_string_setting("/updateMaxDischargeVoltage", [](String value) {
+    datalayer.battery.settings.max_user_set_discharge_voltage_dV = static_cast<uint16_t>(value.toFloat() * 10);
+  });
+
+  // Route for editing BMSresetDuration
+  update_string_setting("/updateBMSresetDuration", [](String value) {
+    datalayer.battery.settings.user_set_bms_reset_duration_ms = static_cast<uint16_t>(value.toFloat() * 1000);
+  });
+
+  // Route for editing FakeBatteryVoltage
+  update_string_setting("/updateFakeBatteryVoltage", [](String value) { battery->set_fake_voltage(value.toFloat()); });
+
+  // Route for editing balancing enabled
+  update_int_setting("/TeslaBalAct", [](int value) { datalayer.battery.settings.user_requests_balancing = value; });
+
+  // Route for editing balancing max time
+  update_string_setting("/BalTime", [](String value) {
+    datalayer.battery.settings.balancing_time_ms = static_cast<uint32_t>(value.toFloat() * 60000);
+  });
+
+  // Route for editing balancing max power
+  update_string_setting("/BalFloatPower", [](String value) {
+    datalayer.battery.settings.balancing_float_power_W = static_cast<uint16_t>(value.toFloat());
+  });
+
+  // Route for editing balancing max pack voltage
+  update_string_setting("/BalMaxPackV", [](String value) {
+    datalayer.battery.settings.balancing_max_pack_voltage_dV = static_cast<uint16_t>(value.toFloat() * 10);
+  });
+
+  // Route for editing balancing max cell voltage
+  update_string_setting("/BalMaxCellV", [](String value) {
+    datalayer.battery.settings.balancing_max_cell_voltage_mV = static_cast<uint16_t>(value.toFloat());
+  });
+
+  // Route for editing balancing max cell voltage deviation
+  update_string_setting("/BalMaxDevCellV", [](String value) {
+    datalayer.battery.settings.balancing_max_deviation_cell_voltage_mV = static_cast<uint16_t>(value.toFloat());
+  });
+
+  if (charger) {
+    // Route for editing ChargerTargetV
+    update_string_setting(
+        "/updateChargeSetpointV", [](String value) { datalayer.charger.charger_setpoint_HV_VDC = value.toFloat(); },
+        [](String value) {
+          float val = value.toFloat();
+          return (val <= CHARGER_MAX_HV && val >= CHARGER_MIN_HV) &&
+                 (val * datalayer.charger.charger_setpoint_HV_IDC <= CHARGER_MAX_POWER);
+        });
+
+    // Route for editing ChargerTargetA
+    update_string_setting(
+        "/updateChargeSetpointA", [](String value) { datalayer.charger.charger_setpoint_HV_IDC = value.toFloat(); },
+        [](String value) {
+          float val = value.toFloat();
+          return (val <= CHARGER_MAX_A) && (val <= datalayer.battery.settings.max_user_set_charge_dA) &&
+                 (val * datalayer.charger.charger_setpoint_HV_VDC <= CHARGER_MAX_POWER);
+        });
+
+    // Route for editing ChargerEndA
+    update_string_setting("/updateChargeEndA",
+                          [](String value) { datalayer.charger.charger_setpoint_HV_IDC_END = value.toFloat(); });
+
+    // Route for enabling/disabling HV charger
+    update_int_setting("/updateChargerHvEnabled",
+                       [](int value) { datalayer.charger.charger_HV_enabled = (bool)value; });
+
+    // Route for enabling/disabling aux12v charger
+    update_int_setting("/updateChargerAux12vEnabled",
+                       [](int value) { datalayer.charger.charger_aux12V_enabled = (bool)value; });
+  }
+
+  // Send a GET request to <ESP_IP>/update
+  def_route_with_auth("/debug", server, HTTP_GET,
+                      [](AsyncWebServerRequest* request) { request->send(200, "text/plain", "Debug: all OK."); });
+
+  // Route to handle reboot command
+  def_route_with_auth("/reboot", server, HTTP_GET, [](AsyncWebServerRequest* request) {
+    request->send(200, "text/plain", "Rebooting server...");
+
+    //Equipment STOP without persisting the equipment state before restart
+    // Max Charge/Discharge = 0; CAN = stop; contactors = open
+    setBatteryPause(true, true, true, false);
+    delay(1000);
+    ESP.restart();
+  });
+
+      // Initialize ElegantOTA (works with both WiFi and Ethernet)
+      init_ElegantOTA_Universal(&server);
+      printOTAStatus();
+
+      // Start AsyncWebServer (works with both WiFi and Ethernet)
+      server.begin();
+      
+      logging.println("AsyncWebServer started and listening on port 80");
+      
+      if (ethernet_ready) {
+        logging.printf("Webserver available via Ethernet at: http://%s\n", 
+                       Ethernet.localIP().toString().c_str());
+      }
+      
+      if (wifi_ready) {
+        logging.printf("Webserver available via WiFi at: http://%s\n", 
+                       WiFi.localIP().toString().c_str());
+      }
+    } else {
+      logging.println("Network enabled but not ready - AsyncWebServer not started");
+      logging.println("Waiting for network connection before starting webserver");
+    }
+  } else {
+    logging.println("Webserver not started - no network interfaces available");
+  }
+}
+
+// ========== OPTIMIZED WEBSERVER IMPLEMENTATION ==========
+
+#include <unordered_map>
+#include <functional>
+#include <vector>
+#include <regex>
+
+// Optimized route handler types
+struct OptimisedRouteHandler {
+  WebRequestMethod method;
+  std::function<void(AsyncWebServerRequest*)> handler;
+  bool requiresAuth;
+  const char* contentType;
+  
+  // Default constructor
+  OptimisedRouteHandler() = default;
+  
+  OptimisedRouteHandler(WebRequestMethod m, std::function<void(AsyncWebServerRequest*)> h, 
+                       bool auth = true, const char* ct = "text/html")
+    : method(m), handler(h), requiresAuth(auth), contentType(ct) {}
+};
+
+// Optimized settings handler structure
+struct OptimisedSettingHandler {
+  std::function<void(String)> setter;
+  std::function<bool(String)> validator;
+  bool storeSettings;
+  
+  // Default constructor
+  OptimisedSettingHandler() = default;
+  
+  OptimisedSettingHandler(std::function<void(String)> s, 
+                         std::function<bool(String)> v = nullptr, 
+                         bool store = true)
+    : setter(s), validator(v), storeSettings(store) {}
+};
+
+// Global hashtables for optimized routing (using std::string for proper hash support)
+static std::unordered_map<std::string, OptimisedRouteHandler> optimised_route_map;
+static std::unordered_map<std::string, OptimisedSettingHandler> optimised_settings_map;
+
+// Pre-compiled function pointers for common operations
+static std::function<void(String)> optimised_store_settings_wrapper = [](String value) { store_settings(); };
+
+// Optimized boolean settings lookup table
+static std::unordered_map<std::string, bool*> optimised_bool_settings_map;
+
+// Global flag to choose styling method
+enum class StylingMethod {
+  PROCESSOR_LEVEL,    // Current method - style at processor level
+  RESPONSE_LEVEL      // New method - style complete HTML before sending
+};
+static StylingMethod current_styling_method = StylingMethod::RESPONSE_LEVEL;
+//static StylingMethod current_styling_method = StylingMethod::PROCESSOR_LEVEL;
+
+// Optimized initialization of boolean settings map
+void optimised_init_bool_settings_map() {
+  static bool map_initialized = false;
+  if (map_initialized) return;
+  
+  // Pre-populate with direct pointers for fastest access
+  static const std::vector<std::pair<const char*, std::function<bool&()>>> bool_setting_refs = {
+    // Add more bool settings here as needed - this is just an example structure
+    // {"WIFIAPENABLED", []() -> bool& { static bool dummy = false; return dummy; }}
+  };
+  
+  for (const auto& setting : bool_setting_refs) {
+    optimised_bool_settings_map[std::string(setting.first)] = &setting.second();
+  }
+  
+  map_initialized = true;
+}
+
+// Optimized route registration function
+void optimised_register_route(const std::string& path, WebRequestMethod method, 
+                             std::function<void(AsyncWebServerRequest*)> handler,
+                             bool requiresAuth = true, const char* contentType = "text/html") {
+  optimised_route_map.emplace(path, OptimisedRouteHandler(method, handler, requiresAuth, contentType));
+}
+
+// Optimized settings registration function  
+void optimised_register_setting(const std::string& path, std::function<void(String)> setter,
+                                std::function<bool(String)> validator = nullptr,
+                                bool storeSettings = true) {
+  optimised_settings_map.emplace(path, OptimisedSettingHandler(setter, validator, storeSettings));
+}
+
+// Robust CSS rule replacement function using regex
+// Finds a CSS selector and replaces the entire rule block with replacement string
+String replace_css_rule_robust(const String& content, const String& selector, const String& replacement) {
+  // Convert Arduino String to std::string for regex processing
+  std::string std_content = content.c_str();
+  
+  // Create regex pattern to match CSS rule: selector followed by optional whitespace, then { content }
+  // Pattern explanation:
+  // \\b - word boundary to ensure we match complete selectors
+  // selector - the CSS selector to find
+  // [^{]* - any characters except opening brace (handles pseudo-selectors, etc.)
+  // \\{ - opening brace (escaped)
+  // [^}]* - any content except closing brace  
+  // \\} - closing brace (escaped)
+  std::string pattern = "\\b" + std::string(selector.c_str()) + "[^{]*\\{[^}]*\\}";
+  
+  try {
+    std::regex css_regex(pattern);
+    std::string result = std::regex_replace(std_content, css_regex, replacement.c_str());
+    return String(result.c_str());
+  } catch (const std::regex_error& e) {
+    // If regex fails, fall back to simple string replacement
+    String modified_content = content;
+    return modified_content;
+  }
+}
+
+// Helper function to apply optimized styling to any processor content
+String apply_optimised_styling(const String& original_content) {
+  String modified_content = original_content;
+  
+  // Replace the body background style with light blue
+  //modified_content.replace("body { background-color: black; color: white; }", "body { background-color: #ADD8E6; color: black; }");
+  modified_content = replace_css_rule_robust(modified_content, "body", "body { background-color: #ADD8E6; color: black; }");
+
+  // Replace button styles with steel blue theme
+  modified_content.replace("button { background-color: #505E67; color: white; border: none; padding: 10px 20px; margin-bottom: 20px; cursor: pointer; border-radius: 10px; }",
+                          "button { background-color: #4682B4; color: white; border: none; padding: 10px 20px; margin-bottom: 20px; cursor: pointer; border-radius: 10px; }");
+  modified_content.replace("button:hover { background-color: #3A4A52; }", "button:hover { background-color: #4169E1; }");
+  
+  // Replace tooltip colors
+  modified_content.replace("background-color: #3A4A52;", "background-color: #4682B4;");
+  modified_content.replace(".tooltip-icon { color: #505E67; cursor: help; }", ".tooltip-icon { color: #4682B4; cursor: help; }");
+  
+  // Add color: black to h2 and h4 elements for better visibility on light background
+  modified_content.replace("h2 { font-size: 1.2em; margin: 0.3em 0 0.5em 0; }", "h2 { font-size: 1.2em; margin: 0.3em 0 0.5em 0; color: black; }");
+  modified_content.replace("h4 { margin: 0.6em 0; line-height: 1.2; }", "h4 { margin: 0.6em 0; line-height: 1.2; color: black; }");
+  
+  return modified_content;
+}
+
+// Response-level HTML styling function - applies styling to complete rendered HTML
+String apply_response_level_styling(const String& complete_html) {
+  String modified_html = complete_html;
+  
+  // Apply global styling transformations to the complete HTML
+  modified_html = replace_css_rule_robust(modified_html, "body", "body { background-color: #ADD8E6; color: black; }");
+  
+  // Replace button styles with steel blue theme
+  modified_html.replace("button { background-color: #505E67; color: white; border: none; padding: 10px 20px; margin-bottom: 20px; cursor: pointer; border-radius: 10px; }",
+                       "button { background-color: #4682B4; color: white; border: none; padding: 10px 20px; margin-bottom: 20px; cursor: pointer; border-radius: 10px; }");
+  modified_html.replace("button:hover { background-color: #3A4A52; }", "button:hover { background-color: #4169E1; }");
+  
+  // Replace tooltip colors
+  modified_html.replace("background-color: #3A4A52;", "background-color: #4682B4;");
+  modified_html.replace(".tooltip-icon { color: #505E67; cursor: help; }", ".tooltip-icon { color: #4682B4; cursor: help; }");
+  
+  // Add color: black to h2 and h4 elements for better visibility on light background
+  modified_html.replace("h2 { font-size: 1.2em; margin: 0.3em 0 0.5em 0; }", "h2 { font-size: 1.2em; margin: 0.3em 0 0.5em 0; color: black; }");
+  modified_html.replace("h4 { margin: 0.6em 0; line-height: 1.2; }", "h4 { margin: 0.6em 0; line-height: 1.2; color: black; }");
+  
+  // Replace headers with optimized versions
+  modified_html.replace("<h2>Battery Emulator</h2>", "<h2 style='color: black;'>Battery Emulator (Response-Level Optimized)</h2>");
+  
+  return modified_html;
+}
+
+// Smart send function that applies styling based on current method
+void optimised_smart_send(AsyncWebServerRequest* request, int code, const String& contentType, 
+                         const char* template_content, std::function<String(const String&)> processor) {
+  if (current_styling_method == StylingMethod::RESPONSE_LEVEL && contentType == "text/html") {
+    // Response-level styling: create a wrapper processor that styles the final result
+    auto styling_processor = [processor](const String& var) -> String {
+      if (var == "X") {
+        // Get the original content from the processor
+        String original_content = processor ? processor(var) : String();
+        // Apply styling to the complete rendered HTML
+        return apply_response_level_styling(original_content);
+      }
+      // For non-X variables, just pass through to original processor
+      return processor ? processor(var) : String();
+    };
+    
+    // Send with the styling wrapper processor
+    request->send(code, contentType, template_content, styling_processor);
+    
+  } else {
+    // Original method: send with processor as-is
+    request->send(code, contentType, template_content, processor);
+  }
+}
+
+// Overload for simple string responses
+void optimised_smart_send(AsyncWebServerRequest* request, int code, const String& contentType, const String& content) {
+  if (current_styling_method == StylingMethod::RESPONSE_LEVEL && contentType == "text/html") {
+    String styled_html = apply_response_level_styling(content);
+    request->send(code, contentType, styled_html);
+  } else {
+    request->send(code, contentType, content);
+  }
+}
+
+// Generic function to create optimized processors
+std::function<String(const String&)> create_optimised_processor(std::function<String(const String&)> original_processor) {
+  return [original_processor](const String& var) -> String {
+    if (var == "X") {
+      // Get the original processor content
+      String original_content = original_processor(var);
+      
+      // Apply optimized styling
+      String modified_content = apply_optimised_styling(original_content);
+      
+      // Replace the header with optimized version if it exists
+      modified_content.replace("<h2>Battery Emulator</h2>", "<h2 style='color: black;'>Battery Emulator (Optimized)</h2>");
+      
+      return modified_content;
+    }
+    return String();
+  };
+}
+
+// Optimized batch route registration
+void optimised_register_static_routes() {
+  // Register routes with runtime processor creation to avoid static initialization issues
+  
+  // Main page route with smart styling
+  optimised_register_route(std::string("/"), HTTP_GET, 
+    [](AsyncWebServerRequest* request) {
+      if (current_styling_method == StylingMethod::PROCESSOR_LEVEL) {
+        auto optimized_proc = create_optimised_processor(processor);
+        request->send(200, "text/html", index_html, optimized_proc);
+      } else {
+        optimised_smart_send(request, 200, "text/html", index_html, processor);
+      }
+    });
+  
+  // Firmware info route (no optimization needed for JSON)
+  optimised_register_route(std::string("/GetFirmwareInfo"), HTTP_GET, 
+    [](AsyncWebServerRequest* request) {
+      request->send(200, "application/json", get_firmware_info_html, get_firmware_info_processor);
+    });
+  
+  // Advanced battery page with smart styling  
+  optimised_register_route(std::string("/advanced"), HTTP_GET, 
+    [](AsyncWebServerRequest* request) {
+      if (current_styling_method == StylingMethod::PROCESSOR_LEVEL) {
+        auto optimized_proc = create_optimised_processor(advanced_battery_processor);
+        request->send(200, "text/html", index_html, optimized_proc);
+      } else {
+        optimised_smart_send(request, 200, "text/html", index_html, advanced_battery_processor);
+      }
+    });
+  
+  // Cell monitor page with smart styling
+  optimised_register_route(std::string("/cellmonitor"), HTTP_GET, 
+    [](AsyncWebServerRequest* request) {
+      if (current_styling_method == StylingMethod::PROCESSOR_LEVEL) {
+        auto optimized_proc = create_optimised_processor(cellmonitor_processor);
+        request->send(200, "text/html", index_html, optimized_proc);
+      } else {
+        optimised_smart_send(request, 200, "text/html", index_html, cellmonitor_processor);
+      }
+    });
+  
+  // Events page with smart styling
+  optimised_register_route(std::string("/events"), HTTP_GET, 
+    [](AsyncWebServerRequest* request) {
+      if (current_styling_method == StylingMethod::PROCESSOR_LEVEL) {
+        auto optimized_proc = create_optimised_processor(events_processor);
+        request->send(200, "text/html", index_html, optimized_proc);
+      } else {
+        optimised_smart_send(request, 200, "text/html", index_html, events_processor);
+      }
+    });
+  
+  // Special routes
+  optimised_register_route(std::string("/logout"), HTTP_GET, 
+    [](AsyncWebServerRequest* request) { request->send(401); }, false);
+    
+  optimised_register_route(std::string("/settings"), HTTP_GET, 
+    [](AsyncWebServerRequest* request) {
+      auto settings = std::make_shared<BatteryEmulatorSettingsStore>(true);
+      if (current_styling_method == StylingMethod::PROCESSOR_LEVEL) {
+        request->send(200, "text/html", settings_html,
+                      [settings](const String& content) { return settings_processor(content, *settings); });
+      } else {
+        optimised_smart_send(request, 200, "text/html", settings_html,
+                           [settings](const String& content) { return settings_processor(content, *settings); });
+      }
+    });
+  
+  // Save settings POST route
+  const char* boolSettingNames[] = {
+      "DBLBTR",        "CNTCTRL",      "CNTCTRLDBL",  "PWMCNTCTRL",   "PERBMSRESET",  "SDLOGENABLED", "STATICIP",
+      "REMBMSRESET",   "EXTPRECHARGE", "USBENABLED",  "CANLOGUSB",    "WEBENABLED",   "CANFDASCAN",   "CANLOGSD",
+      "WIFIAPENABLED", "MQTTENABLED",  "NOINVDISC",   "HADISC",       "MQTTTOPICS",   "MQTTCELLV",    "INVICNT",
+      "GTWRHD",        "DIGITALHVIL",  "PERFPROFILE", "INTERLOCKREQ", "SOCESTIMATED", "PYLONOFFSET",  "PYLONORDER",
+      "DEYEBYD",       "NCCONTACTOR",  "TRIBTR",      "CNTCTRLTRI",
+  };
+  
+  optimised_register_route(std::string("/saveSettings"), HTTP_POST,
+    [boolSettingNames](AsyncWebServerRequest* request) {
+      BatteryEmulatorSettingsStore settings;
+
+      struct BoolSetting {
+        const char* name;
+        bool existingValue;
+        bool newValue;
+      };
+
+      std::vector<BoolSetting> boolSettings;
+
+      for (auto& name : boolSettingNames) {
+        boolSettings.push_back({name, settings.getBool(name, name == std::string("WIFIAPENABLED")), false});
+      }
+
+      // Define parameter handlers using map for O(log n) lookup
+      static const std::map<const char*, std::function<void(const String&)>, CStringCompare> paramHandlers = {
+        {"SSID", [&](const String& val) { 
+          settings.saveString("SSID", val.c_str()); 
+          ssid = settings.getString("SSID", "").c_str(); 
+        }},
+        {"PASSWORD", [&](const String& val) { 
+          settings.saveString("PASSWORD", val.c_str()); 
+          password = settings.getString("PASSWORD", "").c_str(); 
+        }},
+        {"APNAME", [&](const String& val) { settings.saveString("APNAME", val.c_str()); }},
+        {"APPASSWORD", [&](const String& val) { settings.saveString("APPASSWORD", val.c_str()); }},
+        {"HOSTNAME", [&](const String& val) { settings.saveString("HOSTNAME", val.c_str()); }},
+        {"MQTTSERVER", [&](const String& val) { settings.saveString("MQTTSERVER", val.c_str()); }},
+        {"MQTTUSER", [&](const String& val) { settings.saveString("MQTTUSER", val.c_str()); }},
+        {"MQTTPASSWORD", [&](const String& val) { settings.saveString("MQTTPASSWORD", val.c_str()); }},
+        {"MQTTTOPIC", [&](const String& val) { settings.saveString("MQTTTOPIC", val.c_str()); }},
+        {"MQTTOBJIDPREFIX", [&](const String& val) { settings.saveString("MQTTOBJIDPREFIX", val.c_str()); }},
+        {"MQTTDEVICENAME", [&](const String& val) { settings.saveString("MQTTDEVICENAME", val.c_str()); }},
+        {"HADEVICEID", [&](const String& val) { settings.saveString("HADEVICEID", val.c_str()); }},
+        
+        {"inverter", [&](const String& val) { settings.saveUInt("INVTYPE", (int)static_cast<InverterProtocolType>(atoi(val.c_str()))); }},
+        {"INVCOMM", [&](const String& val) { settings.saveUInt("INVCOMM", (int)static_cast<comm_interface>(atoi(val.c_str()))); }},
+        {"battery", [&](const String& val) { settings.saveUInt("BATTTYPE", (int)static_cast<BatteryType>(atoi(val.c_str()))); }},
+        {"BATTCHEM", [&](const String& val) { settings.saveUInt("BATTCHEM", (int)static_cast<battery_chemistry_enum>(atoi(val.c_str()))); }},
+        {"BATTCOMM", [&](const String& val) { settings.saveUInt("BATTCOMM", (int)static_cast<comm_interface>(atoi(val.c_str()))); }},
+        {"charger", [&](const String& val) { settings.saveUInt("CHGTYPE", (int)static_cast<ChargerType>(atoi(val.c_str()))); }},
+        {"CHGCOMM", [&](const String& val) { settings.saveUInt("CHGCOMM", (int)static_cast<comm_interface>(atoi(val.c_str()))); }},
+        {"EQSTOP", [&](const String& val) { settings.saveUInt("EQSTOP", (int)static_cast<STOP_BUTTON_BEHAVIOR>(atoi(val.c_str()))); }},
+        {"BATT2COMM", [&](const String& val) { settings.saveUInt("BATT2COMM", (int)static_cast<comm_interface>(atoi(val.c_str()))); }},
+        {"BATT3COMM", [&](const String& val) { settings.saveUInt("BATT3COMM", (int)static_cast<comm_interface>(atoi(val.c_str()))); }},
+        {"shunt", [&](const String& val) { settings.saveUInt("SHUNTTYPE", (int)static_cast<ShuntType>(atoi(val.c_str()))); }},
+        {"SHUNTCOMM", [&](const String& val) { settings.saveUInt("SHUNTCOMM", (int)static_cast<comm_interface>(atoi(val.c_str()))); }},
+        
+        {"BATTPVMAX", [&](const String& val) { settings.saveUInt("BATTPVMAX", (int)(val.toFloat() * 10.0f)); }},
+        {"BATTPVMIN", [&](const String& val) { settings.saveUInt("BATTPVMIN", (int)(val.toFloat() * 10.0f)); }},
+        
+        {"BATTCVMAX", [&](const String& val) { settings.saveUInt("BATTCVMAX", atoi(val.c_str())); }},
+        {"BATTCVMIN", [&](const String& val) { settings.saveUInt("BATTCVMIN", atoi(val.c_str())); }},
+        {"MAXPRETIME", [&](const String& val) { settings.saveUInt("MAXPRETIME", atoi(val.c_str())); }},
+        {"WIFICHANNEL", [&](const String& val) { settings.saveUInt("WIFICHANNEL", atoi(val.c_str())); }},
+        {"DCHGPOWER", [&](const String& val) { settings.saveUInt("DCHGPOWER", atoi(val.c_str())); }},
+        {"CHGPOWER", [&](const String& val) { settings.saveUInt("CHGPOWER", atoi(val.c_str())); }},
+        {"LOCALIP1", [&](const String& val) { settings.saveUInt("LOCALIP1", atoi(val.c_str())); }},
+        {"LOCALIP2", [&](const String& val) { settings.saveUInt("LOCALIP2", atoi(val.c_str())); }},
+        {"LOCALIP3", [&](const String& val) { settings.saveUInt("LOCALIP3", atoi(val.c_str())); }},
+        {"LOCALIP4", [&](const String& val) { settings.saveUInt("LOCALIP4", atoi(val.c_str())); }},
+        {"GATEWAY1", [&](const String& val) { settings.saveUInt("GATEWAY1", atoi(val.c_str())); }},
+        {"GATEWAY2", [&](const String& val) { settings.saveUInt("GATEWAY2", atoi(val.c_str())); }},
+        {"GATEWAY3", [&](const String& val) { settings.saveUInt("GATEWAY3", atoi(val.c_str())); }},
+        {"GATEWAY4", [&](const String& val) { settings.saveUInt("GATEWAY4", atoi(val.c_str())); }},
+        {"SUBNET1", [&](const String& val) { settings.saveUInt("SUBNET1", atoi(val.c_str())); }},
+        {"SUBNET2", [&](const String& val) { settings.saveUInt("SUBNET2", atoi(val.c_str())); }},
+        {"SUBNET3", [&](const String& val) { settings.saveUInt("SUBNET3", atoi(val.c_str())); }},
+        {"SUBNET4", [&](const String& val) { settings.saveUInt("SUBNET4", atoi(val.c_str())); }},
+        {"MQTTPORT", [&](const String& val) { settings.saveUInt("MQTTPORT", atoi(val.c_str())); }},
+        {"MQTTTIMEOUT", [&](const String& val) { settings.saveUInt("MQTTTIMEOUT", atoi(val.c_str())); }},
+        {"SOFAR_ID", [&](const String& val) { settings.saveUInt("SOFAR_ID", atoi(val.c_str())); }},
+        {"PYLONSEND", [&](const String& val) { settings.saveUInt("PYLONSEND", atoi(val.c_str())); }},
+        {"INVCELLS", [&](const String& val) { settings.saveUInt("INVCELLS", atoi(val.c_str())); }},
+        {"INVMODULES", [&](const String& val) { settings.saveUInt("INVMODULES", atoi(val.c_str())); }},
+        {"INVCELLSPER", [&](const String& val) { settings.saveUInt("INVCELLSPER", atoi(val.c_str())); }},
+        {"INVVLEVEL", [&](const String& val) { settings.saveUInt("INVVLEVEL", atoi(val.c_str())); }},
+        {"INVCAPACITY", [&](const String& val) { settings.saveUInt("INVCAPACITY", atoi(val.c_str())); }},
+        {"INVBTYPE", [&](const String& val) { settings.saveUInt("INVBTYPE", atoi(val.c_str())); }},
+        {"CANFREQ", [&](const String& val) { settings.saveUInt("CANFREQ", atoi(val.c_str())); }},
+        {"CANFDFREQ", [&](const String& val) { settings.saveUInt("CANFDFREQ", atoi(val.c_str())); }},
+        {"PRECHGMS", [&](const String& val) { settings.saveUInt("PRECHGMS", atoi(val.c_str())); }},
+        {"PWMFREQ", [&](const String& val) { settings.saveUInt("PWMFREQ", atoi(val.c_str())); }},
+        {"PWMHOLD", [&](const String& val) { settings.saveUInt("PWMHOLD", atoi(val.c_str())); }},
+        {"GTWCOUNTRY", [&](const String& val) { settings.saveUInt("GTWCOUNTRY", atoi(val.c_str())); }},
+        {"GTWMAPREG", [&](const String& val) { settings.saveUInt("GTWMAPREG", atoi(val.c_str())); }},
+        {"GTWCHASSIS", [&](const String& val) { settings.saveUInt("GTWCHASSIS", atoi(val.c_str())); }},
+        {"GTWPACK", [&](const String& val) { settings.saveUInt("GTWPACK", atoi(val.c_str())); }},
+        {"LEDMODE", [&](const String& val) { settings.saveUInt("LEDMODE", atoi(val.c_str())); }},
+        {"GPIOOPT1", [&](const String& val) { settings.saveUInt("GPIOOPT1", atoi(val.c_str())); }}
+      };
+
+      int numParams = request->params();
+      for (int i = 0; i < numParams; i++) {
+        auto p = request->getParam(i);
+        const String& paramName = p->name();
+        
+        // Check if parameter has a dedicated handler
+        auto it = paramHandlers.find(paramName.c_str());
+        if (it != paramHandlers.end()) {
+          it->second(p->value());
+        }
+        
+        // Check boolean settings
+        for (auto& boolSetting : boolSettings) {
+          if (paramName == boolSetting.name) {
+            boolSetting.newValue = p->value() == "on";
+          }
+        }
+      }
+
+      for (auto& boolSetting : boolSettings) {
+        if (boolSetting.existingValue != boolSetting.newValue) {
+          settings.saveBool(boolSetting.name, boolSetting.newValue);
+        }
+      }
+
+      settingsUpdated = settings.were_settings_updated();
+      request->redirect("/settings");
+    });
+  
+  // Clear events route
+  optimised_register_route(std::string("/clearevents"), HTTP_GET,
+    [](AsyncWebServerRequest* request) {
+      reset_all_events();
+      // Send back a response that includes an instant redirect to /events
+      String response = "<html><body>";
+      response += "<script>window.location.href = '/events';</script>";  // Instant redirect
+      response += "</body></html>";
+      request->send(200, "text/html", response);
+    });
+  
+  // Reboot route
+  optimised_register_route(std::string("/reboot"), HTTP_GET,
+    [](AsyncWebServerRequest* request) {
+      request->send(200, "text/plain", "Rebooting server...");
+      
+      // Equipment STOP without persisting the equipment state before restart
+      // Max Charge/Discharge = 0; CAN = stop; contactors = open
+      setBatteryPause(true, true, true, false);
+      delay(1000);
+      ESP.restart();
+    });
+}
+
+// Optimized settings routes registration
+void optimised_register_settings_routes() {
+  // Batch register all update routes with lambda capture optimization
+  static const std::vector<std::tuple<const char*, std::function<void(String)>, std::function<bool(String)>>> settings_routes = {
+    {"/updateBatterySize", [](String value) { 
+      datalayer.battery.info.total_capacity_Wh = value.toInt(); 
+    }, nullptr},
+    
+    {"/updateUseScaledSOC", [](String value) { 
+      datalayer.battery.settings.soc_scaling_active = value.toInt(); 
+    }, nullptr},
+    
+    {"/updateSocMax", [](String value) {
+      datalayer.battery.settings.max_percentage = static_cast<uint16_t>(value.toFloat() * 100);
+    }, nullptr},
+    
+    {"/updateSocMin", [](String value) {
+      datalayer.battery.settings.min_percentage = static_cast<uint16_t>(value.toFloat() * 100);
+    }, nullptr},
+    
+    {"/updateMaxChargeA", [](String value) {
+      datalayer.battery.settings.max_user_set_charge_dA = static_cast<uint16_t>(value.toFloat() * 10);
+    }, nullptr},
+    
+    {"/updateMaxDischargeA", [](String value) {
+      datalayer.battery.settings.max_user_set_discharge_dA = static_cast<uint16_t>(value.toFloat() * 10);
+    }, nullptr}
+  };
+  
+  for (const auto& route : settings_routes) {
+    optimised_register_setting(std::string(std::get<0>(route)), std::get<1>(route), std::get<2>(route));
+  }
+}
+
+// Optimized universal settings handler
+void optimised_handle_setting_request(AsyncWebServerRequest* request, const String& path) {
+  std::string std_path(path.c_str());  // Convert Arduino String to std::string for hashtable lookup
+  auto it = optimised_settings_map.find(std_path);
+  if (it == optimised_settings_map.end()) {
+    request->send(404, "text/plain", "Setting not found");
+    return;
+  }
+  
+  if (!request->hasParam("value")) {
+    request->send(400, "text/plain", "Bad Request");
+    return;
+  }
+  
+  String value = request->getParam("value")->value();
+  const auto& handler = it->second;
+  
+  if (handler.validator && !handler.validator(value)) {
+    request->send(400, "text/plain", "Invalid value");
+    return;
+  }
+  
+  handler.setter(value);
+  if (handler.storeSettings) {
+    store_settings();
+  }
+  
+  request->send(200, "text/plain", "Updated successfully");
+}
+
+// Optimized route dispatcher
+void optimised_dispatch_routes() {
+  // Register all routes in hash tables first
+  optimised_register_static_routes();
+  optimised_register_settings_routes();
+  
+  Serial.printf("Registering %d optimised routes with AsyncWebServer\n", optimised_route_map.size());
+  
+  // Single loop to register all routes with server
+  for (const auto& route : optimised_route_map) {
+    const std::string& path = route.first;
+    const OptimisedRouteHandler& handler = route.second;
+    
+    Serial.printf("Registering optimised route: %s\n", path.c_str());
+    
+    if (handler.requiresAuth) {
+      def_route_with_auth(path.c_str(), server, handler.method, handler.handler);
+    } else {
+      server.on(path.c_str(), handler.method, handler.handler);
+    }
+    
+    // // COMMENTED OUT - Register POST routes - doesn't work
+    // // Register GET routes
+    // if (handler.requiresAuth) {
+    //   def_route_with_auth(path.c_str(), server, HTTP_GET, handler.handler);
+    // } else {
+    //   server.on(path.c_str(), HTTP_GET, handler.handler);
+    // }
+    
+    // // Register POST routes
+    // if (handler.requiresAuth) {
+    //   def_route_with_auth(path.c_str(), server, HTTP_POST, handler.handler);
+    // } else {
+    //   server.on(path.c_str(), HTTP_POST, handler.handler);
+    // }
+  }
+  
+  logging.println("All optimised routes registered with AsyncWebServer");
+  
+  logging.printf("Registering %d optimised settings routes\n", optimised_settings_map.size());
+  
+  // Register settings routes with single universal handler
+  for (const auto& setting : optimised_settings_map) {
+    const std::string& path = setting.first;
+    logging.printf("Registering optimised setting route: %s\n", path.c_str());
+    
+    def_route_with_auth(path.c_str(), server, HTTP_GET, 
+      [path](AsyncWebServerRequest* request) {
+        String arduino_path(path.c_str());  // Convert to Arduino String for compatibility
+        optimised_handle_setting_request(request, arduino_path);
+      });
+      
+    // // COMMENTED OUT - Register POST handler - doesn't work
+    // // Register GET handler
+    // def_route_with_auth(path.c_str(), server, HTTP_GET, 
+    //   [path](AsyncWebServerRequest* request) {
+    //     String arduino_path(path.c_str());  // Convert to Arduino String for compatibility
+    //     optimised_handle_setting_request(request, arduino_path);
+    //   });
+    
+    // // Register POST handler
+    // def_route_with_auth(path.c_str(), server, HTTP_POST, 
+    //   [path](AsyncWebServerRequest* request) {
+    //     String arduino_path(path.c_str());  // Convert to Arduino String for compatibility
+    //     optimised_handle_setting_request(request, arduino_path);
+    //   });
+  }
+  
+  logging.println("All optimised settings routes registered with AsyncWebServer");
+}
+
+// Optimized webserver initialization - WiFi+Ethernet bridge mode
+void optimised_init_webserver() {
+  Serial.println("\n*** ENTERED optimised_init_webserver() ***");
+  Serial.flush();
+  
+  Serial.println("Starting 1 second delay...");
+  Serial.flush();
+  delay(1000);  // Allow time for network interfaces to initialize
+  Serial.println("Delay complete");
+  Serial.flush();
+  
+  logging.println("=== Starting Optimized WebServer ===");
+  
+  // Check if any network interface is available
+  wifi_mode_t current_wifi_mode = WiFi.getMode();
+  Serial.printf("DEBUG: WiFi mode = %d (0=OFF, 1=STA, 2=AP, 3=AP_STA)\n", current_wifi_mode);
+  Serial.printf("DEBUG: WiFi status = %d (3=WL_CONNECTED)\n", WiFi.status());
+  Serial.printf("DEBUG: wifi_enabled = %s\n", wifi_enabled ? "true" : "false");
+  Serial.flush();
+  
+  const bool wifi_ready = wifi_enabled && (WiFi.status() == WL_CONNECTED || 
+                                             current_wifi_mode == WIFI_AP || 
+                                             current_wifi_mode == WIFI_AP_STA);
+  const bool ethernet_ready = ethernetPresent && ethernet_connected && (Ethernet.linkStatus() == LinkON);
+  
+  Serial.printf("DEBUG: wifi_ready = %s\n", wifi_ready ? "true" : "false");
+  Serial.printf("DEBUG: ethernet_ready = %s\n", ethernet_ready ? "true" : "false");
+  Serial.flush();
+  
+  logging.printf("Network Status:\n");
+  logging.printf("  Ethernet: %s", ethernet_ready ? "connected" : "not connected");
+  if (ethernet_ready) {
+    logging.printf(" (%s)", Ethernet.localIP().toString().c_str());
+  }
+  logging.printf("\n");
+  
+  logging.printf("  WiFi: %s", wifi_ready ? "connected/AP" : "not connected");
+  if (wifi_ready) {
+    if (WiFi.getMode() == WIFI_AP) {
+      logging.printf(" (%s)", WiFi.softAPIP().toString().c_str());
+    } else {
+      logging.printf(" (%s)", WiFi.localIP().toString().c_str());
+    }
+  }
+  logging.printf("\n");
+  
+  // AsyncWebServer requires WiFi TCP stack - check if WiFi is available
+  if (!wifi_ready) {
+    logging.println("\nERROR: AsyncWebServer requires WiFi interface");
+    if (ethernet_ready) {
+      logging.println("Ethernet is connected but WiFi needed for AsyncWebServer TCP stack");
+      logging.println("Please ensure WiFi connects to same network as Ethernet");
+    } else if (ethernetPresent) {
+      logging.println("Waiting for Ethernet connection...");
+    }
+    logging.println("Waiting for WiFi...");
+    return;
+  }
+  
+  // Print active network interface information
+  Serial.println("DEBUG: About to call printNetworkInfo()...");
+  Serial.flush();
+  printNetworkInfo();
+  Serial.println("DEBUG: printNetworkInfo() completed");
+  Serial.flush();
+  
+  // Initialize AsyncWebServer (works with both WiFi and Ethernet)
+  Serial.println("DEBUG: Initializing AsyncWebServer...");
+  Serial.flush();
+  logging.println("Initializing AsyncWebServer...");
+  
+  // If using Ethernet, initialize the AsyncWebServer compatibility layer
+  if (ethernet_ready) {
+    Serial.println("DEBUG: Ethernet ready - calling initAsyncWebServerForEthernet()...");
+    Serial.flush();
+    logging.println("Calling initAsyncWebServerForEthernet()...");
+    if (!initAsyncWebServerForEthernet()) {
+      logging.println("ERROR: Failed to initialize AsyncWebServer for Ethernet");
+      return;
+    }
+    logging.println("initAsyncWebServerForEthernet() succeeded");
+  } else {
+    Serial.println("DEBUG: Ethernet not ready - skipping initAsyncWebServerForEthernet()");
+    Serial.flush();
+  }
+  
+  Serial.println("DEBUG: Initializing boolean settings map...");
+  Serial.flush();
+  logging.println("DEBUG: Initializing boolean settings map...");
+  // Initialize boolean settings map once
+  optimised_init_bool_settings_map();
+  Serial.println("DEBUG: Boolean settings map initialized");
+  Serial.flush();
+  logging.println("DEBUG: Boolean settings map initialized");
+  
+  Serial.println("DEBUG: Dispatching routes...");
+  Serial.flush();
+  logging.println("DEBUG: Dispatching routes...");
+  // Use optimized route dispatcher
+  optimised_dispatch_routes();
+  Serial.println("DEBUG: Routes dispatched successfully");
+  Serial.flush();
+  logging.println("DEBUG: Routes dispatched successfully");
+  
+  Serial.println("DEBUG: Initializing ElegantOTA...");
+  Serial.flush();
+  logging.println("DEBUG: Initializing ElegantOTA...");
+  // Initialize ElegantOTA with universal network support
+  init_ElegantOTA_Universal(&server);
+  printOTAStatus();
+  logging.println("DEBUG: ElegantOTA initialized");
+  
+  // Add a simple test route BEFORE server.begin()
+  logging.println("DEBUG: Adding test route at /test");
+  server.on("/test", HTTP_GET, [](AsyncWebServerRequest *request) {
+    Serial.println("DEBUG: /test route accessed!");
+    Serial.printf("DEBUG: Request from client IP: %s\n", request->client()->remoteIP().toString().c_str());
+    Serial.printf("DEBUG: Request to server IP: %s\n", request->host().c_str());
+    
+    String response = "AsyncWebServer is working!\n";
+    response += "Mode: " + String(ethernetPresent ? "Ethernet" : "WiFi") + "\n";
+    response += "Client IP: " + request->client()->remoteIP().toString() + "\n";
+    response += "Server Host: " + request->host() + "\n";
+    if (ethernetPresent) {
+      response += "Ethernet IP: " + Ethernet.localIP().toString() + "\n";
+    }
+    response += "WiFi Mode: " + String(WiFi.getMode()) + "\n";
+    response += "WiFi IP: " + WiFi.localIP().toString() + "\n";
+    
+    request->send(200, "text/plain", response);
+  });
+  logging.println("DEBUG: Test route added");
+  
+  // Add global request handler to log all incoming requests
+  server.onNotFound([](AsyncWebServerRequest *request) {
+    Serial.printf("DEBUG: Request received - URL: %s, Client IP: %s, Host: %s\n",
+                  request->url().c_str(),
+                  request->client()->remoteIP().toString().c_str(),
+                  request->host().c_str());
+    request->send(404, "text/plain", "Not Found");
+  });
+  logging.println("DEBUG: Request logger added");
+  
+  // Start server
+  logging.println("DEBUG: Calling server.begin()...");
+  server.begin();
+  logging.println("DEBUG: server.begin() completed");
+  
+  // Show all available network interfaces
+  logging.println("========================================");
+  logging.println("Network Interface Status:");
+  logging.println("========================================");
+  logging.printf("WiFi Mode: %d (0=OFF, 1=STA, 2=AP, 3=AP_STA)\n", WiFi.getMode());
+  logging.printf("WiFi Status: %d\n", WiFi.status());
+  logging.printf("WiFi IP: %s\n", WiFi.localIP().toString().c_str());
+  if (WiFi.getMode() == WIFI_AP || WiFi.getMode() == WIFI_AP_STA) {
+    logging.printf("WiFi AP IP: %s\n", WiFi.softAPIP().toString().c_str());
+  }
+  if (ethernetPresent) {
+    logging.printf("Ethernet IP: %s\n", Ethernet.localIP().toString().c_str());
+    logging.printf("Ethernet Link: %s\n", Ethernet.linkStatus() == LinkON ? "ON" : "OFF");
+  }
+  logging.println("========================================\n");
+  
+  logging.println("Optimized AsyncWebServer started and listening on port 80\n");
+  
+  // Important note about AsyncWebServer limitations
+  if (ethernet_ready && wifi_ready) {
+    logging.println("========================================");
+    logging.println("IMPORTANT: AsyncWebServer Network Binding");
+    logging.println("========================================");
+    logging.println("AsyncWebServer uses AsyncTCP which ONLY binds to WiFi interface.");
+    logging.println("Even though both WiFi and Ethernet are active:");
+    logging.printf("  - Webserver is ONLY accessible via WiFi IP: http://%s\n", WiFi.localIP().toString().c_str());
+    logging.printf("  - Ethernet IP (%s) will NOT serve webpages\n", Ethernet.localIP().toString().c_str());
+    logging.println("  - Ethernet provides network connectivity for outbound traffic");
+    logging.println("  - Both IPs are pingable but only WiFi IP serves HTTP");
+    logging.println("This is a limitation of the AsyncTCP library used by ESPAsyncWebServer.");
+    logging.println("========================================\n");
+  }
+  
+  if (ethernet_ready) {
+    logging.printf("Ethernet IP: %s (pingable, network connectivity only)\n", 
+                   Ethernet.localIP().toString().c_str());
+    logging.printf("Ethernet Link: %s\n", 
+                   Ethernet.linkStatus() == LinkON ? "ON" : "OFF");
+  }
+  
+  if (wifi_ready) {
+    logging.printf("Webserver available at: http://%s\n", 
+                   WiFi.localIP().toString().c_str());
+    logging.printf("DEBUG: WiFi IP: %s, Mode: %d\n",
+                   WiFi.localIP().toString().c_str(), WiFi.getMode());
+  }
+  
+  logging.println("AsyncWebServer initialization complete");
+  logging.println("========================================");
+  logging.println("TEST: Try accessing http://<IP>/test to verify server is responding");
+  logging.println("========================================");
+}
+
+// ========== DUAL SERVER ABSTRACTION LAYER ==========
+
+// Abstract request wrapper for dual server support
+struct DualServerRequest {
+  enum ServerType { ASYNC_SERVER, ETHERNET_SERVER };
+  
+  ServerType type;
+  AsyncWebServerRequest* async_request;
+  EthernetClient* ethernet_client;
+  std::string method;
+  std::string uri;
+  std::string body;
+  std::unordered_map<std::string, std::string> params;
+  
+  // Constructor for AsyncWebServer
+  DualServerRequest(AsyncWebServerRequest* req) 
+    : type(ASYNC_SERVER), async_request(req), ethernet_client(nullptr) {
+    
+    // Safety check
+    if (!req) {
+      method = "GET";
+      uri = "/";
+      return;
+    }
+    
+    // Safe method extraction
+    switch (req->method()) {
+      case HTTP_GET: method = "GET"; break;
+      case HTTP_POST: method = "POST"; break;
+      case HTTP_PUT: method = "PUT"; break;
+      case HTTP_DELETE: method = "DELETE"; break;
+      default: method = "GET"; break;
+    }
+    
+    // Safe URL extraction
+    String url_string = req->url();
+    uri = std::string(url_string.c_str());
+    
+    // Safe parameter extraction
+    try {
+      int numParams = req->params();
+      for (int i = 0; i < numParams; i++) {
+        auto p = req->getParam(i);
+        if (p && p->name().length() > 0) {
+          params[std::string(p->name().c_str())] = std::string(p->value().c_str());
+        }
+      }
+    } catch (...) {
+      // If parameter extraction fails, just continue with empty params
+    }
+  }
+  
+  // Constructor for EthernetServer  
+  DualServerRequest(EthernetClient* client, const std::string& m, const std::string& u) 
+    : type(ETHERNET_SERVER), async_request(nullptr), ethernet_client(client), method(m), uri(u) {
+    
+    // Parse query parameters from URI
+    size_t queryStart = uri.find('?');
+    if (queryStart != std::string::npos) {
+      std::string query = uri.substr(queryStart + 1);
+      uri = uri.substr(0, queryStart);
+      
+      // Simple parameter parsing
+      size_t start = 0;
+      while (start < query.length()) {
+        size_t ampPos = query.find('&', start);
+        if (ampPos == std::string::npos) ampPos = query.length();
+        
+        std::string param = query.substr(start, ampPos - start);
+        size_t eqPos = param.find('=');
+        if (eqPos != std::string::npos) {
+          std::string key = param.substr(0, eqPos);
+          std::string value = param.substr(eqPos + 1);
+          // Simple URL decode
+          size_t pos = 0;
+          while ((pos = value.find("%20", pos)) != std::string::npos) {
+            value.replace(pos, 3, " ");
+            pos += 1;
+          }
+          params[key] = value;
+        }
+        start = ampPos + 1;
+      }
+    }
+  }
+  
+  bool hasParam(const std::string& name) const {
+    return params.find(name) != params.end();
+  }
+  
+  std::string getParam(const std::string& name) const {
+    auto it = params.find(name);
+    return (it != params.end()) ? it->second : std::string();
+  }
+  
+  bool authenticate(const std::string& username, const std::string& password) const {
+    if (type == ASYNC_SERVER) {
+      return async_request->authenticate(username.c_str(), password.c_str());
+    } else {
+      // Simple HTTP Basic Auth for Ethernet
+      // In a real implementation, you'd parse the Authorization header
+      return true; // Simplified for now
+    }
+  }
+};
+
+// Abstract response interface
+class DualServerResponse {
+public:
+  virtual ~DualServerResponse() = default;
+  virtual void send(int code, const String& contentType, const String& content) = 0;
+  virtual void send(int code, const String& contentType, const char* template_content, 
+                   std::function<String(const String&)> processor) = 0;
+  virtual void redirect(const String& url) = 0;
+  virtual void requestAuthentication() = 0;
+};
+
+// AsyncWebServer response wrapper
+class AsyncServerResponse : public DualServerResponse {
+private:
+  AsyncWebServerRequest* request;
+  
+public:
+  AsyncServerResponse(AsyncWebServerRequest* req) : request(req) {}
+  
+  void send(int code, const String& contentType, const String& content) override {
+    request->send(code, contentType, content);
+  }
+  
+  void send(int code, const String& contentType, const char* template_content, 
+           std::function<String(const String&)> processor) override {
+    request->send(code, contentType, template_content, processor);
+  }
+  
+  void redirect(const String& url) override {
+    request->redirect(url);
+  }
+  
+  void requestAuthentication() override {
+    request->requestAuthentication();
+  }
+};
+
+// EthernetServer response wrapper
+class EthernetServerResponse : public DualServerResponse {
+private:
+  EthernetClient* client;
+  
+public:
+  EthernetServerResponse(EthernetClient* c) : client(c) {}
+  
+  void send(int code, const String& contentType, const String& content) override {
+    String response = "HTTP/1.1 " + String(code) + " OK\r\n";
+    response += "Content-Type: " + contentType + "\r\n";
+    response += "Content-Length: " + String(content.length()) + "\r\n";
+    response += "Connection: close\r\n\r\n";
+    response += content;
+    
+    client->print(response);
+    client->stop();
+  }
+  
+  void send(int code, const String& contentType, const char* template_content, 
+           std::function<String(const String&)> processor) override {
+    String processed_content = processor ? processor("X") : String(template_content);
+    send(code, contentType, processed_content);
+  }
+  
+  void redirect(const String& url) override {
+    String response = "HTTP/1.1 302 Found\r\n";
+    response += "Location: " + url + "\r\n";
+    response += "Connection: close\r\n\r\n";
+    
+    client->print(response);
+    client->stop();
+  }
+  
+  void requestAuthentication() override {
+    String response = "HTTP/1.1 401 Unauthorized\r\n";
+    response += "WWW-Authenticate: Basic realm=\"Battery Emulator\"\r\n";
+    response += "Connection: close\r\n\r\n";
+    
+    client->print(response);
+    client->stop();
+  }
+};
+
+// Dual server smart send function
+void dual_smart_send(DualServerRequest& request, std::unique_ptr<DualServerResponse> response,
+                    int code, const String& contentType, const char* template_content, 
+                    std::function<String(const String&)> processor) {
+  
+  if (current_styling_method == StylingMethod::RESPONSE_LEVEL && contentType == "text/html") {
+    // Response-level styling: create a wrapper processor that styles the final result
+    auto styling_processor = [processor, template_content](const String& var) -> String {
+      if (var == "X") {
+        // Get the original content from the processor
+        String original_content = processor ? processor(var) : String();
+        
+        // Special handling for settings page - check if this is settings_html template
+        bool is_settings_page = (template_content == settings_html);
+        
+        if (is_settings_page) {
+          // For settings page, we need to apply styling to both the HTML and any embedded CSS
+          // First apply our response-level styling
+          String styled_html = apply_response_level_styling(original_content);
+          
+          // Then also replace any CSS file contents that might have been embedded
+          // Look for style tag content and apply styling to that as well
+          if (styled_html.indexOf("<style>") != -1) {
+            int style_start = styled_html.indexOf("<style>") + 7;
+            int style_end = styled_html.indexOf("</style>");
+            if (style_end > style_start) {
+              String css_content = styled_html.substring(style_start, style_end);
+              String styled_css = apply_response_level_styling(css_content);
+              styled_html = styled_html.substring(0, style_start) + styled_css + styled_html.substring(style_end);
+            }
+          }
+          
+          // Also handle any external CSS references by applying global style overrides
+          styled_html = replace_css_rule_robust(styled_html, "body", "body { background-color: #ADD8E6; color: black; }");
+          
+          return styled_html;
+        } else {
+          // For non-settings pages, use standard styling
+          return apply_response_level_styling(original_content);
+        }
+      }
+      // For non-X variables, just pass through to original processor
+      return processor ? processor(var) : String();
+    };
+    
+    // Send with the styling wrapper processor
+    response->send(code, contentType, template_content, styling_processor);
+    
+  } else {
+    // Original method: send with processor as-is
+    response->send(code, contentType, template_content, processor);
+  }
+}
+
+// Overload for simple string responses
+void dual_smart_send(DualServerRequest& request, std::unique_ptr<DualServerResponse> response,
+                    int code, const String& contentType, const String& content) {
+  if (current_styling_method == StylingMethod::RESPONSE_LEVEL && contentType == "text/html") {
+    String styled_html = apply_response_level_styling(content);
+    response->send(code, contentType, styled_html);
+  } else {
+    response->send(code, contentType, content);
+  }
+}
+
+// Dual server route handler function type
+using DualRouteHandler = std::function<void(DualServerRequest&, std::unique_ptr<DualServerResponse>)>;
+
+// Dual server route registry
+static std::unordered_map<std::string, DualRouteHandler> dual_route_handlers;
+
+// Authentication wrapper for dual server
+void dual_route_with_auth(const std::string& uri, DualRouteHandler handler) {
+  dual_route_handlers[uri] = [handler](DualServerRequest& req, std::unique_ptr<DualServerResponse> resp) {
+    if (webserver_auth && !req.authenticate(http_username.c_str(), http_password.c_str())) {
+      resp->requestAuthentication();
+      return;
+    }
+    handler(req, std::move(resp));
+  };
+}
+
+// Register dual server routes
+void register_dual_routes() {
+  logging.println("Starting MINIMAL route registration...");
+  
+  // Just one simple route to start with
+  dual_route_handlers["/"] = [](DualServerRequest& req, std::unique_ptr<DualServerResponse> resp) {
+    logging.println("Root route handler called - sending response");
+    try {
+      const char* html = "<html><head><title>Test Working</title></head><body><h1>Dual Server Test SUCCESS!</h1><p>If you see this, the dual server is working!</p></body></html>";
+      resp->send(200, "text/html", html);
+      logging.println("Root route response sent successfully");
+    } catch (...) {
+      logging.println("ERROR: Exception in root route");
+    }
+  };
+  logging.println("One minimal route registered");
+  
+  // Uncommented the complex routes to test functionality
+  
+  // Main page with complex processor
+  dual_route_with_auth("/", [](DualServerRequest& req, std::unique_ptr<DualServerResponse> resp) {
+    dual_smart_send(req, std::move(resp), 200, "text/html", index_html, processor);
+  });
+  
+  // Settings page
+  dual_route_with_auth("/settings", [](DualServerRequest& req, std::unique_ptr<DualServerResponse> resp) {
+    auto settings = std::make_shared<BatteryEmulatorSettingsStore>(true);
+    dual_smart_send(req, std::move(resp), 200, "text/html", settings_html,
+                   [settings](const String& content) { return settings_processor(content, *settings); });
+  });
+  
+  // Advanced page
+  dual_route_with_auth("/advanced", [](DualServerRequest& req, std::unique_ptr<DualServerResponse> resp) {
+    dual_smart_send(req, std::move(resp), 200, "text/html", index_html, advanced_battery_processor);
+  });
+  
+  // Cell monitor page
+  dual_route_with_auth("/cellmonitor", [](DualServerRequest& req, std::unique_ptr<DualServerResponse> resp) {
+    dual_smart_send(req, std::move(resp), 200, "text/html", index_html, cellmonitor_processor);
+  });
+  
+  // Events page
+  dual_route_with_auth("/events", [](DualServerRequest& req, std::unique_ptr<DualServerResponse> resp) {
+    dual_smart_send(req, std::move(resp), 200, "text/html", index_html, events_processor);
+  });
+  
+  // Firmware info
+  dual_route_with_auth("/GetFirmwareInfo", [](DualServerRequest& req, std::unique_ptr<DualServerResponse> resp) {
+    dual_smart_send(req, std::move(resp), 200, "application/json", get_firmware_info_html, get_firmware_info_processor);
+  });
+  
+  // Uncommented settings routes
+  // Register settings update routes for dual server
+  register_dual_settings_routes();
+  
+  logging.println("Route registration completed");
+}
+
+// Register dual server settings routes
+void register_dual_settings_routes() {
+  // Battery settings routes
+  dual_route_handlers["/updateBatterySize"] = [](DualServerRequest& req, std::unique_ptr<DualServerResponse> resp) {
+    if (webserver_auth && !req.authenticate(http_username.c_str(), http_password.c_str())) {
+      resp->requestAuthentication();
+      return;
+    }
+    if (req.hasParam("value")) {
+      datalayer.battery.info.total_capacity_Wh = std::stoi(req.getParam("value"));
+      store_settings();
+      resp->send(200, "text/plain", "Updated successfully");
+    } else {
+      resp->send(400, "text/plain", "Bad Request");
+    }
+  };
+  
+  dual_route_handlers["/updateUseScaledSOC"] = [](DualServerRequest& req, std::unique_ptr<DualServerResponse> resp) {
+    if (webserver_auth && !req.authenticate(http_username.c_str(), http_password.c_str())) {
+      resp->requestAuthentication();
+      return;
+    }
+    if (req.hasParam("value")) {
+      datalayer.battery.settings.soc_scaling_active = std::stoi(req.getParam("value"));
+      store_settings();
+      resp->send(200, "text/plain", "Updated successfully");
+    } else {
+      resp->send(400, "text/plain", "Bad Request");
+    }
+  };
+  
+  dual_route_handlers["/updateSocMax"] = [](DualServerRequest& req, std::unique_ptr<DualServerResponse> resp) {
+    if (webserver_auth && !req.authenticate(http_username.c_str(), http_password.c_str())) {
+      resp->requestAuthentication();
+      return;
+    }
+    if (req.hasParam("value")) {
+      datalayer.battery.settings.max_percentage = static_cast<uint16_t>(std::stof(req.getParam("value")) * 100);
+      store_settings();
+      resp->send(200, "text/plain", "Updated successfully");
+    } else {
+      resp->send(400, "text/plain", "Bad Request");
+    }
+  };
+  
+  dual_route_handlers["/updateSocMin"] = [](DualServerRequest& req, std::unique_ptr<DualServerResponse> resp) {
+    if (webserver_auth && !req.authenticate(http_username.c_str(), http_password.c_str())) {
+      resp->requestAuthentication();
+      return;
+    }
+    if (req.hasParam("value")) {
+      datalayer.battery.settings.min_percentage = static_cast<uint16_t>(std::stof(req.getParam("value")) * 100);
+      store_settings();
+      resp->send(200, "text/plain", "Updated successfully");
+    } else {
+      resp->send(400, "text/plain", "Bad Request");
+    }
+  };
+  
+  // Add more settings routes as needed - this covers the main ones
+}
+
+// Ethernet server handler function
+void handle_ethernet_request(EthernetClient& client) {
+  String currentLine = "";
+  std::string method = "";
+  std::string uri = "";
+  bool firstLine = true;
+  
+  while (client.connected() && client.available()) {
+    char c = client.read();
+    
+    if (c == '\n') {
+      if (currentLine.length() == 0) {
+        // End of headers, process request
+        if (method.length() > 0 && uri.length() > 0) {
+          // Create dual server request
+          DualServerRequest request(&client, method, uri);
+          
+          // Find handler
+          auto it = dual_route_handlers.find(uri);
+          
+          if (it != dual_route_handlers.end()) {
+            // Create response wrapper
+            auto response = std::make_unique<EthernetServerResponse>(&client);
+            // Call handler
+            it->second(request, std::move(response));
+          } else {
+            // 404 Not Found
+            String response = "HTTP/1.1 404 Not Found\r\n";
+            response += "Content-Type: text/plain\r\n";
+            response += "Connection: close\r\n\r\n";
+            response += "Not Found";
+            client.print(response);
+            client.stop();
+          }
+        }
+        break;
+      } else {
+        // Process header line
+        if (firstLine) {
+          // Parse request line: "GET /path HTTP/1.1"
+          int firstSpace = currentLine.indexOf(' ');
+          int secondSpace = currentLine.indexOf(' ', firstSpace + 1);
+          
+          if (firstSpace != -1 && secondSpace != -1) {
+            method = std::string(currentLine.substring(0, firstSpace).c_str());
+            uri = std::string(currentLine.substring(firstSpace + 1, secondSpace).c_str());
+          }
+          firstLine = false;
+        }
+        currentLine = "";
+      }
+    } else if (c != '\r') {
+      currentLine += c;
+    }
+  }
+}
+
+// Global server selection preferences
+enum class ServerPreference {
+  AUTO,           // Use whatever is available (WiFi preferred)
+  WIFI_ONLY,      // Use only WiFi/AsyncWebServer
+  ETHERNET_ONLY,  // Use only Ethernet/EthernetServer
+  BOTH            // Use both simultaneously
+};
+
+static ServerPreference server_preference = ServerPreference::AUTO;
+static EthernetServer* ethernet_server = nullptr;
+
+// Function to set server preference (C++ enum version)
+void set_dual_server_preference(ServerPreference pref) {
+  server_preference = pref;
+}
+
+// Function to set server preference (C-style int version for header)
+void set_dual_server_preference(int pref) {
+  if (pref >= 0 && pref <= 3) {
+    server_preference = static_cast<ServerPreference>(pref);
+  }
+}
+
+// Dual webserver initialization function
+void init_dual_webserver() {
+  // Initialize LittleFS with error handling optimization
+  // static bool littlefs_initialized = false;
+  // if (!littlefs_initialized) {
+  //   littlefs_initialized = LittleFS.begin();
+  //   logging.println(littlefs_initialized ? "LittleFS mounted successfully\n" : "Failed to mount LittleFS\n");
+  // }
+  
+  // // Build settings HTML with caching
+  // static bool html_built = false;
+  // if (!html_built) {
+  //   settings_html_string = buildSettingsHtml();
+  //   settings_html = settings_html_string.c_str();
+  //   html_built = true;
+  // }
+  
+  // 1. FIRST: Set up all route definitions (independent of server type)
+  logging.println("Setting up all routes first...\n");
+  register_dual_routes();
+  
+  logging.printf("Registered %d dual routes\n", dual_route_handlers.size());
+  
+  // 2. THEN: Determine which servers to start based on availability and preferences
+  bool wifi_available = wifi_enabled && (WiFi.status() == WL_CONNECTED || WiFi.getMode() == WIFI_AP);
+  bool ethernet_available = ethernetPresent;
+  
+  logging.printf("Dual webserver init: WiFi=%s, Ethernet=%s, Preference=%d\n", 
+                 wifi_available ? "available" : "not available",
+                 ethernet_available ? "available" : "not available",
+                 (int)server_preference);
+  
+  bool start_wifi = false;
+  bool start_ethernet = false;
+  
+  switch (server_preference) {
+    case ServerPreference::AUTO:
+      start_wifi = wifi_available;
+      start_ethernet = !wifi_available && ethernet_available;
+      break;
+    case ServerPreference::WIFI_ONLY:
+      start_wifi = wifi_available;
+      break;
+    case ServerPreference::ETHERNET_ONLY:
+      start_ethernet = ethernet_available;
+      break;
+    case ServerPreference::BOTH:
+      start_wifi = wifi_available;
+      start_ethernet = ethernet_available;
+      break;
+  }
+  
+  // 3. Start WiFi server and register routes if requested
+  if (start_wifi) {
+    logging.println("Starting AsyncWebServer for WiFi\n");
+    
+    // Add a catch-all handler for debugging
+    server.onNotFound([](AsyncWebServerRequest *request) {
+      logging.printf("[DEBUG] AsyncWebServer received request for: %s (method: %d)\n", request->url().c_str(), request->method());
+      request->send(404, "text/plain", "Not Found - but server is receiving requests!");
+    });
+    
+    // Register all dual routes with AsyncWebServer
+    logging.printf("Registering %d dual routes with AsyncWebServer\n", dual_route_handlers.size());
+    
+    for (const auto& route : dual_route_handlers) {
+      const std::string route_path = route.first;
+      const auto& route_handler = route.second;
+      
+      logging.printf("Registering dual route: %s\n", route_path.c_str());
+      
+      // Register GET routes
+      server.on(route_path.c_str(), HTTP_GET, [route_path, &route_handler](AsyncWebServerRequest* request) {
+        logging.printf("Handling GET request for: %s\n", request->url().c_str());
+        try {
+          DualServerRequest dual_req(request);
+          auto response = std::make_unique<AsyncServerResponse>(request);
+          route_handler(dual_req, std::move(response));
+        } catch (...) {
+          logging.printf("ERROR: Exception in dual route handler for %s\n", route_path.c_str());
+          request->send(500, "text/plain", "Internal Server Error");
+        }
+      });
+      
+      // Register POST routes for settings updates
+      server.on(route_path.c_str(), HTTP_POST, [route_path, &route_handler](AsyncWebServerRequest* request) {
+        logging.printf("Handling POST request for: %s\n", request->url().c_str());
+        try {
+          DualServerRequest dual_req(request);
+          auto response = std::make_unique<AsyncServerResponse>(request);
+          route_handler(dual_req, std::move(response));
+        } catch (...) {
+          logging.printf("ERROR: Exception in dual route POST handler for %s\n", route_path.c_str());
+          request->send(500, "text/plain", "Internal Server Error");
+        }
+      });
+    }
+    
+    logging.println("All dual routes registered with AsyncWebServer\n");
+    
+    // Initialize ElegantOTA with universal network support (works with WiFi and Ethernet)
+    init_ElegantOTA_Universal(&server);
+    printOTAStatus();
+    
+    server.begin();
+    logging.println("AsyncWebServer started on port 80\n");
+  }
+  
+  // 4. Start Ethernet server if requested (routes handled in ethernet client loop)
+  if (start_ethernet) {
+    logging.println("Starting EthernetServer\n");
+    ethernet_server = new EthernetServer(80);
+    ethernet_server->begin();
+    logging.printf("EthernetServer started on port 80 with %d routes available\n", dual_route_handlers.size());
+  }
+  
+  if (!start_wifi && !start_ethernet) {
+    logging.println("No webservers started - no suitable network interface available");
+  }
+  
+  logging.println("Dual webserver initialization complete\n");
+}
+
+// Handle Ethernet server clients - call this in your main loop
+void check_ethernet_clients() {
+  if (ethernet_server == nullptr) {
+    return; // Ethernet server not initialized
+  }
+  
+  EthernetClient client = ethernet_server->available();
+  if (client) {
+    logging.println("Ethernet client connected");
+    handle_ethernet_request(client);
+  }
+}
+
+// Cleanup function for dual servers
+void cleanup_dual_servers() {
+  if (ethernet_server != nullptr) {
+    delete ethernet_server;
+    ethernet_server = nullptr;
+  }
+}
+
+
+String getConnectResultString(wl_status_t status) {
+  switch (status) {
+    case WL_CONNECTED:
+      return "Connected";
+    case WL_NO_SHIELD:
+      return "No shield";
+    case WL_IDLE_STATUS:
+      return "Idle status";
+    case WL_NO_SSID_AVAIL:
+      return "No SSID available";
+    case WL_SCAN_COMPLETED:
+      return "Scan completed";
+    case WL_CONNECT_FAILED:
+      return "Connect failed";
+    case WL_CONNECTION_LOST:
+      return "Connection lost";
+    case WL_DISCONNECTED:
+      return "Disconnected";
+    default:
+      return "Unknown";
+  }
+}
+
+void ota_monitor() {
+  if (ota_active && ota_timeout_timer.elapsed()) {
+    // OTA timeout, try to restore can and clear the update event
+    set_event(EVENT_OTA_UPDATE_TIMEOUT, 0);
+    onOTAEnd(false);
+  }
+}
+
+// Function to initialize ElegantOTA (legacy WiFi-only version)
+void init_ElegantOTA() {
+  // Use the universal version that supports both WiFi and Ethernet
+  init_ElegantOTA_Universal(&server);
+  
+  // ElegantOTA callbacks
+  ElegantOTA.onStart(onOTAStart);
+  ElegantOTA.onProgress(onOTAProgress);
+  ElegantOTA.onEnd(onOTAEnd);
+}
+
+String get_firmware_info_processor(const String& var) {
+  if (var == "X") {
+    String content = "";
+    static JsonDocument doc;
+
+    doc["hardware"] = esp32hal->name();
+    doc["firmware"] = String(version_number);
+    serializeJson(doc, content);
+    return content;
+  }
+  return String();
+}
+
+String get_uptime() {
+  uint64_t milliseconds;
+  uint32_t remaining_seconds_in_day;
+  uint32_t remaining_seconds;
+  uint32_t remaining_minutes;
+  uint32_t remaining_hours;
+  uint16_t total_days;
+
+  milliseconds = millis64();
+
+  //convert passed millis to days, hours, minutes, seconds
+  total_days = milliseconds / (1000 * 60 * 60 * 24);
+  remaining_seconds_in_day = (milliseconds / 1000) % (60 * 60 * 24);
+  remaining_hours = remaining_seconds_in_day / (60 * 60);
+  remaining_minutes = (remaining_seconds_in_day % (60 * 60)) / 60;
+  remaining_seconds = remaining_seconds_in_day % 60;
+
+  return (String)total_days + " days, " + (String)remaining_hours + " hours, " + (String)remaining_minutes +
+         " minutes, " + (String)remaining_seconds + " seconds";
+}
+
+String processor(const String& var) {
+  if (var == "X") {
+    String content = "";
+    content += "<style>";
+    content += "body { background-color: black; color: white; }";
+    content +=
+        "button { background-color: #505E67; color: white; border: none; padding: 10px 20px; margin-bottom: 20px; "
+        "cursor: pointer; border-radius: 10px; }";
+    content += "button:hover { background-color: #3A4A52; }";
+    content += "h2 { font-size: 1.2em; margin: 0.3em 0 0.5em 0; }";
+    content += "h4 { margin: 0.6em 0; line-height: 1.2; }";
+    //content += ".tooltip { position: relative; display: inline-block; }";
+    content += ".tooltip .tooltiptext {";
+    content += "  visibility: hidden;";
+    content += "  width: 200px;";
+    content += "  background-color: #3A4A52;";  // Matching your button hover color
+    content += "  color: white;";
+    content += "  text-align: center;";
+    content += "  border-radius: 6px;";
+    content += "  padding: 8px;";
+    content += "  position: absolute;";
+    content += "  z-index: 1;";
+    content += "  margin-left: -100px;";
+    content += "  opacity: 0;";
+    content += "  transition: opacity 0.3s;";
+    content += "  font-size: 0.9em;";
+    content += "  font-weight: normal;";
+    content += "  line-height: 1.4;";
+    content += "}";
+    content += ".tooltip:hover .tooltiptext { visibility: visible; opacity: 1; }";
+    content += ".tooltip-icon { color: #505E67; cursor: help; }";  // Matching your button color
+    content += "</style>";
+
+    // Compact header
+    content += "<h2>Battery Emulator</h2>";
+
+    // Start content block
+    content += "<div style='background-color: #303E47; padding: 10px; margin-bottom: 10px; border-radius: 50px'>";
+    content += "<h4>Software: " + String(version_number);
+
+// Show hardware used:
+// #ifdef HW_LILYGO
+//     content += " Hardware: LilyGo T-CAN485";
+// #endif  // HW_LILYGO
+// #ifdef HW_LILYGO2CAN
+//     content += " Hardware: LilyGo T_2CAN";
+// #endif  // HW_LILYGO2CAN
+// #ifdef HW_STARK
+//     content += " Hardware: Stark CMR Module";
+// #endif  // HW_STARK
+// #ifdef HW_LILYGO_T_CONNECT_PRO
+//     content += " Hardware: LilyGo T-Connect Pro";
+// #endif  // HW_LILYGO_T_CONNECT_PRO
+
+const char* hardware_name = esp32hal->name();
+content += " Hardware: " + String(hardware_name ? hardware_name : "undefined");
+
+    content += " @ " + String(datalayer.system.info.CPU_temperature, 1) + " &deg;C</h4>";
+    content += "<h4>Uptime: " + get_uptime() + "</h4>";
+    if (datalayer.system.info.performance_measurement_active) {
+      // Load information
+      content += "<h4>Core task max load: " + String(datalayer.system.status.core_task_max_us) + " us</h4>";
+      content +=
+          "<h4>Core task max load last 10 s: " + String(datalayer.system.status.core_task_10s_max_us) + " us</h4>";
+      content +=
+          "<h4>MQTT function (MQTT task) max load last 10 s: " + String(datalayer.system.status.mqtt_task_10s_max_us) +
+          " us</h4>";
+      content +=
+          "<h4>WIFI function (MQTT task) max load last 10 s: " + String(datalayer.system.status.wifi_task_10s_max_us) +
+          " us</h4>";
+      content += "<h4>Max load @ worst case execution of core task:</h4>";
+      content += "<h4>10ms function timing: " + String(datalayer.system.status.time_snap_10ms_us) + " us</h4>";
+      content += "<h4>Values function timing: " + String(datalayer.system.status.time_snap_values_us) + " us</h4>";
+      content += "<h4>CAN/serial RX function timing: " + String(datalayer.system.status.time_snap_comm_us) + " us</h4>";
+      content += "<h4>CAN TX function timing: " + String(datalayer.system.status.time_snap_cantx_us) + " us</h4>";
+      content += "<h4>OTA function timing: " + String(datalayer.system.status.time_snap_ota_us) + " us</h4>";
+    }
+
+    // Display appropriate network information based on active connection
+    bool wifi_connected = wifi_enabled && (WiFi.status() == WL_CONNECTED || WiFi.getMode() == WIFI_AP);
+    bool ethernet_ready = ethernetPresent && ethernet_connected && (Ethernet.linkStatus() == LinkON);
+    
+    if (wifi_connected && ethernet_ready) {
+      // Both WiFi and Ethernet available - show both
+      content += "<h4>Network Mode: WiFi + Ethernet</h4>";
+      
+      // WiFi info
+      content += "<h4>WiFi SSID: " + html_escape(ssid.c_str());
+      content += " RSSI:" + String(WiFi.RSSI()) + " dBm Ch: " + String(WiFi.channel());
+      content += "</h4>";
+      content += "<h4>WiFi IP: " + WiFi.localIP().toString() + "</h4>";
+      
+      // Ethernet info
+      content += "<h4>Ethernet IP: " + Ethernet.localIP().toString() + "</h4>";
+      
+    } else if (wifi_connected) {
+      // WiFi only mode
+      wl_status_t status = WiFi.status();
+      content += "<h4>Network Mode: WiFi</h4>";
+      content += "<h4>SSID: " + html_escape(ssid.c_str());
+      if (status == WL_CONNECTED) {
+        content += " RSSI:" + String(WiFi.RSSI()) + " dBm Ch: " + String(WiFi.channel());
+      }
+      content += "</h4>";
+      
+      if (status == WL_CONNECTED) {
+        content += "<h4>WiFi IP: " + WiFi.localIP().toString() + "</h4>";
+        content += "<h4>Hostname: " + html_escape(WiFi.getHostname()) + "</h4>";
+      } else {
+        content += "<h4>WiFi state: " + getConnectResultString(status) + "</h4>";
+      }
+      
+    } else if (ethernet_ready) {
+      // Ethernet only mode
+      content += "<h4>Network Mode: Ethernet (W5500)</h4>";
+      content += "<h4>Ethernet IP: " + Ethernet.localIP().toString() + "</h4>";
+      content += "<h4>Gateway: " + Ethernet.gatewayIP().toString() + "</h4>";
+      content += "<h4>Subnet: " + Ethernet.subnetMask().toString() + "</h4>";
+      content += "<h4>MAC: ";
+      byte mac[6];
+      Ethernet.MACAddress(mac);
+      for (int i = 0; i < 6; i++) {
+        if (i > 0) content += ":";
+        if (mac[i] < 16) content += "0";
+        content += String(mac[i], HEX);
+      }
+      content += "</h4>";
+      
+    } else {
+      // No network connection
+      content += "<h4>Network Mode: Not connected</h4>";
+      if (wifi_enabled) {
+        wl_status_t status = WiFi.status();
+        content += "<h4>WiFi state: " + getConnectResultString(status) + "</h4>";
+      }
+      if (ethernetPresent) {
+        content += "<h4>Ethernet: Checking connection...</h4>";
+      }
+    }
+    // Close the block
+    content += "</div>";
+
+    if (inverter || battery || charger || user_selected_shunt_type != ShuntType::None) {
+      // Start a new block with a specific background color
+      content += "<div style='background-color: #333; padding: 10px; margin-bottom: 10px; border-radius: 50px'>";
+
+      // Display which components are used
+      if (inverter) {
+        content += "<h4 style='color: white;'>Inverter protocol: ";
+        content += inverter->name();
+        content += " ";
+        content += datalayer.system.info.inverter_brand;
+        content += "</h4>";
+      }
+
+      if (battery) {
+        content += "<h4 style='color: white;'>Battery protocol: ";
+        content += datalayer.system.info.battery_protocol;
+        if (battery3) {
+          content += " (Triple battery)";
+        } else if (battery2) {
+          content += " (Double battery)";
+        }
+        if (datalayer.battery.info.chemistry == battery_chemistry_enum::LFP) {
+          content += " (LFP)";
+        }
+        content += "</h4>";
+      }
+
+      if (user_selected_shunt_type != ShuntType::None) {
+        content += "<h4 style='color: white;'>Shunt protocol: ";
+        content += datalayer.system.info.shunt_protocol;
+        content += "</h4>";
+      }
+
+      if (charger) {
+        content += "<h4 style='color: white;'>Charger protocol: ";
+        content += charger->name();
+        content += "</h4>";
+      }
+
+      // Close the block
+      content += "</div>";
+    }
+
+    if (battery) {
+      if (battery2) {
+        // Start a new block with a specific background color. Color changes depending on BMS status
+        content += "<div style='display: flex; width: 100%;'>";
+        content += "<div style='flex: 1; background-color: ";
+      } else {
+        // Start a new block with a specific background color. Color changes depending on system status
+        content += "<div style='background-color: ";
+      }
+
+      switch (get_emulator_status()) {
+        case EMULATOR_STATUS::STATUS_OK:
+          content += "#2D3F2F;";
+          break;
+        case EMULATOR_STATUS::STATUS_WARNING:
+          content += "#F5CC00;";
+          break;
+        case EMULATOR_STATUS::STATUS_ERROR:
+          content += "#A70107;";
+          break;
+        case EMULATOR_STATUS::STATUS_UPDATING:
+          content += "#2B35AF;";  // Blue in test mode
+          break;
+      }
+
+      // Add the common style properties
+      content += "padding: 10px; margin-bottom: 10px; border-radius: 50px;'>";
+
+      // Display battery statistics within this block
+      float socRealFloat =
+          static_cast<float>(datalayer.battery.status.real_soc) / 100.0f;  // Convert to float and divide by 100
+      float socScaledFloat =
+          static_cast<float>(datalayer.battery.status.reported_soc) / 100.0f;  // Convert to float and divide by 100
+      float sohFloat =
+          static_cast<float>(datalayer.battery.status.soh_pptt) / 100.0f;  // Convert to float and divide by 100
+      float voltageFloat =
+          static_cast<float>(datalayer.battery.status.voltage_dV) / 10.0f;  // Convert to float and divide by 10
+      float currentFloat =
+          static_cast<float>(datalayer.battery.status.current_dA) / 10.0f;  // Convert to float and divide by 10
+      float powerFloat = static_cast<float>(datalayer.battery.status.active_power_W);                // Convert to float
+      float tempMaxFloat = static_cast<float>(datalayer.battery.status.temperature_max_dC) / 10.0f;  // Convert to float
+      float tempMinFloat = static_cast<float>(datalayer.battery.status.temperature_min_dC) / 10.0f;  // Convert to float
+      float maxCurrentChargeFloat =
+          static_cast<float>(datalayer.battery.status.max_charge_current_dA) / 10.0f;  // Convert to float
+      float maxCurrentDischargeFloat =
+          static_cast<float>(datalayer.battery.status.max_discharge_current_dA) / 10.0f;  // Convert to float
+      uint16_t cell_delta_mv =
+          datalayer.battery.status.cell_max_voltage_mV - datalayer.battery.status.cell_min_voltage_mV;
+
+      if (datalayer.battery.settings.soc_scaling_active)
+        content += "<h4 style='color: white;'>Scaled SOC: " + String(socScaledFloat, 2) +
+                   "&percnt; (real: " + String(socRealFloat, 2) + "&percnt;)</h4>";
+      else
+        content += "<h4 style='color: white;'>SOC: " + String(socRealFloat, 2) + "&percnt;</h4>";
+
+      content += "<h4 style='color: white;'>SOH: " + String(sohFloat, 2) + "&percnt;</h4>";
+      content += "<h4 style='color: white;'>Voltage: " + String(voltageFloat, 1) +
+                 " V &nbsp; Current: " + String(currentFloat, 1) + " A</h4>";
+      content += formatPowerValue("Power", powerFloat, "", 1);
+
+      if (datalayer.battery.settings.soc_scaling_active)
+        content += "<h4 style='color: white;'>Scaled total capacity: " +
+                   formatPowerValue(datalayer.battery.info.reported_total_capacity_Wh, "h", 1) +
+                   " (real: " + formatPowerValue(datalayer.battery.info.total_capacity_Wh, "h", 1) + ")</h4>";
+      else
+        content += formatPowerValue("Total capacity", datalayer.battery.info.total_capacity_Wh, "h", 1);
+
+      if (datalayer.battery.settings.soc_scaling_active)
+        content += "<h4 style='color: white;'>Scaled remaining capacity: " +
+                   formatPowerValue(datalayer.battery.status.reported_remaining_capacity_Wh, "h", 1) +
+                   " (real: " + formatPowerValue(datalayer.battery.status.remaining_capacity_Wh, "h", 1) + ")</h4>";
+      else
+        content += formatPowerValue("Remaining capacity", datalayer.battery.status.remaining_capacity_Wh, "h", 1);
+
+      if (datalayer.system.info.equipment_stop_active) {
+        content +=
+            formatPowerValue("Max discharge power", datalayer.battery.status.max_discharge_power_W, "", 1, "red");
+        content += formatPowerValue("Max charge power", datalayer.battery.status.max_charge_power_W, "", 1, "red");
+        content += "<h4 style='color: red;'>Max discharge current: " + String(maxCurrentDischargeFloat, 1) + " A</h4>";
+        content += "<h4 style='color: red;'>Max charge current: " + String(maxCurrentChargeFloat, 1) + " A</h4>";
+      } else {
+        content += formatPowerValue("Max discharge power", datalayer.battery.status.max_discharge_power_W, "", 1);
+        content += formatPowerValue("Max charge power", datalayer.battery.status.max_charge_power_W, "", 1);
+        content += "<h4 style='color: white;'>Max discharge current: " + String(maxCurrentDischargeFloat, 1) + " A";
+        if (datalayer.battery.settings.remote_settings_limit_discharge) {
+          content += " (Remote)</h4>";
+        } else if (datalayer.battery.settings.user_settings_limit_discharge) {
+          content += " (Manual)</h4>";
+        } else {
+          content += " (BMS)</h4>";
+        }
+        content += "<h4 style='color: white;'>Max charge current: " + String(maxCurrentChargeFloat, 1) + " A";
+        if (datalayer.battery.settings.remote_settings_limit_charge) {
+          content += " (Remote)</h4>";
+        } else if (datalayer.battery.settings.user_settings_limit_charge) {
+          content += " (Manual)</h4>";
+        } else {
+          content += " (BMS)</h4>";
+        }
+      }
+
+      content += "<h4>Cell min/max: " + String(datalayer.battery.status.cell_min_voltage_mV) + " mV / " +
+                 String(datalayer.battery.status.cell_max_voltage_mV) + " mV</h4>";
+      if (cell_delta_mv > datalayer.battery.info.max_cell_voltage_deviation_mV) {
+        content += "<h4 style='color: red;'>Cell delta: " + String(cell_delta_mv) + " mV</h4>";
+      } else {
+        content += "<h4>Cell delta: " + String(cell_delta_mv) + " mV</h4>";
+      }
+      content += "<h4>Temperature min/max: " + String(tempMinFloat, 1) + " &deg;C / " + String(tempMaxFloat, 1) +
+                 " &deg;C</h4>";
+
+      content += "<h4>System status: ";
+      switch (datalayer.battery.status.bms_status) {
+        case ACTIVE:
+          content += String("OK");
+          break;
+        case UPDATING:
+          content += String("UPDATING");
+          break;
+        case FAULT:
+          content += String("FAULT");
+          break;
+        case INACTIVE:
+          content += String("INACTIVE");
+          break;
+        case STANDBY:
+          content += String("STANDBY");
+          break;
+        default:
+          content += String("??");
+          break;
+      }
+      content += "</h4>";
+
+      if (battery && battery->supports_real_BMS_status()) {
+        content += "<h4>Battery BMS status: ";
+        switch (datalayer.battery.status.real_bms_status) {
+          case BMS_ACTIVE:
+            content += String("OK");
+            break;
+          case BMS_FAULT:
+            content += String("FAULT");
+            break;
+          case BMS_DISCONNECTED:
+            content += String("DISCONNECTED");
+            break;
+          case BMS_STANDBY:
+            content += String("STANDBY");
+            break;
+          default:
+            content += String("??");
+            break;
+        }
+        content += "</h4>";
+      }
+
+      if (datalayer.battery.status.current_dA == 0) {
+        content += "<h4>Battery idle</h4>";
+      } else if (datalayer.battery.status.current_dA < 0) {
+        content += "<h4>Battery discharging!";
+        if (datalayer.battery.settings.inverter_limits_discharge) {
+          content += " (Inverter limiting)</h4>";
+        } else {
+          if (datalayer.battery.settings.user_settings_limit_discharge) {
+            content += " (Settings limiting)</h4>";
+          } else {
+            content += " (Battery limiting)</h4>";
+          }
+        }
+        content += "</h4>";
+      } else {  // > 0 , positive current
+        content += "<h4>Battery charging!";
+        if (datalayer.battery.settings.inverter_limits_charge) {
+          content += " (Inverter limiting)</h4>";
+        } else {
+          if (datalayer.battery.settings.user_settings_limit_charge) {
+            content += " (Settings limiting)</h4>";
+          } else {
+            content += " (Battery limiting)</h4>";
+          }
+        }
+      }
+
+      // Close the block
+      content += "</div>";
+
+      if (battery2) {
+        content += "<div style='flex: 1; background-color: ";
+        switch (datalayer.battery.status.bms_status) {
+          case ACTIVE:
+            content += "#2D3F2F;";
+            break;
+          case FAULT:
+            content += "#A70107;";
+            break;
+          default:
+            content += "#2D3F2F;";
+            break;
+        }
+        // Add the common style properties
+        content += "padding: 10px; margin-bottom: 10px; border-radius: 50px;'>";
+
+        // Display battery statistics within this block
+        socRealFloat =
+            static_cast<float>(datalayer.battery2.status.real_soc) / 100.0f;  // Convert to float and divide by 100
+        //socScaledFloat; // Same value used for bat2
+        sohFloat =
+            static_cast<float>(datalayer.battery2.status.soh_pptt) / 100.0f;  // Convert to float and divide by 100
+        voltageFloat =
+            static_cast<float>(datalayer.battery2.status.voltage_dV) / 10.0f;  // Convert to float and divide by 10
+        currentFloat =
+            static_cast<float>(datalayer.battery2.status.current_dA) / 10.0f;       // Convert to float and divide by 10
+        powerFloat = static_cast<float>(datalayer.battery2.status.active_power_W);  // Convert to float
+        tempMaxFloat = static_cast<float>(datalayer.battery2.status.temperature_max_dC) / 10.0f;  // Convert to float
+        tempMinFloat = static_cast<float>(datalayer.battery2.status.temperature_min_dC) / 10.0f;  // Convert to float
+        cell_delta_mv = datalayer.battery2.status.cell_max_voltage_mV - datalayer.battery2.status.cell_min_voltage_mV;
+
+        if (datalayer.battery.settings.soc_scaling_active)
+          content += "<h4 style='color: white;'>Scaled SOC: " + String(socScaledFloat, 2) +
+                     "&percnt; (real: " + String(socRealFloat, 2) + "&percnt;)</h4>";
+        else
+          content += "<h4 style='color: white;'>SOC: " + String(socRealFloat, 2) + "&percnt;</h4>";
+
+        content += "<h4 style='color: white;'>SOH: " + String(sohFloat, 2) + "&percnt;</h4>";
+        content += "<h4 style='color: white;'>Voltage: " + String(voltageFloat, 1) +
+                   " V &nbsp; Current: " + String(currentFloat, 1) + " A</h4>";
+        content += formatPowerValue("Power", powerFloat, "", 1);
+
+        if (datalayer.battery.settings.soc_scaling_active)
+          content += "<h4 style='color: white;'>Scaled total capacity: " +
+                     formatPowerValue(datalayer.battery2.info.reported_total_capacity_Wh, "h", 1) +
+                     " (real: " + formatPowerValue(datalayer.battery2.info.total_capacity_Wh, "h", 1) + ")</h4>";
+        else
+          content += formatPowerValue("Total capacity", datalayer.battery2.info.total_capacity_Wh, "h", 1);
+
+        if (datalayer.battery.settings.soc_scaling_active)
+          content += "<h4 style='color: white;'>Scaled remaining capacity: " +
+                     formatPowerValue(datalayer.battery2.status.reported_remaining_capacity_Wh, "h", 1) +
+                     " (real: " + formatPowerValue(datalayer.battery2.status.remaining_capacity_Wh, "h", 1) + ")</h4>";
+        else
+          content += formatPowerValue("Remaining capacity", datalayer.battery2.status.remaining_capacity_Wh, "h", 1);
+
+        if (datalayer.system.info.equipment_stop_active) {
+          content +=
+              formatPowerValue("Max discharge power", datalayer.battery2.status.max_discharge_power_W, "", 1, "red");
+          content += formatPowerValue("Max charge power", datalayer.battery2.status.max_charge_power_W, "", 1, "red");
+          content +=
+              "<h4 style='color: red;'>Max discharge current: " + String(maxCurrentDischargeFloat, 1) + " A</h4>";
+          content += "<h4 style='color: red;'>Max charge current: " + String(maxCurrentChargeFloat, 1) + " A</h4>";
+        } else {
+          content += formatPowerValue("Max discharge power", datalayer.battery2.status.max_discharge_power_W, "", 1);
+          content += formatPowerValue("Max charge power", datalayer.battery2.status.max_charge_power_W, "", 1);
+          content +=
+              "<h4 style='color: white;'>Max discharge current: " + String(maxCurrentDischargeFloat, 1) + " A</h4>";
+          content += "<h4 style='color: white;'>Max charge current: " + String(maxCurrentChargeFloat, 1) + " A</h4>";
+        }
+
+        content += "<h4>Cell min/max: " + String(datalayer.battery2.status.cell_min_voltage_mV) + " mV / " +
+                   String(datalayer.battery2.status.cell_max_voltage_mV) + " mV</h4>";
+        if (cell_delta_mv > datalayer.battery2.info.max_cell_voltage_deviation_mV) {
+          content += "<h4 style='color: red;'>Cell delta: " + String(cell_delta_mv) + " mV</h4>";
+        } else {
+          content += "<h4>Cell delta: " + String(cell_delta_mv) + " mV</h4>";
+        }
+        content += "<h4>Temperature min/max: " + String(tempMinFloat, 1) + " &deg;C / " + String(tempMaxFloat, 1) +
+                   " &deg;C</h4>";
+        if (datalayer.battery.status.bms_status == ACTIVE) {
+          content += "<h4>System status: OK </h4>";
+        } else if (datalayer.battery.status.bms_status == UPDATING) {
+          content += "<h4>System status: UPDATING </h4>";
+        } else {
+          content += "<h4>System status: FAULT </h4>";
+        }
+        if (datalayer.battery2.status.current_dA == 0) {
+          content += "<h4>Battery idle</h4>";
+        } else if (datalayer.battery2.status.current_dA < 0) {
+          content += "<h4>Battery discharging!</h4>";
+        } else {  // > 0
+          content += "<h4>Battery charging!</h4>";
+        }
+        content += "</div>";
+        if (battery3) {
+          content += "<div style='flex: 1; background-color: ";
+          switch (datalayer.battery.status.bms_status) {
+            case ACTIVE:
+              content += "#2D3F2F;";
+              break;
+            case FAULT:
+              content += "#A70107;";
+              break;
+            default:
+              content += "#2D3F2F;";
+              break;
+          }
+          // Add the common style properties
+          content += "padding: 10px; margin-bottom: 10px; border-radius: 50px;'>";
+
+          // Display battery statistics within this block
+          socRealFloat =
+              static_cast<float>(datalayer.battery3.status.real_soc) / 100.0f;  // Convert to float and divide by 100
+          //socScaledFloat; // Same value used for bat2
+          sohFloat =
+              static_cast<float>(datalayer.battery3.status.soh_pptt) / 100.0f;  // Convert to float and divide by 100
+          voltageFloat =
+              static_cast<float>(datalayer.battery3.status.voltage_dV) / 10.0f;  // Convert to float and divide by 10
+          currentFloat =
+              static_cast<float>(datalayer.battery3.status.current_dA) / 10.0f;  // Convert to float and divide by 10
+          powerFloat = static_cast<float>(datalayer.battery3.status.active_power_W);                // Convert to float
+          tempMaxFloat = static_cast<float>(datalayer.battery3.status.temperature_max_dC) / 10.0f;  // Convert to float
+          tempMinFloat = static_cast<float>(datalayer.battery3.status.temperature_min_dC) / 10.0f;  // Convert to float
+          cell_delta_mv = datalayer.battery3.status.cell_max_voltage_mV - datalayer.battery3.status.cell_min_voltage_mV;
+
+          if (datalayer.battery.settings.soc_scaling_active)
+            content += "<h4 style='color: white;'>Scaled SOC: " + String(socScaledFloat, 2) +
+                       "&percnt; (real: " + String(socRealFloat, 2) + "&percnt;)</h4>";
+          else
+            content += "<h4 style='color: white;'>SOC: " + String(socRealFloat, 2) + "&percnt;</h4>";
+
+          content += "<h4 style='color: white;'>SOH: " + String(sohFloat, 2) + "&percnt;</h4>";
+          content += "<h4 style='color: white;'>Voltage: " + String(voltageFloat, 1) +
+                     " V &nbsp; Current: " + String(currentFloat, 1) + " A</h4>";
+          content += formatPowerValue("Power", powerFloat, "", 1);
+
+          if (datalayer.battery.settings.soc_scaling_active)
+            content += "<h4 style='color: white;'>Scaled total capacity: " +
+                       formatPowerValue(datalayer.battery3.info.reported_total_capacity_Wh, "h", 1) +
+                       " (real: " + formatPowerValue(datalayer.battery3.info.total_capacity_Wh, "h", 1) + ")</h4>";
+          else
+            content += formatPowerValue("Total capacity", datalayer.battery3.info.total_capacity_Wh, "h", 1);
+
+          if (datalayer.battery.settings.soc_scaling_active)
+            content += "<h4 style='color: white;'>Scaled remaining capacity: " +
+                       formatPowerValue(datalayer.battery3.status.reported_remaining_capacity_Wh, "h", 1) +
+                       " (real: " + formatPowerValue(datalayer.battery3.status.remaining_capacity_Wh, "h", 1) +
+                       ")</h4>";
+          else
+            content += formatPowerValue("Remaining capacity", datalayer.battery3.status.remaining_capacity_Wh, "h", 1);
+
+          if (datalayer.system.info.equipment_stop_active) {
+            content +=
+                formatPowerValue("Max discharge power", datalayer.battery3.status.max_discharge_power_W, "", 1, "red");
+            content += formatPowerValue("Max charge power", datalayer.battery3.status.max_charge_power_W, "", 1, "red");
+            content +=
+                "<h4 style='color: red;'>Max discharge current: " + String(maxCurrentDischargeFloat, 1) + " A</h4>";
+            content += "<h4 style='color: red;'>Max charge current: " + String(maxCurrentChargeFloat, 1) + " A</h4>";
+          } else {
+            content += formatPowerValue("Max discharge power", datalayer.battery3.status.max_discharge_power_W, "", 1);
+            content += formatPowerValue("Max charge power", datalayer.battery3.status.max_charge_power_W, "", 1);
+            content +=
+                "<h4 style='color: white;'>Max discharge current: " + String(maxCurrentDischargeFloat, 1) + " A</h4>";
+            content += "<h4 style='color: white;'>Max charge current: " + String(maxCurrentChargeFloat, 1) + " A</h4>";
+          }
+
+          content += "<h4>Cell min/max: " + String(datalayer.battery3.status.cell_min_voltage_mV) + " mV / " +
+                     String(datalayer.battery3.status.cell_max_voltage_mV) + " mV</h4>";
+          if (cell_delta_mv > datalayer.battery3.info.max_cell_voltage_deviation_mV) {
+            content += "<h4 style='color: red;'>Cell delta: " + String(cell_delta_mv) + " mV</h4>";
+          } else {
+            content += "<h4>Cell delta: " + String(cell_delta_mv) + " mV</h4>";
+          }
+          content += "<h4>Temperature min/max: " + String(tempMinFloat, 1) + " &deg;C / " + String(tempMaxFloat, 1) +
+                     " &deg;C</h4>";
+          if (datalayer.battery.status.bms_status == ACTIVE) {
+            content += "<h4>System status: OK </h4>";
+          } else if (datalayer.battery.status.bms_status == UPDATING) {
+            content += "<h4>System status: UPDATING </h4>";
+          } else {
+            content += "<h4>System status: FAULT </h4>";
+          }
+          if (datalayer.battery3.status.current_dA == 0) {
+            content += "<h4>Battery idle</h4>";
+          } else if (datalayer.battery3.status.current_dA < 0) {
+            content += "<h4>Battery discharging!</h4>";
+          } else {  // > 0
+            content += "<h4>Battery charging!</h4>";
+          }
+          content += "</div>";
+          content += "</div>";
+        }
+        content += "</div>";
+      }
+    }
+    // Block for Contactor status and component request status
+    // Start a new block with gray background color
+    content += "<div style='background-color: #333; padding: 10px; margin-bottom: 10px;border-radius: 50px'>";
+
+    if (emulator_pause_status == NORMAL) {
+      content += "<h4>Power status: " + String(get_emulator_pause_status().c_str()) + " </h4>";
+    } else {
+      content += "<h4 style='color: red;'>Power status: " + String(get_emulator_pause_status().c_str()) + " </h4>";
+    }
+
+    content += "<h4>Emulator allows contactor closing: ";
+    if (datalayer.battery.status.bms_status == FAULT) {
+      content += "<span style='color: red;'>&#10005;</span>";
+    } else {
+      content += "<span>&#10003;</span>";
+    }
+    content += " Inverter allows contactor closing: ";
+    if (datalayer.system.status.inverter_allows_contactor_closing == true) {
+      content += "<span>&#10003;</span></h4>";
+    } else {
+      content += "<span style='color: red;'>&#10005;</span></h4>";
+    }
+    if (battery2) {
+      content += "<h4>Secondary battery allowed to join ";
+      if (datalayer.system.status.battery2_allowed_contactor_closing == true) {
+        content += "<span>&#10003;</span>";
+      } else {
+        content += "<span style='color: red;'>&#10005; (voltage mismatch)</span>";
+      }
+    }
+
+    if (!contactor_control_enabled) {
+      content += "<div class=\"tooltip\">";
+      content += "<h4>Contactors not fully controlled via emulator <span style=\"color:orange\">[?]</span></h4>";
+      content +=
+          "<span class=\"tooltiptext\">This means you are either running CAN controlled contactors OR manually "
+          "powering the contactors. Battery-Emulator will have limited amount of control over the contactors!</span>";
+      content += "</div>";
+    } else {  //contactor_control_enabled TRUE
+      content += "<div class=\"tooltip\"><h4>Contactors controlled by emulator, state: ";
+      if (datalayer.system.status.contactors_engaged == 0) {
+        content += "<span style='color: red;'>OFF (DISCONNECTED)</span>";
+      } else if (datalayer.system.status.contactors_engaged == 1) {
+        content += "<span style='color: green;'>ON</span>";
+      } else if (datalayer.system.status.contactors_engaged == 2) {
+        content += "<span style='color: red;'>OFF (FAULT)</span>";
+        content += "<span class=\"tooltip-icon\"> [!]</span>";
+        content +=
+            "<span class=\"tooltiptext\">Emulator spent too much time in critical FAULT event. Investigate event "
+            "causing this via Events page. Reboot required to resume operation!</span>";
+      } else if (datalayer.system.status.contactors_engaged == 3) {
+        content += "<span style='color: orange;'>PRECHARGE</span>";
+      }
+      content += "</h4></div>";
+      if (contactor_control_enabled_double_battery && battery2) {
+        content += "<h4>Secondary battery contactor, state: ";
+        if (pwm_contactor_control) {
+          if (datalayer.system.status.contactors_battery2_engaged) {
+            content += "<span style='color: green;'>Economized</span>";
+          } else {
+            content += "<span style='color: red;'>OFF</span>";
+          }
+        } else if (
+            esp32hal->SECOND_BATTERY_CONTACTORS_PIN() !=
+            GPIO_NUM_NC) {  // No PWM_CONTACTOR_CONTROL , we can read the pin and see feedback. Helpful if channel overloaded
+          if (digitalRead(esp32hal->SECOND_BATTERY_CONTACTORS_PIN()) == HIGH) {
+            content += "<span style='color: green;'>ON</span>";
+          } else {
+            content += "<span style='color: red;'>OFF</span>";
+          }
+        }  //no PWM_CONTACTOR_CONTROL
+        content += "</h4>";
+      }
+    }
+
+    // Close the block
+    content += "</div>";
+
+    if (charger) {
+      // Start a new block with orange background color
+      content += "<div style='background-color: #FF6E00; padding: 10px; margin-bottom: 10px;border-radius: 50px'>";
+
+      content += "<h4>Charger HV Enabled: ";
+      if (datalayer.charger.charger_HV_enabled) {
+        content += "<span>&#10003;</span>";
+      } else {
+        content += "<span style='color: red;'>&#10005;</span>";
+      }
+      content += "</h4>";
+
+      content += "<h4>Charger Aux12v Enabled: ";
+      if (datalayer.charger.charger_aux12V_enabled) {
+        content += "<span>&#10003;</span>";
+      } else {
+        content += "<span style='color: red;'>&#10005;</span>";
+      }
+      content += "</h4>";
+
+      auto chgPwrDC = charger->outputPowerDC();
+      auto chgEff = charger->efficiency();
+
+      content += formatPowerValue("Charger Output Power", chgPwrDC, "", 1);
+      if (charger->efficiencySupported()) {
+        content += "<h4 style='color: white;'>Charger Efficiency: " + String(chgEff) + "%</h4>";
+      }
+
+      float HVvol = charger->HVDC_output_voltage();
+      float HVcur = charger->HVDC_output_current();
+      float LVvol = charger->LVDC_output_voltage();
+      float LVcur = charger->LVDC_output_current();
+
+      content += "<h4 style='color: white;'>Charger HVDC Output V: " + String(HVvol, 2) + " V</h4>";
+      content += "<h4 style='color: white;'>Charger HVDC Output I: " + String(HVcur, 2) + " A</h4>";
+      content += "<h4 style='color: white;'>Charger LVDC Output I: " + String(LVcur, 2) + "</h4>";
+      content += "<h4 style='color: white;'>Charger LVDC Output V: " + String(LVvol, 2) + "</h4>";
+
+      float ACcur = charger->AC_input_current();
+      float ACvol = charger->AC_input_voltage();
+
+      content += "<h4 style='color: white;'>Charger AC Input V: " + String(ACvol, 2) + " VAC</h4>";
+      content += "<h4 style='color: white;'>Charger AC Input I: " + String(ACcur, 2) + " A</h4>";
+
+      content += "</div>";
+    }
+
+    if (emulator_pause_request_ON)
+      content += "<button onclick='PauseBattery(false)'>Resume charge/discharge</button> ";
+    else
+      content +=
+          "<button onclick=\"if(confirm('Are you sure you want to pause charging and discharging? This will set the "
+          "maximum charge and discharge values to zero, preventing any further power flow.')) { PauseBattery(true); "
+          "}\">Pause charge/discharge</button> ";
+
+    content += "<button onclick='OTA()'>Perform OTA update</button> ";
+    content += "<button onclick='Settings()'>Change Settings</button> ";
+    content += "<button onclick='Advanced()'>More Battery Info</button> ";
+    content += "<button onclick='CANlog()'>CAN logger</button> ";
+    content += "<button onclick='CANreplay()'>CAN replay</button> ";
+    if (datalayer.system.info.web_logging_active || datalayer.system.info.SD_logging_active) {
+      content += "<button onclick='Log()'>Log</button> ";
+    }
+    content += "<button onclick='Cellmon()'>Cellmonitor</button> ";
+    content += "<button onclick='Events()'>Events</button> ";
+    content += "<button onclick='askReboot()'>Reboot Emulator</button>";
+    if (webserver_auth)
+      content += "<button onclick='logout()'>Logout</button>";
+    if (!datalayer.system.info.equipment_stop_active)
+      content +=
+          "<br/><button style=\"background:red;color:white;cursor:pointer;\""
+          " onclick=\""
+          "if(confirm('This action will attempt to open contactors on the battery. Are you "
+          "sure?')) { estop(true); }\""
+          ">Open Contactors</button><br/>";
+    else
+      content +=
+          "<br/><button style=\"background:green;color:white;cursor:pointer;\""
+          "20px;font-size:16px;font-weight:bold;cursor:pointer;border-radius:5px; margin:10px;"
+          " onclick=\""
+          "if(confirm('This action will attempt to close contactors and enable power transfer. Are you sure?')) { "
+          "estop(false); }\""
+          ">Close Contactors</button><br/>";
+    content += "<script>";
+    content += "function OTA() { window.location.href = '/update'; }";
+    content += "function Cellmon() { window.location.href = '/cellmonitor'; }";
+    content += "function Settings() { window.location.href = '/settings'; }";
+    content += "function Advanced() { window.location.href = '/advanced'; }";
+    content += "function CANlog() { window.location.href = '/canlog'; }";
+    content += "function CANreplay() { window.location.href = '/canreplay'; }";
+    content += "function Log() { window.location.href = '/log'; }";
+    content += "function Events() { window.location.href = '/events'; }";
+    if (webserver_auth) {
+      content += "function logout() {";
+      content += "  var xhr = new XMLHttpRequest();";
+      content += "  xhr.open('GET', '/logout', true);";
+      content += "  xhr.send();";
+      content += "  setTimeout(function(){ window.open(\"/\",\"_self\"); }, 1000);";
+      content += "}";
+    }
+    content += "function PauseBattery(pause){";
+    content +=
+        "var xhr=new "
+        "XMLHttpRequest();xhr.onload=function() { "
+        "window.location.reload();};xhr.open('GET','/pause?value='+pause,true);xhr.send();";
+    content += "}";
+    content += "function estop(stop){";
+    content +=
+        "var xhr=new "
+        "XMLHttpRequest();xhr.onload=function() { "
+        "window.location.reload();};xhr.open('GET','/equipmentStop?value='+stop,true);xhr.send();";
+    content += "}";
+    content += "</script>";
+
+    //Script for refreshing page
+    content += "<script>";
+    content += "setTimeout(function(){ location.reload(true); }, 15000);";
+    content += "</script>";
+
+    return content;
+  }
+  return String();
+}
+
+void onOTAStart() {
+  //try to Pause the battery
+  setBatteryPause(true, true);
+
+  // Log when OTA has started
+  set_event(EVENT_OTA_UPDATE, 0);
+
+  // If already set, make a new attempt
+  clear_event(EVENT_OTA_UPDATE_TIMEOUT);
+  ota_active = true;
+
+  ota_timeout_timer.reset();
+}
+
+void onOTAProgress(size_t current, size_t final) {
+  // Log every 1 second
+  if (millis() - ota_progress_millis > 1000) {
+    ota_progress_millis = millis();
+    logging.printf("OTA Progress Current: %u bytes, Final: %u bytes\n", current, final);
+    // Reset the "watchdog"
+    ota_timeout_timer.reset();
+  }
+}
+
+void onOTAEnd(bool success) {
+
+  ota_active = false;
+  clear_event(EVENT_OTA_UPDATE);
+
+  // Log when OTA has finished
+  if (success) {
+    //Equipment STOP without persisting the equipment state before restart
+    // Max Charge/Discharge = 0; CAN = stop; contactors = open
+    setBatteryPause(true, true, true, false);
+    // a reboot will be done by the OTA library. no need to do anything here
+    logging.println("OTA update finished successfully!");
+  } else {
+    logging.println("There was an error during OTA update!");
+    //try to Resume the battery pause and CAN communication
+    setBatteryPause(false, false);
+  }
+}
+
+// ========== UNIFIED WEBSERVER WITH AsyncWebServer_ESP32_W5500 ==========
+
+/**
+ * @brief Initialize unified webserver using AsyncWebServer_ESP32_W5500 
+ * This library natively supports both WiFi and Ethernet without dual server complexity
+ */
+void init_unified_webserver() {
+  logging.println("=== UNIFIED WEBSERVER INITIALIZATION ===");
+  
+  // Initialize LittleFS for HTML storage
+  // static bool littlefs_initialized = false;
+  // if (!littlefs_initialized) {
+  //   littlefs_initialized = LittleFS.begin();
+  //   logging.println(littlefs_initialized ? "LittleFS mounted successfully" : "Failed to mount LittleFS");
+  // }
+  
+  // // Build settings HTML
+  // static bool html_built = false;
+  // if (!html_built) {
+  //   settings_html_string = buildSettingsHtml();
+  //   settings_html = settings_html_string.c_str();
+  //   html_built = true;
+  // }
+  
+  // Initialize network interfaces
+  bool wifi_available = wifi_enabled && (WiFi.status() == WL_CONNECTED || WiFi.getMode() == WIFI_AP);
+  bool ethernet_available = ethernetPresent;
+  
+  logging.printf("Network status - WiFi: %s, Ethernet: %s\n", 
+                 wifi_available ? "available" : "not available",
+                 ethernet_available ? "available" : "not available");
+  
+  if (!wifi_available && !ethernet_available) {
+    logging.println("No network interfaces available - webserver not started");
+    return;
+  }
+  
+  // Register routes with the unified AsyncWebServer_ESP32_W5500
+  // This server automatically handles both WiFi and Ethernet requests
+  
+  // Main page
+  def_route_with_auth("/", server, HTTP_GET, [](AsyncWebServerRequest* request) {
+    request->send(200, "text/html", index_html, processor);
+  });
+  
+  // Settings page
+  def_route_with_auth("/settings", server, HTTP_GET, [](AsyncWebServerRequest* request) {
+    auto settings = std::make_shared<BatteryEmulatorSettingsStore>(true);
+    request->send(200, "text/html", settings_html,
+                  [settings](const String& content) { return settings_processor(content, *settings); });
+  });
+  
+  // Advanced battery page
+  def_route_with_auth("/advanced", server, HTTP_GET, [](AsyncWebServerRequest* request) {
+    request->send(200, "text/html", index_html, advanced_battery_processor);
+  });
+  
+  // Cell monitor page
+  def_route_with_auth("/cellmonitor", server, HTTP_GET, [](AsyncWebServerRequest* request) {
+    request->send(200, "text/html", index_html, cellmonitor_processor);
+  });
+  
+  // Events page
+  def_route_with_auth("/events", server, HTTP_GET, [](AsyncWebServerRequest* request) {
+    request->send(200, "text/html", index_html, events_processor);
+  });
+  
+  // Firmware info (JSON API)
+  def_route_with_auth("/GetFirmwareInfo", server, HTTP_GET, [](AsyncWebServerRequest* request) {
+    request->send(200, "application/json", get_firmware_info_html, get_firmware_info_processor);
+  });
+  
+  // Simple status endpoint to test both interfaces
+  server.on("/status", HTTP_GET, [](AsyncWebServerRequest* request) {
+    String interface_info = "";
+    if (WiFi.status() == WL_CONNECTED) {
+      interface_info += "WiFi: " + WiFi.localIP().toString() + " ";
+    }
+    if (ethernetPresent && Ethernet.linkStatus() == LinkON) {
+      interface_info += "Ethernet: " + Ethernet.localIP().toString() + " ";
+    }
+    
+    String response = "<!DOCTYPE html><html><head><title>Unified Server Status</title></head>";
+    response += "<body style='font-family: Arial; margin: 40px; background-color: #ADD8E6;'>";
+    response += "<h1>Unified WebServer Status</h1>";
+    response += "<p><strong>Server Type:</strong> AsyncWebServer_ESP32_W5500 (Unified WiFi + Ethernet)</p>";
+    response += "<p><strong>Active Interfaces:</strong> " + interface_info + "</p>";
+    response += "<p><strong>Request received via:</strong> " + request->client()->remoteIP().toString() + "</p>";
+    response += "<p><a href='/'>Main Page</a> | <a href='/settings'>Settings</a> | <a href='/advanced'>Advanced</a></p>";
+    response += "</body></html>";
+    
+    request->send(200, "text/html", response);
+  });
+  
+  // Logout route
+  server.on("/logout", HTTP_GET, [](AsyncWebServerRequest* request) {
+    request->send(401, "text/plain", "Unauthorized");
+  });
+  
+  // Add all the settings update routes from original webserver
+  auto update_int_setting = [](const char* route, std::function<void(int)> setter) {
+    def_route_with_auth(route, server, HTTP_GET, [=](AsyncWebServerRequest* request) {
+      if (!request->hasParam("value")) {
+        request->send(400, "text/plain", "Bad Request");
+        return;
+      }
+      String value = request->getParam("value")->value();
+      setter(value.toInt());
+      store_settings();
+      request->send(200, "text/plain", "Updated successfully");
+    });
+  };
+  
+  // Register common settings routes
+  update_int_setting("/updateBatterySize", [](int value) { 
+    datalayer.battery.info.total_capacity_Wh = value; 
+  });
+  
+  update_int_setting("/updateUseScaledSOC", [](int value) { 
+    datalayer.battery.settings.soc_scaling_active = value; 
+  });
+  
+  // Initialize ElegantOTA with universal network support
+  init_ElegantOTA_Universal(&server);
+  printOTAStatus();
+  
+  // Start the unified server - it will automatically handle both WiFi and Ethernet
+  server.begin();
+  
+  logging.println("=== UNIFIED WEBSERVER STARTED ===");
+  logging.println("Server supports both WiFi and Ethernet automatically");
+  
+  if (wifi_available) {
+    logging.printf("WiFi access: http://%s/\n", WiFi.localIP().toString().c_str());
+  }
+  if (ethernet_available) {
+    logging.printf("Ethernet access: http://%s/\n", Ethernet.localIP().toString().c_str());
+  }
+  
+  logging.println("Visit /status to see active interfaces and test functionality");
+}
+
+template <typename T>  // This function makes power values appear as W when under 1000, and kW when over
+String formatPowerValue(String label, T value, String unit, int precision, String color) {
+  String result = "<h4 style='color: " + color + ";'>" + label + ": ";
+  result += formatPowerValue(value, unit, precision);
+  result += "</h4>";
+  return result;
+}
+template <typename T>  // This function makes power values appear as W when under 1000, and kW when over
+String formatPowerValue(T value, String unit, int precision) {
+  String result = "";
+
+  if (std::is_same<T, float>::value || std::is_same<T, uint16_t>::value || std::is_same<T, uint32_t>::value) {
+    float convertedValue = static_cast<float>(value);
+
+    if (convertedValue >= 1000.0f || convertedValue <= -1000.0f) {
+      result += String(convertedValue / 1000.0f, precision) + " kW";
+    } else {
+      result += String(convertedValue, 0) + " W";
+    }
+  }
+
+  result += unit;
+  return result;
+}

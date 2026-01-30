@@ -1,0 +1,16 @@
+{
+    "name": "espnow_common_utils",
+    "version": "1.0.0",
+    "description": "Common ESP-NOW utilities for peer management and discovery",
+    "keywords": ["esp32", "espnow", "peer", "discovery"],
+    "authors": {
+        "name": "ESP32 Common",
+        "maintainers": true
+    },
+    "repository": {
+        "type": "git",
+        "url": ""
+    },
+    "frameworks": "arduino",
+    "platforms": "espressif32"
+}
