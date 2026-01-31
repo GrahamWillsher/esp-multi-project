@@ -34,6 +34,7 @@ static TaskHandle_t ethernet_utils_task_handle = NULL;
 static unsigned long last_ntp_sync = 0;
 static bool time_initialized = false;
 static bool timezone_configured = false;
+static unsigned long last_timezone_attempt = 0;
 
 // Internet connectivity status
 static volatile bool internet_connected = false;
@@ -364,14 +365,32 @@ void stop_ethernet_utilities_task() {
 }
 
 bool get_ntp_time() {
-    // Configure timezone on first call
+    // Configure timezone on first call or retry every 30 minutes if failed
+    bool should_retry_timezone = false;
+    
     if (!timezone_configured) {
-        if (!configure_timezone_from_location()) {
-            Serial.println("[NTP_UTILS] Using default UTC timezone");
-            setenv("TZ", "UTC0", 1);
-            tzset();
+        should_retry_timezone = true;
+    } else if (detected_timezone_abbreviation.length() == 0 || 
+               detected_timezone_abbreviation == "UTC") {
+        // Retry if we're using default UTC and enough time has passed
+        if (millis() - last_timezone_attempt >= NTP_SYNC_INTERVAL_MS) {
+            should_retry_timezone = true;
+            Serial.println("[NTP_UTILS] Retrying timezone detection...");
         }
-        timezone_configured = true;
+    }
+    
+    if (should_retry_timezone) {
+        last_timezone_attempt = millis();
+        if (configure_timezone_from_location()) {
+            timezone_configured = true;
+        } else {
+            Serial.println("[NTP_UTILS] Timezone detection failed, using UTC (will retry in 30 min)");
+            if (!timezone_configured) {
+                setenv("TZ", "UTC0", 1);
+                tzset();
+                timezone_configured = true;
+            }
+        }
     }
     
     // Skip if recently synced
