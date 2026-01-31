@@ -14,6 +14,7 @@
  */
 
 #include "ethernet_utilities.h"
+#include "../src/config/logging_config.h"
 #include <ArduinoJson.h>
 #include <WiFiClient.h>
 
@@ -79,7 +80,7 @@ static bool send_ntp_packet(const char* server) {
  */
 static String get_timezone_from_location() {
     if (!is_network_connected()) {
-        Serial.println("[NTP_UTILS] No network connection for timezone detection");
+        LOG_INFO("[NTP_UTILS] No network connection for timezone detection");
         return "UTC0";
     }
     
@@ -87,10 +88,10 @@ static String get_timezone_from_location() {
     const char* path = "/api/ip";
     
     WiFiClient client;
-    Serial.printf("[NTP_UTILS] Connecting to %s...\n", host);
+    LOG_INFO("[NTP_UTILS] Connecting to %s...", host);
     
     if (!client.connect(host, 80)) {
-        Serial.printf("[NTP_UTILS] Failed to connect to %s\n", host);
+        LOG_INFO("[NTP_UTILS] Failed to connect to %s", host);
         return "UTC0";
     }
     
@@ -123,7 +124,7 @@ static String get_timezone_from_location() {
     client.stop();
     
     if (response.length() == 0) {
-        Serial.println("[NTP_UTILS] No response from timezone service");
+        LOG_INFO("[NTP_UTILS] No response from timezone service");
         return "UTC0";
     }
     
@@ -132,7 +133,7 @@ static String get_timezone_from_location() {
     DeserializationError error = deserializeJson(doc, response);
     
     if (error) {
-        Serial.printf("[NTP_UTILS] JSON parsing failed: %s\n", error.c_str());
+        LOG_INFO("[NTP_UTILS] JSON parsing failed: %s", error.c_str());
         return "UTC0";
     }
     
@@ -148,7 +149,7 @@ static String get_timezone_from_location() {
     detected_timezone_name = timezone_name;
     detected_timezone_abbreviation = abbreviation;
     
-    Serial.printf("[NTP_UTILS] Detected timezone: %s (%s), offset: %+d hours, DST: %s\n", 
+    LOG_INFO("[NTP_UTILS] Detected timezone: %s (%s), offset: %+d hours, DST: %s", 
                  timezone_name.c_str(), abbreviation.c_str(), utc_offset/3600,
                  dst ? "active" : "inactive");
     
@@ -193,12 +194,12 @@ static String get_timezone_from_location() {
         if (timezone_name.indexOf("London") >= 0 || timezone_name.indexOf("Europe/London") >= 0 ||
             abbreviation == "GMT" || abbreviation == "BST") {
             posixTz += ",M3.5.0/1,M10.5.0/2";
-            Serial.println("[NTP_UTILS] Applied UK/GMT DST rules");
+            LOG_INFO("[NTP_UTILS] Applied UK/GMT DST rules");
         }
         // European Union (Last Sunday March 2AM - Last Sunday October 3AM)
         else if (timezone_name.indexOf("Europe") >= 0 && timezone_name.indexOf("London") < 0) {
             posixTz += ",M3.5.0/2,M10.5.0/3";
-            Serial.println("[NTP_UTILS] Applied EU DST rules");
+            LOG_INFO("[NTP_UTILS] Applied EU DST rules");
         }
         // US & Canada (2nd Sunday March 2AM - 1st Sunday November 2AM)
         else if (timezone_name.indexOf("America/New_York") >= 0 || 
@@ -209,7 +210,7 @@ static String get_timezone_from_location() {
                  timezone_name.indexOf("America/Toronto") >= 0 ||
                  timezone_name.indexOf("America/Vancouver") >= 0) {
             posixTz += ",M3.2.0/2,M11.1.0/2";
-            Serial.println("[NTP_UTILS] Applied US/Canada DST rules");
+            LOG_INFO("[NTP_UTILS] Applied US/Canada DST rules");
         }
         // Australia (1st Sunday October 2AM - 1st Sunday April 3AM)
         else if (timezone_name.indexOf("Australia/Sydney") >= 0 ||
@@ -218,60 +219,60 @@ static String get_timezone_from_location() {
                  timezone_name.indexOf("Australia/Hobart") >= 0 ||
                  timezone_name.indexOf("Australia/Adelaide") >= 0) {
             posixTz += ",M10.1.0/2,M4.1.0/3";
-            Serial.println("[NTP_UTILS] Applied Australia (southeast) DST rules");
+            LOG_INFO("[NTP_UTILS] Applied Australia (southeast) DST rules");
         }
         // New Zealand (Last Sunday September 2AM - 1st Sunday April 3AM)
         else if (timezone_name.indexOf("Pacific/Auckland") >= 0 ||
                  timezone_name.indexOf("New_Zealand") >= 0) {
             posixTz += ",M9.5.0/2,M4.1.0/3";
-            Serial.println("[NTP_UTILS] Applied New Zealand DST rules");
+            LOG_INFO("[NTP_UTILS] Applied New Zealand DST rules");
         }
         // Brazil (3rd Sunday October 0AM - 3rd Sunday February 0AM)
         else if (timezone_name.indexOf("America/Sao_Paulo") >= 0) {
             posixTz += ",M10.3.0/0,M2.3.0/0";
-            Serial.println("[NTP_UTILS] Applied Brazil DST rules");
+            LOG_INFO("[NTP_UTILS] Applied Brazil DST rules");
         }
         // Chile (2nd Saturday August 24:00 - 2nd Saturday May 24:00)
         else if (timezone_name.indexOf("America/Santiago") >= 0) {
             posixTz += ",M8.2.6/24,M5.2.6/24";
-            Serial.println("[NTP_UTILS] Applied Chile DST rules");
+            LOG_INFO("[NTP_UTILS] Applied Chile DST rules");
         }
         // Israel (Last Friday March 2AM - Last Sunday October 2AM)
         else if (timezone_name.indexOf("Asia/Jerusalem") >= 0) {
             posixTz += ",M3.5.5/2,M10.5.0/2";
-            Serial.println("[NTP_UTILS] Applied Israel DST rules");
+            LOG_INFO("[NTP_UTILS] Applied Israel DST rules");
         }
         // Mexico (1st Sunday April 2AM - Last Sunday October 2AM)
         else if (timezone_name.indexOf("America/Mexico_City") >= 0 ||
                  timezone_name.indexOf("America/Cancun") >= 0) {
             posixTz += ",M4.1.0/2,M10.5.0/2";
-            Serial.println("[NTP_UTILS] Applied Mexico DST rules");
+            LOG_INFO("[NTP_UTILS] Applied Mexico DST rules");
         }
         // Cuba (2nd Sunday March 0AM - 1st Sunday November 1AM)
         else if (timezone_name.indexOf("America/Havana") >= 0) {
             posixTz += ",M3.2.0/0,M11.1.0/1";
-            Serial.println("[NTP_UTILS] Applied Cuba DST rules");
+            LOG_INFO("[NTP_UTILS] Applied Cuba DST rules");
         }
         // Iran (Day 1 Farvardin 0AM - Day 1 Mehr 0AM) - Approximate to March 21 - September 22
         else if (timezone_name.indexOf("Asia/Tehran") >= 0) {
             posixTz += ",M3.3.2/0,M9.3.2/0";
-            Serial.println("[NTP_UTILS] Applied Iran DST rules (approximate)");
+            LOG_INFO("[NTP_UTILS] Applied Iran DST rules (approximate)");
         }
         // Generic Northern Hemisphere fallback (2nd Sunday March 2AM - 1st Sunday November 2AM)
         else if (offsetHours >= 0 || timezone_name.indexOf("America") >= 0) {
             posixTz += ",M3.2.0/2,M11.1.0/2";
-            Serial.println("[NTP_UTILS] Applied generic Northern Hemisphere DST rules");
+            LOG_INFO("[NTP_UTILS] Applied generic Northern Hemisphere DST rules");
         }
         // Generic Southern Hemisphere fallback (1st Sunday October 2AM - 1st Sunday April 2AM)
         else {
             posixTz += ",M10.1.0/2,M4.1.0/2";
-            Serial.println("[NTP_UTILS] Applied generic Southern Hemisphere DST rules");
+            LOG_INFO("[NTP_UTILS] Applied generic Southern Hemisphere DST rules");
         }
         
-        Serial.printf("[NTP_UTILS] DST offset: %+d hours\n", dst_offset/3600);
+        LOG_INFO("[NTP_UTILS] DST offset: %+d hours", dst_offset/3600);
     }
     
-    Serial.printf("[NTP_UTILS] POSIX timezone: %s\n", posixTz.c_str());
+    LOG_INFO("[NTP_UTILS] POSIX timezone: %s", posixTz.c_str());
     return posixTz;
 }
 
@@ -282,14 +283,14 @@ static void ethernet_utilities_task(void* parameter) {
     TickType_t last_ntp_check = 0;
     TickType_t last_ping_check = 0;
     
-    Serial.println("[NTP_UTILS] Network utilities task started");
+    LOG_INFO("[NTP_UTILS] Network utilities task started");
     
     // Wait for network connection (Ethernet to get IP address)
-    Serial.println("[NTP_UTILS] Waiting for network connection...");
+    LOG_INFO("[NTP_UTILS] Waiting for network connection...");
     while (!is_network_connected()) {
         vTaskDelay(pdMS_TO_TICKS(500));
     }
-    Serial.println("[NTP_UTILS] Network connected");
+    LOG_INFO("[NTP_UTILS] Network connected");
     
     // Wait additional 2 seconds for network to stabilize, then do initial NTP sync
     vTaskDelay(pdMS_TO_TICKS(2000));
@@ -315,7 +316,7 @@ static void ethernet_utilities_task(void* parameter) {
                 internet_connected = test_internet_connectivity();
                 
                 if (internet_connected != was_connected) {
-                    Serial.printf("[NTP_UTILS] Internet: %s\n", 
+                    LOG_INFO("[NTP_UTILS] Internet: %s", 
                                 internet_connected ? "ONLINE" : "OFFLINE");
                 }
             } else {
@@ -332,15 +333,15 @@ static void ethernet_utilities_task(void* parameter) {
 // ═══════════════════════════════════════════════════════════════════════
 
 bool init_ethernet_utilities() {
-    Serial.println("[NTP_UTILS] Initializing network time utilities...");
+    LOG_INFO("[NTP_UTILS] Initializing network time utilities...");
     ntp_udp.begin(NTP_LOCAL_PORT);
-    Serial.printf("[NTP_UTILS] NTP client ready on port %d\n", NTP_LOCAL_PORT);
+    LOG_INFO("[NTP_UTILS] NTP client ready on port %d", NTP_LOCAL_PORT);
     return true;
 }
 
 bool start_ethernet_utilities_task() {
     if (ethernet_utils_task_handle != NULL) {
-        Serial.println("[NTP_UTILS] Task already running");
+        LOG_INFO("[NTP_UTILS] Task already running");
         return true;
     }
     
@@ -355,10 +356,10 @@ bool start_ethernet_utilities_task() {
     );
     
     if (result == pdPASS) {
-        Serial.println("[NTP_UTILS] Background task started");
+        LOG_INFO("[NTP_UTILS] Background task started");
         return true;
     } else {
-        Serial.println("[NTP_UTILS] Failed to start task");
+        LOG_INFO("[NTP_UTILS] Failed to start task");
         return false;
     }
 }
@@ -367,7 +368,7 @@ void stop_ethernet_utilities_task() {
     if (ethernet_utils_task_handle != NULL) {
         vTaskDelete(ethernet_utils_task_handle);
         ethernet_utils_task_handle = NULL;
-        Serial.println("[NTP_UTILS] Background task stopped");
+        LOG_INFO("[NTP_UTILS] Background task stopped");
     }
 }
 
@@ -382,7 +383,7 @@ bool get_ntp_time() {
         // Retry if we're using default UTC and enough time has passed
         if (millis() - last_timezone_attempt >= NTP_SYNC_INTERVAL_MS) {
             should_retry_timezone = true;
-            Serial.println("[NTP_UTILS] Retrying timezone detection...");
+            LOG_INFO("[NTP_UTILS] Retrying timezone detection...");
         }
     }
     
@@ -391,7 +392,7 @@ bool get_ntp_time() {
         if (configure_timezone_from_location()) {
             timezone_configured = true;
         } else {
-            Serial.println("[NTP_UTILS] Timezone detection failed, using UTC (will retry in 30 min)");
+            LOG_INFO("[NTP_UTILS] Timezone detection failed, using UTC (will retry in 30 min)");
             if (!timezone_configured) {
                 setenv("TZ", "UTC0", 1);
                 tzset();
@@ -406,17 +407,17 @@ bool get_ntp_time() {
     }
     
     if (!is_network_connected()) {
-        Serial.println("[NTP_UTILS] No network connection");
+        LOG_INFO("[NTP_UTILS] No network connection");
         return false;
     }
     
-    Serial.println("[NTP_UTILS] Syncing time from NTP...");
+    LOG_INFO("[NTP_UTILS] Syncing time from NTP...");
     
     const char* servers[] = {NTP_SERVER1, NTP_SERVER2};
     
     for (int i = 0; i < 2; i++) {
         const char* server = servers[i];
-        Serial.printf("[NTP_UTILS] Trying %s...\n", server);
+        LOG_INFO("[NTP_UTILS] Trying %s...", server);
         
         if (!send_ntp_packet(server)) {
             continue;
@@ -448,7 +449,7 @@ bool get_ntp_time() {
             const char* tz_display = detected_timezone_abbreviation.length() > 0 ? 
                                      detected_timezone_abbreviation.c_str() : "UTC";
             
-            Serial.printf("[NTP_UTILS] Time set: %04d-%02d-%02d %02d:%02d:%02d %s\n",
+            LOG_INFO("[NTP_UTILS] Time set: %04d-%02d-%02d %02d:%02d:%02d %s",
                          local_time->tm_year + 1900,
                          local_time->tm_mon + 1,
                          local_time->tm_mday,
@@ -463,7 +464,7 @@ bool get_ntp_time() {
         }
     }
     
-    Serial.println("[NTP_UTILS] All NTP servers failed");
+    LOG_INFO("[NTP_UTILS] All NTP servers failed");
     return false;
 }
 
@@ -498,7 +499,7 @@ bool configure_timezone_from_location() {
     
     setenv("TZ", tz.c_str(), 1);
     tzset();
-    Serial.printf("[NTP_UTILS] Timezone set: %s\n", tz.c_str());
+    LOG_INFO("[NTP_UTILS] Timezone set: %s", tz.c_str());
     return true;
 }
 
