@@ -284,7 +284,14 @@ static void ethernet_utilities_task(void* parameter) {
     
     Serial.println("[NTP_UTILS] Network utilities task started");
     
-    // Wait for network to stabilize, then do initial NTP sync
+    // Wait for network connection (Ethernet to get IP address)
+    Serial.println("[NTP_UTILS] Waiting for network connection...");
+    while (!is_network_connected()) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+    Serial.println("[NTP_UTILS] Network connected");
+    
+    // Wait additional 2 seconds for network to stabilize, then do initial NTP sync
     vTaskDelay(pdMS_TO_TICKS(2000));
     get_ntp_time();
     
