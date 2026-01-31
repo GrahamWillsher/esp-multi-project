@@ -419,13 +419,17 @@ bool get_ntp_time() {
             time_t now = epoch;
             struct tm* local_time = localtime(&now);
             
-            Serial.printf("[NTP_UTILS] Time set: %04d-%02d-%02d %02d:%02d:%02d\n",
+            const char* tz_display = detected_timezone_abbreviation.length() > 0 ? 
+                                     detected_timezone_abbreviation.c_str() : "UTC";
+            
+            Serial.printf("[NTP_UTILS] Time set: %04d-%02d-%02d %02d:%02d:%02d %s\n",
                          local_time->tm_year + 1900,
                          local_time->tm_mon + 1,
                          local_time->tm_mday,
                          local_time->tm_hour,
                          local_time->tm_min,
-                         local_time->tm_sec);
+                         local_time->tm_sec,
+                         tz_display);
             
             time_initialized = true;
             last_ntp_sync = millis();
