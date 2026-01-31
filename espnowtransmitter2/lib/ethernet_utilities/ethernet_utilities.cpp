@@ -88,12 +88,14 @@ static String get_timezone_from_location() {
     const char* path = "/api/ip";
     
     WiFiClient client;
-    LOG_INFO("[NTP_UTILS] Connecting to %s...", host);
+    LOG_INFO("[NTP_UTILS] Connecting to %s%s...", host, path);
     
     if (!client.connect(host, 80)) {
-        LOG_INFO("[NTP_UTILS] Failed to connect to %s", host);
+        LOG_INFO("[NTP_UTILS] Failed to connect to %s (connection refused/timeout)", host);
         return "UTC0";
     }
+    
+    LOG_INFO("[NTP_UTILS] Connected, sending HTTP request...");
     
     // Send HTTP GET request
     client.print("GET ");
@@ -109,11 +111,13 @@ static String get_timezone_from_location() {
     bool headersPassed = false;
     unsigned long timeout = millis() + 10000;
     
+    LOG_INFO("[NTP_UTILS] Waiting for response...");
     while (client.connected() && millis() < timeout) {
         if (client.available()) {
             String line = client.readStringUntil('\n');
             if (!headersPassed && line == "\r") {
                 headersPassed = true;
+                LOG_INFO("[NTP_UTILS] Headers received, reading JSON body...");
                 continue;
             }
             if (headersPassed) {
@@ -124,9 +128,11 @@ static String get_timezone_from_location() {
     client.stop();
     
     if (response.length() == 0) {
-        LOG_INFO("[NTP_UTILS] No response from timezone service");
+        LOG_INFO("[NTP_UTILS] No response from timezone service (timeout or empty response)");
         return "UTC0";
     }
+    
+    LOG_INFO("[NTP_UTILS] Received %d bytes, parsing JSON...", response.length());
     
     // Parse JSON response
     DynamicJsonDocument doc(1024);
@@ -134,6 +140,7 @@ static String get_timezone_from_location() {
     
     if (error) {
         LOG_INFO("[NTP_UTILS] JSON parsing failed: %s", error.c_str());
+        LOG_INFO("[NTP_UTILS] Response was: %s", response.c_str());
         return "UTC0";
     }
     
@@ -378,19 +385,27 @@ bool get_ntp_time() {
     
     if (!timezone_configured) {
         should_retry_timezone = true;
+        LOG_INFO("[NTP_UTILS] First timezone detection attempt");
     } else if (detected_timezone_abbreviation.length() == 0 || 
-               detected_timezone_abbreviation == "UTC") {
-        // Retry if we're using default UTC and enough time has passed
+               detected_timezone_abbreviation == "UTC" ||
+               detected_timezone_name.length() == 0) {
+        // Retry if timezone detection previously failed
         if (millis() - last_timezone_attempt >= NTP_SYNC_INTERVAL_MS) {
             should_retry_timezone = true;
-            LOG_INFO("[NTP_UTILS] Retrying timezone detection...");
+            LOG_INFO("[NTP_UTILS] Retrying timezone detection (current: '%s', name: '%s')...", 
+                     detected_timezone_abbreviation.c_str(), 
+                     detected_timezone_name.c_str());
         }
     }
     
     if (should_retry_timezone) {
         last_timezone_attempt = millis();
+        LOG_INFO("[NTP_UTILS] Attempting timezone detection from worldtimeapi.org...");
         if (configure_timezone_from_location()) {
             timezone_configured = true;
+            LOG_INFO("[NTP_UTILS] Timezone configured: %s (%s)", 
+                     detected_timezone_name.c_str(), 
+                     detected_timezone_abbreviation.c_str());
         } else {
             LOG_INFO("[NTP_UTILS] Timezone detection failed, using UTC (will retry in 30 min)");
             if (!timezone_configured) {
