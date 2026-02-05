@@ -117,6 +117,17 @@ void setup_message_routes() {
             ReceiverConfigManager::instance().requestFullSnapshot(mac);
             LOG_INFO("Requested full configuration snapshot from transmitter");
             
+            // Request firmware metadata from transmitter
+            metadata_request_t meta_req;
+            meta_req.type = msg_metadata_request;
+            meta_req.request_id = esp_random();
+            esp_err_t meta_result = esp_now_send(mac, (const uint8_t*)&meta_req, sizeof(meta_req));
+            if (meta_result == ESP_OK) {
+                LOG_INFO("Requested firmware metadata from transmitter");
+            } else {
+                LOG_WARN("Failed to send METADATA_REQUEST: %s", esp_err_to_name(meta_result));
+            }
+            
             // Send REQUEST_DATA to start receiving battery data
             request_data_t req_msg = { msg_request_data, subtype_power_profile };
             esp_err_t result = esp_now_send(mac, (const uint8_t*)&req_msg, sizeof(req_msg));
@@ -277,6 +288,38 @@ void setup_message_routes() {
                          response->firmware_version / 10000,
                          (response->firmware_version / 100) % 100,
                          response->firmware_version % 100);
+            }
+        },
+        0xFF, nullptr);
+    
+    // Register metadata response handler
+    router.register_route(msg_metadata_response,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            if (msg->len >= (int)sizeof(metadata_response_t)) {
+                const metadata_response_t* response = reinterpret_cast<const metadata_response_t*>(msg->data);
+                
+                char indicator = response->valid ? '@' : '*';
+                LOG_INFO("=== RECEIVED METADATA_RESPONSE ===");
+                LOG_INFO("  Request ID: %u", response->request_id);
+                LOG_INFO("  Valid: %s %c", response->valid ? "true" : "false", indicator);
+                LOG_INFO("  Device: %s", response->device_type);
+                LOG_INFO("  Env: %s", response->env_name);
+                LOG_INFO("  Version: v%d.%d.%d", response->version_major, response->version_minor, response->version_patch);
+                LOG_INFO("  Built: %s", response->build_date);
+                LOG_INFO("==================================");
+                
+                // Store in TransmitterManager
+                TransmitterManager::storeMetadata(
+                    response->valid,
+                    response->env_name,
+                    response->device_type,
+                    response->version_major,
+                    response->version_minor,
+                    response->version_patch,
+                    response->build_date
+                );
+            } else {
+                LOG_WARN("METADATA_RESPONSE too short: %d bytes", msg->len);
             }
         },
         0xFF, nullptr);

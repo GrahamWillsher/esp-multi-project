@@ -18,6 +18,16 @@ private:
     static char build_date[12];
     static char build_time[9];
     
+    // Firmware metadata (from .rodata)
+    static bool metadata_received;  // Flag indicating metadata was received
+    static bool metadata_valid;
+    static char metadata_env[32];
+    static char metadata_device[16];
+    static uint8_t metadata_major;
+    static uint8_t metadata_minor;
+    static uint8_t metadata_patch;
+    static char metadata_build_date[48];
+    
 public:
     // MAC management
     static void registerMAC(const uint8_t* transmitter_mac);
@@ -42,6 +52,17 @@ public:
     static bool hasVersionInfo();
     static const char* getBuildDate();
     static const char* getBuildTime();
+    
+    // Metadata management
+    static void storeMetadata(bool valid, const char* env, const char* device,
+                             uint8_t major, uint8_t minor, uint8_t patch,
+                             const char* build_date);
+    static bool hasMetadata();
+    static bool isMetadataValid();
+    static const char* getMetadataEnv();
+    static const char* getMetadataDevice();
+    static void getMetadataVersion(uint8_t& major, uint8_t& minor, uint8_t& patch);
+    static const char* getMetadataBuildDate();
 };
 
 #endif

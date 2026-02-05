@@ -20,7 +20,7 @@
 #include "../lib/webserver/utils/transmitter_manager.h"
 #include <espnow_discovery.h>  // Common ESP-NOW discovery component
 #include <firmware_version.h>
-// #include <firmware_metadata.h>  // Embed firmware metadata in binary - DISABLED - causes crash
+#include <firmware_metadata.h>  // Embed firmware metadata in binary
 
 // Forward declaration for status indicator task (defined in test_data.cpp)
 void taskStatusIndicator(void *parameter);
@@ -34,6 +34,16 @@ void setup() {
     smart_delay(1000);  // Give serial time to initialize
     LOG_INFO("\n========================================");
     LOG_INFO("ESP32 T-Display-S3 ESP-NOW Receiver");
+    
+    // Display firmware metadata using logging system
+    char fwInfo[128];
+    FirmwareMetadata::getInfoString(fwInfo, sizeof(fwInfo), false);
+    LOG_INFO("%s", fwInfo);
+    
+    if (FirmwareMetadata::isValid(FirmwareMetadata::metadata)) {
+        LOG_INFO("Built: %s", FirmwareMetadata::metadata.build_date);
+    }
+    
     LOG_INFO("Build: %s %s", __DATE__, __TIME__);
     LOG_INFO("========================================");
     Serial.flush();

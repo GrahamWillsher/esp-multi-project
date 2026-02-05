@@ -22,7 +22,7 @@
 #include <espnow_transmitter.h>
 #include <ethernet_utilities.h>
 #include <firmware_version.h>
-// #include <firmware_metadata.h>  // Embed firmware metadata in binary - DISABLED - causes crash
+#include <firmware_metadata.h>
 
 // Configuration
 #include "config/hardware_config.h"
@@ -54,9 +54,18 @@ void setup() {
     Serial.begin(115200);
     delay(1000);
     LOG_INFO("\n=== ESP-NOW Transmitter (Modular) ===");
+    
+    // Display firmware metadata (embedded in binary)
+    char fwInfo[128];
+    FirmwareMetadata::getInfoString(fwInfo, sizeof(fwInfo), false);
+    LOG_INFO("%s", fwInfo);
+    
+    // Display build date if metadata is valid
+    if (FirmwareMetadata::isValid(FirmwareMetadata::metadata)) {
+        LOG_INFO("Built: %s", FirmwareMetadata::metadata.build_date);
+    }
+    
     LOG_INFO("Device: %s", DEVICE_NAME);
-    LOG_INFO("Firmware: v%d.%d.%d (build %u)", FW_VERSION_MAJOR, FW_VERSION_MINOR, FW_VERSION_PATCH, FW_VERSION_NUMBER);
-    LOG_INFO("Build: %s %s", __DATE__, __TIME__);
     LOG_INFO("Protocol Version: %d", PROTOCOL_VERSION);
     
     // Initialize Ethernet

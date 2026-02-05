@@ -14,6 +14,11 @@
 #include <Preferences.h>
 #include <ethernet_config.h>
 #include <firmware_version.h>
+#include <firmware_metadata.h>
+
+// Stringify macro for build flags
+#define STRINGIFY_IMPL(x) #x
+#define STRINGIFY(x) STRINGIFY_IMPL(x)
 
 EspnowMessageHandler& EspnowMessageHandler::instance() {
     static EspnowMessageHandler instance;
@@ -125,6 +130,13 @@ void EspnowMessageHandler::setup_message_routes() {
     router.register_route(msg_debug_control,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             static_cast<EspnowMessageHandler*>(ctx)->handle_debug_control(*msg);
+        },
+        0xFF, this);
+    
+    // Register metadata request handler
+    router.register_route(msg_metadata_request,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            static_cast<EspnowMessageHandler*>(ctx)->handle_metadata_request(*msg);
         },
         0xFF, this);
     
@@ -653,4 +665,65 @@ void EspnowMessageHandler::handle_config_request_full(const espnow_queue_msg_t& 
     }
     
     LOG_INFO("CONFIG: Snapshot sent successfully");
+}
+
+void EspnowMessageHandler::handle_metadata_request(const espnow_queue_msg_t& msg) {
+    if (msg.len < (int)sizeof(metadata_request_t)) {
+        LOG_WARN("METADATA_REQUEST: Invalid message length %d", msg.len);
+        return;
+    }
+    
+    const metadata_request_t* req = reinterpret_cast<const metadata_request_t*>(msg.data);
+    LOG_INFO("METADATA_REQUEST: request_id=%u from receiver", req->request_id);
+    
+    // Read our firmware metadata
+    metadata_response_t response;
+    response.type = msg_metadata_response;
+    response.request_id = req->request_id;
+    response.valid = FirmwareMetadata::isValid(FirmwareMetadata::metadata);
+    
+    if (response.valid) {
+        // Use metadata from .rodata
+        const auto& meta = FirmwareMetadata::metadata;
+        strncpy(response.env_name, meta.env_name, sizeof(response.env_name) - 1);
+        response.env_name[sizeof(response.env_name) - 1] = '\0';
+        
+        strncpy(response.device_type, meta.device_type, sizeof(response.device_type) - 1);
+        response.device_type[sizeof(response.device_type) - 1] = '\0';
+        
+        response.version_major = meta.version_major;
+        response.version_minor = meta.version_minor;
+        response.version_patch = meta.version_patch;
+        
+        strncpy(response.build_date, meta.build_date, sizeof(response.build_date) - 1);
+        response.build_date[sizeof(response.build_date) - 1] = '\0';
+        
+        LOG_INFO("METADATA: Sending valid metadata ● %s %s v%d.%d.%d",
+                 response.device_type, response.env_name,
+                 response.version_major, response.version_minor, response.version_patch);
+    } else {
+        // Fallback to build flags
+        strncpy(response.env_name, STRINGIFY(PIO_ENV_NAME), sizeof(response.env_name) - 1);
+        response.env_name[sizeof(response.env_name) - 1] = '\0';
+        
+        strncpy(response.device_type, STRINGIFY(TARGET_DEVICE), sizeof(response.device_type) - 1);
+        response.device_type[sizeof(response.device_type) - 1] = '\0';
+        
+        response.version_major = FW_VERSION_MAJOR;
+        response.version_minor = FW_VERSION_MINOR;
+        response.version_patch = FW_VERSION_PATCH;
+        
+        strcpy(response.build_date, __DATE__ " " __TIME__);
+        
+        LOG_INFO("METADATA: Sending fallback metadata * v%d.%d.%d",
+                 response.version_major, response.version_minor, response.version_patch);
+    }
+    
+    // Send response back to receiver
+    esp_err_t result = esp_now_send(msg.mac, (uint8_t*)&response, sizeof(response));
+    if (result == ESP_OK) {
+        LOG_INFO("METADATA: Response sent successfully");
+    } else {
+        LOG_ERROR("METADATA: Failed to send response: %s", esp_err_to_name(result));
+    }
 }

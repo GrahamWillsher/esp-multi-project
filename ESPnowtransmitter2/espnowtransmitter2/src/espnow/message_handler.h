@@ -97,6 +97,12 @@ private:
     void handle_config_request_full(const espnow_queue_msg_t& msg);
     
     /**
+     * @brief Handle METADATA_REQUEST message (send firmware metadata)
+     * @param msg ESP-NOW message
+     */
+    void handle_metadata_request(const espnow_queue_msg_t& msg);
+    
+    /**
      * @brief Send DEBUG_ACK message back to receiver
      * @param applied_level Level that was applied
      * @param previous_level Previous level before change

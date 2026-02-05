@@ -38,6 +38,13 @@ private:
     static esp_err_t ota_upload_handler(httpd_req_t *req);
     
     /**
+     * @brief HTTP handler for firmware info API
+     * @param req HTTP request object
+     * @return ESP_OK on success
+     */
+    static esp_err_t firmware_info_handler(httpd_req_t *req);
+    
+    /**
      * @brief HTTP handler for root endpoint (health check)
      * @param req HTTP request object
      * @return ESP_OK on success

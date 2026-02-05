@@ -13,6 +13,14 @@ uint32_t TransmitterManager::firmware_version = 0;
 bool TransmitterManager::version_known = false;
 char TransmitterManager::build_date[12] = {0};
 char TransmitterManager::build_time[9] = {0};
+bool TransmitterManager::metadata_received = false;
+bool TransmitterManager::metadata_valid = false;
+char TransmitterManager::metadata_env[32] = {0};
+char TransmitterManager::metadata_device[16] = {0};
+uint8_t TransmitterManager::metadata_major = 0;
+uint8_t TransmitterManager::metadata_minor = 0;
+uint8_t TransmitterManager::metadata_patch = 0;
+char TransmitterManager::metadata_build_date[48] = {0};
 
 void TransmitterManager::registerMAC(const uint8_t* transmitter_mac) {
     if (transmitter_mac == nullptr) return;
@@ -142,4 +150,64 @@ const char* TransmitterManager::getBuildDate() {
 
 const char* TransmitterManager::getBuildTime() {
     return build_time;
+}
+
+// Metadata management
+void TransmitterManager::storeMetadata(bool valid, const char* env, const char* device,
+                                       uint8_t major, uint8_t minor, uint8_t patch,
+                                       const char* build_date_str) {
+    metadata_received = true;
+    metadata_valid = valid;
+    
+    if (env != nullptr) {
+        strncpy(metadata_env, env, sizeof(metadata_env) - 1);
+        metadata_env[sizeof(metadata_env) - 1] = '\0';
+    }
+    
+    if (device != nullptr) {
+        strncpy(metadata_device, device, sizeof(metadata_device) - 1);
+        metadata_device[sizeof(metadata_device) - 1] = '\0';
+    }
+    
+    metadata_major = major;
+    metadata_minor = minor;
+    metadata_patch = patch;
+    
+    if (build_date_str != nullptr) {
+        strncpy(metadata_build_date, build_date_str, sizeof(metadata_build_date) - 1);
+        metadata_build_date[sizeof(metadata_build_date) - 1] = '\0';
+    }
+    
+    char indicator = valid ? '@' : '*';
+    Serial.printf("[TX_MGR] Metadata: %s %s v%d.%d.%d %c\n", 
+                 metadata_device, metadata_env, major, minor, patch, indicator);
+    if (build_date_str != nullptr && strlen(build_date_str) > 0) {
+        Serial.printf("[TX_MGR]   Built: %s\n", metadata_build_date);
+    }
+}
+
+bool TransmitterManager::hasMetadata() {
+    return metadata_received;
+}
+
+bool TransmitterManager::isMetadataValid() {
+    return metadata_valid;
+}
+
+const char* TransmitterManager::getMetadataEnv() {
+    return metadata_env;
+}
+
+const char* TransmitterManager::getMetadataDevice() {
+    return metadata_device;
+}
+
+void TransmitterManager::getMetadataVersion(uint8_t& major, uint8_t& minor, uint8_t& patch) {
+    major = metadata_major;
+    minor = metadata_minor;
+    patch = metadata_patch;
+}
+
+const char* TransmitterManager::getMetadataBuildDate() {
+    return metadata_build_date;
 }

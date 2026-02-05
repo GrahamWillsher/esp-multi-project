@@ -30,7 +30,11 @@ enum msg_type : uint8_t {
     // Firmware version exchange messages
     msg_version_announce,       // Periodic version announcement
     msg_version_request,        // Request version from peer
-    msg_version_response        // Version response to request
+    msg_version_response,       // Version response to request
+    
+    // Firmware metadata exchange messages
+    msg_metadata_request,       // Request firmware metadata from peer
+    msg_metadata_response       // Firmware metadata response
 };
 
 // ESP-NOW packet subtypes (for fragmented messages)
@@ -182,6 +186,25 @@ typedef struct __attribute__((packed)) {
     char build_time[9];             // Build time
     uint32_t uptime_seconds;        // Device uptime
 } version_response_t;
+
+// Firmware metadata request packet
+typedef struct __attribute__((packed)) {
+    uint8_t type;             // msg_metadata_request
+    uint32_t request_id;      // For tracking responses
+} metadata_request_t;
+
+// Firmware metadata response packet
+typedef struct __attribute__((packed)) {
+    uint8_t type;                // msg_metadata_response
+    uint32_t request_id;         // Echoed from request
+    bool valid;                  // Metadata is valid (from .rodata)
+    char env_name[32];           // Environment name
+    char device_type[16];        // Device type
+    uint8_t version_major;       // Major version
+    uint8_t version_minor;       // Minor version
+    uint8_t version_patch;       // Patch version
+    char build_date[48];         // Build timestamp (DD-MM-YYYY HH:MM:SS)
+} metadata_response_t;
 
 // Structure for queued ESP-NOW messages (holds raw data for processing in worker task)
 typedef struct {

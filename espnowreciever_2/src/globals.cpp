@@ -10,8 +10,8 @@ LogLevel current_log_level = LOG_INFO;
 
 // WiFi Configuration (definitions)
 namespace Config {
-    const char* WIFI_SSID = "BTB-X9FMMG";
-    const char* WIFI_PASSWORD = "amnPKhDrXU9GPt";
+    const char* WIFI_SSID = "YOUR_WIFI_SSID";
+    const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
     const IPAddress LOCAL_IP = IPAddress(192, 168, 1, 230);
     const IPAddress GATEWAY = IPAddress(192, 168, 1, 1);
     const IPAddress SUBNET = IPAddress(255, 255, 255, 0);

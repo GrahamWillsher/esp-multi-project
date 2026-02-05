@@ -12,6 +12,7 @@
 #include <HTTPClient.h>
 #include <LittleFS.h>
 #include <firmware_version.h>
+#include <firmware_metadata.h>
 
 // External references to global variables (backward compatibility aliases from src/globals.cpp)
 extern bool& test_mode_enabled;
@@ -477,19 +478,31 @@ static esp_err_t api_config_version_handler(httpd_req_t *req) {
 
 // Firmware version API
 static esp_err_t api_version_handler(httpd_req_t *req) {
-    char json[512];
+    char json[768];
     
     // Format receiver version
     String receiver_version = formatVersion(FW_VERSION_NUMBER);
     
-    // Get transmitter version if available
+    // Get transmitter version/metadata if available
     String transmitter_version = "Unknown";
     uint32_t transmitter_version_number = 0;
     bool version_compatible = false;
     String transmitter_build_date = "";
     String transmitter_build_time = "";
+    bool has_metadata = TransmitterManager::hasMetadata();
+    bool metadata_valid = TransmitterManager::isMetadataValid();
     
-    if (TransmitterManager::hasVersionInfo()) {
+    if (has_metadata) {
+        // Use metadata if available (more accurate)
+        uint8_t major, minor, patch;
+        TransmitterManager::getMetadataVersion(major, minor, patch);
+        transmitter_version_number = major * 10000 + minor * 100 + patch;
+        transmitter_version = formatVersion(transmitter_version_number);
+        version_compatible = isVersionCompatible(transmitter_version_number);
+        transmitter_build_date = String(TransmitterManager::getMetadataBuildDate());
+        transmitter_build_time = "";  // Metadata has combined date/time
+    } else if (TransmitterManager::hasVersionInfo()) {
+        // Fallback to old version info
         transmitter_version_number = TransmitterManager::getFirmwareVersion();
         transmitter_version = formatVersion(transmitter_version_number);
         version_compatible = isVersionCompatible(transmitter_version_number);
@@ -509,6 +522,7 @@ static esp_err_t api_version_handler(httpd_req_t *req) {
              "\"transmitter_build_date\":\"%s\","
              "\"transmitter_build_time\":\"%s\","
              "\"transmitter_compatible\":%s,"
+             "\"transmitter_metadata_valid\":%s,"
              "\"uptime\":%lu,"
              "\"heap_free\":%u,"
              "\"wifi_channel\":%d"
@@ -520,9 +534,79 @@ static esp_err_t api_version_handler(httpd_req_t *req) {
              transmitter_build_date.c_str(),
              transmitter_build_time.c_str(),
              version_compatible ? "true" : "false",
+             metadata_valid ? "true" : "false",
              millis() / 1000,
              ESP.getFreeHeap(),
              WiFi.channel());
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json, strlen(json));
+    return ESP_OK;
+}
+
+// Firmware metadata API - returns current running firmware info
+static esp_err_t api_firmware_info_handler(httpd_req_t *req) {
+    char json[512];
+    
+    if (FirmwareMetadata::isValid(FirmwareMetadata::metadata)) {
+        // Metadata is valid - return embedded metadata
+        snprintf(json, sizeof(json), 
+                 "{\"valid\":true,"
+                 "\"env\":\"%s\","
+                 "\"device\":\"%s\","
+                 "\"version\":\"%d.%d.%d\","
+                 "\"build_date\":\"%s\"}",
+                 FirmwareMetadata::metadata.env_name,
+                 FirmwareMetadata::metadata.device_type,
+                 FirmwareMetadata::metadata.version_major,
+                 FirmwareMetadata::metadata.version_minor,
+                 FirmwareMetadata::metadata.version_patch,
+                 FirmwareMetadata::metadata.build_date);
+    } else {
+        // Metadata not valid - return fallback from build flags
+        snprintf(json, sizeof(json), 
+                 "{\"valid\":false,"
+                 "\"version\":\"%d.%d.%d\","
+                 "\"build_date\":\"%s %s\"}",
+                 FW_VERSION_MAJOR,
+                 FW_VERSION_MINOR,
+                 FW_VERSION_PATCH,
+                 __DATE__, __TIME__);
+    }
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json, strlen(json));
+    return ESP_OK;
+}
+
+// Transmitter firmware metadata API - returns transmitter firmware info from ESP-NOW
+static esp_err_t api_transmitter_metadata_handler(httpd_req_t *req) {
+    char json[512];
+    
+    if (TransmitterManager::hasMetadata()) {
+        uint8_t major, minor, patch;
+        TransmitterManager::getMetadataVersion(major, minor, patch);
+        bool valid = TransmitterManager::isMetadataValid();
+        
+        snprintf(json, sizeof(json), 
+                 "{\"status\":\"received\","
+                 "\"valid\":%s,"
+                 "\"env\":\"%s\","
+                 "\"device\":\"%s\","
+                 "\"version\":\"%d.%d.%d\","
+                 "\"build_date\":\"%s\"}",
+                 valid ? "true" : "false",
+                 TransmitterManager::getMetadataEnv(),
+                 TransmitterManager::getMetadataDevice(),
+                 major, minor, patch,
+                 TransmitterManager::getMetadataBuildDate());
+    } else {
+        // No metadata received yet
+        snprintf(json, sizeof(json), 
+                 "{\"status\":\"waiting\","
+                 "\"valid\":false,"
+                 "\"message\":\"No metadata received from transmitter yet\"}");
+    }
     
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, json, strlen(json));
@@ -543,6 +627,8 @@ int register_all_api_handlers(httpd_handle_t server) {
         {.uri = "/api/request_transmitter_ip", .method = HTTP_GET, .handler = api_request_transmitter_ip_handler, .user_ctx = NULL},
         {.uri = "/api/config_version", .method = HTTP_GET, .handler = api_config_version_handler, .user_ctx = NULL},
         {.uri = "/api/version", .method = HTTP_GET, .handler = api_version_handler, .user_ctx = NULL},
+        {.uri = "/api/firmware_info", .method = HTTP_GET, .handler = api_firmware_info_handler, .user_ctx = NULL},
+        {.uri = "/api/transmitter_metadata", .method = HTTP_GET, .handler = api_transmitter_metadata_handler, .user_ctx = NULL},
         {.uri = "/api/monitor_sse", .method = HTTP_GET, .handler = api_monitor_sse_handler, .user_ctx = NULL},
         {.uri = "/api/reboot", .method = HTTP_GET, .handler = api_reboot_handler, .user_ctx = NULL},
         {.uri = "/api/setDebugLevel", .method = HTTP_GET, .handler = api_set_debug_level_handler, .user_ctx = NULL},

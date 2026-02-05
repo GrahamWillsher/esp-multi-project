@@ -2,6 +2,8 @@
 #include "../config/logging_config.h"
 #include <Arduino.h>
 #include <Update.h>
+#include <firmware_metadata.h>
+#include <firmware_version.h>
 
 OtaManager& OtaManager::instance() {
     static OtaManager instance;
@@ -72,6 +74,40 @@ esp_err_t OtaManager::root_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+esp_err_t OtaManager::firmware_info_handler(httpd_req_t *req) {
+    char json[512];
+    
+    if (FirmwareMetadata::isValid(FirmwareMetadata::metadata)) {
+        // Metadata is valid - return embedded metadata
+        snprintf(json, sizeof(json), 
+                 "{\"valid\":true,"
+                 "\"env\":\"%s\","
+                 "\"device\":\"%s\","
+                 "\"version\":\"%d.%d.%d\","
+                 "\"build_date\":\"%s\"}",
+                 FirmwareMetadata::metadata.env_name,
+                 FirmwareMetadata::metadata.device_type,
+                 FirmwareMetadata::metadata.version_major,
+                 FirmwareMetadata::metadata.version_minor,
+                 FirmwareMetadata::metadata.version_patch,
+                 FirmwareMetadata::metadata.build_date);
+    } else {
+        // Metadata not valid - return fallback from build flags
+        snprintf(json, sizeof(json), 
+                 "{\"valid\":false,"
+                 "\"version\":\"%d.%d.%d\","
+                 "\"build_date\":\"%s %s\"}",
+                 FW_VERSION_MAJOR,
+                 FW_VERSION_MINOR,
+                 FW_VERSION_PATCH,
+                 __DATE__, __TIME__);
+    }
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json, strlen(json));
+    return ESP_OK;
+}
+
 void OtaManager::init_http_server() {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
@@ -91,6 +127,15 @@ void OtaManager::init_http_server() {
             .user_ctx = NULL
         };
         httpd_register_uri_handler(http_server_, &ota_upload_uri);
+        
+        // Register firmware info handler
+        httpd_uri_t firmware_info_uri = {
+            .uri = "/api/firmware_info",
+            .method = HTTP_GET,
+            .handler = firmware_info_handler,
+            .user_ctx = NULL
+        };
+        httpd_register_uri_handler(http_server_, &firmware_info_uri);
         
         // Register root handler
         httpd_uri_t root_uri = {
