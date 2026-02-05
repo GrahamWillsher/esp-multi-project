@@ -1,0 +1,26 @@
+{
+	"folders": [
+		{
+			"name": "ESP32 Common",
+			"path": "c:\\users\\grahamwillsher\\esp32projects\\esp32common"
+		},
+		{
+			"name": "ESP-NOW Receiver",
+			"path": "c:\\users\\grahamwillsher\\esp32projects\\espnowreciever"
+		},
+		{
+			"path": "ESPnowtransmitter2"
+		},
+		{
+			"path": "espnowreciever_2"
+		}
+	],
+	"settings": {
+		"files.associations": {
+			"*.h": "cpp",
+			"*.cpp": "cpp",
+			"*.ino": "cpp"
+		},
+		"C_Cpp.default.configurationProvider": "platformio-ide"
+	}
+}

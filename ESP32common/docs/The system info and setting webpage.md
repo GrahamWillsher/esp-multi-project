@@ -1,0 +1,3 @@
+The system info and setting webpages need to be updated.
+The system info is for the receiver data and should be labelled more clearly to reflect that, also the network configuration that is currently in the settings page should be moved to the system info page (except for the static ip settings), and all of the details should be filled in as you know this Hostname, SSID, wifi channel etc.
+On the settgins pag ehtis should be more clearly marked as the transmitter settings and if you have the mqtt settings they should be populated and the mqtt enable should be ticked since you have them. The same should be for the static ip if you have it fill in the static ip tick box and complete the ip details.

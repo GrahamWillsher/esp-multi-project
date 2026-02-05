@@ -1,0 +1,3 @@
+Hi I need the debug to be sent via syslog from the transmitter instead of being sent via the serial print etc on the USB port please could you give me the correct function for this and put it in the appropriate common say utility's folder also can you look at the ability to be able to change the debug levels on the fly so maybe sending a small message from the web page back to the transmitter to say change from syslog level debug to warm port info etc.
+
+Please could you write this as a document 

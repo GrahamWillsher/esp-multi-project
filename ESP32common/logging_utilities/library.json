@@ -1,0 +1,14 @@
+{
+    "name": "logging_utilities",
+    "version": "1.0.0",
+    "description": "MQTT-based logging utilities for ESP32",
+    "keywords": "mqtt, logging, debug",
+    "authors": {
+        "name": "ESP32 Project"
+    },
+    "dependencies": {
+        "PubSubClient": "^2.8"
+    },
+    "frameworks": "arduino",
+    "platforms": "espressif32"
+}
