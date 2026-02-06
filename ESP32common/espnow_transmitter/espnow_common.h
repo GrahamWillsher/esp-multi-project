@@ -34,7 +34,24 @@ enum msg_type : uint8_t {
     
     // Firmware metadata exchange messages
     msg_metadata_request,       // Request firmware metadata from peer
-    msg_metadata_response       // Firmware metadata response
+    msg_metadata_response,      // Firmware metadata response
+    
+    // =========================================================================
+    // PHASE 1: Battery Emulator Data Layer Messages
+    // =========================================================================
+    
+    // Battery data messages
+    msg_battery_status,         // Real-time battery status (SOC, V, I, temp, power)
+    msg_battery_info,           // Static battery info (capacity, chemistry, cell count)
+    
+    // Charger data messages  
+    msg_charger_status,         // Real-time charger status (HV/LV voltage, current, power)
+    
+    // Inverter data messages
+    msg_inverter_status,        // Real-time inverter status (AC voltage, freq, power)
+    
+    // System data messages
+    msg_system_status           // System status (contactors, BMS state, errors)
 };
 
 // ESP-NOW packet subtypes (for fragmented messages)
@@ -205,6 +222,82 @@ typedef struct __attribute__((packed)) {
     uint8_t version_patch;       // Patch version
     char build_date[48];         // Build timestamp (DD-MM-YYYY HH:MM:SS)
 } metadata_response_t;
+
+// =============================================================================
+// PHASE 1: Battery Emulator Data Layer Message Structures
+// =============================================================================
+
+// BMS status enum
+enum bms_status_t : uint8_t {
+    BMS_OK = 0,
+    BMS_WARNING = 1,
+    BMS_FAULT = 2,
+    BMS_OFFLINE = 3
+};
+
+// Battery status message - Real-time data (200ms updates)
+typedef struct __attribute__((packed)) {
+    uint8_t type;                    // msg_battery_status
+    uint16_t soc_percent_100;        // SOC in 0.01% (e.g., 8050 = 80.50%)
+    uint32_t voltage_mV;             // Voltage in mV
+    int32_t current_mA;              // Current in mA (signed: + = charging, - = discharging)
+    int16_t temperature_dC;          // Temperature in 0.1°C
+    int32_t power_W;                 // Power in W (signed)
+    uint16_t max_charge_power_W;     // Maximum charge power limit
+    uint16_t max_discharge_power_W;  // Maximum discharge power limit
+    uint8_t bms_status;              // BMS status (bms_status_t enum)
+    uint16_t checksum;               // Message checksum
+} battery_status_msg_t;  // Total: 27 bytes
+
+// Battery info message - Static data (sent once on connection)
+typedef struct __attribute__((packed)) {
+    uint8_t type;                        // msg_battery_info
+    uint32_t total_capacity_Wh;          // Total energy capacity in Wh
+    uint32_t reported_capacity_Wh;       // Capacity reported to inverter
+    uint16_t max_design_voltage_dV;      // Maximum pack voltage in dV (0.1V)
+    uint16_t min_design_voltage_dV;      // Minimum pack voltage in dV
+    uint16_t max_cell_voltage_mV;        // Max cell voltage limit in mV
+    uint16_t min_cell_voltage_mV;        // Min cell voltage limit in mV
+    uint16_t max_cell_deviation_mV;      // Max allowed cell deviation
+    uint8_t number_of_cells;             // Total cells in pack
+    uint8_t chemistry;                   // Battery chemistry (0=NCA, 1=NMC, 2=LFP, 3=LTO)
+    uint16_t checksum;                   // Message checksum
+} battery_info_msg_t;  // Total: 26 bytes
+
+// Charger status message - Real-time data (200ms updates)
+typedef struct __attribute__((packed)) {
+    uint8_t type;                    // msg_charger_status
+    uint16_t hv_voltage_dV;          // HV voltage in dV (0.1V)
+    int16_t hv_current_dA;           // HV current in dA (0.1A, signed)
+    uint16_t lv_voltage_dV;          // LV voltage in dV
+    int16_t lv_current_dA;           // LV current in dA (signed)
+    uint16_t ac_voltage_V;           // AC input voltage in V
+    int16_t ac_current_dA;           // AC current in dA (signed)
+    uint16_t power_W;                // Charger power in W
+    uint8_t charger_status;          // Charger state (0=off, 1=charging, 2=fault)
+    uint16_t checksum;               // Message checksum
+} charger_status_msg_t;  // Total: 20 bytes
+
+// Inverter status message - Real-time data (200ms updates)  
+typedef struct __attribute__((packed)) {
+    uint8_t type;                    // msg_inverter_status
+    uint16_t ac_voltage_V;           // AC output voltage in V
+    uint16_t ac_frequency_dHz;       // AC frequency in dHz (0.1Hz)
+    int16_t ac_current_dA;           // AC current in dA (signed)
+    int32_t power_W;                 // Inverter power in W (signed)
+    uint8_t inverter_status;         // Inverter state (0=off, 1=on, 2=fault)
+    uint16_t checksum;               // Message checksum
+} inverter_status_msg_t;  // Total: 14 bytes
+
+// System status message - Real-time data (200ms updates)
+typedef struct __attribute__((packed)) {
+    uint8_t type;                    // msg_system_status
+    uint8_t contactor_state;         // Bit flags: 0=positive, 1=negative, 2=precharge
+    uint8_t error_flags;             // Error flags (bit mask)
+    uint8_t warning_flags;           // Warning flags (bit mask)
+    uint32_t uptime_seconds;         // System uptime in seconds
+    uint16_t checksum;               // Message checksum
+} system_status_msg_t;  // Total: 10 bytes
 
 // Structure for queued ESP-NOW messages (holds raw data for processing in worker task)
 typedef struct {
