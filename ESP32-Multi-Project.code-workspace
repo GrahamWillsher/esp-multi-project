@@ -13,6 +13,9 @@
 		},
 		{
 			"path": "espnowreciever_2"
+		},
+		{
+			"path": "../Downloads/Battery-Emulator-9.2.4/Battery-Emulator-9.2.4"
 		}
 	],
 	"settings": {

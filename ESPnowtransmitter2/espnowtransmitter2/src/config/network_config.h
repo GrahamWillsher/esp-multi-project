@@ -20,10 +20,10 @@ namespace config {
     
     // MQTT Configuration
     struct MqttConfig {
-        const char* server{"YOUR_MQTT_BROKER_IP"};     // MQTT broker IP/hostname
+        const char* server{"192.168.1.221"};     // MQTT broker IP/hostname
         uint16_t port{1883};                        // MQTT broker port
-        const char* username{"YOUR_MQTT_USERNAME"};          // Username (empty for none)
-        const char* password{"YOUR_MQTT_PASSWORD"};      // Password (empty for none)
+        const char* username{"Aintree34"};          // Username (empty for none)
+        const char* password{"Shanghai17"};      // Password (empty for none)
         const char* client_id{"espnow_transmitter"};
         
         struct Topics {
