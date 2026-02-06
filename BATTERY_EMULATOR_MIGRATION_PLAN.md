@@ -150,10 +150,22 @@ msg_config_ack, msg_version_announce, msg_metadata_request, msg_metadata_respons
    - Document task priorities and timing
    - Identify data flow patterns
 
-4. **Create mapping documents**
-   - `WEBSERVER_PAGES_MAPPING.md` - Which pages go where
-   - `DATA_LAYER_MAPPING.md` - How datalayer maps to ESP-NOW messages
-   - `SETTINGS_MAPPING.md` - Settings structure migration
+4. **Create mapping documents** ✓ COMPLETE
+   - ✓ `WEBSERVER_PAGES_MAPPING.md` - Which pages go where
+   - ✓ `DATA_LAYER_MAPPING.md` - How datalayer maps to ESP-NOW messages
+   - ✓ `SETTINGS_MAPPING.md` - Settings structure migration
+   - ✓ `TASK_PRIORITIES_AND_TIMING.md` - Task structure and priorities
+
+#### Detailed Documentation Reference
+
+All detailed migration documentation is in [`ESP32common/docs/Migration/`](ESP32common/docs/Migration/):
+
+| Document | Lines | Purpose | Key Sections |
+|----------|-------|---------|--------------|
+| [WEBSERVER_PAGES_MAPPING.md](ESP32common/docs/Migration/WEBSERVER_PAGES_MAPPING.md) | 861 | Map Battery Emulator web pages to receiver | Architecture (NO WiFi/webserver/display), Subscribe/Unsubscribe, Static vs Dynamic data, Page mapping table, Timing requirements |
+| [DATA_LAYER_MAPPING.md](ESP32common/docs/Migration/DATA_LAYER_MAPPING.md) | 686 | Map datalayer structures to ESP-NOW messages | Battery/Charger/System data structures, Subscribe/Unsubscribe messages, Message types, Bandwidth analysis |
+| [SETTINGS_MAPPING.md](ESP32common/docs/Migration/SETTINGS_MAPPING.md) | 542 | Map NVS settings to transmitter storage | Battery/Inverter/Charger/MQTT/Ethernet settings, Transmitter writes own NVS, Settings sync flow |
+| [TASK_PRIORITIES_AND_TIMING.md](ESP32common/docs/Migration/TASK_PRIORITIES_AND_TIMING.md) | 565 | Define task structure and priorities | Priority 4 control loop, Core separation, Timing budgets, Connectivity task (NTP/ping/OTA) |
 
 **Deliverable**: Clean workspace with documented baseline
 
