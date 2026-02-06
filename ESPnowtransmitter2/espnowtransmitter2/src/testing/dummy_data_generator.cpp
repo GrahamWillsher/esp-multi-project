@@ -67,7 +67,7 @@ namespace DummyData {
         
         msg.checksum = calculate_checksum(&msg, sizeof(msg) - 2);
         
-        esp_now_send(get_broadcast_address(), (uint8_t*)&msg, sizeof(msg));
+        esp_now_send(receiver_mac, (uint8_t*)&msg, sizeof(msg));
         LOG_TRACE("[DUMMY] Battery: SOC=%d.%02d%%, V=%dmV, I=%dmA, P=%dW",
                  soc/100, soc%100, msg.voltage_mV, msg.current_mA, msg.power_W);
     }
@@ -89,7 +89,7 @@ namespace DummyData {
         msg.chemistry = 2;                      // LFP
         msg.checksum = calculate_checksum(&msg, sizeof(msg) - 2);
         
-        esp_now_send(get_broadcast_address(), (uint8_t*)&msg, sizeof(msg));
+        esp_now_send(receiver_mac, (uint8_t*)&msg, sizeof(msg));
         LOG_DEBUG("[DUMMY] Battery info sent (30kWh, 120 cells, LFP)");
     }
     
@@ -109,7 +109,7 @@ namespace DummyData {
         msg.charger_status = (power > 0) ? 1 : 0;      // 1=charging, 0=off
         msg.checksum = calculate_checksum(&msg, sizeof(msg) - 2);
         
-        esp_now_send(get_broadcast_address(), (uint8_t*)&msg, sizeof(msg));
+        esp_now_send(receiver_mac, (uint8_t*)&msg, sizeof(msg));
         LOG_TRACE("[DUMMY] Charger: %s, HV=%dV/%dA, P=%dW",
                  msg.charger_status ? "CHARGING" : "OFF",
                  msg.hv_voltage_dV/10, msg.hv_current_dA/10, msg.power_W);
@@ -128,7 +128,7 @@ namespace DummyData {
         msg.inverter_status = (power < 0) ? 1 : 0;     // 1=on, 0=off
         msg.checksum = calculate_checksum(&msg, sizeof(msg) - 2);
         
-        esp_now_send(get_broadcast_address(), (uint8_t*)&msg, sizeof(msg));
+        esp_now_send(receiver_mac, (uint8_t*)&msg, sizeof(msg));
         LOG_TRACE("[DUMMY] Inverter: %s, AC=%dV/%dA@%dHz, P=%dW",
                  msg.inverter_status ? "ON" : "OFF",
                  msg.ac_voltage_V, msg.ac_current_dA/10, msg.ac_frequency_dHz/10, msg.power_W);
@@ -146,7 +146,7 @@ namespace DummyData {
         msg.uptime_seconds = uptime;
         msg.checksum = calculate_checksum(&msg, sizeof(msg) - 2);
         
-        esp_now_send(get_broadcast_address(), (uint8_t*)&msg, sizeof(msg));
+        esp_now_send(receiver_mac, (uint8_t*)&msg, sizeof(msg));
         LOG_TRACE("[DUMMY] System: contactors=0x%02X, errors=0x%02X, warnings=0x%02X, uptime=%us",
                  msg.contactor_state, msg.error_flags, msg.warning_flags, msg.uptime_seconds);
     }
