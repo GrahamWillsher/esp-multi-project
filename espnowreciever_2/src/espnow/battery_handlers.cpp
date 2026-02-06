@@ -5,7 +5,6 @@
  */
 
 #include "battery_handlers.h"
-#include "../../lib/webserver/logging.h"
 #include <Arduino.h>
 
 // Battery data globals (will be used by web UI)
