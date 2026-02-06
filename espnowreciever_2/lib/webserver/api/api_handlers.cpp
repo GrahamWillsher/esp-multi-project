@@ -633,14 +633,20 @@ int register_all_api_handlers(httpd_handle_t server) {
         {.uri = "/api/reboot", .method = HTTP_GET, .handler = api_reboot_handler, .user_ctx = NULL},
         {.uri = "/api/setDebugLevel", .method = HTTP_GET, .handler = api_set_debug_level_handler, .user_ctx = NULL},
         {.uri = "/api/ota_upload", .method = HTTP_POST, .handler = api_ota_upload_handler, .user_ctx = NULL},
-        {.uri = "/firmware.bin", .method = HTTP_GET, .handler = firmware_bin_handler, .user_ctx = NULL},
-        {.uri = "/*", .method = HTTP_GET, .handler = notfound_handler, .user_ctx = NULL}
+        {.uri = "/firmware.bin", .method = HTTP_GET, .handler = firmware_bin_handler, .user_ctx = NULL}
     };
     
+    // Register all specific handlers first
     for (int i = 0; i < sizeof(handlers) / sizeof(httpd_uri_t); i++) {
         if (httpd_register_uri_handler(server, &handlers[i]) == ESP_OK) {
             count++;
         }
+    }
+    
+    // Register catch-all handler LAST to avoid catching specific routes
+    httpd_uri_t notfound = {.uri = "/*", .method = HTTP_GET, .handler = notfound_handler, .user_ctx = NULL};
+    if (httpd_register_uri_handler(server, &notfound) == ESP_OK) {
+        count++;
     }
     
     return count;

@@ -51,7 +51,15 @@ enum msg_type : uint8_t {
     msg_inverter_status,        // Real-time inverter status (AC voltage, freq, power)
     
     // System data messages
-    msg_system_status           // System status (contactors, BMS state, errors)
+    msg_system_status,          // System status (contactors, BMS state, errors)
+    
+    // =========================================================================
+    // PHASE 2: Settings Bidirectional Flow
+    // =========================================================================
+    
+    // Settings update messages
+    msg_battery_settings_update,    // Update battery settings (receiver → transmitter)
+    msg_settings_update_ack         // Settings update acknowledgment (transmitter → receiver)
 };
 
 // ESP-NOW packet subtypes (for fragmented messages)
@@ -298,6 +306,54 @@ typedef struct __attribute__((packed)) {
     uint32_t uptime_seconds;         // System uptime in seconds
     uint16_t checksum;               // Message checksum
 } system_status_msg_t;  // Total: 10 bytes
+
+// =============================================================================
+// PHASE 2: Settings Bidirectional Flow Message Structures
+// =============================================================================
+
+// Settings category and field identifiers
+enum SettingsCategory : uint8_t {
+    SETTINGS_BATTERY = 0,
+    SETTINGS_CHARGER = 1,
+    SETTINGS_INVERTER = 2,
+    SETTINGS_SYSTEM = 3,
+    SETTINGS_MQTT = 4,
+    SETTINGS_NETWORK = 5
+};
+
+// Battery settings field IDs
+enum BatterySettingsField : uint8_t {
+    BATTERY_CAPACITY_WH = 0,
+    BATTERY_MAX_VOLTAGE_MV = 1,
+    BATTERY_MIN_VOLTAGE_MV = 2,
+    BATTERY_MAX_CHARGE_CURRENT_A = 3,
+    BATTERY_MAX_DISCHARGE_CURRENT_A = 4,
+    BATTERY_SOC_HIGH_LIMIT = 5,
+    BATTERY_SOC_LOW_LIMIT = 6,
+    BATTERY_CELL_COUNT = 7,
+    BATTERY_CHEMISTRY = 8
+};
+
+// Settings update message - Receiver → Transmitter
+typedef struct __attribute__((packed)) {
+    uint8_t type;                // msg_battery_settings_update
+    uint8_t category;            // Settings category (SettingsCategory)
+    uint8_t field_id;            // Field within category
+    uint32_t value_uint32;       // Integer value
+    float value_float;           // Float value (use appropriate field based on setting type)
+    char value_string[32];       // String value (for text settings like MQTT server)
+    uint16_t checksum;           // Message checksum
+} settings_update_msg_t;  // Total: 44 bytes
+
+// Settings update acknowledgment - Transmitter → Receiver
+typedef struct __attribute__((packed)) {
+    uint8_t type;                // msg_settings_update_ack
+    uint8_t category;            // Echo: category that was updated
+    uint8_t field_id;            // Echo: field that was updated
+    bool success;                // True if setting was saved successfully
+    char error_msg[48];          // Error description if failed
+    uint16_t checksum;           // Message checksum
+} settings_update_ack_msg_t;  // Total: 54 bytes
 
 // Structure for queued ESP-NOW messages (holds raw data for processing in worker task)
 typedef struct {
