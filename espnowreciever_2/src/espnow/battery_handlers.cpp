@@ -5,6 +5,7 @@
  */
 
 #include "battery_handlers.h"
+#include "../../lib/webserver/logging.h"
 #include <Arduino.h>
 
 // Battery data globals (will be used by web UI)
@@ -76,7 +77,7 @@ void handle_battery_status(const espnow_queue_msg_t* msg) {
     
     // Validate checksum
     if (!validate_checksum(data, sizeof(*data))) {
-        Serial.println("[BATTERY] Invalid checksum - message rejected");
+        LOG_ERROR("Battery status: Invalid checksum - message rejected");
         return;
     }
     
@@ -91,9 +92,9 @@ void handle_battery_status(const espnow_queue_msg_t* msg) {
     BatteryData::bms_status = data->bms_status;
     BatteryData::status_received = true;
     
-    Serial.printf("[BATTERY] Status: SOC=%.2f%%, V=%.2fV, I=%.2fA, T=%.1fC, P=%dW, BMS=%d\n",
-                 BatteryData::soc_percent, BatteryData::voltage_V, BatteryData::current_A,
-                 BatteryData::temperature_C, BatteryData::power_W, BatteryData::bms_status);
+    LOG_DEBUG("Battery Status: SOC=%.2f%%, V=%.2fV, I=%.2fA, T=%.1fC, P=%dW, BMS=%d",
+              BatteryData::soc_percent, BatteryData::voltage_V, BatteryData::current_A,
+              BatteryData::temperature_C, BatteryData::power_W, BatteryData::bms_status);
     
     // TODO Phase 2: Notify SSE clients
     // notify_sse_battery_updated();
@@ -107,7 +108,7 @@ void handle_battery_info(const espnow_queue_msg_t* msg) {
     
     // Validate checksum
     if (!validate_checksum(data, sizeof(*data))) {
-        Serial.println("[BATTERY] Info: Invalid checksum - message rejected");
+        LOG_ERROR("Battery info: Invalid checksum - message rejected");
         return;
     }
     
@@ -123,10 +124,10 @@ void handle_battery_info(const espnow_queue_msg_t* msg) {
     BatteryData::info_received = true;
     
     const char* chemistry_str[] = {"NCA", "NMC", "LFP", "LTO"};
-    Serial.printf("[BATTERY] Info: %dWh capacity, %d cells, %s chemistry, V: %d-%dV\n",
-                 BatteryData::total_capacity_Wh, BatteryData::number_of_cells,
-                 chemistry_str[data->chemistry], BatteryData::min_design_voltage_V,
-                 BatteryData::max_design_voltage_V);
+    LOG_INFO("Battery Info: %dWh capacity, %d cells, %s chemistry, V: %d-%dV",
+             BatteryData::total_capacity_Wh, BatteryData::number_of_cells,
+             chemistry_str[data->chemistry], BatteryData::min_design_voltage_V,
+             BatteryData::max_design_voltage_V);
 }
 
 void handle_charger_status(const espnow_queue_msg_t* msg) {
@@ -134,7 +135,7 @@ void handle_charger_status(const espnow_queue_msg_t* msg) {
     
     // Validate checksum
     if (!validate_checksum(data, sizeof(*data))) {
-        Serial.println("[CHARGER] Invalid checksum - message rejected");
+        LOG_ERROR("Charger status: Invalid checksum - message rejected");
         return;
     }
     
@@ -147,10 +148,10 @@ void handle_charger_status(const espnow_queue_msg_t* msg) {
     BatteryData::charger_status = data->charger_status;
     BatteryData::charger_received = true;
     
-    Serial.printf("[CHARGER] Status=%d, HV=%.1fV/%.1fA, AC=%dV, P=%dW\n",
-                 BatteryData::charger_status, BatteryData::charger_hv_voltage_V,
-                 BatteryData::charger_hv_current_A, BatteryData::charger_ac_voltage_V,
-                 BatteryData::charger_power_W);
+    LOG_DEBUG("Charger Status=%d, HV=%.1fV/%.1fA, AC=%dV, P=%dW",
+              BatteryData::charger_status, BatteryData::charger_hv_voltage_V,
+              BatteryData::charger_hv_current_A, BatteryData::charger_ac_voltage_V,
+              BatteryData::charger_power_W);
     
     // TODO Phase 2: Notify SSE clients
 }
@@ -160,7 +161,7 @@ void handle_inverter_status(const espnow_queue_msg_t* msg) {
     
     // Validate checksum
     if (!validate_checksum(data, sizeof(*data))) {
-        Serial.println("[INVERTER] Invalid checksum - message rejected");
+        LOG_ERROR("Inverter status: Invalid checksum - message rejected");
         return;
     }
     
@@ -172,10 +173,10 @@ void handle_inverter_status(const espnow_queue_msg_t* msg) {
     BatteryData::inverter_status = data->inverter_status;
     BatteryData::inverter_received = true;
     
-    Serial.printf("[INVERTER] Status=%d, AC=%dV/%.1fA@%.1fHz, P=%dW\n",
-                 BatteryData::inverter_status, BatteryData::inverter_ac_voltage_V,
-                 BatteryData::inverter_ac_current_A, BatteryData::inverter_ac_frequency_Hz,
-                 BatteryData::inverter_power_W);
+    LOG_DEBUG("Inverter Status=%d, AC=%dV/%.1fA@%.1fHz, P=%dW",
+              BatteryData::inverter_status, BatteryData::inverter_ac_voltage_V,
+              BatteryData::inverter_ac_current_A, BatteryData::inverter_ac_frequency_Hz,
+              BatteryData::inverter_power_W);
     
     // TODO Phase 2: Notify SSE clients
 }
@@ -185,7 +186,7 @@ void handle_system_status(const espnow_queue_msg_t* msg) {
     
     // Validate checksum
     if (!validate_checksum(data, sizeof(*data))) {
-        Serial.println("[SYSTEM] Invalid checksum - message rejected");
+        LOG_ERROR("System status: Invalid checksum - message rejected");
         return;
     }
     
@@ -196,9 +197,9 @@ void handle_system_status(const espnow_queue_msg_t* msg) {
     BatteryData::uptime_seconds = data->uptime_seconds;
     BatteryData::system_received = true;
     
-    Serial.printf("[SYSTEM] Contactors=0x%02X, Errors=0x%02X, Warnings=0x%02X, Uptime=%us\n",
-                 BatteryData::contactor_state, BatteryData::error_flags,
-                 BatteryData::warning_flags, BatteryData::uptime_seconds);
+    LOG_DEBUG("System Status: Contactors=0x%02X, Errors=0x%02X, Warnings=0x%02X, Uptime=%us",
+              BatteryData::contactor_state, BatteryData::error_flags,
+              BatteryData::warning_flags, BatteryData::uptime_seconds);
     
     // TODO Phase 2: Notify SSE clients
 }
