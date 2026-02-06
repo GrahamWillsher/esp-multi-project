@@ -310,7 +310,183 @@ typedef struct __attribute__((packed)) {
 
 ---
 
-## 4. Event Log Mapping
+## 4. Page Subscription Messages (On-Demand Data Flow)
+
+**Purpose**: Enable on-demand data flow - transmitter only sends dynamic data when receiver has a page open
+
+### 4.1 Subscribe to Page
+
+**Message Type**: `msg_subscribe_page` (0x0A)
+
+**Sent by**: Receiver
+
+**When**: User opens a webpage requiring dynamic data (Monitor, Cells, Events)
+
+**Structure**:
+
+```cpp
+typedef struct __attribute__((packed)) {
+  uint8_t type;          // msg_subscribe_page (0x0A)
+  uint8_t page_id;       // Which page to subscribe to
+  uint16_t checksum;
+} subscribe_page_msg_t;  // Total: 4 bytes
+```
+
+**Page IDs**:
+
+```cpp
+enum PageSubscription {
+  PAGE_MONITOR = 0,           // Main status page (battery/charger/system status)
+  PAGE_CELLS = 1,             // Cell voltage monitor
+  PAGE_EVENTS = 2,            // Event log viewer
+  PAGE_BATTERY_SETTINGS = 3,  // Battery settings (static data, one-time fetch)
+  PAGE_CHARGER_SETTINGS = 4,  // Charger settings (static data, one-time fetch)
+  PAGE_INVERTER_SETTINGS = 5, // Inverter settings (static data, one-time fetch)
+  PAGE_SYSTEM_SETTINGS = 6    // System settings (static data, one-time fetch)
+};
+```
+
+**Transmitter Response**:
+1. Add page to subscription list
+2. Start sending relevant data for that page:
+   - `PAGE_MONITOR` → send battery_status, charger_status, system_status every 200ms
+   - `PAGE_CELLS` → send cell_voltages chunks every 1000ms
+   - `PAGE_EVENTS` → send event_history every 5000ms
+   - Settings pages → send corresponding settings message ONCE
+
+---
+
+### 4.2 Unsubscribe from Page
+
+**Message Type**: `msg_unsubscribe_page` (0x0B)
+
+**Sent by**: Receiver
+
+**When**: User closes webpage, navigates away, or after 60 seconds of inactivity
+
+**Structure**:
+
+```cpp
+typedef struct __attribute__((packed)) {
+  uint8_t type;          // msg_unsubscribe_page (0x0B)
+  uint8_t page_id;       // Which page to unsubscribe from
+  uint16_t checksum;
+} unsubscribe_page_msg_t;  // Total: 4 bytes
+```
+
+**Transmitter Response**:
+1. Remove page from subscription list
+2. Stop sending data for that page
+3. If no pages subscribed, send NO dynamic data (only respond to commands)
+
+---
+
+### 4.3 Subscription Manager (Transmitter)
+
+**Implementation**:
+
+```cpp
+class SubscriptionManager {
+private:
+  struct Subscription {
+    uint8_t page_id;
+    uint8_t receiver_mac[6];
+    uint32_t last_activity_ms;  // For timeout detection
+  };
+  std::vector<Subscription> subscriptions;
+  
+public:
+  void subscribe(uint8_t page_id, const uint8_t* receiver_mac) {
+    // Add or update subscription
+    for (auto& sub : subscriptions) {
+      if (sub.page_id == page_id && 
+          memcmp(sub.receiver_mac, receiver_mac, 6) == 0) {
+        sub.last_activity_ms = millis();  // Refresh timeout
+        return;
+      }
+    }
+    // New subscription
+    Subscription new_sub;
+    new_sub.page_id = page_id;
+    memcpy(new_sub.receiver_mac, receiver_mac, 6);
+    new_sub.last_activity_ms = millis();
+    subscriptions.push_back(new_sub);
+    
+    LOG_INFO("Page %d subscribed", page_id);
+  }
+  
+  void unsubscribe(uint8_t page_id, const uint8_t* receiver_mac) {
+    subscriptions.erase(
+      std::remove_if(subscriptions.begin(), subscriptions.end(),
+        [&](const Subscription& sub) {
+          return sub.page_id == page_id && 
+                 memcmp(sub.receiver_mac, receiver_mac, 6) == 0;
+        }),
+      subscriptions.end()
+    );
+    
+    LOG_INFO("Page %d unsubscribed", page_id);
+  }
+  
+  bool is_subscribed(uint8_t page_id) {
+    return std::any_of(subscriptions.begin(), subscriptions.end(),
+      [page_id](const Subscription& sub) { return sub.page_id == page_id; });
+  }
+  
+  void check_timeouts() {
+    uint32_t now = millis();
+    const uint32_t TIMEOUT_MS = 60000;  // 60 seconds
+    
+    subscriptions.erase(
+      std::remove_if(subscriptions.begin(), subscriptions.end(),
+        [now, TIMEOUT_MS](const Subscription& sub) {
+          if (now - sub.last_activity_ms > TIMEOUT_MS) {
+            LOG_WARN("Page %d subscription timed out", sub.page_id);
+            return true;
+          }
+          return false;
+        }),
+      subscriptions.end()
+    );
+  }
+};
+```
+
+**Usage in ESP-NOW Data Sender Task** (Priority 1, Core 1):
+
+```cpp
+void espnow_data_sender_task(void* parameter) {
+  SubscriptionManager sub_mgr;
+  
+  while (true) {
+    // Only send if pages are subscribed
+    if (sub_mgr.is_subscribed(PAGE_MONITOR)) {
+      send_battery_status();   // 200ms
+      send_charger_status();   // 200ms
+      send_system_status();    // 200ms
+    }
+    
+    if (sub_mgr.is_subscribed(PAGE_CELLS)) {
+      send_cell_voltages_chunk(chunk_index);  // 1000ms
+    }
+    
+    if (sub_mgr.is_subscribed(PAGE_EVENTS)) {
+      send_event_history();  // 5000ms
+    }
+    
+    // Check for subscription timeouts
+    sub_mgr.check_timeouts();
+    
+    vTaskDelay(pdMS_TO_TICKS(200));
+  }
+}
+```
+
+**Key Principle**: **If no one is looking at a webpage, no dynamic data is sent** → Saves bandwidth and CPU cycles
+
+---
+
+## 5. Event Log Mapping
 
 **Source**: Events system (`Software/src/devboard/utils/events.h`)
 
@@ -339,7 +515,7 @@ typedef struct __attribute__((packed)) {
 
 ---
 
-## 5. ESP-NOW Bandwidth Analysis
+## 6. ESP-NOW Bandwidth Analysis
 
 ### Message Sizes Summary
 
@@ -361,7 +537,7 @@ typedef struct __attribute__((packed)) {
 
 ---
 
-## 6. Transmitter Implementation Notes
+## 7. Transmitter Implementation Notes
 
 ### 6.1 Data Sender Task (Low Priority)
 
@@ -401,7 +577,7 @@ void espnow_data_sender_task(void* parameter) {
 }
 ```
 
-### 6.2 Control Loop (Does NOT send ESP-NOW)
+### 7.2 Control Loop (Does NOT send ESP-NOW)
 
 ```cpp
 void battery_control_loop(void* parameter) {
@@ -426,7 +602,7 @@ void battery_control_loop(void* parameter) {
 
 ---
 
-## 7. Receiver Implementation Notes
+## 8. Receiver Implementation Notes
 
 ### 7.1 Message Handlers
 
@@ -467,7 +643,7 @@ struct SystemData {
 } g_system_data;
 ```
 
-### 7.3 SSE Notifications
+### 8.3 SSE Notifications
 
 When data updated, notify web clients:
 
@@ -490,7 +666,7 @@ void handle_battery_status(const espnow_queue_msg_t* msg) {
 
 ---
 
-## 8. Phase 1 Testing Checklist
+## 9. Phase 1 Testing Checklist
 
 - [ ] All message structures pack correctly (no padding issues)
 - [ ] Checksums calculate and validate correctly

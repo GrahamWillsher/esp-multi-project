@@ -85,7 +85,63 @@ These settings will NOT be migrated - transmitter uses Ethernet only:
 | SUBNET1-4 | Subnet mask | ✓ Migrate (Ethernet) |
 | HOSTNAME | Hostname | ✓ Migrate |
 
-### 1.7 MQTT Settings
+---
+
+### 1.7 Ethernet Configuration (Transmitter Only)
+
+**NVS Namespace**: `batt_emu_v2` (transmitter)
+
+**CRITICAL**: Transmitter is Ethernet-only (NO WiFi AP/STA mode)
+
+| Setting | NVS Key | Type | Default | Description |
+|---------|---------|------|---------|-------------|
+| Network Mode | `eth_use_static` | bool | false | false=DHCP, true=Static IP |
+| Static IP | `eth_static_ip` | uint8_t[4] | {192,168,1,100} | Static IP address (if enabled) |
+| Gateway | `eth_gateway` | uint8_t[4] | {192,168,1,1} | Gateway address (if static) |
+| Subnet Mask | `eth_subnet` | uint8_t[4] | {255,255,255,0} | Subnet mask (if static) |
+| DNS Server | `eth_dns` | uint8_t[4] | {8,8,8,8} | DNS server (if static) |
+
+**Settings Write Flow**:
+1. User edits Ethernet config in System Settings page on receiver
+2. Receiver sends `msg_system_settings_update` with Ethernet configuration
+3. **Transmitter receives message and writes to its own NVS** (namespace "batt_emu_v2")
+4. Transmitter may require reboot to apply new network settings
+5. Transmitter sends `msg_settings_update_ack` back to receiver
+6. Receiver displays success/error message to user
+
+**ESP-NOW Message**:
+```cpp
+typedef struct __attribute__((packed)) {
+  uint8_t type;                  // msg_system_settings_update
+  bool eth_use_static;           // DHCP (false) or Static (true)
+  uint8_t eth_static_ip[4];      // Static IP (if eth_use_static=true)
+  uint8_t eth_gateway[4];        // Gateway
+  uint8_t eth_subnet[4];         // Subnet mask
+  uint8_t eth_dns[4];            // DNS server
+  // ... other system settings ...
+  uint16_t checksum;
+} system_settings_update_msg_t;
+```
+
+**Validation**:
+- IP addresses: 0-255 for each octet
+- Gateway must be on same subnet as IP
+- Subnet mask must be valid CIDR notation
+- DNS can be any valid IP
+
+**Notes**:
+- Transmitter does NOT have WiFi AP/STA mode
+- Transmitter does NOT serve web pages (receiver handles all web UI)
+- Transmitter does NOT need mDNS (no services to advertise)
+- Ethernet configuration handled by connectivity_task (Priority 0, Core 1)
+
+---
+
+### 1.8 MQTT Settings (Transmitter Only)
+
+**NVS Namespace**: `batt_emu_v2` (transmitter)
+
+**CRITICAL**: MQTT runs on transmitter via Ethernet (Priority 0, Core 1)
 
 | Setting Key | Type | Description | Default | NVS |
 |------------|------|-------------|---------|-----|
@@ -98,7 +154,9 @@ These settings will NOT be migrated - transmitter uses Ethernet only:
 | HADISC | bool | Home Assistant discovery | false | Yes |
 | MQTTCELLV | bool | Transmit cell voltages | false | Yes |
 
-### 1.8 Logging Settings
+---
+
+### 1.9 Logging Settings
 
 | Setting Key | Type | Description | Default | NVS |
 |------------|------|-------------|---------|-----|
@@ -109,7 +167,7 @@ These settings will NOT be migrated - transmitter uses Ethernet only:
 | SDLOGENABLED | bool | SD logging | false | Yes |
 | PERFPROFILE | bool | Performance profiling | false | Yes |
 
-### 1.9 Hardware/Contactor Settings
+### 1.10 Hardware/Contactor Settings
 
 | Setting Key | Type | Description | Default | NVS |
 |------------|------|-------------|---------|-----|
@@ -123,7 +181,7 @@ These settings will NOT be migrated - transmitter uses Ethernet only:
 | PWMFREQ | uint32_t | PWM frequency | 20000 Hz | Yes |
 | PWMHOLD | uint32_t | PWM hold duty | 250 (25.0%) | Yes |
 
-### 1.10 Special Functions
+### 1.11 Special Functions
 
 | Setting Key | Type | Description | Default | NVS |
 |------------|------|-------------|---------|-----|
@@ -137,6 +195,14 @@ These settings will NOT be migrated - transmitter uses Ethernet only:
 ---
 
 ## 2. Settings Migration Plan
+
+**CRITICAL ARCHITECTURE PRINCIPLE**: 
+- **Transmitter settings** (battery, charger, inverter, MQTT, Ethernet, CAN) are stored in **transmitter's NVS**
+- **Receiver settings** (display, WiFi, web auth) are stored in **receiver's NVS**
+- Receiver sends settings updates via ESP-NOW → **Transmitter writes to its own NVS** → Transmitter sends ACK
+- Receiver NEVER writes transmitter settings directly
+
+---
 
 ### 2.1 Phase 1: Message Definition
 

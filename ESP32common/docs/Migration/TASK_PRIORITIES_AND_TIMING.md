@@ -15,7 +15,7 @@ From `Battery-Emulator-9.2.4/Software/Software.cpp`:
 | Task Name | Function | Core | Priority | Stack Size | Timing |
 |-----------|----------|------|----------|------------|--------|
 | main_loop_task | Core 10ms control loop | 0 | ? | ? | 10ms cycle |
-| connectivity_loop_task | WiFi, webserver, OTA, display | 1 | ? | ? | ~1ms delay |
+| connectivity_loop_task | Ethernet, NTP, OTA (transmitter only) | 1 | ? | ? | ~1s delay |
 | logging_loop_task | SD card logging | ? | ? | ? | On demand |
 | mqtt_loop_task | MQTT publishing | ? | ? | ? | Variable |
 
@@ -75,18 +75,24 @@ void loop() {
 
 ### 1.3 Connectivity Loop Task
 
-**Function**: WiFi, webserver, OTA, display updates
+**Function**: Ethernet, NTP, OTA (transmitter ONLY - no WiFi, no webserver, no display)
 
 **Responsibilities**:
-1. Monitor WiFi connection
-2. Handle OTA requests
-3. Serve web pages
-4. Update display (if present)
-5. Handle mDNS
+1. Monitor Ethernet connection (link up/down)
+2. Periodic NTP time synchronization (every 1 hour)
+3. Periodic internet connectivity check (ping gateway/DNS)
+4. Handle OTA requests (via Ethernet)
+5. ~~Handle mDNS~~ (NOT NEEDED - no webserver on transmitter)
 
-**Timing**: ~1ms delay between iterations
+**Timing**: ~1 second delay between iterations (not time-critical)
 
-**Priority Required**: LOW (can be delayed without affecting control)
+**Priority Required**: LOWEST (background only, can be delayed without affecting control)
+
+**Notes**:
+- Transmitter does NOT serve web pages (receiver handles all web UI)
+- Transmitter does NOT update displays (receiver has TFT display)
+- Transmitter does NOT have WiFi (Ethernet only)
+- Transmitter does NOT need mDNS (no services to advertise)
 
 ---
 
@@ -132,13 +138,14 @@ void loop() {
 | espnow_rx_handler | ESP-NOW message processing | 1 | 2 | 4096 | On receive |
 | espnow_data_sender | **LOW PRIORITY** Status updates | 1 | **1** | 4096 | **200ms** |
 | espnow_discovery | Receiver discovery/announcements | 1 | 1 | 4096 | 5000ms |
+| connectivity_task | Ethernet checks, NTP, OTA | 1 | 0 | 8192 | 1000ms |
 | mqtt_task | MQTT telemetry | 1 | 0 | 8192 | Variable |
-| ethernet_task | Ethernet/NTP | 1 | 0 | 8192 | Variable |
 
 **CRITICAL PRINCIPLE**: 
 - **Battery control loop (Priority 4) must NEVER be blocked**
 - **ESP-NOW data sender (Priority 1) runs ONLY when CPU available**
-- **Display/webserver updates are NOT time-critical** (200ms-1000ms acceptable)
+- **Transmitter has NO WiFi, NO webserver, NO display** (all handled by receiver)
+- **Ethernet/NTP/MQTT are NOT time-critical** (can be delayed indefinitely without affecting control)
 
 ---
 
@@ -191,9 +198,11 @@ void loop() {
 ### 3.2 ESP-NOW Bandwidth Budget
 
 **ESP-NOW Latency** (per message):
-- Best case: 1-2 ms (same WiFi channel, no interference)
+- Best case: 1-2 ms (no interference)
 - Typical case: 5-10 ms (good conditions)
-- Worst case: 50-100 ms (interference, retries)
+- Worst case: 50-100 ms (interference, retries, channel hopping)
+
+**Note**: ESP-NOW operates independently of WiFi connection (uses WiFi radio but no AP/STA mode)
 
 **Data Sender Task Timing** (200ms cycle):
 
@@ -317,7 +326,66 @@ void espnow_data_sender_task(void* parameter) {
 
 ---
 
-### 4.3 Task Creation
+### 4.3 Connectivity Task (Priority 0 - LOWEST)
+
+```cpp
+void connectivity_task(void* parameter) {
+  // Core 1, Priority 0 (LOWEST - background only)
+  const TickType_t ntp_interval = pdMS_TO_TICKS(3600000);  // 1 hour
+  const TickType_t ping_interval = pdMS_TO_TICKS(60000);   // 1 minute
+  TickType_t last_ntp = xTaskGetTickCount();
+  TickType_t last_ping = xTaskGetTickCount();
+  
+  while (true) {
+    TickType_t now = xTaskGetTickCount();
+    
+    // 1. Check Ethernet link status (quick)
+    if (!eth_link_is_up()) {
+      LOG_WARN("Ethernet link down, attempting reconnect");
+      eth_reconnect();
+    }
+    
+    // 2. Periodic NTP sync (every hour)
+    if (now - last_ntp >= ntp_interval) {
+      LOG_INFO("Syncing time via NTP");
+      ntp_sync();  // Non-blocking, sets time from NTP server
+      last_ntp = now;
+    }
+    
+    // 3. Periodic internet connectivity check (every minute)
+    if (now - last_ping >= ping_interval) {
+      // Ping gateway to verify connectivity
+      if (!ping_gateway()) {
+        LOG_WARN("Internet connectivity lost");
+        // Optional: Trigger reconnect or alert
+      }
+      last_ping = now;
+    }
+    
+    // 4. Handle OTA requests (via Ethernet)
+    ota_handle();  // Non-blocking, checks for pending OTA
+    
+    // NOT time-critical - can be delayed indefinitely
+    vTaskDelay(pdMS_TO_TICKS(1000));  // 1 second delay
+  }
+}
+```
+
+**KEY POINTS**:
+- Runs on Core 1 (opposite core from control loop)
+- Priority 0 (LOWEST - background only, yields to ALL other tasks)
+- 1 second cycle (NOT time-critical, can be delayed indefinitely)
+- NO WiFi monitoring (transmitter is Ethernet-only)
+- NO webserver (receiver handles all web UI)
+- NO display updates (receiver has TFT display)
+- NO mDNS (not needed without webserver)
+- Handles NTP sync (1 hour interval)
+- Handles internet connectivity checks (1 minute interval)
+- Handles OTA updates via Ethernet
+
+---
+
+### 4.4 Task Creation
 
 ```cpp
 void setup() {
@@ -463,11 +531,11 @@ void test_espnow_no_interference() {
 ✅ **Control loop runs at 10ms** - Measured with microsecond precision  
 ✅ **Control loop NEVER exceeds 10ms** - Even under heavy load  
 ✅ **ESP-NOW is lower priority** - Runs on separate core, lower priority  
-✅ **Display updates NOT time-critical** - 200ms-1000ms acceptable  
-✅ **Webserver NOT time-critical** - Can tolerate delays  
-✅ **MQTT NOT time-critical** - Background only  
+✅ **Transmitter has NO WiFi, NO webserver, NO display** - All handled by receiver  
+✅ **Ethernet/NTP/MQTT NOT time-critical** - Background only, can be delayed indefinitely  
+✅ **Connectivity checks are periodic** - NTP every 1 hour, ping every 1 minute  
 
-### 6.2 Task Priority Summary
+### 6.2 Task Priority Summary (Transmitter)
 
 | Priority | Core | Tasks |
 |----------|------|-------|
@@ -475,15 +543,17 @@ void test_espnow_no_interference() {
 | 3 | 0 | CAN TX/RX |
 | 2 | 1 | ESP-NOW RX handler |
 | 1 | 1 | ESP-NOW data sender, Discovery |
-| 0 (LOWEST) | 1 | MQTT, Ethernet, NTP |
+| 0 (LOWEST) | 1 | Connectivity (Ethernet/NTP/OTA), MQTT |
 
 ### 6.3 Migration Success Criteria
 
 - [ ] Control loop stable at 10ms (±100 μs jitter acceptable)
 - [ ] Zero timing violations over 24 hours
 - [ ] ESP-NOW traffic does NOT affect control loop timing
-- [ ] Display updates happen (200ms-1000ms delay acceptable)
+- [ ] Ethernet connectivity checks work (NTP sync, ping gateway)
 - [ ] Settings updates work (1-5 seconds delay acceptable)
+- [ ] MQTT telemetry publishes successfully (delays acceptable)
+- [ ] Receiver display updates via ESP-NOW (200ms-1000ms delay acceptable)
 - [ ] MQTT publishes work (delays acceptable)
 - [ ] No task starvation (all tasks get CPU time)
 
