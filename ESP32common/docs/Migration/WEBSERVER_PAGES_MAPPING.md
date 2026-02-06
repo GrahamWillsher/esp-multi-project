@@ -8,7 +8,7 @@
 - [DATA_LAYER_MAPPING.md](DATA_LAYER_MAPPING.md) - ESP-NOW message structures for page data
 - [SETTINGS_MAPPING.md](SETTINGS_MAPPING.md) - Settings storage and sync
 - [TASK_PRIORITIES_AND_TIMING.md](TASK_PRIORITIES_AND_TIMING.md) - Task priorities and timing budgets
-- [Main Migration Plan](../../../BATTERY_EMULATOR_MIGRATION_PLAN.md) - Overall migration strategy
+- [BATTERY_EMULATOR_MIGRATION_PLAN.md](BATTERY_EMULATOR_MIGRATION_PLAN.md) - Overall migration strategy
 
 ---
 

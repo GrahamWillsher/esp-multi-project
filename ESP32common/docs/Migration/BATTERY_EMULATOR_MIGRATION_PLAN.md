@@ -1,5 +1,13 @@
 # Battery Emulator 9.2.4 to ESP32Projects Migration Plan
 
+**Related Documentation**:
+- [WEBSERVER_PAGES_MAPPING.md](WEBSERVER_PAGES_MAPPING.md) - Web page migration details
+- [DATA_LAYER_MAPPING.md](DATA_LAYER_MAPPING.md) - ESP-NOW message structures
+- [SETTINGS_MAPPING.md](SETTINGS_MAPPING.md) - Settings storage and sync
+- [TASK_PRIORITIES_AND_TIMING.md](TASK_PRIORITIES_AND_TIMING.md) - Task structure and priorities
+
+---
+
 ## Executive Summary
 Migrate the single-device Battery-Emulator-9.2.4 project to a two-device architecture:
 - **Transmitter (ESP32-POE-ISO)**: Real-time battery control system with Ethernet/MQTT

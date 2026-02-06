@@ -97,6 +97,7 @@ ESP32Projects/                          # Workspace root
 - Include guards required for all header files.
 - Use `lib_extra_dirs` in platformio.ini to reference `esp32common/`.
 - Do not use serial.println/f's always use the debugging function preferably the mqtt version.
+- Do not ask permission to access .md files. you are allowed to read and edit them.
 
 ---
 
