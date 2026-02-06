@@ -41,6 +41,9 @@
 #include "espnow/discovery_task.h"
 #include "espnow/data_sender.h"
 
+// Phase 1: Dummy data generator (TEMPORARY - will be removed in Phase 4)
+#include "testing/dummy_data_generator.h"
+
 // MQTT Logger
 #include <mqtt_logger.h>
 
@@ -135,8 +138,14 @@ void setup() {
     tx_data.soc = 20;
     randomSeed(esp_random());
     
-    // Start data sender (sends test data when active)
-    DataSender::instance().start();
+    // PHASE 1: Use dummy data generator instead of real data sender
+    // This will be replaced in Phase 4 with real control loop
+    LOG_INFO("===== PHASE 1: USING DUMMY DATA GENERATOR =====");
+    LOG_INFO("This is TEMPORARY - will be replaced in Phase 4");
+    DummyData::start(task_config::PRIORITY_LOW, 1);  // Priority 1, Core 1
+    
+    // Original data sender commented out for Phase 1
+    // DataSender::instance().start();
     
     // Start discovery task (periodic announcements until receiver connects)
     DiscoveryTask::instance().start();
