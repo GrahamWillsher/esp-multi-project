@@ -1,4 +1,5 @@
 #include "espnow_tasks.h"
+#include "battery_handlers.h"  // Phase 1: Battery Emulator data handlers
 #include "../common.h"
 #include "../display/display_core.h"
 #include "../display/display_led.h"
@@ -173,6 +174,42 @@ void setup_message_routes() {
             handle_debug_ack_message(msg);
         },
         0xFF, nullptr);
+    
+    // =========================================================================
+    // PHASE 1: Register Battery Emulator data message handlers
+    // =========================================================================
+    
+    router.register_route(msg_battery_status,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            handle_battery_status(msg);
+        },
+        0xFF, nullptr);
+    
+    router.register_route(msg_battery_info,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            handle_battery_info(msg);
+        },
+        0xFF, nullptr);
+    
+    router.register_route(msg_charger_status,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            handle_charger_status(msg);
+        },
+        0xFF, nullptr);
+    
+    router.register_route(msg_inverter_status,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            handle_inverter_status(msg);
+        },
+        0xFF, nullptr);
+    
+    router.register_route(msg_system_status,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            handle_system_status(msg);
+        },
+        0xFF, nullptr);
+    
+    // =========================================================================
     
     // Register packet handlers with subtypes
     router.register_route(msg_packet,
