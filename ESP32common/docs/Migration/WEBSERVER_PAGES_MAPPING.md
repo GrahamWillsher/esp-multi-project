@@ -4,6 +4,12 @@
 **Phase**: 0 (Pre-Migration Setup)  
 **Purpose**: Map Battery Emulator web pages to ESP32Projects receiver destination
 
+**Related Documentation**:
+- [DATA_LAYER_MAPPING.md](DATA_LAYER_MAPPING.md) - ESP-NOW message structures for page data
+- [SETTINGS_MAPPING.md](SETTINGS_MAPPING.md) - Settings storage and sync
+- [TASK_PRIORITIES_AND_TIMING.md](TASK_PRIORITIES_AND_TIMING.md) - Task priorities and timing budgets
+- [Main Migration Plan](../../../BATTERY_EMULATOR_MIGRATION_PLAN.md) - Overall migration strategy
+
 ---
 
 ## Battery Emulator Web Pages (Source)
@@ -856,5 +862,35 @@ The main battery control loop runs at **Priority 4 (HIGHEST)** on **Core 0** wit
 
 ---
 
-**Status**: ✓ COMPLETE  
-**Next**: Create DATA_LAYER_MAPPING.md
+## Implementation Status
+
+### Phase 1: Core Infrastructure
+- [ ] Subscribe/unsubscribe API endpoints
+- [ ] Page subscription manager on transmitter
+- [ ] Dynamic data sender task (Priority 1)
+- [ ] SSE infrastructure on receiver
+
+### Phase 2: Monitor Page
+- [ ] Monitor page HTML/CSS/JavaScript
+- [ ] Battery status display
+- [ ] Charger status display
+- [ ] System status display
+- [ ] Auto-subscribe on page load
+
+### Phase 3: Settings Pages
+- [ ] Battery settings page
+- [ ] Inverter settings page
+- [ ] Charger settings page
+- [ ] System settings page (Ethernet)
+- [ ] MQTT settings page
+- [ ] Settings update via ESP-NOW
+
+### Phase 4: Advanced Pages
+- [ ] Cell monitor page
+- [ ] Events log page
+- [ ] Debug/logging page
+
+---
+
+**Status**: ✓ DOCUMENTATION COMPLETE
+**Next**: Implement Phase 1 infrastructure

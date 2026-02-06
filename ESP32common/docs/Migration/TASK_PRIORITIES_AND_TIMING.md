@@ -4,6 +4,12 @@
 **Phase**: 0 (Pre-Migration Setup)  
 **Purpose**: Document Battery Emulator task structure and define ESP32Projects task priorities
 
+**Related Documentation**:
+- [WEBSERVER_PAGES_MAPPING.md](WEBSERVER_PAGES_MAPPING.md) - Web UI and subscription timing requirements
+- [DATA_LAYER_MAPPING.md](DATA_LAYER_MAPPING.md) - Data sending task timing
+- [SETTINGS_MAPPING.md](SETTINGS_MAPPING.md) - Settings sync task requirements
+- [Main Migration Plan](../../../BATTERY_EMULATOR_MIGRATION_PLAN.md) - Overall migration strategy
+
 ---
 
 ## 1. Battery Emulator Task Structure (Source)

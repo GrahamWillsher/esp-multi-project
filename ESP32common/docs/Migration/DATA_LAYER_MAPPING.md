@@ -4,6 +4,12 @@
 **Phase**: 0 (Pre-Migration Setup)  
 **Purpose**: Map Battery Emulator datalayer structures to ESP-NOW message protocol
 
+**Related Documentation**:
+- [WEBSERVER_PAGES_MAPPING.md](WEBSERVER_PAGES_MAPPING.md) - Web page requirements and data flow
+- [SETTINGS_MAPPING.md](SETTINGS_MAPPING.md) - Settings structures
+- [TASK_PRIORITIES_AND_TIMING.md](TASK_PRIORITIES_AND_TIMING.md) - Timing constraints for data sending
+- [Main Migration Plan](../../../BATTERY_EMULATOR_MIGRATION_PLAN.md) - Overall migration strategy
+
 ---
 
 ## Source: Battery Emulator Datalayer
@@ -681,5 +687,32 @@ void handle_battery_status(const espnow_queue_msg_t* msg) {
 
 ---
 
-**Status**: ✓ COMPLETE  
-**Next**: Create SETTINGS_MAPPING.md
+## Implementation Status
+
+### Message Structures
+- [ ] Define all message types in espnow_common.h
+- [ ] Battery info message (msg_battery_info)
+- [ ] Battery status message (msg_battery_status)
+- [ ] Charger status message (msg_charger_status)
+- [ ] System status message (msg_system_status)
+- [ ] Subscribe/unsubscribe messages
+- [ ] Cell voltages chunked messages
+- [ ] Event log messages
+
+### Transmitter Implementation
+- [ ] SubscriptionManager class
+- [ ] Data sender task (Priority 1, Core 1)
+- [ ] Message builders for each data type
+- [ ] Checksum calculation
+- [ ] Subscribe/unsubscribe handlers
+
+### Receiver Implementation
+- [ ] Message handlers for all types
+- [ ] Checksum validation
+- [ ] Data storage/forwarding to SSE
+- [ ] Subscribe/unsubscribe senders
+
+---
+
+**Status**: ✓ DOCUMENTATION COMPLETE
+**Next**: Implement message structures
