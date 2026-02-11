@@ -104,6 +104,84 @@ const char* COMMON_STYLES = R"rawliteral(
         margin: 20px 0;
         font-weight: bold;
     }
+    
+    /* ========== Material Design Field Styles ========== */
+    /* Read-only fields (DHCP mode, informational data) */
+    .readonly-field,
+    input[type="text"]:disabled,
+    input[type="password"]:disabled,
+    input.octet:disabled {
+        background-color: #FFFFFF !important;
+        color: #757575 !important;           /* Material Grey 600 */
+        border: 1px solid #E0E0E0 !important; /* Material Grey 300 */
+        cursor: not-allowed !important;
+    }
+    
+    /* Editable fields (Static IP mode, user input) */
+    .editable-field,
+    input[type="text"]:not(:disabled),
+    input[type="password"]:not(:disabled),
+    input.octet:not(:disabled) {
+        background-color: #FFFFFF !important;
+        color: #212121 !important;           /* Material Grey 900 */
+        border: 1px solid #BDBDBD !important; /* Material Grey 400 */
+        cursor: text !important;
+    }
+    
+    /* Focus state for editable fields */
+    .editable-field:focus,
+    input[type="text"]:not(:disabled):focus,
+    input[type="password"]:not(:disabled):focus,
+    input.octet:not(:disabled):focus {
+        border: 2px solid #4CAF50 !important; /* Material Green 500 - matches save button */
+        outline: none !important;
+    }
+    
+    /* Mode badges */
+    .network-mode-badge {
+        display: inline-block;
+        padding: 4px 12px;
+        border-radius: 12px;
+        font-size: 12px;
+        font-weight: 600;
+        margin-left: 8px;
+        vertical-align: middle;
+    }
+    
+    .badge-dhcp {
+        background-color: #E3F2FD; /* Light Blue 50 */
+        color: #1976D2;            /* Blue 700 */
+    }
+    
+    .badge-static {
+        background-color: #E8F5E9; /* Light Green 50 */
+        color: #388E3E;            /* Green 700 */
+    }
+    
+    /* MQTT Status Dot Indicator */
+    .status-dot {
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        margin-left: 8px;
+        vertical-align: middle;
+    }
+    .status-dot.connected {
+        background-color: #28a745;  /* Green */
+        box-shadow: 0 0 8px #28a745;
+    }
+    .status-dot.connecting {
+        background-color: #FF9800;  /* Orange */
+        animation: pulse 1.5s ease-in-out infinite;
+    }
+    .status-dot.disconnected {
+        background-color: #dc3545;  /* Red */
+    }
+    @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+    }
 )rawliteral";
 
 #endif

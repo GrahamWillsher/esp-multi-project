@@ -100,7 +100,7 @@ esp_err_t reboot_handler(httpd_req_t *req) {
 
 esp_err_t register_reboot_page(httpd_handle_t server) {
     httpd_uri_t uri = {
-        .uri = "/reboot",
+        .uri = "/transmitter/reboot",
         .method = HTTP_GET,
         .handler = reboot_handler,
         .user_ctx = NULL

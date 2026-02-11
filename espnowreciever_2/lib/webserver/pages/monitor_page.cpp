@@ -89,7 +89,7 @@ static esp_err_t monitor_handler(httpd_req_t *req) {
  */
 esp_err_t register_monitor_page(httpd_handle_t server) {
     httpd_uri_t uri = {
-        .uri       = "/monitor",
+        .uri       = "/transmitter/monitor",
         .method    = HTTP_GET,
         .handler   = monitor_handler,
         .user_ctx  = NULL

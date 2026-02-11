@@ -10,7 +10,13 @@ bool send_debug_level_control(uint8_t level) {
         return false;
     }
     
-    // Check if transmitter is registered
+    // Check if transmitter is connected (more reliable than checking MAC)
+    if (!ESPNow::transmitter_connected) {
+        Serial.println("[ESP-NOW] Transmitter not connected - cannot send debug control");
+        return false;
+    }
+    
+    // Double-check MAC is not zero (defensive check)
     bool mac_is_zero = true;
     for (int i = 0; i < 6; i++) {
         if (ESPNow::transmitter_mac[i] != 0) {

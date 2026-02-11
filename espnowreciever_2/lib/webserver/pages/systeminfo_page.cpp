@@ -9,10 +9,7 @@
 esp_err_t systeminfo_handler(httpd_req_t *req) {
     String content = R"rawliteral(
     <h1>ESP-NOW Receiver</h1>
-    <h2>Receiver System Information</h2>
-    <div class='note'>
-        📱 This page displays information about the receiver device (LilyGo T-Display-S3)
-    </div>
+    <h2>Receiver System Information (LilyGo T-Display-S3)</h2>
     )rawliteral";
     
     // Add navigation buttons from central registry
@@ -41,7 +38,7 @@ esp_err_t systeminfo_handler(httpd_req_t *req) {
     </div>
     
     <div class='info-box'>
-        <h3>Network Configuration</h3>
+        <h3>WiFi Settings</h3>
         <div class='info-row'>
             <span class='info-label'>Hostname:</span>
             <span class='info-value'>ESP32-Receiver</span>
@@ -59,28 +56,75 @@ esp_err_t systeminfo_handler(httpd_req_t *req) {
             <span class='info-value' id='channel'>Loading...</span>
         </div>
         <div class='info-row'>
+            <span class='info-label'>MAC Address:</span>
+            <span class='info-value' id='mac'>Loading...</span>
+        </div>
+    </div>
+    
+    <div class='info-box'>
+        <h3>
+            IP Configuration
+            <span id='networkModeBadge' class='network-mode-badge badge-static'>STATIC</span>
+        </h3>
+        <div class='info-row'>
             <span class='info-label'>IP Address:</span>
-            <span class='info-value'>192.168.1.230</span>
+            <div class='ip-row' style='display: inline-block;'>
+                <input class='octet' type='text' maxlength='3' value='192' disabled />
+                <span class='dot'>.</span>
+                <input class='octet' type='text' maxlength='3' value='168' disabled />
+                <span class='dot'>.</span>
+                <input class='octet' type='text' maxlength='3' value='1' disabled />
+                <span class='dot'>.</span>
+                <input class='octet' type='text' maxlength='3' value='230' disabled />
+            </div>
         </div>
         <div class='info-row'>
             <span class='info-label'>Gateway:</span>
-            <span class='info-value'>192.168.1.1</span>
+            <div class='ip-row' style='display: inline-block;'>
+                <input class='octet' type='text' maxlength='3' value='192' disabled />
+                <span class='dot'>.</span>
+                <input class='octet' type='text' maxlength='3' value='168' disabled />
+                <span class='dot'>.</span>
+                <input class='octet' type='text' maxlength='3' value='1' disabled />
+                <span class='dot'>.</span>
+                <input class='octet' type='text' maxlength='3' value='1' disabled />
+            </div>
         </div>
         <div class='info-row'>
             <span class='info-label'>Subnet Mask:</span>
-            <span class='info-value'>255.255.255.0</span>
+            <div class='ip-row' style='display: inline-block;'>
+                <input class='octet' type='text' maxlength='3' value='255' disabled />
+                <span class='dot'>.</span>
+                <input class='octet' type='text' maxlength='3' value='255' disabled />
+                <span class='dot'>.</span>
+                <input class='octet' type='text' maxlength='3' value='255' disabled />
+                <span class='dot'>.</span>
+                <input class='octet' type='text' maxlength='3' value='0' disabled />
+            </div>
         </div>
         <div class='info-row'>
             <span class='info-label'>Primary DNS:</span>
-            <span class='info-value'>8.8.8.8</span>
+            <div class='ip-row' style='display: inline-block;'>
+                <input class='octet' type='text' maxlength='3' value='8' disabled />
+                <span class='dot'>.</span>
+                <input class='octet' type='text' maxlength='3' value='8' disabled />
+                <span class='dot'>.</span>
+                <input class='octet' type='text' maxlength='3' value='8' disabled />
+                <span class='dot'>.</span>
+                <input class='octet' type='text' maxlength='3' value='8' disabled />
+            </div>
         </div>
         <div class='info-row'>
             <span class='info-label'>Secondary DNS:</span>
-            <span class='info-value'>8.8.4.4</span>
-        </div>
-        <div class='info-row'>
-            <span class='info-label'>MAC Address:</span>
-            <span class='info-value' id='mac'>Loading...</span>
+            <div class='ip-row' style='display: inline-block;'>
+                <input class='octet' type='text' maxlength='3' value='8' disabled />
+                <span class='dot'>.</span>
+                <input class='octet' type='text' maxlength='3' value='8' disabled />
+                <span class='dot'>.</span>
+                <input class='octet' type='text' maxlength='3' value='4' disabled />
+                <span class='dot'>.</span>
+                <input class='octet' type='text' maxlength='3' value='4' disabled />
+            </div>
         </div>
     </div>
 )rawliteral";
@@ -101,7 +145,7 @@ esp_err_t systeminfo_handler(httpd_req_t *req) {
             });
     )rawliteral";
 
-    String html = generatePage("ESP-NOW Receiver - System Info", content, "", script);
+    String html = generatePage("ESP-NOW System Info", content, "", script);
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, html.c_str(), html.length());
     return ESP_OK;
@@ -112,7 +156,7 @@ esp_err_t systeminfo_handler(httpd_req_t *req) {
  */
 esp_err_t register_systeminfo_page(httpd_handle_t server) {
     httpd_uri_t uri = {
-        .uri       = "/systeminfo",
+        .uri       = "/receiver/config",
         .method    = HTTP_GET,
         .handler   = systeminfo_handler,
         .user_ctx  = NULL

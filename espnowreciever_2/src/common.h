@@ -22,6 +22,12 @@ enum LEDColor {
     LED_ORANGE = 2
 };
 
+// Connection state tracking for timeout detection
+struct ConnectionState {
+    bool is_connected;
+    uint32_t last_rx_time_ms;
+};
+
 // Actual TFT RGB565 color values for LED display
 namespace LEDColors {
     constexpr uint16_t RED    = TFT_RED;     // 0xF800

@@ -150,7 +150,7 @@ esp_err_t monitor2_handler(httpd_req_t *req) {
 
 esp_err_t register_monitor2_page(httpd_handle_t server) {
     httpd_uri_t uri = {
-        .uri = "/monitor2",
+        .uri = "/transmitter/monitor2",
         .method = HTTP_GET,
         .handler = monitor2_handler,
         .user_ctx = NULL

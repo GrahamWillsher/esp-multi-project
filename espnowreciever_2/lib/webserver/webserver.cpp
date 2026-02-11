@@ -54,7 +54,7 @@ void init_webserver() {
     }
     
     // Count expected handlers (update this when adding/removing handlers)
-    const int EXPECTED_HANDLER_COUNT = 15;  // Current: 10 pages/APIs + 1 reboot + 1 OTA page + 1 OTA API + 1 firmware.bin + 1 wildcard 404
+    const int EXPECTED_HANDLER_COUNT = 34;  // 10 pages + 24 API handlers (23 specific + 1 catch-all 404)
     
     // Initialize SSE notification system
     SSENotifier::init();
@@ -84,7 +84,7 @@ void init_webserver() {
     config.task_priority = tskIDLE_PRIORITY + 2;
     config.stack_size = 6144;
     config.max_open_sockets = 4;
-    config.max_uri_handlers = 15;  // Increased from 10 to accommodate all handlers (currently 12)
+    config.max_uri_handlers = 50;  // Phase 3: Increased to 50 for granular settings pages + future expansion
     config.uri_match_fn = httpd_uri_match_wildcard;
     config.server_port = 80;
     config.lru_purge_enable = true;
@@ -110,12 +110,21 @@ void init_webserver() {
     // Register URI handlers (with counter for verification)
     int registered_count = 0;
     
-    // Register pages (modular)
+    // V2: Register new landing and hub pages
+    if (register_dashboard_page(server) == ESP_OK) registered_count++;
+    if (register_transmitter_hub_page(server) == ESP_OK) registered_count++;
+    
+    // Register transmitter pages (now with /transmitter prefix)
     if (register_settings_page(server) == ESP_OK) registered_count++;
+    if (register_battery_settings_page(server) == ESP_OK) registered_count++;
     if (register_monitor_page(server) == ESP_OK) registered_count++;
     if (register_monitor2_page(server) == ESP_OK) registered_count++;
-    if (register_systeminfo_page(server) == ESP_OK) registered_count++;
     if (register_reboot_page(server) == ESP_OK) registered_count++;
+    
+    // Register receiver pages
+    if (register_systeminfo_page(server) == ESP_OK) registered_count++;
+    
+    // Register system tool pages
     if (register_ota_page(server) == ESP_OK) registered_count++;
     if (register_debug_page(server) == ESP_OK) registered_count++;
     

@@ -92,6 +92,12 @@ void setup() {
     }
     LOG_DEBUG("ESP-NOW queue created (size=%d)", ESPNow::QUEUE_SIZE);
     
+    // CRITICAL: Setup message routes BEFORE starting worker task
+    // This prevents race condition where PROBE messages arrive before handlers are registered
+    LOG_DEBUG("Setting up ESP-NOW message routes...");
+    setup_message_routes();  // From espnow_tasks.cpp
+    LOG_DEBUG("ESP-NOW message routes initialized");
+    
     // Create FreeRTOS tasks
     LOG_DEBUG("Creating FreeRTOS tasks...");
     tft.fillScreen(Display::tft_background);

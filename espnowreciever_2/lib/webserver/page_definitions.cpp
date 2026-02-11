@@ -3,13 +3,15 @@
 
 // Central page registry - all pages defined in one place
 const PageInfo PAGE_DEFINITIONS[] = {
-    { "/",          "Settings",                    subtype_none,          false },  // Landing page
-    { "/monitor",   "Battery Monitor (Polling)",   subtype_none,          false },  // Polling mode (uses API)
-    { "/monitor2",  "Battery Monitor (SSE)",       subtype_power_profile, true  },  // Real-time SSE
-    { "/systeminfo","System Info",                 subtype_systeminfo,    false },  // System info page
-    { "/debuglog",  "Debug Logging",               subtype_none,          false },  // Debug log with transmitter control
-    { "/reboot",    "Reboot Transmitter",          subtype_none,          false },  // Reboot command action
-    { "/ota",       "OTA Update",                  subtype_none,          false },  // OTA firmware update
+    // Landing page
+    { "/",                          "Dashboard",                   subtype_none,          false },  // V2: New device-centric landing page
+    
+    // Transmitter section
+    { "/transmitter",               "Transmitter Hub",             subtype_none,          false },  // Hub page with navigation
+    { "/transmitter/config",        "Configuration",               subtype_none,          false },  // Moved from /
+    
+    // Receiver section
+    { "/receiver/config",           "Configuration",               subtype_systeminfo,    false },  // Renamed from /systeminfo
 };
 
 const int PAGE_COUNT = sizeof(PAGE_DEFINITIONS) / sizeof(PageInfo);

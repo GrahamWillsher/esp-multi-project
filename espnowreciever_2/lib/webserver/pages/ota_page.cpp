@@ -19,8 +19,11 @@ static esp_err_t ota_handler(httpd_req_t *req) {
     String compatibility_status = "⚠️ Waiting for version info";
     String compatibility_color = "#FFD700";
     
-    if (TransmitterManager::hasVersionInfo()) {
-        uint32_t tx_version = TransmitterManager::getFirmwareVersion();
+    // V2: Only use metadata (legacy hasVersionInfo() removed)
+    if (TransmitterManager::hasMetadata()) {
+        uint8_t major, minor, patch;
+        TransmitterManager::getMetadataVersion(major, minor, patch);
+        uint32_t tx_version = major * 10000 + minor * 100 + patch;
         transmitter_version = formatVersion(tx_version);
         
         if (isVersionCompatible(tx_version)) {
@@ -128,12 +131,6 @@ static esp_err_t ota_handler(httpd_req_t *req) {
             </div>
             <div id='progressTextTransmitter' style='margin-top: 10px; color: #FFD700;'>0%</div>
         </div>
-    </div>
-    
-    <div class='note'>
-        ⚠️ Important: Ensure firmware files are compatible with the target device.<br>
-        📝 Receiver: LilyGo T-Display-S3 (ESP32-S3)<br>
-        📝 Transmitter: Olimex ESP32-POE-ISO (ESP32 WROVER)
     </div>
 )rawliteral";
 

@@ -93,7 +93,7 @@ static esp_err_t debug_page_handler(httpd_req_t *req) {
 // Register debug page
 esp_err_t register_debug_page(httpd_handle_t server) {
     httpd_uri_t debug_uri = {
-        .uri = "/debuglog",
+        .uri = "/debug",
         .method = HTTP_GET,
         .handler = debug_page_handler,
         .user_ctx = NULL

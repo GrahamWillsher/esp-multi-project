@@ -5,6 +5,8 @@
  */
 
 #include "battery_handlers.h"
+#include "battery_settings_cache.h"
+#include "../../lib/webserver/utils/transmitter_manager.h"
 #include <Arduino.h>
 
 // Battery data globals (will be used by web UI)
@@ -103,30 +105,52 @@ void handle_battery_status(const espnow_queue_msg_t* msg) {
 }
 
 void handle_battery_info(const espnow_queue_msg_t* msg) {
-    const battery_info_msg_t* data = (battery_info_msg_t*)msg->data;
+    // V2: Only support battery_settings_full_msg_t (28 bytes) with all configurable fields
+    // Legacy battery_info_msg_t (26 bytes) support removed
     
-    // Validate checksum
-    if (!validate_checksum(data, sizeof(*data))) {
-        LOG_ERROR("Battery info: Invalid checksum - message rejected");
+    if (msg->len != sizeof(battery_settings_full_msg_t)) {
+        LOG_ERROR("Battery info: Invalid message size %d, expected %d (v2 full settings only)",
+                  msg->len, sizeof(battery_settings_full_msg_t));
         return;
     }
     
-    // Update global state (static data)
-    BatteryData::total_capacity_Wh = data->total_capacity_Wh;
-    BatteryData::reported_capacity_Wh = data->reported_capacity_Wh;
-    BatteryData::max_design_voltage_V = data->max_design_voltage_dV / 10;
-    BatteryData::min_design_voltage_V = data->min_design_voltage_dV / 10;
-    BatteryData::max_cell_voltage_mV = data->max_cell_voltage_mV;
-    BatteryData::min_cell_voltage_mV = data->min_cell_voltage_mV;
-    BatteryData::number_of_cells = data->number_of_cells;
+    const battery_settings_full_msg_t* data = (battery_settings_full_msg_t*)msg->data;
+    
+    // Validate checksum
+    if (!validate_checksum(data, sizeof(*data))) {
+        LOG_ERROR("Battery settings: Invalid checksum - message rejected");
+        return;
+    }
+    
+    // Store ALL settings in TransmitterManager cache for web API
+    BatterySettings settings;
+    settings.capacity_wh = data->capacity_wh;
+    settings.max_voltage_mv = data->max_voltage_mv;
+    settings.min_voltage_mv = data->min_voltage_mv;
+    settings.max_charge_current_a = data->max_charge_current_a;
+    settings.max_discharge_current_a = data->max_discharge_current_a;
+    settings.soc_high_limit = data->soc_high_limit;
+    settings.soc_low_limit = data->soc_low_limit;
+    settings.cell_count = data->cell_count;
+    settings.chemistry = data->chemistry;
+    settings.version = BatterySettingsCache::instance().get_version();
+    
+    TransmitterManager::storeBatterySettings(settings);
+    
+    // Also update global state
+    BatteryData::total_capacity_Wh = data->capacity_wh;
+    BatteryData::max_design_voltage_V = data->max_voltage_mv / 1000;
+    BatteryData::min_design_voltage_V = data->min_voltage_mv / 1000;
+    BatteryData::number_of_cells = data->cell_count;
     BatteryData::chemistry = data->chemistry;
     BatteryData::info_received = true;
     
     const char* chemistry_str[] = {"NCA", "NMC", "LFP", "LTO"};
-    LOG_INFO("Battery Info: %dWh capacity, %d cells, %s chemistry, V: %d-%dV",
-             BatteryData::total_capacity_Wh, BatteryData::number_of_cells,
-             chemistry_str[data->chemistry], BatteryData::min_design_voltage_V,
-             BatteryData::max_design_voltage_V);
+    LOG_INFO("Battery Settings: %dWh, %d-%dmV, %.1f/%.1fA, SOC:%d-%d%%, %dS %s",
+             settings.capacity_wh, settings.min_voltage_mv, settings.max_voltage_mv,
+             settings.max_charge_current_a, settings.max_discharge_current_a,
+             settings.soc_low_limit, settings.soc_high_limit,
+             settings.cell_count, chemistry_str[data->chemistry]);
 }
 
 void handle_charger_status(const espnow_queue_msg_t* msg) {
