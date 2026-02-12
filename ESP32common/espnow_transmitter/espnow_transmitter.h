@@ -35,6 +35,9 @@ int hop_and_lock_channel(uint8_t* out_channel, uint8_t attempts_per_channel = 2,
 void on_espnow_recv(const uint8_t *mac_addr, const uint8_t *data, int len);
 void on_data_sent(const uint8_t *mac_addr, esp_now_send_status_t status);
 
+// Health check for graceful retry
+bool is_espnow_healthy();
+
 // Data transmission (example helper)
 void send_test_data();
 

@@ -24,6 +24,13 @@ void EspnowDiscovery::start(std::function<bool()> is_connected_callback,
         return;
     }
     
+    // Save configuration for restart capability
+    last_is_connected_callback_ = is_connected_callback;
+    last_interval_ms_ = interval_ms;
+    last_task_priority_ = task_priority;
+    last_stack_size_ = stack_size;
+    suspended_ = false;
+    
     // Allocate task configuration
     config_ = new TaskConfig{is_connected_callback, interval_ms};
     
@@ -56,7 +63,39 @@ void EspnowDiscovery::stop() {
             config_ = nullptr;
         }
         
+        suspended_ = false;
         MQTT_LOG_INFO("DISCOVERY", "Announcement task stopped");
+    }
+}
+
+void EspnowDiscovery::suspend() {
+    if (task_handle_ != nullptr && !suspended_) {
+        suspended_ = true;
+        MQTT_LOG_INFO("DISCOVERY", "Announcements suspended (task kept alive)");
+    }
+}
+
+void EspnowDiscovery::resume() {
+    if (task_handle_ != nullptr && suspended_) {
+        suspended_ = false;
+        MQTT_LOG_INFO("DISCOVERY", "Announcements resumed");
+    } else if (task_handle_ == nullptr) {
+        MQTT_LOG_WARNING("DISCOVERY", "Cannot resume - task not running");
+    }
+}
+
+void EspnowDiscovery::restart() {
+    MQTT_LOG_INFO("DISCOVERY", "Restarting discovery task");
+    
+    // Stop existing task if running
+    stop();
+    
+    // Restart with saved parameters
+    if (last_is_connected_callback_) {
+        start(last_is_connected_callback_, last_interval_ms_, 
+              last_task_priority_, last_stack_size_);
+    } else {
+        MQTT_LOG_ERROR("DISCOVERY", "Cannot restart - no saved configuration");
     }
 }
 
@@ -76,13 +115,17 @@ void EspnowDiscovery::task_impl(void* parameter) {
     const TickType_t interval_ticks = pdMS_TO_TICKS(config->interval_ms);
     
     for (;;) {
+        // Check if suspended
+        if (instance().suspended_) {
+            vTaskDelay(pdMS_TO_TICKS(1000));  // Sleep while suspended
+            continue;
+        }
+        
         // Check if peer is connected (via callback)
         if (config->is_connected && config->is_connected()) {
-            MQTT_LOG_INFO("DISCOVERY", "Peer connected - stopping announcements");
-            instance().task_handle_ = nullptr;
-            delete config;
-            vTaskDelete(nullptr);
-            return;
+            MQTT_LOG_INFO("DISCOVERY", "Peer connected - suspending announcements");
+            instance().suspended_ = true;
+            continue;  // Keep task alive, just suspend
         }
         
         // Send announcement PROBE

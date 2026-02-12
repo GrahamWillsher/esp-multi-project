@@ -47,10 +47,31 @@ public:
     void stop();
     
     /**
+     * @brief Suspend announcement broadcasts (keep task alive)
+     */
+    void suspend();
+    
+    /**
+     * @brief Resume announcement broadcasts
+     */
+    void resume();
+    
+    /**
+     * @brief Restart announcement task (stop + start)
+     */
+    void restart();
+    
+    /**
      * @brief Check if announcement task is running
      * @return true if task is active
      */
     bool is_running() const { return task_handle_ != nullptr; }
+    
+    /**
+     * @brief Check if announcements are suspended
+     * @return true if suspended
+     */
+    bool is_suspended() const { return suspended_; }
     
     /**
      * @brief Get task handle
@@ -81,4 +102,11 @@ private:
     
     TaskHandle_t task_handle_{nullptr};
     TaskConfig* config_{nullptr};
+    volatile bool suspended_{false};
+    
+    // Store last configuration for restart
+    uint32_t last_interval_ms_{5000};
+    uint8_t last_task_priority_{1};
+    uint32_t last_stack_size_{2048};
+    std::function<bool()> last_is_connected_callback_;
 };

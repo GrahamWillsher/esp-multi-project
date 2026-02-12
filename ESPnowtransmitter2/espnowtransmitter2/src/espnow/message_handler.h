@@ -30,6 +30,14 @@ public:
     bool is_receiver_connected() const { return receiver_connected_; }
     
     /**
+     * @brief Connection state tracking for timeout detection
+     */
+    struct ConnectionState {
+        bool is_connected{false};
+        uint32_t last_rx_time_ms{0};
+    };
+    
+    /**
      * @brief Check if data transmission is currently active
      * @return true if receiver requested data transmission
      */
@@ -103,6 +111,50 @@ private:
     void handle_metadata_request(const espnow_queue_msg_t& msg);
     
     /**
+     * @brief Handle NETWORK_CONFIG_REQUEST message (receiver requests current config)
+     * @param msg ESP-NOW message
+     */
+    void handle_network_config_request(const espnow_queue_msg_t& msg);
+    
+    /**
+     * @brief Handle NETWORK_CONFIG_UPDATE message (receiver requests config change)
+     * @param msg ESP-NOW message
+     */
+    void handle_network_config_update(const espnow_queue_msg_t& msg);
+    
+    /**
+     * @brief Send NETWORK_CONFIG_ACK message back to receiver
+     * @param success True if config saved, false if validation/save failed
+     * @param message Status message (e.g., "OK - reboot required" or error)
+     */
+    void send_network_config_ack(bool success, const char* message);
+    
+    /**
+     * @brief Handle MQTT_CONFIG_REQUEST message (receiver requests current MQTT config)
+     * @param msg ESP-NOW message
+     */
+    void handle_mqtt_config_request(const espnow_queue_msg_t& msg);
+    
+    /**
+     * @brief Handle MQTT_CONFIG_UPDATE message (receiver requests MQTT config change)
+     * @param msg ESP-NOW message
+     */
+    void handle_mqtt_config_update(const espnow_queue_msg_t& msg);
+    
+    /**
+     * @brief Send MQTT_CONFIG_ACK message back to receiver
+     * @param success True if config saved, false if validation/save failed
+     * @param message Status message
+     */
+    void send_mqtt_config_ack(bool success, const char* message);
+    
+    /**
+     * @brief Network config processing task (runs heavy operations in background)
+     * @param parameter Task parameter (unused)
+     */
+    static void network_config_task_impl(void* parameter);
+    
+    /**
      * @brief Send DEBUG_ACK message back to receiver
      * @param applied_level Level that was applied
      * @param previous_level Previous level before change
@@ -123,4 +175,9 @@ private:
     volatile bool receiver_connected_{false};
     volatile bool transmission_active_{false};
     uint8_t receiver_mac_[6]{0};  // Store receiver MAC for sending ACKs
+    ConnectionState receiver_state_;  // Track receiver timeout
+    
+    // Network configuration task management
+    static TaskHandle_t network_config_task_handle_;
+    static QueueHandle_t network_config_queue_;
 };

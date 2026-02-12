@@ -72,7 +72,7 @@ namespace FirmwareMetadata {
             // Metadata is embedded and valid
             if (includeBuildDate) {
                 snprintf(buffer, bufSize, 
-                    "Firmware: %s %s v%d.%d.%d ●\nBuilt: %s",
+                    "Firmware: %s %s %d.%d.%d ●\nBuilt: %s",
                     metadata.device_type,
                     metadata.env_name,
                     metadata.version_major,
@@ -81,7 +81,7 @@ namespace FirmwareMetadata {
                     metadata.build_date);
             } else {
                 snprintf(buffer, bufSize, 
-                    "Firmware: %s %s v%d.%d.%d ●",
+                    "Firmware: %s %s %d.%d.%d ●",
                     metadata.device_type,
                     metadata.env_name,
                     metadata.version_major,
@@ -92,11 +92,11 @@ namespace FirmwareMetadata {
             // Fallback to build flags (no embedded metadata)
             if (includeBuildDate) {
                 snprintf(buffer, bufSize, 
-                    "Firmware: v%d.%d.%d *\n(No embedded metadata)",
+                    "Firmware: %d.%d.%d *\n(No embedded metadata)",
                     FW_VERSION_MAJOR, FW_VERSION_MINOR, FW_VERSION_PATCH);
             } else {
                 snprintf(buffer, bufSize, 
-                    "Firmware: v%d.%d.%d *",
+                    "Firmware: %d.%d.%d *",
                     FW_VERSION_MAJOR, FW_VERSION_MINOR, FW_VERSION_PATCH);
             }
         }

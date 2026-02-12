@@ -10,7 +10,9 @@
 #include "dummy_data_generator.h"
 #include <espnow_common.h>
 #include <espnow_transmitter.h>
+#include <espnow_send_utils.h>  // Phase 3: Use unified retry utility with automatic backoff
 #include "../config/logging_config.h"
+#include "../settings/settings_manager.h"
 
 namespace DummyData {
     // Task handle
@@ -67,30 +69,55 @@ namespace DummyData {
         
         msg.checksum = calculate_checksum(&msg, sizeof(msg) - 2);
         
-        esp_now_send(receiver_mac, (uint8_t*)&msg, sizeof(msg));
-        LOG_TRACE("[DUMMY] Battery: SOC=%d.%02d%%, V=%dmV, I=%dmA, P=%dW",
-                 soc/100, soc%100, msg.voltage_mV, msg.current_mA, msg.power_W);
+        if (EspnowSendUtils::send_with_retry(receiver_mac, &msg, sizeof(msg), "Battery status")) {
+            LOG_TRACE("[DUMMY] Battery: SOC=%d.%02d%%, V=%dmV, I=%dmA, P=%dW",
+                     soc/100, soc%100, msg.voltage_mV, msg.current_mA, msg.power_W);
+        }
     }
     
     /**
-     * @brief Send dummy battery info message (static data)
+     * @brief Send dummy battery info message (static data from NVS settings or defaults)
+     * V2: Now sends battery_settings_full_msg_t with all 9 configurable fields
      */
     static void send_battery_info() {
-        battery_info_msg_t msg;
+        battery_settings_full_msg_t msg;
         msg.type = msg_battery_info;
-        msg.total_capacity_Wh = 30000;          // 30kWh battery
-        msg.reported_capacity_Wh = 28500;       // 95% of total
-        msg.max_design_voltage_dV = 5040;       // 504V
-        msg.min_design_voltage_dV = 4200;       // 420V
-        msg.max_cell_voltage_mV = 4200;         // 4.2V per cell
-        msg.min_cell_voltage_mV = 3000;         // 3.0V per cell
-        msg.max_cell_deviation_mV = 50;         // 50mV max deviation
-        msg.number_of_cells = 120;              // 120 cells in series
-        msg.chemistry = 2;                      // LFP
+        
+        // Check if SettingsManager has loaded NVS settings
+        bool use_nvs = SettingsManager::instance().is_initialized();
+        
+        if (use_nvs) {
+            // Use actual settings from NVS (loaded by SettingsManager)
+            msg.capacity_wh = SettingsManager::instance().get_battery_capacity_wh();
+            msg.max_voltage_mv = SettingsManager::instance().get_battery_max_voltage_mv();
+            msg.min_voltage_mv = SettingsManager::instance().get_battery_min_voltage_mv();
+            msg.max_charge_current_a = SettingsManager::instance().get_battery_max_charge_current_a();
+            msg.max_discharge_current_a = SettingsManager::instance().get_battery_max_discharge_current_a();
+            msg.soc_high_limit = SettingsManager::instance().get_battery_soc_high_limit();
+            msg.soc_low_limit = SettingsManager::instance().get_battery_soc_low_limit();
+            msg.cell_count = SettingsManager::instance().get_battery_cell_count();
+            msg.chemistry = SettingsManager::instance().get_battery_chemistry();
+        } else {
+            // Fallback to hardcoded dummy values (first boot or NVS not available)
+            msg.capacity_wh = 30000;                // 30kWh battery
+            msg.max_voltage_mv = 58000;             // 58V max
+            msg.min_voltage_mv = 46000;             // 46V min
+            msg.max_charge_current_a = 100.0f;      // 100A max charge
+            msg.max_discharge_current_a = 100.0f;   // 100A max discharge
+            msg.soc_high_limit = 95;                // 95% high limit
+            msg.soc_low_limit = 20;                 // 20% low limit
+            msg.cell_count = 16;                    // 16 cells in series
+            msg.chemistry = 2;                      // LFP
+        }
+        
         msg.checksum = calculate_checksum(&msg, sizeof(msg) - 2);
         
-        esp_now_send(receiver_mac, (uint8_t*)&msg, sizeof(msg));
-        LOG_DEBUG("[DUMMY] Battery info sent (30kWh, 120 cells, LFP)");
+        if (EspnowSendUtils::send_with_retry(receiver_mac, &msg, sizeof(msg), "Battery info")) {
+            const char* chem[] = {"NCA", "NMC", "LFP", "LTO"};
+            LOG_INFO("[DUMMY] Battery info sent: %dWh, %dS, %s chemistry (%s)",
+                     msg.capacity_wh, msg.cell_count, chem[msg.chemistry],
+                     use_nvs ? "from NVS" : "dummy defaults");
+        }
     }
     
     /**
@@ -109,10 +136,11 @@ namespace DummyData {
         msg.charger_status = (power > 0) ? 1 : 0;      // 1=charging, 0=off
         msg.checksum = calculate_checksum(&msg, sizeof(msg) - 2);
         
-        esp_now_send(receiver_mac, (uint8_t*)&msg, sizeof(msg));
-        LOG_TRACE("[DUMMY] Charger: %s, HV=%dV/%dA, P=%dW",
-                 msg.charger_status ? "CHARGING" : "OFF",
-                 msg.hv_voltage_dV/10, msg.hv_current_dA/10, msg.power_W);
+        if (EspnowSendUtils::send_with_retry(receiver_mac, &msg, sizeof(msg), "Charger status")) {
+            LOG_TRACE("[DUMMY] Charger: %s, HV=%dV/%dA, P=%dW",
+                     msg.charger_status ? "CHARGING" : "OFF",
+                     msg.hv_voltage_dV/10, msg.hv_current_dA/10, msg.power_W);
+        }
     }
     
     /**
@@ -128,10 +156,11 @@ namespace DummyData {
         msg.inverter_status = (power < 0) ? 1 : 0;     // 1=on, 0=off
         msg.checksum = calculate_checksum(&msg, sizeof(msg) - 2);
         
-        esp_now_send(receiver_mac, (uint8_t*)&msg, sizeof(msg));
-        LOG_TRACE("[DUMMY] Inverter: %s, AC=%dV/%dA@%dHz, P=%dW",
-                 msg.inverter_status ? "ON" : "OFF",
-                 msg.ac_voltage_V, msg.ac_current_dA/10, msg.ac_frequency_dHz/10, msg.power_W);
+        if (EspnowSendUtils::send_with_retry(receiver_mac, &msg, sizeof(msg), "Inverter status")) {
+            LOG_TRACE("[DUMMY] Inverter: %s, AC=%dV/%dA@%dHz, P=%dW",
+                     msg.inverter_status ? "ON" : "OFF",
+                     msg.ac_voltage_V, msg.ac_current_dA/10, msg.ac_frequency_dHz/10, msg.power_W);
+        }
     }
     
     /**
@@ -146,9 +175,10 @@ namespace DummyData {
         msg.uptime_seconds = uptime;
         msg.checksum = calculate_checksum(&msg, sizeof(msg) - 2);
         
-        esp_now_send(receiver_mac, (uint8_t*)&msg, sizeof(msg));
-        LOG_TRACE("[DUMMY] System: contactors=0x%02X, errors=0x%02X, warnings=0x%02X, uptime=%us",
-                 msg.contactor_state, msg.error_flags, msg.warning_flags, msg.uptime_seconds);
+        if (EspnowSendUtils::send_with_retry(receiver_mac, &msg, sizeof(msg), "System status")) {
+            LOG_TRACE("[DUMMY] System: contactors=0x%02X, errors=0x%02X, warnings=0x%02X, uptime=%us",
+                     msg.contactor_state, msg.error_flags, msg.warning_flags, msg.uptime_seconds);
+        }
     }
     
     /**
@@ -166,6 +196,9 @@ namespace DummyData {
         uint8_t cycle = 0;
         
         while (true) {
+            // Phase 3: EspnowSendUtils handles backoff automatically with timer
+            // No need for manual pause logic - it's all in the utility class
+            
             // Simulate power changing (oscillates between -2000W and +1500W)
             static float power_phase = 0.0;
             power_phase += 0.05;  // Slow oscillation

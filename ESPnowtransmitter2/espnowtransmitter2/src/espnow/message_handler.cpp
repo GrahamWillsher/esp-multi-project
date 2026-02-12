@@ -1,24 +1,28 @@
 #include "message_handler.h"
+#include "discovery_task.h"
+#include "version_beacon_manager.h"
+#include "keep_alive_manager.h"
 #include "../network/ethernet_manager.h"
 #include "../config/task_config.h"
 #include "../config/logging_config.h"
 #include "../config/network_config.h"
+#include "../settings/settings_manager.h"
 #include <Arduino.h>
 #include <esp_now.h>
+#include <esp_wifi.h>
 #include <espnow_transmitter.h>
 #include <espnow_peer_manager.h>
 #include <espnow_message_router.h>
 #include <espnow_standard_handlers.h>
 #include <espnow_packet_utils.h>
 #include <mqtt_logger.h>
+#include <mqtt_manager.h>
 #include <Preferences.h>
 #include <ethernet_config.h>
 #include <firmware_version.h>
 #include <firmware_metadata.h>
 
-// Stringify macro for build flags
-#define STRINGIFY_IMPL(x) #x
-#define STRINGIFY(x) STRINGIFY_IMPL(x)
+// Note: STRINGIFY macro is defined in firmware_version.h
 
 EspnowMessageHandler& EspnowMessageHandler::instance() {
     static EspnowMessageHandler instance;
@@ -49,41 +53,7 @@ void EspnowMessageHandler::setup_message_routes() {
     ack_config_.set_wifi_channel = false;              // Don't change channel in handler - let discovery complete first
     ack_config_.on_connection = [](const uint8_t* mac, bool connected) {
         LOG_INFO("Receiver connected via ACK");
-        
-        // Send version information (static data, sent once on connection)
-        version_announce_t announce;
-        announce.type = msg_version_announce;
-        announce.firmware_version = FW_VERSION_NUMBER;
-        announce.protocol_version = PROTOCOL_VERSION;
-        strncpy(announce.device_type, DEVICE_NAME, sizeof(announce.device_type) - 1);
-        announce.device_type[sizeof(announce.device_type) - 1] = '\0';
-        strncpy(announce.build_date, __DATE__, sizeof(announce.build_date) - 1);
-        announce.build_date[sizeof(announce.build_date) - 1] = '\0';
-        strncpy(announce.build_time, __TIME__, sizeof(announce.build_time) - 1);
-        announce.build_time[sizeof(announce.build_time) - 1] = '\0';
-        announce.min_compatible_version = MIN_COMPATIBLE_VERSION;
-        announce.uptime_seconds = millis() / 1000;
-        
-        // Detailed logging of STATIC DATA being sent
-        LOG_INFO("=== STATIC DATA VERSION ANNOUNCEMENT ===");
-        LOG_INFO("  Message Type: %d (msg_version_announce)", announce.type);
-        LOG_INFO("  Firmware Version: %u (v%d.%d.%d)", announce.firmware_version, 
-                 FW_VERSION_MAJOR, FW_VERSION_MINOR, FW_VERSION_PATCH);
-        LOG_INFO("  Protocol Version: %u", announce.protocol_version);
-        LOG_INFO("  Min Compatible: %u", announce.min_compatible_version);
-        LOG_INFO("  Device Type: '%s'", announce.device_type);
-        LOG_INFO("  Build Date: '%s'", announce.build_date);
-        LOG_INFO("  Build Time: '%s'", announce.build_time);
-        LOG_INFO("  Uptime: %u seconds", announce.uptime_seconds);
-        LOG_INFO("  Packet Size: %u bytes", sizeof(announce));
-        LOG_INFO("=======================================");
-        
-        esp_err_t result = esp_now_send(mac, (const uint8_t*)&announce, sizeof(announce));
-        if (result == ESP_OK) {
-            LOG_INFO("✓ Version announcement sent successfully");
-        } else {
-            LOG_ERROR("✗ Failed to send version announcement: %s", esp_err_to_name(result));
-        }
+        // Note: Version announce already sent in PROBE handler - no need to duplicate
     };
     
     // Register standard message handlers
@@ -167,9 +137,77 @@ void EspnowMessageHandler::setup_message_routes() {
         },
         0xFF, this);
     
+    // Register config section request handler (Phase 4: Version-based cache sync)
+    router.register_route(msg_config_section_request,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            if (msg->len >= (int)sizeof(config_section_request_t)) {
+                const config_section_request_t* request = reinterpret_cast<const config_section_request_t*>(msg->data);
+                VersionBeaconManager::instance().handle_config_request(request, msg->mac);
+            }
+        },
+        0xFF, this);
+    
     router.register_route(msg_config_request_resync,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             LOG_DEBUG("Received CONFIG_REQUEST_RESYNC (transmitter doesn't process these)");
+        },
+        0xFF, this);
+    
+    // Register heartbeat handler (Section 11: Keep-alive)
+    router.register_route(msg_heartbeat,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            // Heartbeat received from receiver - connection is alive
+            LOG_DEBUG("[HEARTBEAT] Received from receiver");
+            KeepAliveManager::instance().record_heartbeat_received();
+        },
+        0xFF, this);
+    
+    // Phase 2: Settings update handler
+    router.register_route(msg_battery_settings_update,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            SettingsManager::instance().handle_settings_update(*msg);
+        },
+        0xFF, this);
+    
+    // Network configuration request handler
+    router.register_route(msg_network_config_request,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            static_cast<EspnowMessageHandler*>(ctx)->handle_network_config_request(*msg);
+        },
+        0xFF, this);
+    
+    // Network configuration update handler
+    router.register_route(msg_network_config_update,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            static_cast<EspnowMessageHandler*>(ctx)->handle_network_config_update(*msg);
+        },
+        0xFF, this);
+    
+    // MQTT configuration request handler
+    router.register_route(msg_mqtt_config_request,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            static_cast<EspnowMessageHandler*>(ctx)->handle_mqtt_config_request(*msg);
+        },
+        0xFF, this);
+    
+    // MQTT configuration update handler
+    router.register_route(msg_mqtt_config_update,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            static_cast<EspnowMessageHandler*>(ctx)->handle_mqtt_config_update(*msg);
+        },
+        0xFF, this);
+    
+    // =========================================================================
+    // PHASE 4: Version-Based Cache Synchronization
+    // =========================================================================
+    
+    // Config section request handler (receiver → transmitter when version mismatch)
+    router.register_route(msg_config_section_request,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            if (msg->len >= (int)sizeof(config_section_request_t)) {
+                const config_section_request_t* request = reinterpret_cast<const config_section_request_t*>(msg->data);
+                VersionBeaconManager::instance().handle_config_request(request, msg->mac);
+            }
         },
         0xFF, this);
     
@@ -182,10 +220,10 @@ void EspnowMessageHandler::setup_message_routes() {
                 uint8_t rx_minor = (announce->firmware_version / 100) % 100;
                 uint8_t rx_patch = announce->firmware_version % 100;
                 
-                LOG_INFO("Receiver version: v%d.%d.%d", rx_major, rx_minor, rx_patch);
+                LOG_INFO("Receiver version: %d.%d.%d", rx_major, rx_minor, rx_patch);
                 
                 if (!isVersionCompatible(announce->firmware_version)) {
-                    LOG_WARN("Version incompatible: transmitter v%d.%d.%d, receiver v%d.%d.%d",
+                    LOG_WARN("Version incompatible: transmitter %d.%d.%d, receiver %d.%d.%d",
                              FW_VERSION_MAJOR, FW_VERSION_MINOR, FW_VERSION_PATCH,
                              rx_major, rx_minor, rx_patch);
                 }
@@ -222,7 +260,7 @@ void EspnowMessageHandler::setup_message_routes() {
         [](const espnow_queue_msg_t* msg, void* ctx) {
             if (msg->len >= (int)sizeof(version_response_t)) {
                 const version_response_t* response = reinterpret_cast<const version_response_t*>(msg->data);
-                LOG_DEBUG("Received VERSION_RESPONSE: %s v%d.%d.%d",
+                LOG_DEBUG("Received VERSION_RESPONSE: %s %d.%d.%d",
                          response->device_type,
                          response->firmware_version / 10000,
                          (response->firmware_version / 100) % 100,
@@ -235,6 +273,7 @@ void EspnowMessageHandler::setup_message_routes() {
 }
 
 void EspnowMessageHandler::start_rx_task(QueueHandle_t queue) {
+    // Create main RX task
     xTaskCreate(
         rx_task_impl,
         "espnow_rx",
@@ -244,6 +283,22 @@ void EspnowMessageHandler::start_rx_task(QueueHandle_t queue) {
         nullptr
     );
     LOG_DEBUG("ESP-NOW RX task started");
+    
+    // Create network config processing queue and task
+    network_config_queue_ = xQueueCreate(task_config::NETWORK_CONFIG_QUEUE_SIZE, sizeof(espnow_queue_msg_t));
+    if (network_config_queue_ == nullptr) {
+        LOG_ERROR("Failed to create network config queue");
+    } else {
+        xTaskCreate(
+            network_config_task_impl,
+            "net_config",
+            task_config::STACK_SIZE_NETWORK_CONFIG,
+            nullptr,
+            task_config::PRIORITY_NETWORK_CONFIG,
+            &network_config_task_handle_
+        );
+        LOG_DEBUG("Network config task started (priority=%d)", task_config::PRIORITY_NETWORK_CONFIG);
+    }
 }
 
 void EspnowMessageHandler::rx_task_impl(void* parameter) {
@@ -253,15 +308,78 @@ void EspnowMessageHandler::rx_task_impl(void* parameter) {
     
     LOG_DEBUG("Message RX task running");
     espnow_queue_msg_t msg;
+    const TickType_t timeout_ticks = pdMS_TO_TICKS(1000);  // Check timeout every second
+    const uint32_t CONNECTION_TIMEOUT_MS = 10000;  // 10 second timeout (matches receiver)
     
     while (true) {
-        if (xQueueReceive(queue, &msg, portMAX_DELAY) == pdTRUE) {
+        if (xQueueReceive(queue, &msg, timeout_ticks) == pdTRUE) {
+            // Update last RX time for ANY message from receiver
+            if (memcmp(msg.mac, handler.receiver_mac_, 6) == 0) {
+                handler.receiver_state_.last_rx_time_ms = millis();
+                if (!handler.receiver_state_.is_connected) {
+                    handler.receiver_state_.is_connected = true;
+                    LOG_INFO("[WATCHDOG] Receiver connection restored");
+                }
+            }
+            
             // Route message using common router
             if (!router.route_message(msg)) {
                 // Message not handled by any route
                 uint8_t msg_type = (msg.len > 0) ? msg.data[0] : 0;
                 LOG_WARN("Unknown message type: %u from %02X:%02X:%02X:%02X:%02X:%02X",
                              msg_type, msg.mac[0], msg.mac[1], msg.mac[2], msg.mac[3], msg.mac[4], msg.mac[5]);
+            }
+        }
+        
+        // Timeout watchdog (runs every second when queue empty or after each message)
+        if (handler.receiver_state_.is_connected) {
+            uint32_t time_since_last_rx = millis() - handler.receiver_state_.last_rx_time_ms;
+            if (time_since_last_rx > CONNECTION_TIMEOUT_MS) {
+                uint32_t downtime_start = millis();
+                
+                handler.receiver_state_.is_connected = false;
+                handler.receiver_connected_ = false;
+                LOG_WARN("[WATCHDOG] ═══ RECEIVER CONNECTION LOST (timeout: %u ms) ═══", CONNECTION_TIMEOUT_MS);
+                
+                // CRITICAL: Multi-layer channel enforcement before restart
+                uint8_t current_ch = 0;
+                wifi_second_chan_t second;
+                esp_wifi_get_channel(&current_ch, &second);
+                
+                LOG_INFO("[WATCHDOG] Channel state: current=%d, locked=%d", current_ch, g_lock_channel);
+                
+                // ALWAYS force-set channel (defensive programming)
+                if (!set_channel(g_lock_channel)) {
+                    LOG_ERROR("[WATCHDOG] ✗ Failed to force-set WiFi channel to %d", g_lock_channel);
+                } else {
+                    LOG_INFO("[WATCHDOG] ✓ Channel force-set to %d", g_lock_channel);
+                }
+                
+                // Industrial delay for WiFi stack stabilization
+                delay(150);
+                
+                // Verify channel lock
+                esp_wifi_get_channel(&current_ch, &second);
+                if (current_ch != g_lock_channel) {
+                    LOG_ERROR("[WATCHDOG] ✗ Channel verification failed: expected=%d, actual=%d", 
+                             g_lock_channel, current_ch);
+                } else {
+                    LOG_INFO("[WATCHDOG] ✓ Channel verified and locked: %d", current_ch);
+                }
+                
+                // Restart discovery task to find receiver again
+                LOG_INFO("[WATCHDOG] Initiating discovery restart...");
+                DiscoveryTask::instance().restart();
+                
+                // Track downtime for metrics
+                uint32_t downtime_ms = millis() - downtime_start;
+                DiscoveryMetrics& metrics = const_cast<DiscoveryMetrics&>(
+                    DiscoveryTask::instance().get_metrics());
+                if (downtime_ms > metrics.longest_downtime_ms) {
+                    metrics.longest_downtime_ms = downtime_ms;
+                }
+                
+                LOG_INFO("[WATCHDOG] ═══ WATCHDOG RECOVERY COMPLETE (%d ms) ═══", downtime_ms);
             }
         }
     }
@@ -281,62 +399,166 @@ void EspnowMessageHandler::handle_request_data(const espnow_queue_msg_t& msg) {
             LOG_INFO(">>> Power profile transmission STARTED");
             break;
         
-        case subtype_settings: {
-            LOG_DEBUG(">>> Settings request - sending IP data");
-            
-            // Send Ethernet IP configuration to receiver
+        case subtype_network_config: {
+            // Send ONLY IP configuration (Phase 3 granular subtype)
             if (EthernetManager::instance().is_connected()) {
                 IPAddress local_ip = EthernetManager::instance().get_local_ip();
                 IPAddress gateway = EthernetManager::instance().get_gateway_ip();
                 IPAddress subnet = EthernetManager::instance().get_subnet_mask();
                 
-                // Create proper espnow_packet_t structure
+                espnow_packet_t packet;
+                packet.type = msg_packet;
+                packet.subtype = subtype_network_config;
+                packet.seq = esp_random();
+                packet.frag_index = 0;
+                packet.frag_total = 1;
+                packet.payload_len = 12;  // IP[4] + Gateway[4] + Subnet[4]
+                
+                for (int i = 0; i < 4; i++) {
+                    packet.payload[i] = local_ip[i];
+                    packet.payload[4 + i] = gateway[i];
+                    packet.payload[8 + i] = subnet[i];
+                }
+                
+                packet.checksum = EspnowPacketUtils::calculate_checksum(packet.payload, packet.payload_len);
+                esp_err_t result = esp_now_send(msg.mac, (const uint8_t*)&packet, sizeof(packet));
+                
+                if (result == ESP_OK) {
+                    LOG_DEBUG("Sent network config: %s, GW: %s, Subnet: %s",
+                             local_ip.toString().c_str(), gateway.toString().c_str(), subnet.toString().c_str());
+                } else {
+                    LOG_WARN("Failed to send network config: %s", esp_err_to_name(result));
+                }
+            } else {
+                LOG_WARN("Ethernet not connected, cannot send network config");
+            }
+            break;
+        }
+        
+        case subtype_battery_config: {
+            // Phase 3: Send ALL battery settings (including currents and SOC limits)
+            LOG_DEBUG(">>> Battery config request - sending FULL battery settings");
+            
+            battery_settings_full_msg_t settings_msg;
+            settings_msg.type = msg_battery_info;
+            settings_msg.capacity_wh = SettingsManager::instance().get_battery_capacity_wh();
+            settings_msg.max_voltage_mv = SettingsManager::instance().get_battery_max_voltage_mv();
+            settings_msg.min_voltage_mv = SettingsManager::instance().get_battery_min_voltage_mv();
+            settings_msg.max_charge_current_a = SettingsManager::instance().get_battery_max_charge_current_a();
+            settings_msg.max_discharge_current_a = SettingsManager::instance().get_battery_max_discharge_current_a();
+            settings_msg.soc_high_limit = SettingsManager::instance().get_battery_soc_high_limit();
+            settings_msg.soc_low_limit = SettingsManager::instance().get_battery_soc_low_limit();
+            settings_msg.cell_count = SettingsManager::instance().get_battery_cell_count();
+            settings_msg.chemistry = SettingsManager::instance().get_battery_chemistry();
+            
+            uint16_t sum = 0;
+            const uint8_t* bytes = (const uint8_t*)&settings_msg;
+            for (size_t i = 0; i < sizeof(settings_msg) - 2; i++) {
+                sum += bytes[i];
+            }
+            settings_msg.checksum = sum;
+            
+            esp_err_t result = esp_now_send(msg.mac, (const uint8_t*)&settings_msg, sizeof(settings_msg));
+            if (result == ESP_OK) {
+                const char* chem[] = {"NCA", "NMC", "LFP", "LTO"};
+                LOG_INFO("Sent FULL battery settings: %dWh, %dS, %s, %.1fA/%.1fA, SOC:%d-%d%%", 
+                        settings_msg.capacity_wh, settings_msg.cell_count, chem[settings_msg.chemistry],
+                        settings_msg.max_charge_current_a, settings_msg.max_discharge_current_a,
+                        settings_msg.soc_low_limit, settings_msg.soc_high_limit);
+            } else {
+                LOG_WARN("Failed to send battery settings: %s", esp_err_to_name(result));
+            }
+            break;
+        }
+        
+        case subtype_settings: {
+            // DEPRECATED: Send BOTH IP and battery (backward compatibility)
+            LOG_DEBUG(">>> Settings request (legacy) - sending IP + battery data");
+            
+            // Send IP data if Ethernet is connected
+            if (EthernetManager::instance().is_connected()) {
+                IPAddress local_ip = EthernetManager::instance().get_local_ip();
+                IPAddress gateway = EthernetManager::instance().get_gateway_ip();
+                IPAddress subnet = EthernetManager::instance().get_subnet_mask();
+                
                 espnow_packet_t packet;
                 packet.type = msg_packet;
                 packet.subtype = subtype_settings;
                 packet.seq = esp_random();
                 packet.frag_index = 0;
                 packet.frag_total = 1;
-                packet.payload_len = 12;  // IP[4] + Gateway[4] + Subnet[4]
+                packet.payload_len = 12;
                 
-                // Pack IP address bytes into payload
                 for (int i = 0; i < 4; i++) {
-                    packet.payload[i] = local_ip[i];       // IP at offset 0
-                    packet.payload[4 + i] = gateway[i];    // Gateway at offset 4
-                    packet.payload[8 + i] = subnet[i];     // Subnet at offset 8
+                    packet.payload[i] = local_ip[i];
+                    packet.payload[4 + i] = gateway[i];
+                    packet.payload[8 + i] = subnet[i];
                 }
                 
-                // Calculate checksum using common utility
                 packet.checksum = EspnowPacketUtils::calculate_checksum(packet.payload, packet.payload_len);
-                
-                // Send IP data via ESP-NOW
                 esp_err_t result = esp_now_send(msg.mac, (const uint8_t*)&packet, sizeof(packet));
                 
                 if (result == ESP_OK) {
-                    // Log packet info using common utility
-                    EspnowPacketUtils::PacketInfo info;
-                    info.seq = packet.seq;
-                    info.frag_index = packet.frag_index;
-                    info.frag_total = packet.frag_total;
-                    info.payload_len = packet.payload_len;
-                    info.subtype = packet.subtype;
-                    info.checksum = packet.checksum;
-                    info.payload = packet.payload;
-                    EspnowPacketUtils::print_packet_info(info, "SETTINGS (sent)");
-                    
-                    LOG_DEBUG("Sent IP data: %s, Gateway: %s, Subnet: %s",
-                                 local_ip.toString().c_str(),
-                                 gateway.toString().c_str(),
-                                 subnet.toString().c_str());
+                    LOG_DEBUG("Sent IP data (legacy subtype_settings)");
                 } else {
-                    LOG_ERROR("Failed to send IP data: %s", esp_err_to_name(result));
+                    LOG_WARN("Failed to send IP data: %s", esp_err_to_name(result));
                 }
             } else {
-                LOG_ERROR("Ethernet not connected, cannot send IP");
+                // Send packet with all zeros to indicate no IP data available
+                espnow_packet_t packet;
+                packet.type = msg_packet;
+                packet.subtype = subtype_settings;
+                packet.seq = esp_random();
+                packet.frag_index = 0;
+                packet.frag_total = 1;
+                packet.payload_len = 12;
+                memset(packet.payload, 0, 12);  // All zeros = no IP yet
+                packet.checksum = EspnowPacketUtils::calculate_checksum(packet.payload, packet.payload_len);
+                
+                esp_err_t result = esp_now_send(msg.mac, (const uint8_t*)&packet, sizeof(packet));
+                if (result == ESP_OK) {
+                    LOG_INFO("Sent empty IP data (Ethernet not connected yet)");
+                } else {
+                    LOG_WARN("Failed to send empty IP data: %s", esp_err_to_name(result));
+                }
+            }
+            
+            // V2: Always send battery_settings_full_msg_t (not legacy battery_info_msg_t)
+            battery_settings_full_msg_t settings_msg;
+            settings_msg.type = msg_battery_info;
+            settings_msg.capacity_wh = SettingsManager::instance().get_battery_capacity_wh();
+            settings_msg.max_voltage_mv = SettingsManager::instance().get_battery_max_voltage_mv();
+            settings_msg.min_voltage_mv = SettingsManager::instance().get_battery_min_voltage_mv();
+            settings_msg.max_charge_current_a = SettingsManager::instance().get_battery_max_charge_current_a();
+            settings_msg.max_discharge_current_a = SettingsManager::instance().get_battery_max_discharge_current_a();
+            settings_msg.soc_high_limit = SettingsManager::instance().get_battery_soc_high_limit();
+            settings_msg.soc_low_limit = SettingsManager::instance().get_battery_soc_low_limit();
+            settings_msg.cell_count = SettingsManager::instance().get_battery_cell_count();
+            settings_msg.chemistry = SettingsManager::instance().get_battery_chemistry();
+            
+            uint16_t sum = 0;
+            const uint8_t* bytes = (const uint8_t*)&settings_msg;
+            for (size_t i = 0; i < sizeof(settings_msg) - 2; i++) {
+                sum += bytes[i];
+            }
+            settings_msg.checksum = sum;
+            
+            esp_err_t result = esp_now_send(msg.mac, (const uint8_t*)&settings_msg, sizeof(settings_msg));
+            if (result == ESP_OK) {
+                const char* chem[] = {"NCA", "NMC", "LFP", "LTO"};
+                LOG_INFO("Sent battery settings: %dWh, %dS, %s, %.1f/%.1fA, SOC:%d-%d%%", 
+                        settings_msg.capacity_wh, settings_msg.cell_count, chem[settings_msg.chemistry],
+                        settings_msg.max_charge_current_a, settings_msg.max_discharge_current_a,
+                        settings_msg.soc_low_limit, settings_msg.soc_high_limit);
+            } else {
+                LOG_WARN("Failed to send battery settings: %s", esp_err_to_name(result));
             }
             break;
         }
         
+        case subtype_charger_config:
+        case subtype_inverter_config:
+        case subtype_system_config:
         case subtype_events:
         case subtype_logs:
         case subtype_cell_info:
@@ -698,7 +920,7 @@ void EspnowMessageHandler::handle_metadata_request(const espnow_queue_msg_t& msg
         strncpy(response.build_date, meta.build_date, sizeof(response.build_date) - 1);
         response.build_date[sizeof(response.build_date) - 1] = '\0';
         
-        LOG_INFO("METADATA: Sending valid metadata ● %s %s v%d.%d.%d",
+        LOG_INFO("METADATA: Sending valid metadata ● %s %s %d.%d.%d",
                  response.device_type, response.env_name,
                  response.version_major, response.version_minor, response.version_patch);
     } else {
@@ -715,7 +937,7 @@ void EspnowMessageHandler::handle_metadata_request(const espnow_queue_msg_t& msg
         
         strcpy(response.build_date, __DATE__ " " __TIME__);
         
-        LOG_INFO("METADATA: Sending fallback metadata * v%d.%d.%d",
+        LOG_INFO("METADATA: Sending fallback metadata * %d.%d.%d",
                  response.version_major, response.version_minor, response.version_patch);
     }
     
@@ -727,3 +949,378 @@ void EspnowMessageHandler::handle_metadata_request(const espnow_queue_msg_t& msg
         LOG_ERROR("METADATA: Failed to send response: %s", esp_err_to_name(result));
     }
 }
+
+// =============================================================================
+// Network Configuration Handler Implementation
+// =============================================================================
+
+// Static member initialization
+TaskHandle_t EspnowMessageHandler::network_config_task_handle_ = nullptr;
+QueueHandle_t EspnowMessageHandler::network_config_queue_ = nullptr;
+
+void EspnowMessageHandler::handle_network_config_request(const espnow_queue_msg_t& msg) {
+    if (msg.len < (int)sizeof(network_config_request_t)) {
+        LOG_ERROR("[NET_CFG] Invalid request message size: %d bytes", msg.len);
+        return;
+    }
+    
+    // Store receiver MAC for ACK response
+    memcpy(receiver_mac_, msg.mac, 6);
+    
+    LOG_INFO("[NET_CFG] Received network config request from receiver");
+    
+    // Send current configuration as ACK
+    send_network_config_ack(true, "Current configuration");
+}
+
+void EspnowMessageHandler::handle_network_config_update(const espnow_queue_msg_t& msg) {
+    if (msg.len < (int)sizeof(network_config_update_t)) {
+        LOG_ERROR("[NET_CFG] Invalid message size: %d bytes", msg.len);
+        return;
+    }
+    
+    const network_config_update_t* config = reinterpret_cast<const network_config_update_t*>(msg.data);
+    
+    // Store receiver MAC for ACK response
+    memcpy(receiver_mac_, msg.mac, 6);
+    
+    LOG_INFO("[NET_CFG] Received network config update:");
+    LOG_INFO("[NET_CFG]   Mode: %s", config->use_static_ip ? "Static" : "DHCP");
+    
+    if (config->use_static_ip) {
+        LOG_INFO("[NET_CFG]   IP: %d.%d.%d.%d", 
+                 config->ip[0], config->ip[1], config->ip[2], config->ip[3]);
+        LOG_INFO("[NET_CFG]   Gateway: %d.%d.%d.%d",
+                 config->gateway[0], config->gateway[1], config->gateway[2], config->gateway[3]);
+        LOG_INFO("[NET_CFG]   Subnet: %d.%d.%d.%d",
+                 config->subnet[0], config->subnet[1], config->subnet[2], config->subnet[3]);
+        LOG_INFO("[NET_CFG]   DNS Primary: %d.%d.%d.%d",
+                 config->dns_primary[0], config->dns_primary[1], config->dns_primary[2], config->dns_primary[3]);
+        LOG_INFO("[NET_CFG]   DNS Secondary: %d.%d.%d.%d",
+                 config->dns_secondary[0], config->dns_secondary[1], config->dns_secondary[2], config->dns_secondary[3]);
+        
+        // Quick validation (< 1ms) - more validation in background task
+        if (config->ip[0] == 0) {
+            LOG_ERROR("[NET_CFG] Invalid static IP (cannot be 0.0.0.0)");
+            send_network_config_ack(false, "Invalid IP address");
+            return;
+        }
+    }
+    
+    // Queue message for background processing (non-blocking)
+    if (network_config_queue_ && xQueueSend(network_config_queue_, &msg, 0) == pdTRUE) {
+        LOG_DEBUG("[NET_CFG] Message queued for background processing");
+    } else {
+        LOG_ERROR("[NET_CFG] Failed to queue message (queue full or not initialized)");
+        send_network_config_ack(false, "Processing queue full");
+    }
+}
+
+void EspnowMessageHandler::send_network_config_ack(bool success, const char* message) {
+    network_config_ack_t ack;
+    memset(&ack, 0, sizeof(ack));
+    
+    auto& eth = EthernetManager::instance();
+    
+    ack.type = msg_network_config_ack;
+    ack.success = success ? 1 : 0;
+    ack.use_static_ip = eth.isStaticIP() ? 1 : 0;
+    
+    // Current network configuration (active IP - could be DHCP or Static)
+    IPAddress current_ip = eth.get_local_ip();
+    IPAddress current_gateway = eth.get_gateway_ip();
+    IPAddress current_subnet = eth.get_subnet_mask();
+    
+    ack.current_ip[0] = current_ip[0];
+    ack.current_ip[1] = current_ip[1];
+    ack.current_ip[2] = current_ip[2];
+    ack.current_ip[3] = current_ip[3];
+    
+    ack.current_gateway[0] = current_gateway[0];
+    ack.current_gateway[1] = current_gateway[1];
+    ack.current_gateway[2] = current_gateway[2];
+    ack.current_gateway[3] = current_gateway[3];
+    
+    ack.current_subnet[0] = current_subnet[0];
+    ack.current_subnet[1] = current_subnet[1];
+    ack.current_subnet[2] = current_subnet[2];
+    ack.current_subnet[3] = current_subnet[3];
+    
+    // Saved static configuration (from NVS - used when static mode is enabled)
+    IPAddress static_ip = eth.getStaticIP();
+    IPAddress static_gateway = eth.getGateway();
+    IPAddress static_subnet = eth.getSubnetMask();
+    IPAddress static_dns_primary = eth.getDNSPrimary();
+    IPAddress static_dns_secondary = eth.getDNSSecondary();
+    
+    ack.static_ip[0] = static_ip[0];
+    ack.static_ip[1] = static_ip[1];
+    ack.static_ip[2] = static_ip[2];
+    ack.static_ip[3] = static_ip[3];
+    
+    ack.static_gateway[0] = static_gateway[0];
+    ack.static_gateway[1] = static_gateway[1];
+    ack.static_gateway[2] = static_gateway[2];
+    ack.static_gateway[3] = static_gateway[3];
+    
+    ack.static_subnet[0] = static_subnet[0];
+    ack.static_subnet[1] = static_subnet[1];
+    ack.static_subnet[2] = static_subnet[2];
+    ack.static_subnet[3] = static_subnet[3];
+    
+    ack.static_dns_primary[0] = static_dns_primary[0];
+    ack.static_dns_primary[1] = static_dns_primary[1];
+    ack.static_dns_primary[2] = static_dns_primary[2];
+    ack.static_dns_primary[3] = static_dns_primary[3];
+    
+    ack.static_dns_secondary[0] = static_dns_secondary[0];
+    ack.static_dns_secondary[1] = static_dns_secondary[1];
+    ack.static_dns_secondary[2] = static_dns_secondary[2];
+    ack.static_dns_secondary[3] = static_dns_secondary[3];
+    
+    ack.config_version = eth.getNetworkConfigVersion();
+    
+    strncpy(ack.message, message, sizeof(ack.message) - 1);
+    ack.message[sizeof(ack.message) - 1] = '\0';
+    
+    // Ensure receiver is registered as peer before sending
+    if (!EspnowPeerManager::is_peer_registered(receiver_mac_)) {
+        LOG_WARN("[NET_CFG] Receiver not registered as peer, adding now");
+        if (!EspnowPeerManager::add_peer(receiver_mac_)) {
+            LOG_ERROR("[NET_CFG] Failed to add receiver as peer");
+            return;
+        }
+    }
+    
+    esp_err_t result = esp_now_send(receiver_mac_, (const uint8_t*)&ack, sizeof(ack));
+    if (result == ESP_OK) {
+        LOG_INFO("[NET_CFG] Sent ACK: %s (success=%d)", message, success);
+        LOG_DEBUG("[NET_CFG]   Current: %d.%d.%d.%d", 
+                  ack.current_ip[0], ack.current_ip[1], ack.current_ip[2], ack.current_ip[3]);
+        LOG_DEBUG("[NET_CFG]   Static saved: %d.%d.%d.%d", 
+                  ack.static_ip[0], ack.static_ip[1], ack.static_ip[2], ack.static_ip[3]);
+    } else {
+        LOG_ERROR("[NET_CFG] Failed to send ACK: %s", esp_err_to_name(result));
+    }
+}
+
+void EspnowMessageHandler::network_config_task_impl(void* parameter) {
+    LOG_INFO("[NET_CFG] Background processing task started");
+    
+    espnow_queue_msg_t msg;
+    auto& eth = EthernetManager::instance();
+    
+    while (true) {
+        if (xQueueReceive(network_config_queue_, &msg, portMAX_DELAY) == pdTRUE) {
+            const network_config_update_t* config = reinterpret_cast<const network_config_update_t*>(msg.data);
+            
+            LOG_INFO("[NET_CFG] Processing configuration in background...");
+            
+            // Heavy operations here (won't block ESP-NOW or control loop)
+            if (config->use_static_ip) {
+                // 1. Comprehensive validation
+                bool valid = true;
+                
+                // Check for broadcast address
+                if (config->ip[0] == 255 && config->ip[1] == 255 && 
+                    config->ip[2] == 255 && config->ip[3] == 255) {
+                    LOG_ERROR("[NET_CFG] IP cannot be broadcast address");
+                    instance().send_network_config_ack(false, "IP is broadcast");
+                    continue;
+                }
+                
+                // Check for multicast range
+                if (config->ip[0] >= 224 && config->ip[0] <= 239) {
+                    LOG_ERROR("[NET_CFG] IP cannot be multicast address");
+                    instance().send_network_config_ack(false, "IP is multicast");
+                    continue;
+                }
+                
+                // Check IP and gateway are in same subnet
+                bool same_subnet = true;
+                for (int i = 0; i < 4; i++) {
+                    if ((config->ip[i] & config->subnet[i]) != (config->gateway[i] & config->subnet[i])) {
+                        same_subnet = false;
+                        break;
+                    }
+                }
+                if (!same_subnet) {
+                    LOG_WARN("[NET_CFG] IP and gateway not in same subnet - may cause routing issues");
+                }
+                
+                // Check subnet mask validity
+                uint32_t subnet_val = (config->subnet[0] << 24) | (config->subnet[1] << 16) | 
+                                     (config->subnet[2] << 8) | config->subnet[3];
+                uint32_t inverted = ~subnet_val + 1;
+                if ((inverted & (inverted - 1)) != 0 && inverted != 0) {
+                    LOG_ERROR("[NET_CFG] Invalid subnet mask (not contiguous)");
+                    instance().send_network_config_ack(false, "Invalid subnet mask");
+                    continue;
+                }
+                
+                // 2. Check for IP conflicts (500ms)
+                if (eth.checkIPConflict(config->ip)) {
+                    LOG_ERROR("[NET_CFG] IP address conflict detected");
+                    instance().send_network_config_ack(false, "IP in use by active device");
+                    continue;
+                }
+                
+                // 3. Test gateway reachability (2-4s)
+                if (!eth.testStaticIPReachability(config->ip, config->gateway, 
+                                                   config->subnet, config->dns_primary)) {
+                    LOG_ERROR("[NET_CFG] Gateway unreachable");
+                    instance().send_network_config_ack(false, "Gateway unreachable");
+                    continue;
+                }
+            }
+            
+            // All checks passed, save to NVS
+            if (eth.saveNetworkConfig(config->use_static_ip, config->ip, config->gateway,
+                                      config->subnet, config->dns_primary, config->dns_secondary)) {
+                LOG_INFO("[NET_CFG] ✓ Configuration saved to NVS");
+                instance().send_network_config_ack(true, "OK - reboot required");
+            } else {
+                LOG_ERROR("[NET_CFG] ✗ Failed to save configuration");
+                instance().send_network_config_ack(false, "NVS save failed");
+            }
+        }
+    }
+}
+
+// =============================================================================
+// MQTT Configuration Message Handlers
+// =============================================================================
+
+void EspnowMessageHandler::handle_mqtt_config_request(const espnow_queue_msg_t& msg) {
+    if (msg.len < (int)sizeof(mqtt_config_request_t)) {
+        LOG_ERROR("[MQTT_CFG] Invalid request message size: %d bytes", msg.len);
+        return;
+    }
+    
+    // Store receiver MAC for ACK response
+    memcpy(receiver_mac_, msg.mac, 6);
+    
+    LOG_INFO("[MQTT_CFG] Received MQTT config request from receiver");
+    
+    // Send current configuration as ACK
+    send_mqtt_config_ack(true, "Current configuration");
+}
+
+void EspnowMessageHandler::handle_mqtt_config_update(const espnow_queue_msg_t& msg) {
+    if (msg.len < (int)sizeof(mqtt_config_update_t)) {
+        LOG_ERROR("[MQTT_CFG] Invalid message size: %d bytes", msg.len);
+        return;
+    }
+    
+    const mqtt_config_update_t* config = reinterpret_cast<const mqtt_config_update_t*>(msg.data);
+    
+    // Store receiver MAC for ACK response
+    memcpy(receiver_mac_, msg.mac, 6);
+    
+    LOG_INFO("[MQTT_CFG] Received MQTT config update:");
+    LOG_INFO("[MQTT_CFG]   Enabled: %s", config->enabled ? "YES" : "NO");
+    LOG_INFO("[MQTT_CFG]   Server: %d.%d.%d.%d:%d", 
+             config->server[0], config->server[1], config->server[2], config->server[3],
+             config->port);
+    LOG_INFO("[MQTT_CFG]   Username: %s", strlen(config->username) > 0 ? config->username : "(none)");
+    LOG_INFO("[MQTT_CFG]   Client ID: %s", config->client_id);
+    
+    // Validate configuration
+    if (config->enabled) {
+        // Check server IP is not 0.0.0.0 or 255.255.255.255
+        if ((config->server[0] == 0 && config->server[1] == 0 && 
+             config->server[2] == 0 && config->server[3] == 0) ||
+            (config->server[0] == 255 && config->server[1] == 255 && 
+             config->server[2] == 255 && config->server[3] == 255)) {
+            LOG_ERROR("[MQTT_CFG] Invalid MQTT server address");
+            send_mqtt_config_ack(false, "Invalid server IP");
+            return;
+        }
+        
+        // Validate port
+        if (config->port < 1 || config->port > 65535) {
+            LOG_ERROR("[MQTT_CFG] Invalid port: %d", config->port);
+            send_mqtt_config_ack(false, "Invalid port number");
+            return;
+        }
+        
+        // Check client ID is not empty
+        if (strlen(config->client_id) == 0) {
+            LOG_ERROR("[MQTT_CFG] Client ID cannot be empty");
+            send_mqtt_config_ack(false, "Client ID required");
+            return;
+        }
+    }
+    
+    // Save configuration to NVS
+    IPAddress server(config->server[0], config->server[1], config->server[2], config->server[3]);
+    if (MqttConfigManager::saveConfig(config->enabled, server, config->port,
+                                config->username, config->password, config->client_id)) {
+        LOG_INFO("[MQTT_CFG] ✓ Configuration saved to NVS");
+        
+        // Apply configuration with hot-reload
+        LOG_INFO("[MQTT_CFG] Applying configuration (hot-reload)");
+        MqttConfigManager::applyConfig();
+        
+        // Wait a moment for connection attempt
+        delay(1000);
+        
+        send_mqtt_config_ack(true, "Config saved and applied");
+    } else {
+        LOG_ERROR("[MQTT_CFG] ✗ Failed to save configuration");
+        send_mqtt_config_ack(false, "NVS save failed");
+    }
+}
+
+void EspnowMessageHandler::send_mqtt_config_ack(bool success, const char* message) {
+    mqtt_config_ack_t ack;
+    memset(&ack, 0, sizeof(ack));
+    
+    ack.type = msg_mqtt_config_ack;
+    ack.success = success ? 1 : 0;
+    ack.enabled = MqttConfigManager::isEnabled() ? 1 : 0;
+    
+    // Current MQTT configuration
+    IPAddress server = MqttConfigManager::getServer();
+    ack.server[0] = server[0];
+    ack.server[1] = server[1];
+    ack.server[2] = server[2];
+    ack.server[3] = server[3];
+    
+    ack.port = MqttConfigManager::getPort();
+    
+    strncpy(ack.username, MqttConfigManager::getUsername(), sizeof(ack.username) - 1);
+    ack.username[sizeof(ack.username) - 1] = '\0';
+    
+    strncpy(ack.password, MqttConfigManager::getPassword(), sizeof(ack.password) - 1);
+    ack.password[sizeof(ack.password) - 1] = '\0';
+    
+    strncpy(ack.client_id, MqttConfigManager::getClientId(), sizeof(ack.client_id) - 1);
+    ack.client_id[sizeof(ack.client_id) - 1] = '\0';
+    
+    ack.connected = MqttConfigManager::isConnected() ? 1 : 0;
+    ack.config_version = MqttConfigManager::getConfigVersion();
+    
+    strncpy(ack.message, message, sizeof(ack.message) - 1);
+    ack.message[sizeof(ack.message) - 1] = '\0';
+    
+    ack.checksum = 0;  // TODO: Implement checksum if needed
+    
+    // Ensure receiver is registered as peer before sending
+    if (!EspnowPeerManager::is_peer_registered(receiver_mac_)) {
+        LOG_WARN("[MQTT_CFG] Receiver not registered as peer, adding now");
+        if (!EspnowPeerManager::add_peer(receiver_mac_)) {
+            LOG_ERROR("[MQTT_CFG] Failed to add receiver as peer");
+            return;
+        }
+    }
+    
+    esp_err_t result = esp_now_send(receiver_mac_, (const uint8_t*)&ack, sizeof(ack));
+    if (result == ESP_OK) {
+        LOG_INFO("[MQTT_CFG] ✓ ACK sent to receiver (success=%d, connected=%d)", 
+                 ack.success, ack.connected);
+    } else {
+        LOG_ERROR("[MQTT_CFG] ✗ Failed to send ACK: %s", esp_err_to_name(result));
+    }
+}
+

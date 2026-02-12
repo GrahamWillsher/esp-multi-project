@@ -32,6 +32,13 @@
 // Minimum compatible version (refuse to run with older incompatible firmware on other device)
 #define MIN_COMPATIBLE_VERSION 10000  // 1.0.0
 
+// Version compatibility structure
+struct VersionCompatibility {
+    uint32_t my_version;
+    uint32_t min_peer_version;
+    uint32_t max_peer_version;
+};
+
 // Device identification (set by build flags)
 #ifdef RECEIVER_DEVICE
     #define DEVICE_TYPE "RECEIVER"
@@ -49,9 +56,17 @@ inline String getFirmwareVersionString() {
     return String(FW_VERSION_STRING) + " (" + FW_BUILD_DATE + " " + FW_BUILD_TIME + ")";
 }
 
-// Helper to check compatibility
+// Helper to check compatibility (dynamic major version matching)
 inline bool isVersionCompatible(uint32_t otherVersion) {
-    return (otherVersion >= MIN_COMPATIBLE_VERSION);
+    // Calculate compatibility range based on current major version
+    // Compatible = same major version (any minor/patch)
+    // Example: v2.0.0 accepts v2.0.0 to v2.99.99
+    uint16_t my_major = FW_VERSION_MAJOR;
+    uint32_t min_compatible = my_major * 10000;        // Same major version minimum
+    uint32_t max_compatible = (my_major + 1) * 10000 - 1;  // Up to next major version
+    
+    // Check if other version is within compatible range
+    return (otherVersion >= min_compatible && otherVersion <= max_compatible);
 }
 
 // Helper to extract version components

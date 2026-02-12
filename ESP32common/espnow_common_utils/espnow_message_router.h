@@ -76,7 +76,7 @@ public:
 private:
     EspnowMessageRouter() = default;
     
-    static constexpr size_t MAX_ROUTES = 20;
+    static constexpr size_t MAX_ROUTES = 48;  // Phase 3: Increased for granular subtypes + future expansion
     MessageRoute routes_[MAX_ROUTES];
     size_t route_count_ = 0;
 };

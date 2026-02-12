@@ -25,9 +25,11 @@ void handle_probe(const espnow_queue_msg_t* msg, void* context) {
     
     MQTT_LOG_DEBUG("PROBE", "Received announcement (seq=%u) from %s", p->seq, mac_str);
     
-    // Add peer if not already registered
+    // Add peer if not already registered (use current WiFi channel explicitly)
     if (!EspnowPeerManager::is_peer_registered(msg->mac)) {
-        EspnowPeerManager::add_peer(msg->mac, 0);
+        uint8_t current_channel = WiFi.channel();
+        EspnowPeerManager::add_peer(msg->mac, current_channel);
+        MQTT_LOG_DEBUG("PROBE", "Registered peer %s on channel %d", mac_str, current_channel);
     }
     
     // Update connection flag if provided

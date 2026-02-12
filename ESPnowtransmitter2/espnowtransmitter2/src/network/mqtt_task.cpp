@@ -5,10 +5,21 @@
 #include "../config/network_config.h"
 #include "../config/logging_config.h"
 #include "../espnow/message_handler.h"
+#include "../espnow/version_beacon_manager.h"
 #include <Arduino.h>
 #include <espnow_transmitter.h>
 #include <ethernet_utilities.h>
 #include <mqtt_logger.h>
+
+// MqttTask singleton implementation
+MqttTask& MqttTask::instance() {
+    static MqttTask instance;
+    return instance;
+}
+
+bool MqttTask::is_connected() const {
+    return MqttManager::instance().is_connected();
+}
 
 void task_mqtt_loop(void* parameter) {
     LOG_DEBUG("MQTT task started");
@@ -24,12 +35,21 @@ void task_mqtt_loop(void* parameter) {
     unsigned long last_reconnect_attempt = 0;
     unsigned long last_publish = 0;
     bool logger_initialized = false;
+    bool was_connected = false;  // Track previous MQTT connection state
     
     while (true) {
         unsigned long now = millis();
         
+        // Check if MQTT connection state changed
+        bool is_connected_now = MqttManager::instance().is_connected();
+        if (is_connected_now != was_connected) {
+            // MQTT state changed - notify version beacon manager
+            VersionBeaconManager::instance().notify_mqtt_connected(is_connected_now);
+            was_connected = is_connected_now;
+        }
+        
         // Handle MQTT connection
-        if (!MqttManager::instance().is_connected()) {
+        if (!is_connected_now) {
             if (config::features::MQTT_ENABLED && 
                 EthernetManager::instance().is_connected() && 
                 (now - last_reconnect_attempt > timing::MQTT_RECONNECT_INTERVAL_MS)) {

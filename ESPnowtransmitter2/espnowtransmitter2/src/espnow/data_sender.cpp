@@ -1,5 +1,6 @@
 #include "data_sender.h"
 #include "message_handler.h"
+#include "enhanced_cache.h"  // Section 11: Dual storage cache (replaces data_cache)
 #include "../config/task_config.h"
 #include "../config/logging_config.h"
 #include <Arduino.h>
@@ -52,7 +53,13 @@ void DataSender::task_impl(void* parameter) {
 /**
  * @brief Send test data with SOC-based LED flash control
  * 
+ * Section 11 Architecture: ALWAYS cache-first (non-blocking)
+ * - Data flows through EnhancedCache regardless of connection state
+ * - Background transmission task handles sending from cache
+ * - Non-blocking: < 100µs cache write (doesn't block Battery Emulator)
+ * 
  * Sends battery data and triggers LED flash on receiver when SOC band changes.
+ * 
  * SOC range is 20-80%, mapped to thirds:
  * - Low (20-39 SOC = 0-33% normalized): Red LED
  * - Medium (40-59 SOC = 34-66% normalized): Orange LED  
@@ -63,6 +70,18 @@ void DataSender::task_impl(void* parameter) {
 void DataSender::send_test_data_with_led_control() {
     // Generate test data (using library's send_test_data logic)
     send_test_data();
+    
+    // Section 11: ALWAYS write to cache first (cache-centric pattern)
+    // Background transmission task will handle sending from cache
+    if (EnhancedCache::instance().add_transient(tx_data)) {
+        LOG_TRACE("Data cached (SOC:%d%%, Power:%dW)", 
+                 tx_data.soc, tx_data.power);
+    } else {
+        // Cache write failed (mutex timeout or overflow)
+        // Data dropped - doesn't block control code
+        LOG_WARN("Cache write failed (timeout/overflow) - data dropped");
+        return;
+    }
     
     // Determine current SOC band (20-80 range mapped to thirds)
     SOCBand current_band;
@@ -76,6 +95,12 @@ void DataSender::send_test_data_with_led_control() {
     
     // Send flash LED command only when band changes
     if (current_band != last_soc_band) {
+        // Check ESP-NOW health before sending LED command
+        if (!is_espnow_healthy()) {
+            LOG_DEBUG("Skipping LED flash - ESP-NOW experiencing delivery failures");
+            return;
+        }
+        
         flash_led_t flash_msg;
         flash_msg.type = msg_flash_led;
         

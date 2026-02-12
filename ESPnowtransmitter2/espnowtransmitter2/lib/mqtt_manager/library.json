@@ -1,0 +1,10 @@
+{
+  "name": "mqtt_manager",
+  "version": "1.0.0",
+  "description": "MQTT Configuration Manager - NVS-based MQTT settings storage",
+  "dependencies": {
+    "logging_utilities": "*"
+  },
+  "frameworks": "arduino",
+  "platforms": "espressif32"
+}

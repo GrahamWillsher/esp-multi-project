@@ -141,6 +141,49 @@ namespace EspnowPacketUtils {
         return info.frag_index == (info.frag_total - 1);
     }
 
+    // =========================================================================
+    // Common Checksum Utilities (used by settings sync, etc.)
+    // =========================================================================
+
+    /**
+     * @brief Calculate XOR checksum for a message structure
+     * 
+     * Calculates XOR checksum over all bytes except the checksum field itself.
+     * Template handles any message type with a uint16_t checksum field.
+     * 
+     * @tparam T Message structure type (must have uint16_t checksum field)
+     * @param message Pointer to message structure
+     * @return uint16_t Calculated checksum value
+     */
+    template<typename T>
+    inline uint16_t calculate_message_checksum(const T* message) {
+        uint16_t checksum = 0;
+        const uint8_t* bytes = reinterpret_cast<const uint8_t*>(message);
+        // XOR all bytes except the checksum field (last 2 bytes for uint16_t)
+        for (size_t i = 0; i < sizeof(T) - sizeof(uint16_t); i++) {
+            checksum ^= bytes[i];
+        }
+        return checksum;
+    }
+
+    /**
+     * @brief Verify XOR checksum for a message structure
+     * 
+     * Recalculates checksum and compares with message's checksum field.
+     * 
+     * @tparam T Message structure type (must have uint16_t checksum field)
+     * @param message Pointer to message structure
+     * @return true if calculated checksum matches message checksum
+     */
+    template<typename T>
+    inline bool verify_message_checksum(const T* message) {
+        uint16_t calculated = calculate_message_checksum(message);
+        // Assume checksum is the last field (standard convention)
+        const uint8_t* bytes = reinterpret_cast<const uint8_t*>(message);
+        const uint16_t* stored_checksum = reinterpret_cast<const uint16_t*>(bytes + sizeof(T) - sizeof(uint16_t));
+        return calculated == *stored_checksum;
+    }
+
 } // namespace EspnowPacketUtils
 
 #endif // ESPNOW_PACKET_UTILS_H

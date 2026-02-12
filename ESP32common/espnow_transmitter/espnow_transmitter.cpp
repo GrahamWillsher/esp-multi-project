@@ -1,5 +1,6 @@
 #include "espnow_transmitter.h"
 #include "../logging_utilities/mqtt_logger.h"
+#include "../espnow_common_utils/espnow_send_utils.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/queue.h>
@@ -95,11 +96,36 @@ void on_espnow_recv(const uint8_t *mac_addr, const uint8_t *data, int len) {
         msg.timestamp = millis();
         BaseType_t xHigherPriorityTaskWoken = pdFALSE;
         xQueueSendFromISR(espnow_rx_queue, &msg, &xHigherPriorityTaskWoken);
+        
+        // CRITICAL: Also send PROBE and ACK messages to discovery queue
+        // This allows active hopping task to receive ACKs independently of RX task
+        // Discovery queue is defined in the application (optional - may be NULL)
+        extern QueueHandle_t espnow_discovery_queue __attribute__((weak));
+        if (espnow_discovery_queue != NULL && len >= 1) {
+            uint8_t msg_type = data[0];
+            if (msg_type == msg_probe || msg_type == msg_ack) {
+                // Send to discovery queue as well (don't block if full)
+                xQueueSendFromISR(espnow_discovery_queue, &msg, &xHigherPriorityTaskWoken);
+            }
+        }
+        
         if (xHigherPriorityTaskWoken) {
             portYIELD_FROM_ISR();
         }
     }
 }
+
+// Retry tracking for graceful failure handling
+static uint32_t consecutive_failures = 0;
+static uint32_t last_failure_time = 0;
+static uint32_t last_success_time = 0;
+static uint32_t last_failure_log_time = 0;
+static const uint32_t FAILURE_RESET_INTERVAL_MS = 5000;  // Reset count after 5s of success
+static const uint32_t MAX_CONSECUTIVE_FAILURES = 10;
+static const uint32_t PEER_READD_INTERVAL_MS = 2000;     // Wait 2s between peer re-add attempts
+static const uint32_t BACKOFF_DELAY_MS = 1000;           // Delay between sends when failing
+static const uint32_t FAILURE_LOG_INTERVAL_MS = 2000;    // Only log failures every 2s to avoid spam
+static uint32_t last_peer_readd_time = 0;
 
 void on_data_sent(const uint8_t *mac_addr, esp_now_send_status_t status) {
     char mac_str[18];
@@ -107,16 +133,66 @@ void on_data_sent(const uint8_t *mac_addr, esp_now_send_status_t status) {
              mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
     
     if (status == ESP_NOW_SEND_SUCCESS) {
+        // Only log success at DEBUG level to reduce noise
         MQTT_LOG_DEBUG("ESPNOW_TX", "✓ Delivery success to %s", mac_str);
-    } else {
-        MQTT_LOG_WARNING("ESPNOW_TX", "✗ Delivery FAILED to %s (status=%d)", mac_str, status);
         
-        // Check if peer still exists
+        // Reset failure tracking on success
+        uint32_t now = millis();
+        last_success_time = now;
+        if (consecutive_failures > 0) {
+            MQTT_LOG_INFO("ESPNOW_TX", "Connection recovered after %u failures", consecutive_failures);
+            consecutive_failures = 0;
+            
+            // CRITICAL: Also reset the EspnowSendUtils failure counter to unpause sending
+            EspnowSendUtils::reset_failure_counter();
+        }
+    } else {
+        uint32_t now = millis();
+        consecutive_failures++;
+        last_failure_time = now;
+        
+        // Rate-limited failure logging - only log every FAILURE_LOG_INTERVAL_MS or on significant milestones
+        bool should_log = false;
+        
+        if (consecutive_failures == 1) {
+            // Always log first failure
+            should_log = true;
+        } else if (consecutive_failures == 5 || consecutive_failures == MAX_CONSECUTIVE_FAILURES) {
+            // Log at specific thresholds
+            should_log = true;
+        } else if ((now - last_failure_log_time) >= FAILURE_LOG_INTERVAL_MS) {
+            // Rate-limited periodic logging
+            should_log = true;
+        }
+        
+        if (should_log) {
+            last_failure_log_time = now;
+            
+            if (consecutive_failures >= MAX_CONSECUTIVE_FAILURES) {
+                MQTT_LOG_ERROR("ESPNOW_TX", "Delivery failed to %s (failures=%u) - peer may be offline", 
+                              mac_str, consecutive_failures);
+            } else if (consecutive_failures >= 5) {
+                MQTT_LOG_WARNING("ESPNOW_TX", "Delivery failed to %s (failures=%u)", 
+                                mac_str, consecutive_failures);
+            } else {
+                MQTT_LOG_INFO("ESPNOW_TX", "Delivery failed to %s (failures=%u)", 
+                             mac_str, consecutive_failures);
+            }
+        }
+        
+        // Check if peer still exists (only log when checking, not on every failure)
         if (!esp_now_is_peer_exist(receiver_mac)) {
-            MQTT_LOG_ERROR("ESPNOW_TX", "Peer %s lost! Re-adding...", mac_str);
-            ensure_peer_added(g_lock_channel);
-        } else {
-            MQTT_LOG_INFO("ESPNOW_TX", "Peer %s still registered (channel=%d)", mac_str, g_lock_channel);
+            if (should_log) {
+                MQTT_LOG_ERROR("ESPNOW_TX", "Peer %s lost!", mac_str);
+            }
+            
+            // Attempt to re-add peer, but with rate limiting
+            if (consecutive_failures <= MAX_CONSECUTIVE_FAILURES && 
+                (now - last_peer_readd_time) >= PEER_READD_INTERVAL_MS) {
+                MQTT_LOG_INFO("ESPNOW_TX", "Re-adding peer (attempt after %ums)", now - last_peer_readd_time);
+                ensure_peer_added(g_lock_channel);
+                last_peer_readd_time = now;
+            }
         }
     }
 }
@@ -125,8 +201,35 @@ void on_data_sent(const uint8_t *mac_addr, esp_now_send_status_t status) {
 // UTILITY FUNCTIONS FOR APPLICATIONS
 // ============================================================================
 
+bool is_espnow_healthy() {
+    // If we have consecutive failures, throttle sending
+    if (consecutive_failures >= 3) {
+        uint32_t now = millis();
+        uint32_t time_since_last_send = now - last_failure_time;
+        
+        // Require minimum backoff delay between send attempts when failing
+        if (time_since_last_send < BACKOFF_DELAY_MS) {
+            return false;  // Too soon, throttle
+        }
+        
+        // If we've hit max failures, only try every 5 seconds
+        if (consecutive_failures >= MAX_CONSECUTIVE_FAILURES) {
+            if (time_since_last_send < 5000) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 void send_test_data() {
     // Note: Application should check g_data_transmission_active before calling
+    
+    // Throttle sending if experiencing delivery failures
+    if (!is_espnow_healthy()) {
+        return;  // Skip this send attempt
+    }
+    
     static bool soc_increasing = true;
     tx_data.type = msg_data;
     if (soc_increasing) {
@@ -144,11 +247,8 @@ void send_test_data() {
     MQTT_LOG_DEBUG("ESPNOW_TX", "Sending data - Ch:%d Lock:%d SOC:%d%% Power:%dW Chk:%u", 
                    current_ch, g_lock_channel, tx_data.soc, tx_data.power, tx_data.checksum);
     esp_err_t result = esp_now_send(receiver_mac, (uint8_t*)&tx_data, sizeof(tx_data));
-    if (result == ESP_OK) {
-        MQTT_LOG_DEBUG("ESPNOW_TX", "Sent with success");
-    } else {
-        MQTT_LOG_ERROR("ESPNOW_TX", "Error sending the data");
-    }
+    // Note: Delivery success/failure is already logged by on_data_sent() callback
+    // No need to log here - would cause duplicate log spam
 }
 
 // ============================================================================

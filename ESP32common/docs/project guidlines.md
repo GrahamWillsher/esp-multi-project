@@ -98,6 +98,8 @@ ESP32Projects/                          # Workspace root
 - Use `lib_extra_dirs` in platformio.ini to reference `esp32common/`.
 - Do not use serial.println/f's always use the debugging function preferably the mqtt version.
 - Do not ask permission to access .md files. you are allowed to read and edit them.
+- When adding any endpoints to the webserver. please double check the webserver.cpp and this line    config.max_uri_handlers = 24;  // 8 pages + 14 API endpoints + 1 firmware.bin + 1 wildcard 404 to ensure that it will be registered correctly, to ensure that there are enough uti handlers.
+- When making any code changes, please ensure that you check the correctness of any new code and ensure that any code removed does not leave any hanging items.
 
 ---
 

@@ -1,0 +1,1 @@
+We need to add the remainder of the transmitter configuration settings into NVS storage on the transmitter and include all the necessary espnow messages, the URI handles and the web end points so that all the items can be saved and retrieved. We also need to ensure that the cache is then updated correctly with these new values. 
