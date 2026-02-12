@@ -558,17 +558,23 @@ void setupWiFi() {
 
 ### 1.4 Implementation Sequence (Receiver)
 
-1. Create `ReceiverConfigManager` class (header + implementation)
-2. Add NVS load/save methods with array-based IP storage
-3. Add AP mode support in `wifi_setup.cpp`
-4. Create `/receiver/network` page with AP setup mode detection
-5. Add API endpoints for get/save receiver network config
-6. Implement auto-reboot after save
-7. Add navigation links to new page
-8. Test complete flow:
+1. **Update webserver configuration** in `webserver.cpp`:
+   - Update `EXPECTED_HANDLER_COUNT` from 34 to 37
+   - Verify `max_uri_handlers = 50` (adequate for Phase 1)
+   
+2. Create `ReceiverConfigManager` class (header + implementation)
+3. Add NVS load/save methods with array-based IP storage
+4. Add AP mode support in `wifi_setup.cpp`
+5. Create `/receiver/network` page with AP setup mode detection
+6. Add API endpoints for get/save receiver network config (2 new handlers)
+7. Implement auto-reboot after save
+8. Add navigation links to new page
+9. Test complete flow:
    - Fresh install → AP mode → enter credentials → reboot → normal operation
    - Normal mode → change credentials → reboot → verify changes
    - Failed connection → fallback to AP mode
+   
+10. **Verify handler registration** - check logs show 37/50 handlers registered
 
 ---
 
@@ -1097,7 +1103,140 @@ async function saveBatteryConfig() {
 
 ---
 
-## 6. Documentation Requirements
+## 9. URI Handler Capacity Planning
+
+### Current Handler Count
+
+**Webserver Configuration**:
+- `max_uri_handlers`: **50** (configured in `webserver.cpp`)
+- `EXPECTED_HANDLER_COUNT`: **34** (current)
+
+**Current Handlers** (34 total):
+
+**Pages (10 handlers)**:
+1. `/` - Dashboard (landing page)
+2. `/transmitter` - Transmitter hub
+3. `/transmitter/config` - Settings page
+4. `/transmitter/battery` - Battery settings
+5. `/transmitter/monitor` - Monitor (polling)
+6. `/transmitter/monitor2` - Monitor (SSE)
+7. `/transmitter/reboot` - Reboot page
+8. `/receiver/config` - System info
+9. `/ota` - OTA update
+10. `/debug` - Debug logging
+
+**API Endpoints (23 handlers)**:
+1. `/api/data` - System data
+2. `/api/dashboard_data` - Dashboard data
+3. `/api/monitor` - Battery monitor data
+4. `/api/transmitter_ip` - Get transmitter IP
+5. `/api/request_transmitter_ip` - Request IP from transmitter
+6. `/api/config_version` - Get config version
+7. `/api/version` - Firmware version
+8. `/api/firmware_info` - Firmware metadata
+9. `/api/transmitter_metadata` - Transmitter metadata
+10. `/api/request_metadata` - Request metadata
+11. `/api/monitor_sse` - SSE monitor stream
+12. `/api/reboot` - Reboot transmitter
+13. `/api/setDebugLevel` - Set debug level
+14. `/api/get_battery_settings` - Get battery settings
+15. `/api/save_setting` - Save battery setting
+16. `/api/get_network_config` - Get network config
+17. `/api/request_network_config` - Request network config
+18. `/api/save_network_config` - Save network config
+19. `/api/get_mqtt_config` - Get MQTT config
+20. `/api/request_mqtt_config` - Request MQTT config
+21. `/api/save_mqtt_config` - Save MQTT config
+22. `/api/ota_upload` - OTA upload
+23. `/firmware.bin` - Firmware download
+
+**Catch-all (1 handler)**:
+24. `/*` - 404 handler
+
+**Total Current**: 34 handlers
+
+### Planned Additional Handlers (Receiver WiFi Config)
+
+**New Page (1 handler)**:
+1. `/receiver/network` - WiFi network settings
+
+**New API Endpoints (2 handlers)**:
+2. `/api/get_receiver_network` - Get receiver WiFi config
+3. `/api/save_receiver_network` - Save receiver WiFi config
+
+**Total After Phase 1**: 34 + 3 = **37 handlers**
+
+### Future Expansion (Transmitter Extended Config)
+
+**Estimated Additional Handlers**:
+- Battery config page: Already exists
+- Power settings: 3 handlers (page + get + save)
+- Inverter config: 3 handlers (page + get + save)
+- CAN config: 3 handlers (page + get + save)
+- Contactor config: 3 handlers (page + get + save)
+
+**Total After Full Implementation**: 37 + 12 = **49 handlers**
+
+### Capacity Analysis
+
+| Phase | Handlers | Capacity | Usage | Status |
+|-------|----------|----------|-------|--------|
+| Current | 34 | 50 | 68% | ✅ Good |
+| Phase 1 (Receiver WiFi) | 37 | 50 | 74% | ✅ Good |
+| Full Implementation | 49 | 50 | 98% | ⚠️ Near Limit |
+
+### Recommendations
+
+1. **Phase 1 (Receiver WiFi)**: ✅ No action needed
+   - 37/50 handlers (74% capacity)
+   - 13 handlers remaining for future expansion
+
+2. **Full Implementation**: ⚠️ Consider increasing capacity
+   - 49/50 handlers (98% capacity)
+   - Only 1 handler remaining
+   - Recommend increasing to `max_uri_handlers = 60` before full implementation
+
+3. **Future-Proofing**: 
+   - If adding more features (profiles, history, diagnostics), increase to 75-100
+   - Each major feature typically requires 2-4 handlers (page + API endpoints)
+
+### Configuration Update (Before Full Implementation)
+
+**File**: `espnowreciever_2/lib/webserver/webserver.cpp`
+
+```cpp
+// Current (adequate for Phase 1):
+config.max_uri_handlers = 50;  // 37 handlers used, 13 free
+
+// Recommended for Full Implementation:
+config.max_uri_handlers = 60;  // 49 handlers used, 11 free
+
+// Recommended for future expansion:
+config.max_uri_handlers = 75;  // Plenty of room for new features
+```
+
+**Update EXPECTED_HANDLER_COUNT**:
+```cpp
+// Phase 1 (after receiver WiFi implementation):
+const int EXPECTED_HANDLER_COUNT = 37;  // 10 pages + 26 API + 1 catch-all
+
+// Full Implementation (after all transmitter configs):
+const int EXPECTED_HANDLER_COUNT = 49;  // 15 pages + 33 API + 1 catch-all
+```
+
+### Memory Impact
+
+**ESP32-S3 Memory** (T-Display-S3):
+- Each handler: ~200 bytes of RAM
+- 50 handlers: ~10 KB
+- 75 handlers: ~15 KB
+- **Impact**: Negligible (ESP32-S3 has 512 KB RAM)
+
+**Recommendation**: ✅ Increase to 60-75 handlers now to avoid future issues
+
+---
+
+## 10. Documentation Requirements
 
 ### 6.1 User Documentation
 
