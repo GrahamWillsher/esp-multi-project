@@ -88,7 +88,7 @@ static bool send_ntp_packet(const char* server) {
  */
 static String get_public_ip_and_timezone(String& timezone_out, String& country_out, String& city_out) {
     if (!is_network_connected()) {
-        LOG_ERROR("[IP_DETECT] No network connection!");
+        LOG_ERROR("IP_DETECT", "No network connection!");
         MQTT_LOG_ERROR("IP", "No network connection");
         return "";
     }
@@ -96,13 +96,13 @@ static String get_public_ip_and_timezone(String& timezone_out, String& country_o
     const char* host = "ip-api.com";
     const char* path = "/json/?fields=status,timezone";
     
-    LOG_INFO("[IP_DETECT] ===== PUBLIC IP & TIMEZONE DETECTION START =====");
-    LOG_INFO("[IP_DETECT] Connecting to %s...", host);
+    LOG_INFO("IP_DETECT", "===== PUBLIC IP & TIMEZONE DETECTION START =====");
+    LOG_INFO("IP_DETECT", "Connecting to %s...", host);
     MQTT_LOG_INFO("IP", "Connecting to ip-api.com...");
     
     // Check Ethernet is up
     if (!ETH.linkUp()) {
-        LOG_ERROR("[IP_DETECT] ✗ Ethernet not connected!");
+        LOG_ERROR("IP_DETECT", "✗ Ethernet not connected!");
         MQTT_LOG_ERROR("IP", "Ethernet not connected");
         return "";
     }
@@ -110,24 +110,24 @@ static String get_public_ip_and_timezone(String& timezone_out, String& country_o
     // Verify we have a valid local IP
     IPAddress local_ip = ETH.localIP();
     if (local_ip == IPAddress(0, 0, 0, 0)) {
-        LOG_ERROR("[IP_DETECT] ✗ Ethernet has no valid IP address!");
+        LOG_ERROR("IP_DETECT", "✗ Ethernet has no valid IP address!");
         MQTT_LOG_ERROR("IP", "No valid Ethernet IP");
         return "";
     }
     
-    LOG_INFO("[IP_DETECT] Using Ethernet connection (IP: %s)", local_ip.toString().c_str());
+    LOG_INFO("IP_DETECT", "Using Ethernet connection (IP: %s)", local_ip.toString().c_str());
     
     // WiFiClient works for Ethernet on ESP32
     WiFiClient client;
     
-    LOG_INFO("[IP_DETECT] Attempting to connect to %s:80...", host);
+    LOG_INFO("IP_DETECT", "Attempting to connect to %s:80...", host);
     if (!client.connect(host, 80)) {
-        LOG_ERROR("[IP_DETECT] ✗ Connection to ip-api.com FAILED!");
+        LOG_ERROR("IP_DETECT", "✗ Connection to ip-api.com FAILED!");
         MQTT_LOG_ERROR("IP", "Connection to ip-api.com failed");
         return "";
     }
     
-    LOG_INFO("[IP_DETECT] ✓ Connected! Sending HTTP request...");
+    LOG_INFO("IP_DETECT", "✓ Connected! Sending HTTP request...");
     
     // Small delay to ensure connection is stable
     delay(10);
@@ -141,7 +141,7 @@ static String get_public_ip_and_timezone(String& timezone_out, String& country_o
     client.println("Connection: close");
     client.println();
     
-    LOG_INFO("[IP_DETECT] Request sent, waiting for response...");
+    LOG_INFO("IP_DETECT", "Request sent, waiting for response...");
     
     // Read response
     String response = "";
@@ -156,12 +156,12 @@ static String get_public_ip_and_timezone(String& timezone_out, String& country_o
     }
     
     if (!client.available()) {
-        LOG_ERROR("[IP_DETECT] No data received from server after 5 seconds!");
+        LOG_ERROR("IP_DETECT", "No data received from server after 5 seconds!");
         client.stop();
         return "";
     }
     
-    LOG_INFO("[IP_DETECT] Data available, reading response...");
+    LOG_INFO("IP_DETECT", "Data available, reading response...");
     
     // Read until timeout or no more data (connection can close but data still in buffer)
     while (millis() < timeout) {
@@ -170,40 +170,40 @@ static String get_public_ip_and_timezone(String& timezone_out, String& country_o
             if (!headersPassed) {
                 headerCount++;
                 if (headerCount == 1) {
-                    LOG_INFO("[IP_DETECT] HTTP Status: %s", line.c_str());
+                    LOG_INFO("IP_DETECT", "HTTP Status: %s", line.c_str());
                 }
                 MQTT_LOG_DEBUG("IP", "Header: %s", line.c_str());
                 // Check for blank line (headers/body separator) - can be "\r" or empty after trim
                 line.trim();
                 if (line.length() == 0) {
                     headersPassed = true;
-                    LOG_INFO("[IP_DETECT] Headers complete, reading body...");
+                    LOG_INFO("IP_DETECT", "Headers complete, reading body...");
                     continue;
                 }
             } else {
                 // We're in the body section
-                LOG_INFO("[IP_DETECT] Body line read: %d chars", line.length());
+                LOG_INFO("IP_DETECT", "Body line read: %d chars", line.length());
                 response += line;
             }
         } else {
             // No data available right now
             if (!client.connected()) {
                 // Connection closed and no data left
-                LOG_INFO("[IP_DETECT] Connection closed, no more data");
+                LOG_INFO("IP_DETECT", "Connection closed, no more data");
                 break;
             }
             delay(10);  // Small delay when no data available
         }
     }
     
-    LOG_INFO("[IP_DETECT] Loop exited. Response bytes: %d", response.length());
+    LOG_INFO("IP_DETECT", "Loop exited. Response bytes: %d", response.length());
     client.stop();
     
-    LOG_INFO("[IP_DETECT] Response received: %d bytes", response.length());
-    LOG_INFO("[IP_DETECT] Raw response (first 200 chars): '%s'", response.substring(0, 200).c_str());
+    LOG_INFO("IP_DETECT", "Response received: %d bytes", response.length());
+    LOG_INFO("IP_DETECT", "Raw response (first 200 chars): '%s'", response.substring(0, 200).c_str());
     
     if (response.length() == 0) {
-        LOG_ERROR("[IP_DETECT] ✗ Empty response from ipapi.co (timeout?)");
+        LOG_ERROR("IP_DETECT", "✗ Empty response from ipapi.co (timeout?)");
         MQTT_LOG_ERROR("IP", "Empty response from ipapi.co");
         return "";
     }
@@ -215,13 +215,13 @@ static String get_public_ip_and_timezone(String& timezone_out, String& country_o
     // Example response: {"ip":"1.2.3.4","city":"London","region":"England",
     //                    "country":"GB","country_name":"United Kingdom",
     //                    "timezone":"Europe/London","latitude":51.5074,"longitude":-0.1278}
-    LOG_INFO("[IP_DETECT] Parsing JSON...");
+    LOG_INFO("IP_DETECT", "Parsing JSON...");
     DynamicJsonDocument doc(1024);  // ipapi.co has smaller responses
     DeserializationError error = deserializeJson(doc, response);
     
     if (error) {
-        LOG_ERROR("[IP_DETECT] ✗ JSON parse error: %s", error.c_str());
-        LOG_ERROR("[IP_DETECT] Response was: %s", response.substring(0, 200).c_str());
+        LOG_ERROR("IP_DETECT", "✗ JSON parse error: %s", error.c_str());
+        LOG_ERROR("IP_DETECT", "Response was: %s", response.substring(0, 200).c_str());
         MQTT_LOG_ERROR("IP", "JSON parse error: %s", error.c_str());
         return "";
     }
@@ -232,13 +232,13 @@ static String get_public_ip_and_timezone(String& timezone_out, String& country_o
     String city = doc["city"].as<String>();
     
     if (ip.length() == 0) {
-        LOG_ERROR("[IP_DETECT] ✗ No 'ipAddress' field in JSON response");
+        LOG_ERROR("IP_DETECT", "✗ No 'ipAddress' field in JSON response");
         MQTT_LOG_ERROR("IP", "No IP field in response");
         return "";
     }
     
     if (timezone.length() == 0) {
-        LOG_WARN("[IP_DETECT] No timezone in response, will use UTC");
+        LOG_WARN("IP_DETECT", "No timezone in response, will use UTC");
         timezone = "UTC";
     }
     
@@ -247,10 +247,10 @@ static String get_public_ip_and_timezone(String& timezone_out, String& country_o
     country_out = country;
     city_out = city;
     
-    LOG_INFO("[IP_DETECT] ✓✓✓ SUCCESS! Public IP: %s ✓✓✓", ip.c_str());
-    LOG_INFO("[IP_DETECT] ✓ Location: %s, %s", city.c_str(), country.c_str());
-    LOG_INFO("[IP_DETECT] ✓ Timezone: %s", timezone.c_str());
-    LOG_INFO("[IP_DETECT] ===== PUBLIC IP & TIMEZONE DETECTION END =====");
+    LOG_INFO("IP_DETECT", "✓✓✓ SUCCESS! Public IP: %s ✓✓✓", ip.c_str());
+    LOG_INFO("IP_DETECT", "✓ Location: %s, %s", city.c_str(), country.c_str());
+    LOG_INFO("IP_DETECT", "✓ Timezone: %s", timezone.c_str());
+    LOG_INFO("IP_DETECT", "===== PUBLIC IP & TIMEZONE DETECTION END =====");
     MQTT_LOG_NOTICE("IP", "Detected: %s in %s, %s (TZ: %s)", ip.c_str(), city.c_str(), country.c_str(), timezone.c_str());
     
     return ip;
@@ -264,16 +264,16 @@ static String get_public_ip_and_timezone(String& timezone_out, String& country_o
  */
 static String get_timezone_from_location() {
     if (!is_network_connected()) {
-        LOG_WARN("[TZ_DETECT] No network connection for timezone detection");
+        LOG_WARN("TZ_DETECT", "No network connection for timezone detection");
         MQTT_LOG_WARNING("TZ", "No network connection available");
         return "UTC";
     }
     
-    LOG_INFO("[TZ_DETECT] ===== Starting timezone detection =====");
+    LOG_INFO("TZ_DETECT", "===== Starting timezone detection =====");
     MQTT_LOG_INFO("TZ", "Detecting timezone from public IP");
     
     // Get public IP and timezone info from ip-api.com (all in one call)
-    LOG_INFO("[TZ_DETECT] Getting IP and timezone from ip-api.com...");
+    LOG_INFO("TZ_DETECT", "Getting IP and timezone from ip-api.com...");
     String timezone_name = "";
     String country = "";
     String city = "";
@@ -281,7 +281,7 @@ static String get_timezone_from_location() {
     String ip = get_public_ip_and_timezone(timezone_name, country, city);
     
     if (ip.length() == 0) {
-        LOG_ERROR("[TZ_DETECT] Failed to get public IP from ip-api.com");
+        LOG_ERROR("TZ_DETECT", "Failed to get public IP from ip-api.com");
         MQTT_LOG_ERROR("TZ", "Failed to get public IP");
         return "UTC";
     }
@@ -291,7 +291,7 @@ static String get_timezone_from_location() {
     last_public_ip_check = millis();
     
     if (timezone_name.length() == 0) {
-        LOG_ERROR("[TZ_DETECT] Failed to get timezone name from ip-api.com");
+        LOG_ERROR("TZ_DETECT", "Failed to get timezone name from ip-api.com");
         MQTT_LOG_ERROR("TZ", "Timezone detection failed");
         return "UTC";
     }
@@ -299,11 +299,11 @@ static String get_timezone_from_location() {
     detected_timezone_name = timezone_name;
     detected_timezone_abbreviation = "";  // Will be set after configureTime()
     
-    LOG_INFO("[TZ_DETECT] ✓✓✓ SUCCESS! ✓✓✓");
-    LOG_INFO("[TZ_DETECT] ✓ Public IP: %s", public_ip_address.c_str());
-    LOG_INFO("[TZ_DETECT] ✓ Location: %s, %s", city.c_str(), country.c_str());
-    LOG_INFO("[TZ_DETECT] ✓ Timezone: %s", timezone_name.c_str());
-    LOG_INFO("[TZ_DETECT] ===== TIMEZONE DETECTION END =====");
+    LOG_INFO("TZ_DETECT", "✓✓✓ SUCCESS! ✓✓✓");
+    LOG_INFO("TZ_DETECT", "✓ Public IP: %s", public_ip_address.c_str());
+    LOG_INFO("TZ_DETECT", "✓ Location: %s, %s", city.c_str(), country.c_str());
+    LOG_INFO("TZ_DETECT", "✓ Timezone: %s", timezone_name.c_str());
+    LOG_INFO("TZ_DETECT", "===== TIMEZONE DETECTION END =====");
     MQTT_LOG_NOTICE("TZ", "Detected: %s in %s, %s", timezone_name.c_str(), city.c_str(), country.c_str());
     
     return timezone_name;
@@ -316,7 +316,7 @@ static void ethernet_utilities_task(void* parameter) {
     TickType_t last_ntp_check = 0;
     TickType_t last_ping_check = 0;
     
-    LOG_INFO("[NTP_UTILS] Network utilities task started");
+    LOG_INFO("NTP_UTILS", "Network utilities task started");
     
     // Wait for network connection
     while (!is_network_connected()) {
@@ -341,22 +341,22 @@ static void ethernet_utilities_task(void* parameter) {
                 last_timezone_attempt = millis();
                 timezone_retry_count++;
                 
-                LOG_INFO("[NET_UTILS] ===== Timezone & IP detection attempt #%d =====", timezone_retry_count);
+                LOG_INFO("NET_UTILS", "===== Timezone & IP detection attempt #%d =====", timezone_retry_count);
                 MQTT_LOG_INFO("TZ", "Detection attempt #%d", timezone_retry_count);
                 
                 // Show local IP addresses
                 IPAddress eth_ip = ETH.localIP();
                 IPAddress wifi_ip = WiFi.localIP();
                 if (eth_ip != IPAddress(0, 0, 0, 0)) {
-                    LOG_INFO("[NET_UTILS] Local Ethernet IP: %s", eth_ip.toString().c_str());
+                    LOG_INFO("NET_UTILS", "Local Ethernet IP: %s", eth_ip.toString().c_str());
                 }
                 if (wifi_ip != IPAddress(0, 0, 0, 0)) {
-                    LOG_INFO("[NET_UTILS] Local WiFi IP: %s", wifi_ip.toString().c_str());
+                    LOG_INFO("NET_UTILS", "Local WiFi IP: %s", wifi_ip.toString().c_str());
                 }
                 
                 if (configure_timezone_from_location()) {
                     timezone_detected = true;
-                    LOG_INFO("[NET_UTILS] ✓✓✓ SUCCESS! Timezone configured: %s (%s) ✓✓✓",
+                    LOG_INFO("NET_UTILS", "✓✓✓ SUCCESS! Timezone configured: %s (%s) ✓✓✓",
                              detected_timezone_name.c_str(),
                              detected_timezone_abbreviation.c_str());
                     MQTT_LOG_NOTICE("TZ", "Configured: %s (%s)",
@@ -366,7 +366,7 @@ static void ethernet_utilities_task(void* parameter) {
                     last_ntp_sync = 0;
                     get_ntp_time();
                 } else {
-                    LOG_WARN("[NET_UTILS] Timezone detection attempt #%d FAILED - will retry in %d seconds",
+                    LOG_WARN("NET_UTILS", "Timezone detection attempt #%d FAILED - will retry in %d seconds",
                              timezone_retry_count, TIMEZONE_RETRY_DELAY_MS/1000);
                     MQTT_LOG_WARNING("TZ", "Detection failed, retry #%d", timezone_retry_count);
                 }
@@ -390,7 +390,7 @@ static void ethernet_utilities_task(void* parameter) {
                 internet_connected = test_internet_connectivity();
                 
                 if (internet_connected != was_connected) {
-                    LOG_INFO("[NTP_UTILS] Internet: %s", 
+                    LOG_INFO("NTP_UTILS", "Internet: %s", 
                                 internet_connected ? "ONLINE" : "OFFLINE");
                 }
             } else {
@@ -407,15 +407,15 @@ static void ethernet_utilities_task(void* parameter) {
 // ═══════════════════════════════════════════════════════════════════════
 
 bool init_ethernet_utilities() {
-    LOG_INFO("[NTP_UTILS] Initializing network time utilities...");
+    LOG_INFO("NTP_UTILS", "Initializing network time utilities...");
     ntp_udp.begin(NTP_LOCAL_PORT);
-    LOG_INFO("[NTP_UTILS] NTP client ready on port %d", NTP_LOCAL_PORT);
+    LOG_INFO("NTP_UTILS", "NTP client ready on port %d", NTP_LOCAL_PORT);
     return true;
 }
 
 bool start_ethernet_utilities_task() {
     if (ethernet_utils_task_handle != NULL) {
-        LOG_INFO("[NTP_UTILS] Task already running");
+        LOG_INFO("NTP_UTILS", "Task already running");
         return true;
     }
     
@@ -430,10 +430,10 @@ bool start_ethernet_utilities_task() {
     );
     
     if (result == pdPASS) {
-        LOG_INFO("[NTP_UTILS] Background task started");
+        LOG_INFO("NTP_UTILS", "Background task started");
         return true;
     } else {
-        LOG_INFO("[NTP_UTILS] Failed to start task");
+        LOG_INFO("NTP_UTILS", "Failed to start task");
         return false;
     }
 }
@@ -442,7 +442,7 @@ void stop_ethernet_utilities_task() {
     if (ethernet_utils_task_handle != NULL) {
         vTaskDelete(ethernet_utils_task_handle);
         ethernet_utils_task_handle = NULL;
-        LOG_INFO("[NTP_UTILS] Background task stopped");
+        LOG_INFO("NTP_UTILS", "Background task stopped");
     }
 }
 
@@ -452,7 +452,7 @@ bool get_ntp_time() {
         setenv("TZ", "UTC0", 1);
         tzset();
         timezone_configured = true;
-        LOG_INFO("[NTP_UTILS] Initial timezone: UTC (will auto-detect)");
+        LOG_INFO("NTP_UTILS", "Initial timezone: UTC (will auto-detect)");
     }
     
     // Skip if recently synced
@@ -461,17 +461,17 @@ bool get_ntp_time() {
     }
     
     if (!is_network_connected()) {
-        LOG_INFO("[NTP_UTILS] No network connection");
+        LOG_INFO("NTP_UTILS", "No network connection");
         return false;
     }
     
-    LOG_INFO("[NTP_UTILS] Syncing time from NTP...");
+    LOG_INFO("NTP_UTILS", "Syncing time from NTP...");
     
     const char* servers[] = {NTP_SERVER1, NTP_SERVER2};
     
     for (int i = 0; i < 2; i++) {
         const char* server = servers[i];
-        LOG_INFO("[NTP_UTILS] Trying %s...", server);
+        LOG_INFO("NTP_UTILS", "Trying %s...", server);
         
         if (!send_ntp_packet(server)) {
             continue;
@@ -503,7 +503,7 @@ bool get_ntp_time() {
             const char* tz_display = detected_timezone_abbreviation.length() > 0 ? 
                                      detected_timezone_abbreviation.c_str() : "UTC";
             
-            LOG_INFO("[NTP_UTILS] Time set: %04d-%02d-%02d %02d:%02d:%02d %s",
+            LOG_INFO("NTP_UTILS", "Time set: %04d-%02d-%02d %02d:%02d:%02d %s",
                          local_time->tm_year + 1900,
                          local_time->tm_mon + 1,
                          local_time->tm_mday,
@@ -527,7 +527,7 @@ bool get_ntp_time() {
         }
     }
     
-    LOG_INFO("[NTP_UTILS] All NTP servers failed");
+    LOG_INFO("NTP_UTILS", "All NTP servers failed");
     return false;
 }
 
@@ -557,13 +557,13 @@ bool is_internet_reachable() {
 }
 
 bool configure_timezone_from_location() {
-    LOG_INFO("[TZ_CONFIG] Getting timezone from location...");
+    LOG_INFO("TZ_CONFIG", "Getting timezone from location...");
     String tz_name = get_timezone_from_location();
     
-    LOG_INFO("[TZ_CONFIG] Received timezone name: '%s'", tz_name.c_str());
+    LOG_INFO("TZ_CONFIG", "Received timezone name: '%s'", tz_name.c_str());
     
     if (tz_name.length() == 0 || tz_name == "UTC") {
-        LOG_ERROR("[TZ_CONFIG] REJECTED: Got default UTC (detection failed)");
+        LOG_ERROR("TZ_CONFIG", "REJECTED: Got default UTC (detection failed)");
         MQTT_LOG_ERROR("TZ", "Detection failed - got UTC default");
         return false;
     }
@@ -609,7 +609,7 @@ bool configure_timezone_from_location() {
         detected_timezone_abbreviation = "GST";
     } else {
         // For unknown timezones, just use UTC
-        LOG_WARN("[TZ_CONFIG] Unknown timezone '%s', using UTC", tz_name.c_str());
+        LOG_WARN("TZ_CONFIG", "Unknown timezone '%s', using UTC", tz_name.c_str());
         posix_tz = "UTC0";
         detected_timezone_abbreviation = "UTC";
     }
@@ -617,7 +617,7 @@ bool configure_timezone_from_location() {
     // Apply detected timezone
     setenv("TZ", posix_tz.c_str(), 1);
     tzset();
-    LOG_INFO("[TZ_CONFIG] ✓ Timezone configured: %s -> %s", tz_name.c_str(), posix_tz.c_str());
+    LOG_INFO("TZ_CONFIG", "✓ Timezone configured: %s -> %s", tz_name.c_str(), posix_tz.c_str());
     MQTT_LOG_NOTICE("TZ", "Configured: %s (%s)", tz_name.c_str(), posix_tz.c_str());
     return true;
 }

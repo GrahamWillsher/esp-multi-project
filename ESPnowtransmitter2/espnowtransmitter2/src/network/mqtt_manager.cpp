@@ -15,27 +15,27 @@ MqttManager& MqttManager::instance() {
 
 void MqttManager::init() {
     if (!config::features::MQTT_ENABLED) {
-        LOG_INFO("[MQTT] MQTT disabled in configuration");
+        LOG_INFO("MQTT", "MQTT disabled in configuration");
         return;
     }
     
-    LOG_INFO("[MQTT] Initializing MQTT client...");
+    LOG_INFO("MQTT", "Initializing MQTT client...");
     client_.setServer(config::get_mqtt_config().server, config::get_mqtt_config().port);
     client_.setCallback(message_callback);
     client_.setKeepAlive(60);
     client_.setSocketTimeout(10);
-    LOG_INFO("[MQTT] MQTT client configured (will connect when Ethernet ready)");
+    LOG_INFO("MQTT", "MQTT client configured (will connect when Ethernet ready)");
 }
 
 bool MqttManager::connect() {
     if (!config::features::MQTT_ENABLED) return false;
     
     if (!EthernetManager::instance().is_connected()) {
-        LOG_WARN("[MQTT] Ethernet not connected, skipping MQTT connection");
+        LOG_WARN("MQTT", "Ethernet not connected, skipping MQTT connection");
         return false;
     }
     
-    LOG_INFO("[MQTT] Attempting connection to %s:%d...", 
+    LOG_INFO("MQTT", "Attempting connection to %s:%d...", 
                   config::get_mqtt_config().server, config::get_mqtt_config().port);
     
     bool success = false;
@@ -48,7 +48,7 @@ bool MqttManager::connect() {
     }
     
     if (success) {
-        LOG_INFO("[MQTT] Connected to broker");
+        LOG_INFO("MQTT", "Connected to broker");
         connected_ = true;
         
         // Publish connection status
@@ -56,12 +56,12 @@ bool MqttManager::connect() {
         
         // Subscribe to OTA topic
         if (client_.subscribe(config::get_mqtt_config().topics.ota)) {
-            LOG_INFO("[MQTT] Subscribed to OTA topic: %s", config::get_mqtt_config().topics.ota);
+            LOG_INFO("MQTT", "Subscribed to OTA topic: %s", config::get_mqtt_config().topics.ota);
         } else {
-            LOG_ERROR("[MQTT] Failed to subscribe to OTA topic");
+            LOG_ERROR("MQTT", "Failed to subscribe to OTA topic");
         }
     } else {
-        LOG_ERROR("[MQTT] Connection failed, rc=%d", client_.state());
+        LOG_ERROR("MQTT", "Connection failed, rc=%d", client_.state());
         connected_ = false;
     }
     
@@ -79,9 +79,9 @@ bool MqttManager::publish_data(int soc, long power, const char* timestamp, bool 
     bool success = client_.publish(config::get_mqtt_config().topics.data, payload_buffer_);
     
     if (success) {
-        LOG_DEBUG("[MQTT] Published: %s", payload_buffer_);
+        LOG_DEBUG("MQTT", "Published: %s", payload_buffer_);
     } else {
-        LOG_ERROR("[MQTT] Publish failed");
+        LOG_ERROR("MQTT", "Publish failed");
     }
     
     return success;
@@ -107,7 +107,7 @@ void MqttManager::message_callback(char* topic, byte* payload, unsigned int leng
     if (length >= sizeof(message)) length = sizeof(message) - 1;
     memcpy(message, payload, length);
     message[length] = '\0';
-    LOG_INFO("[MQTT] Message arrived [%s]: %s", topic, message);
+    LOG_INFO("MQTT", "Message arrived [%s]: %s", topic, message);
     
     // Handle OTA commands
     if (strcmp(topic, config::get_mqtt_config().topics.ota) == 0) {
@@ -116,16 +116,16 @@ void MqttManager::message_callback(char* topic, byte* payload, unsigned int leng
 }
 
 void MqttManager::handle_ota_command(const char* url) {
-    LOG_INFO("[OTA] Received OTA command via MQTT");
+    LOG_INFO("OTA", "Received OTA command via MQTT");
     
     // Expected format: "http://receiver_ip/ota_firmware.bin"
     if (strncmp(url, "http://", 7) != 0 && strncmp(url, "https://", 8) != 0) {
-        LOG_ERROR("[OTA] Invalid URL format");
+        LOG_ERROR("OTA", "Invalid URL format");
         publish_status("ota_invalid_url", false);
         return;
     }
     
-    LOG_INFO("[OTA] Starting OTA update from: %s", url);
+    LOG_INFO("OTA", "Starting OTA update from: %s", url);
     
     // Perform OTA update
     WiFiClient client;
@@ -133,21 +133,27 @@ void MqttManager::handle_ota_command(const char* url) {
     
     switch (ret) {
         case HTTP_UPDATE_FAILED:
-            LOG_ERROR("[OTA] Update failed. Error (%d): %s", 
+            LOG_ERROR("OTA", "Update failed. Error (%d): %s", 
                         httpUpdate.getLastError(), httpUpdate.getLastErrorString().c_str());
             publish_status("ota_failed", false);
             break;
             
         case HTTP_UPDATE_NO_UPDATES:
-            LOG_INFO("[OTA] No updates available");
+            LOG_INFO("OTA", "No updates available");
             publish_status("ota_no_update", false);
             break;
             
         case HTTP_UPDATE_OK:
-            LOG_INFO("[OTA] Update successful! Rebooting...");
+            LOG_INFO("OTA", "Update successful! Rebooting...");
             publish_status("ota_success", false);
             delay(1000);
             ESP.restart();
             break;
     }
+}
+
+// External C linkage function for MqttConfigManager to query connection status
+// This avoids circular header dependencies between lib/mqtt_manager and src/network
+extern "C" bool mqtt_manager_is_connected() {
+    return MqttManager::instance().is_connected();
 }

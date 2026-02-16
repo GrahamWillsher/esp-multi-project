@@ -3,7 +3,6 @@
 #include "../common/nav_buttons.h"
 #include "../utils/transmitter_manager.h"
 #include "../processors/settings_processor.h"
-#include "../../../src/config/config_receiver.h"
 #include <Arduino.h>
 
 /**
@@ -144,27 +143,27 @@ static esp_err_t root_handler(httpd_req_t *req) {
         </div>
         <div class='settings-row'>
             <label>Double Battery:</label>
-            <input type='checkbox' %DBLBTR% disabled />
+            <input type='checkbox' id='dblBattery' %DBLBTR% />
         </div>
         <div class='settings-row'>
             <label>Battery Max Voltage:</label>
-            <input type='text' value='%BATTPVMAX% V' disabled />
+            <input type='number' id='battPackMax' value='%BATTPVMAX%' step='0.1' class='editable-field' />
         </div>
         <div class='settings-row'>
             <label>Battery Min Voltage:</label>
-            <input type='text' value='%BATTPVMIN% V' disabled />
+            <input type='number' id='battPackMin' value='%BATTPVMIN%' step='0.1' class='editable-field' />
         </div>
         <div class='settings-row'>
             <label>Cell Max Voltage:</label>
-            <input type='text' value='%BATTCVMAX% mV' disabled />
+            <input type='number' id='cellMax' value='%BATTCVMAX%' step='1' class='editable-field' />
         </div>
         <div class='settings-row'>
             <label>Cell Min Voltage:</label>
-            <input type='text' value='%BATTCVMIN% mV' disabled />
+            <input type='number' id='cellMin' value='%BATTCVMIN%' step='1' class='editable-field' />
         </div>
         <div class='settings-row'>
             <label>Use Estimated SOC:</label>
-            <input type='checkbox' %SOCESTIMATED% disabled />
+            <input type='checkbox' id='socEstimated' %SOCESTIMATED% />
         </div>
     </div>
     
@@ -172,19 +171,19 @@ static esp_err_t root_handler(httpd_req_t *req) {
         <h3>Power Settings</h3>
         <div class='settings-row'>
             <label>Charge Power:</label>
-            <input type='text' value='%CHGPOWER% W' disabled />
+            <input type='number' id='chgPower' value='%CHGPOWER%' step='1' class='editable-field' />
         </div>
         <div class='settings-row'>
             <label>Discharge Power:</label>
-            <input type='text' value='%DCHGPOWER% W' disabled />
+            <input type='number' id='dchgPower' value='%DCHGPOWER%' step='1' class='editable-field' />
         </div>
         <div class='settings-row'>
             <label>Max Pre-charge Time:</label>
-            <input type='text' value='%MAXPRETIME% ms' disabled />
+            <input type='number' id='maxPreTime' value='%MAXPRETIME%' step='1' class='editable-field' />
         </div>
         <div class='settings-row'>
             <label>Pre-charge Duration:</label>
-            <input type='text' value='%PRECHGMS% ms' disabled />
+            <input type='number' id='preChgMs' value='%PRECHGMS%' step='1' class='editable-field' />
         </div>
     </div>
     
@@ -192,27 +191,27 @@ static esp_err_t root_handler(httpd_req_t *req) {
         <h3>Inverter Configuration</h3>
         <div class='settings-row'>
             <label>Inverter Cells:</label>
-            <input type='text' value='%INVCELLS%' disabled />
+            <input type='number' id='invCells' value='%INVCELLS%' step='1' class='editable-field' />
         </div>
         <div class='settings-row'>
             <label>Inverter Modules:</label>
-            <input type='text' value='%INVMODULES%' disabled />
+            <input type='number' id='invModules' value='%INVMODULES%' step='1' class='editable-field' />
         </div>
         <div class='settings-row'>
             <label>Cells Per Module:</label>
-            <input type='text' value='%INVCELLSPER%' disabled />
+            <input type='number' id='invCellsPer' value='%INVCELLSPER%' step='1' class='editable-field' />
         </div>
         <div class='settings-row'>
             <label>Voltage Level:</label>
-            <input type='text' value='%INVVLEVEL% V' disabled />
+            <input type='number' id='invVLevel' value='%INVVLEVEL%' step='1' class='editable-field' />
         </div>
         <div class='settings-row'>
             <label>Capacity:</label>
-            <input type='text' value='%INVCAPACITY% Ah' disabled />
+            <input type='number' id='invCapacity' value='%INVCAPACITY%' step='1' class='editable-field' />
         </div>
         <div class='settings-row'>
             <label>Battery Type:</label>
-            <input type='text' value='%INVBTYPE%' disabled />
+            <input type='number' id='invBType' value='%INVBTYPE%' step='1' class='editable-field' />
         </div>
     </div>
     
@@ -220,19 +219,19 @@ static esp_err_t root_handler(httpd_req_t *req) {
         <h3>CAN Configuration</h3>
         <div class='settings-row'>
             <label>CAN Frequency:</label>
-            <input type='text' value='%CANFREQ% kHz' disabled />
+            <input type='number' id='canFreq' value='%CANFREQ%' step='1' class='editable-field' />
         </div>
         <div class='settings-row'>
             <label>CAN FD Frequency:</label>
-            <input type='text' value='%CANFDFREQ% MHz' disabled />
+            <input type='number' id='canFdFreq' value='%CANFDFREQ%' step='1' class='editable-field' />
         </div>
         <div class='settings-row'>
             <label>Sofar Inverter ID:</label>
-            <input type='text' value='%SOFAR_ID%' disabled />
+            <input type='number' id='sofarId' value='%SOFAR_ID%' step='1' class='editable-field' />
         </div>
         <div class='settings-row'>
             <label>Pylon Send Interval:</label>
-            <input type='text' value='%PYLONSEND% ms' disabled />
+            <input type='number' id='pylonSend' value='%PYLONSEND%' step='1' class='editable-field' />
         </div>
     </div>
     
@@ -240,15 +239,15 @@ static esp_err_t root_handler(httpd_req_t *req) {
         <h3>Contactor Control</h3>
         <div class='settings-row'>
             <label>Contactor Control:</label>
-            <input type='checkbox' %CNTCTRL% disabled />
+            <input type='checkbox' id='cntCtrl' %CNTCTRL% />
         </div>
         <div class='settings-row'>
             <label>NC Contactor:</label>
-            <input type='checkbox' %NCCONTACTOR% disabled />
+            <input type='checkbox' id='ncContactor' %NCCONTACTOR% />
         </div>
         <div class='settings-row'>
             <label>PWM Frequency:</label>
-            <input type='text' value='%PWMFREQ% Hz' disabled />
+            <input type='number' id='pwmFreq' value='%PWMFREQ%' step='1' class='editable-field' />
         </div>
     </div>
     
@@ -310,9 +309,35 @@ static esp_err_t root_handler(httpd_req_t *req) {
             'mqttPort',
             'mqttUsername',
             'mqttPassword',
-            'mqttClientId'
-            // Battery Configuration fields will be added here when implemented
-            // Power Settings fields will be added here when implemented
+            'mqttClientId',
+            // Battery Configuration
+            'dblBattery',
+            'battPackMax',
+            'battPackMin',
+            'cellMax',
+            'cellMin',
+            'socEstimated',
+            // Power Settings
+            'chgPower',
+            'dchgPower',
+            'maxPreTime',
+            'preChgMs',
+            // Inverter Configuration
+            'invCells',
+            'invModules',
+            'invCellsPer',
+            'invVLevel',
+            'invCapacity',
+            'invBType',
+            // CAN Configuration
+            'canFreq',
+            'canFdFreq',
+            'sofarId',
+            'pylonSend',
+            // Contactor Control
+            'cntCtrl',
+            'ncContactor',
+            'pwmFreq'
         ];
         
         // Function to update AP Name visibility based on WiFi AP Enabled checkbox
@@ -436,38 +461,9 @@ static esp_err_t root_handler(httpd_req_t *req) {
                 const response = await fetch('/api/get_network_config');
                 const data = await response.json();
                 
-                // If cache is empty, request data from transmitter
+                // If cache is empty, wait for version beacon updates
                 if (!data.success) {
-                    console.log('Network config cache empty - requesting from transmitter');
-                    
-                    // Send request to transmitter
-                    const requestResponse = await fetch('/api/request_network_config', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' }
-                    });
-                    const requestResult = await requestResponse.json();
-                    
-                    if (requestResult.success) {
-                        console.log('Request sent to transmitter - waiting for response...');
-                        
-                        // Wait 2 seconds for transmitter to respond
-                        await new Promise(resolve => setTimeout(resolve, 2000));
-                        
-                        // Retry loading config
-                        const retryResponse = await fetch('/api/get_network_config');
-                        const retryData = await retryResponse.json();
-                        
-                        if (retryData.success && retryData.current && retryData.static_config) {
-                            console.log('Network config received from transmitter');
-                            populateNetworkConfig(retryData);
-                        } else {
-                            console.error('Still no network config after request - transmitter may be offline');
-                            alert('Cannot load network configuration. Please ensure transmitter is powered on and connected.');
-                        }
-                    } else {
-                        console.error('Failed to send request to transmitter:', requestResult.message);
-                        alert('Cannot communicate with transmitter: ' + requestResult.message);
-                    }
+                    console.log('Network config cache empty - waiting for version beacon');
                     return;
                 }
                 
@@ -652,38 +648,9 @@ static esp_err_t root_handler(httpd_req_t *req) {
                 const response = await fetch('/api/get_mqtt_config');
                 const data = await response.json();
                 
-                // If cache is empty, request data from transmitter
+                // If cache is empty, wait for version beacon updates
                 if (!data.success) {
-                    console.log('MQTT config cache empty - requesting from transmitter');
-                    
-                    // Send request to transmitter
-                    const requestResponse = await fetch('/api/request_mqtt_config', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' }
-                    });
-                    const requestResult = await requestResponse.json();
-                    
-                    if (requestResult.success) {
-                        console.log('Request sent to transmitter - waiting for response...');
-                        
-                        // Wait 2 seconds for transmitter to respond
-                        await new Promise(resolve => setTimeout(resolve, 2000));
-                        
-                        // Retry loading config
-                        const retryResponse = await fetch('/api/get_mqtt_config');
-                        const retryData = await retryResponse.json();
-                        
-                        if (retryData.success) {
-                            console.log('MQTT config received from transmitter');
-                            populateMqttConfig(retryData);
-                        } else {
-                            console.error('Still no MQTT config after request - transmitter may be offline');
-                            alert('Cannot load MQTT configuration. Please ensure transmitter is powered on and connected.');
-                        }
-                    } else {
-                        console.error('Failed to send request to transmitter:', requestResult.message);
-                        alert('Cannot communicate with transmitter: ' + requestResult.message);
-                    }
+                    console.log('MQTT config cache empty - waiting for version beacon');
                     return;
                 }
                 
@@ -793,6 +760,23 @@ static esp_err_t root_handler(httpd_req_t *req) {
                 return false;
             }
         }
+
+        // Save a single transmitter setting via ESP-NOW
+        async function saveSetting(category, field, value) {
+            try {
+                const response = await fetch('/api/save_setting', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ category, field, value })
+                });
+
+                const data = await response.json();
+                return data.success;
+            } catch (error) {
+                console.error('Failed to save setting:', error);
+                return false;
+            }
+        }
         
         // ===== Network Configuration Functions =====
         
@@ -812,6 +796,7 @@ static esp_err_t root_handler(httpd_req_t *req) {
                 
                 let hasNetworkChanges = false;
                 let hasMqttChanges = false;
+                let hasOtherChanges = false;
                 
                 // Check for network changes
                 networkFields.forEach(fieldId => {
@@ -836,11 +821,25 @@ static esp_err_t root_handler(httpd_req_t *req) {
                         }
                     }
                 });
+
+                // Check for changes in remaining sections
+                const otherFields = TRANSMITTER_CONFIG_FIELDS.filter(fieldId => !networkFields.includes(fieldId) && !mqttFields.includes(fieldId));
+                otherFields.forEach(fieldId => {
+                    const element = document.getElementById(fieldId);
+                    if (element) {
+                        const currentValue = element.type === 'checkbox' ? element.checked : element.value;
+                        const initialValue = initialTransmitterConfig[fieldId];
+                        if (initialValue !== currentValue) {
+                            hasOtherChanges = true;
+                        }
+                    }
+                });
                 
-                console.log('Changes detected - Network:', hasNetworkChanges, 'MQTT:', hasMqttChanges);
+                console.log('Changes detected - Network:', hasNetworkChanges, 'MQTT:', hasMqttChanges, 'Other:', hasOtherChanges);
                 
                 let networkSuccess = true;
                 let mqttSuccess = true;
+                let otherSuccess = true;
                 let errorMessage = '';
                 
                 // Save network config if changed
@@ -888,12 +887,110 @@ static esp_err_t root_handler(httpd_req_t *req) {
                         errorMessage += 'MQTT: Save failed ';
                     }
                 }
+
+                // Save battery/power/inverter/CAN/contactor settings if changed
+                if (hasOtherChanges) {
+                    console.log('Saving additional transmitter settings...');
+
+                    const updates = [];
+
+                    // Battery configuration (category SETTINGS_BATTERY = 0)
+                    if (initialTransmitterConfig['dblBattery'] !== document.getElementById('dblBattery').checked) {
+                        updates.push({ category: 0, field: 9, value: document.getElementById('dblBattery').checked ? 1 : 0 });
+                    }
+                    if (initialTransmitterConfig['battPackMax'] !== document.getElementById('battPackMax').value) {
+                        updates.push({ category: 0, field: 10, value: Math.round(parseFloat(document.getElementById('battPackMax').value) * 10) });
+                    }
+                    if (initialTransmitterConfig['battPackMin'] !== document.getElementById('battPackMin').value) {
+                        updates.push({ category: 0, field: 11, value: Math.round(parseFloat(document.getElementById('battPackMin').value) * 10) });
+                    }
+                    if (initialTransmitterConfig['cellMax'] !== document.getElementById('cellMax').value) {
+                        updates.push({ category: 0, field: 12, value: parseInt(document.getElementById('cellMax').value) });
+                    }
+                    if (initialTransmitterConfig['cellMin'] !== document.getElementById('cellMin').value) {
+                        updates.push({ category: 0, field: 13, value: parseInt(document.getElementById('cellMin').value) });
+                    }
+                    if (initialTransmitterConfig['socEstimated'] !== document.getElementById('socEstimated').checked) {
+                        updates.push({ category: 0, field: 14, value: document.getElementById('socEstimated').checked ? 1 : 0 });
+                    }
+
+                    // Power settings (category SETTINGS_POWER = 6)
+                    if (initialTransmitterConfig['chgPower'] !== document.getElementById('chgPower').value) {
+                        updates.push({ category: 6, field: 0, value: parseInt(document.getElementById('chgPower').value) });
+                    }
+                    if (initialTransmitterConfig['dchgPower'] !== document.getElementById('dchgPower').value) {
+                        updates.push({ category: 6, field: 1, value: parseInt(document.getElementById('dchgPower').value) });
+                    }
+                    if (initialTransmitterConfig['maxPreTime'] !== document.getElementById('maxPreTime').value) {
+                        updates.push({ category: 6, field: 2, value: parseInt(document.getElementById('maxPreTime').value) });
+                    }
+                    if (initialTransmitterConfig['preChgMs'] !== document.getElementById('preChgMs').value) {
+                        updates.push({ category: 6, field: 3, value: parseInt(document.getElementById('preChgMs').value) });
+                    }
+
+                    // Inverter settings (category SETTINGS_INVERTER = 2)
+                    if (initialTransmitterConfig['invCells'] !== document.getElementById('invCells').value) {
+                        updates.push({ category: 2, field: 0, value: parseInt(document.getElementById('invCells').value) });
+                    }
+                    if (initialTransmitterConfig['invModules'] !== document.getElementById('invModules').value) {
+                        updates.push({ category: 2, field: 1, value: parseInt(document.getElementById('invModules').value) });
+                    }
+                    if (initialTransmitterConfig['invCellsPer'] !== document.getElementById('invCellsPer').value) {
+                        updates.push({ category: 2, field: 2, value: parseInt(document.getElementById('invCellsPer').value) });
+                    }
+                    if (initialTransmitterConfig['invVLevel'] !== document.getElementById('invVLevel').value) {
+                        updates.push({ category: 2, field: 3, value: parseInt(document.getElementById('invVLevel').value) });
+                    }
+                    if (initialTransmitterConfig['invCapacity'] !== document.getElementById('invCapacity').value) {
+                        updates.push({ category: 2, field: 4, value: parseInt(document.getElementById('invCapacity').value) });
+                    }
+                    if (initialTransmitterConfig['invBType'] !== document.getElementById('invBType').value) {
+                        updates.push({ category: 2, field: 5, value: parseInt(document.getElementById('invBType').value) });
+                    }
+
+                    // CAN settings (category SETTINGS_CAN = 7)
+                    if (initialTransmitterConfig['canFreq'] !== document.getElementById('canFreq').value) {
+                        updates.push({ category: 7, field: 0, value: parseInt(document.getElementById('canFreq').value) });
+                    }
+                    if (initialTransmitterConfig['canFdFreq'] !== document.getElementById('canFdFreq').value) {
+                        updates.push({ category: 7, field: 1, value: parseInt(document.getElementById('canFdFreq').value) });
+                    }
+                    if (initialTransmitterConfig['sofarId'] !== document.getElementById('sofarId').value) {
+                        updates.push({ category: 7, field: 2, value: parseInt(document.getElementById('sofarId').value) });
+                    }
+                    if (initialTransmitterConfig['pylonSend'] !== document.getElementById('pylonSend').value) {
+                        updates.push({ category: 7, field: 3, value: parseInt(document.getElementById('pylonSend').value) });
+                    }
+
+                    // Contactor settings (category SETTINGS_CONTACTOR = 8)
+                    if (initialTransmitterConfig['cntCtrl'] !== document.getElementById('cntCtrl').checked) {
+                        updates.push({ category: 8, field: 0, value: document.getElementById('cntCtrl').checked ? 1 : 0 });
+                    }
+                    if (initialTransmitterConfig['ncContactor'] !== document.getElementById('ncContactor').checked) {
+                        updates.push({ category: 8, field: 1, value: document.getElementById('ncContactor').checked ? 1 : 0 });
+                    }
+                    if (initialTransmitterConfig['pwmFreq'] !== document.getElementById('pwmFreq').value) {
+                        updates.push({ category: 8, field: 2, value: parseInt(document.getElementById('pwmFreq').value) });
+                    }
+
+                    for (const update of updates) {
+                        const success = await saveSetting(update.category, update.field, update.value);
+                        if (!success) {
+                            otherSuccess = false;
+                        }
+                    }
+
+                    if (!otherSuccess) {
+                        errorMessage += 'Additional settings: Save failed ';
+                    }
+                }
                 
                 // Update button based on results
-                if (networkSuccess && mqttSuccess) {
+                if (networkSuccess && mqttSuccess && otherSuccess) {
                     const savedSections = [];
                     if (hasNetworkChanges) savedSections.push('Network');
                     if (hasMqttChanges) savedSections.push('MQTT');
+                    if (hasOtherChanges) savedSections.push('Other');
                     
                     btn.textContent = '✓ Saved ' + savedSections.join(' + ') + '! Reboot transmitter to apply.';
                     btn.style.backgroundColor = '#28a745';

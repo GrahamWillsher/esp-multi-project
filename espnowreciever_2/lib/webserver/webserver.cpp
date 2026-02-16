@@ -45,38 +45,48 @@ size_t ota_firmware_size = 0;
 // ═══════════════════════════════════════════════════════════════════════
 
 void init_webserver() {
-    LOG_INFO("[WEBSERVER] Initializing ESP-IDF http_server...");
+    LOG_INFO("WEBSERVER", "Initializing ESP-IDF http_server...");
     
     // Check if server already running
     if (server != NULL) {
-        LOG_INFO("[WEBSERVER] Server already running, skipping");
+        LOG_INFO("WEBSERVER", "Server already running, skipping");
         return;
     }
     
+    // Verify WiFi is connected - retry a few times if not yet ready
+    int wifi_retries = 0;
+    while (WiFi.status() != WL_CONNECTED && wifi_retries < 5) {
+        LOG_WARN("WEBSERVER", "WiFi not connected yet, retrying... (%d/5)", wifi_retries + 1);
+        delay(500);
+        wifi_retries++;
+    }
+    
+    if (WiFi.status() != WL_CONNECTED) {
+        LOG_ERROR("WEBSERVER", "WiFi still not connected after retries - webserver startup delayed");
+        LOG_INFO("WEBSERVER", "Will try to start webserver when WiFi connects");
+        return;
+    }
+    
+    LOG_INFO("WEBSERVER", "WiFi connected - proceeding with initialization");
+    
     // Count expected handlers (update this when adding/removing handlers)
-    const int EXPECTED_HANDLER_COUNT = 34;  // 10 pages + 24 API handlers (23 specific + 1 catch-all 404)
+    const int EXPECTED_HANDLER_COUNT = 33;  // 10 pages + 23 API handlers (22 specific + 1 firmware + 1 catch-all 404)
     
     // Initialize SSE notification system
     SSENotifier::init();
-    LOG_INFO("[WEBSERVER] SSE notification system initialized");
+    LOG_INFO("WEBSERVER", "SSE notification system initialized");
     
     // Ensure network stack initialized
     static bool netif_initialized = false;
     if (!netif_initialized) {
         esp_err_t ret = esp_netif_init();
         if (ret == ESP_OK || ret == ESP_ERR_INVALID_STATE) {
-            LOG_INFO("[WEBSERVER] Network interface initialized");
+            LOG_INFO("WEBSERVER", "Network interface initialized");
             netif_initialized = true;
         } else {
-            LOG_ERROR("[WEBSERVER] esp_netif_init failed: %s", esp_err_to_name(ret));
+            LOG_ERROR("WEBSERVER", "esp_netif_init failed: %s", esp_err_to_name(ret));
             return;
         }
-    }
-    
-    // Verify WiFi is connected
-    if (WiFi.status() != WL_CONNECTED) {
-        LOG_ERROR("[WEBSERVER] WiFi not connected");
-        return;
     }
     
     // Configure HTTP server
@@ -91,21 +101,21 @@ void init_webserver() {
     
     // Verify configuration can handle all handlers
     if (config.max_uri_handlers < EXPECTED_HANDLER_COUNT) {
-        LOG_ERROR("[WEBSERVER] max_uri_handlers (%d) is less than expected handlers (%d)!", 
+        LOG_ERROR("WEBSERVER", "max_uri_handlers (%d) is less than expected handlers (%d)!", 
                       config.max_uri_handlers, EXPECTED_HANDLER_COUNT);
-        LOG_ERROR("[WEBSERVER] Some handlers will fail to register. Increase max_uri_handlers!");
+        LOG_ERROR("WEBSERVER", "Some handlers will fail to register. Increase max_uri_handlers!");
         // Continue anyway to register what we can, but warn user
     }
     
     // Start HTTP server
     esp_err_t ret = httpd_start(&server, &config);
     if (ret != ESP_OK) {
-        LOG_ERROR("[WEBSERVER] Failed to start: %s", esp_err_to_name(ret));
+        LOG_ERROR("WEBSERVER", "Failed to start: %s", esp_err_to_name(ret));
         return;
     }
     
-    LOG_INFO("[WEBSERVER] Server started successfully");
-    LOG_INFO("[WEBSERVER] Accessible at: http://%s", WiFi.localIP().toString().c_str());
+    LOG_INFO("WEBSERVER", "Server started successfully");
+    LOG_INFO("WEBSERVER", "Accessible at: http://%s", WiFi.localIP().toString().c_str());
     
     // Register URI handlers (with counter for verification)
     int registered_count = 0;
@@ -129,23 +139,37 @@ void init_webserver() {
     if (register_debug_page(server) == ESP_OK) registered_count++;
     
     // Register all API handlers (consolidated)
-    registered_count += register_all_api_handlers(server);
+    int api_count = register_all_api_handlers(server);
+    registered_count += api_count;
+    LOG_DEBUG("WEBSERVER", "API handlers registered: %d", api_count);
     
     // Verify all handlers registered successfully
-    LOG_INFO("[WEBSERVER] Handlers registered: %d/%d", registered_count, EXPECTED_HANDLER_COUNT);
+    LOG_INFO("WEBSERVER", "Handlers registered: %d/%d", registered_count, EXPECTED_HANDLER_COUNT);
     if (registered_count < EXPECTED_HANDLER_COUNT) {
-        LOG_WARN("[WEBSERVER] Only %d of %d handlers registered! Increase max_uri_handlers!",
+        LOG_WARN("WEBSERVER", "Only %d of %d handlers registered! Increase max_uri_handlers!",
                       registered_count, EXPECTED_HANDLER_COUNT);
     } else {
-        LOG_INFO("[WEBSERVER] All handlers registered successfully");
-    }   
+        LOG_INFO("WEBSERVER", "All %d handlers registered successfully", registered_count);
+    }
+    
+    // Log accessible URLs for debugging
+    LOG_INFO("WEBSERVER", "Access webserver at: http://%s", WiFi.localIP().toString().c_str());
+    LOG_DEBUG("WEBSERVER", "Pages available:");
+    LOG_DEBUG("WEBSERVER", "  - / (Dashboard)");
+    LOG_DEBUG("WEBSERVER", "  - /transmitter (Transmitter Hub)");
+    LOG_DEBUG("WEBSERVER", "  - /transmitter/config (Settings)");
+    LOG_DEBUG("WEBSERVER", "  - /transmitter/battery (Battery Settings)");
+    LOG_DEBUG("WEBSERVER", "  - /transmitter/monitor (Monitor Page)");
+    LOG_DEBUG("WEBSERVER", "  - /receiver/config (Receiver Info)");
+    LOG_DEBUG("WEBSERVER", "  - /ota (OTA Updates)");
+    LOG_DEBUG("WEBSERVER", "  - /debug (Debug Info)");
 }
 
 void stop_webserver() {
     if (server != NULL) {
         httpd_stop(server);
         server = NULL;
-        LOG_INFO("[WEBSERVER] Server stopped");
+        LOG_INFO("WEBSERVER", "Server stopped");
     }
 }
 

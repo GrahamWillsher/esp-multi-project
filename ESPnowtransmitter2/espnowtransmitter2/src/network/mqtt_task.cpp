@@ -22,15 +22,15 @@ bool MqttTask::is_connected() const {
 }
 
 void task_mqtt_loop(void* parameter) {
-    LOG_DEBUG("MQTT task started");
+    LOG_DEBUG("MQTT", "MQTT task started");
     
     // Wait for Ethernet to be ready
     while (!EthernetManager::instance().is_connected()) {
-        LOG_DEBUG("MQTT waiting for Ethernet");
+        LOG_DEBUG("MQTT", "MQTT waiting for Ethernet");
         vTaskDelay(pdMS_TO_TICKS(5000));
     }
     
-    LOG_INFO("MQTT task active");
+    LOG_INFO("MQTT", "MQTT task active");
     
     unsigned long last_reconnect_attempt = 0;
     unsigned long last_publish = 0;
@@ -62,7 +62,7 @@ void task_mqtt_loop(void* parameter) {
                         MqttLogger::instance().set_level((MqttLogLevel)saved_level);
                         logger_initialized = true;
                         
-                        LOG_INFO("MQTT logger initialized, level: %s", 
+                        LOG_INFO("MQTT", "MQTT logger initialized, level: %s", 
                                  MqttLogger::instance().level_to_string((MqttLogLevel)saved_level));
                     }
                     

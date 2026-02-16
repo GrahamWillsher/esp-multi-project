@@ -15,13 +15,13 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
     char buf[1024];
     size_t remaining = req->content_len;
     
-    LOG_INFO("[HTTP_OTA] Receiving OTA update, size: %d bytes", remaining);
+    LOG_INFO("HTTP_OTA", "Receiving OTA update, size: %d bytes", remaining);
     
     // Stop other tasks to free resources
     mgr.ota_in_progress_ = true;
     
     if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
-        LOG_ERROR("[HTTP_OTA] Update.begin failed: %s", Update.errorString());
+        LOG_ERROR("HTTP_OTA", "Update.begin failed: %s", Update.errorString());
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Update begin failed");
         mgr.ota_in_progress_ = false;
         return ESP_FAIL;
@@ -34,7 +34,7 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
             if (recv_len == HTTPD_SOCK_ERR_TIMEOUT) {
                 continue;
             }
-            LOG_ERROR("[HTTP_OTA] Connection error during upload");
+            LOG_ERROR("HTTP_OTA", "Connection error during upload");
             Update.abort();
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Connection error");
             mgr.ota_in_progress_ = false;
@@ -43,7 +43,7 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
         
         // Write firmware chunk
         if (Update.write((uint8_t*)buf, recv_len) != (size_t)recv_len) {
-            LOG_ERROR("[HTTP_OTA] Update.write failed: %s", Update.errorString());
+            LOG_ERROR("HTTP_OTA", "Update.write failed: %s", Update.errorString());
             Update.abort();
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Write failed");
             mgr.ota_in_progress_ = false;
@@ -51,18 +51,18 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
         }
         
         remaining -= recv_len;
-        LOG_DEBUG("[HTTP_OTA] Written: %d bytes, remaining: %d", recv_len, remaining);
+        LOG_DEBUG("HTTP_OTA", "Written: %d bytes, remaining: %d", recv_len, remaining);
     }
     
     // Finalize update
     if (Update.end(true)) {
-        LOG_INFO("[HTTP_OTA] Update successful! Size: %u bytes", Update.size());
+        LOG_INFO("HTTP_OTA", "Update successful! Size: %u bytes", Update.size());
         httpd_resp_sendstr(req, "OTA update successful! Rebooting...");
         delay(1000);
         ESP.restart();
         return ESP_OK;
     } else {
-        LOG_ERROR("[HTTP_OTA] Update.end failed: %s", Update.errorString());
+        LOG_ERROR("HTTP_OTA", "Update.end failed: %s", Update.errorString());
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, Update.errorString());
         mgr.ota_in_progress_ = false;
         return ESP_FAIL;
@@ -146,8 +146,8 @@ void OtaManager::init_http_server() {
         };
         httpd_register_uri_handler(http_server_, &root_uri);
         
-        LOG_INFO("[HTTP_SERVER] HTTP server started on port 80");
+        LOG_INFO("HTTP_SERVER", "HTTP server started on port 80");
     } else {
-        LOG_ERROR("[HTTP_SERVER] Failed to start HTTP server");
+        LOG_ERROR("HTTP_SERVER", "Failed to start HTTP server");
     }
 }

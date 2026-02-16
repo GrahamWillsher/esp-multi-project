@@ -1,12 +1,15 @@
 #include "version_beacon_manager.h"
 #include <esp_now.h>
 #include <espnow_transmitter.h>
+#include <connection_manager.h>
 #include <mqtt_manager.h>
 #include "../config/logging_config.h"
 #include "../settings/settings_manager.h"
 #include "../network/mqtt_task.h"
 #include "../network/ethernet_manager.h"
 #include "message_handler.h"
+#include <firmware_version.h>
+#include <firmware_metadata.h>
 
 VersionBeaconManager& VersionBeaconManager::instance() {
     static VersionBeaconManager instance;
@@ -14,7 +17,7 @@ VersionBeaconManager& VersionBeaconManager::instance() {
 }
 
 void VersionBeaconManager::init() {
-    LOG_INFO("[VERSION_BEACON] Manager initialized");
+    LOG_INFO("VERSION_BEACON", "Manager initialized");
     
     // Send initial beacon immediately
     send_version_beacon(true);
@@ -23,7 +26,7 @@ void VersionBeaconManager::init() {
 void VersionBeaconManager::notify_mqtt_connected(bool connected) {
     if (mqtt_connected_ != connected) {
         mqtt_connected_ = connected;
-        LOG_INFO("[VERSION_BEACON] MQTT state changed: %s", 
+        LOG_INFO("VERSION_BEACON", "MQTT state changed: %s", 
                  connected ? "CONNECTED" : "DISCONNECTED");
         send_version_beacon(true);  // Force immediate beacon
     }
@@ -32,23 +35,24 @@ void VersionBeaconManager::notify_mqtt_connected(bool connected) {
 void VersionBeaconManager::notify_ethernet_changed(bool connected) {
     if (ethernet_connected_ != connected) {
         ethernet_connected_ = connected;
-        LOG_INFO("[VERSION_BEACON] Ethernet state changed: %s", 
+        LOG_INFO("VERSION_BEACON", "Ethernet state changed: %s", 
                  connected ? "CONNECTED" : "DISCONNECTED");
         send_version_beacon(true);
     }
 }
 
 void VersionBeaconManager::notify_config_version_changed(config_section_t section) {
-    LOG_INFO("[VERSION_BEACON] Config version changed: section=%d", (int)section);
+    LOG_INFO("VERSION_BEACON", "Config version changed: section=%d", (int)section);
     send_version_beacon(true);  // Force immediate beacon
 }
 
 void VersionBeaconManager::update() {
     uint32_t now = millis();
     
-    // Periodic heartbeat beacon
+    // Periodic heartbeat beacon - FORCE send every 15 seconds regardless of changes
+    // This ensures receiver always has fresh runtime status (MQTT/Ethernet connected state)
     if (now - last_beacon_ms_ >= PERIODIC_INTERVAL_MS) {
-        send_version_beacon(false);  // Don't force if no changes
+        send_version_beacon(true);  // Force send - receiver needs periodic status updates
     }
 }
 
@@ -74,8 +78,10 @@ uint32_t VersionBeaconManager::get_config_version(config_section_t section) {
             return SettingsManager::instance().get_battery_settings_version();
             
         case config_section_power_profile:
-            // TODO: Get power profile version when implemented
-            return 1;
+                return SettingsManager::instance().get_power_settings_version();
+        
+        case config_section_metadata:
+            return FW_VERSION_NUMBER;
             
         default:
             return 0;
@@ -106,30 +112,49 @@ void VersionBeaconManager::send_version_beacon(bool force) {
     beacon.network_config_version = get_config_version(config_section_network);
     beacon.battery_settings_version = get_config_version(config_section_battery);
     beacon.power_profile_version = get_config_version(config_section_power_profile);
+    beacon.metadata_config_version = get_config_version(config_section_metadata);
     beacon.mqtt_connected = mqtt_connected_;
     beacon.ethernet_connected = ethernet_connected_;
     
+    // Populate firmware metadata directly (no separate request/response needed)
+    if (FirmwareMetadata::isValid(FirmwareMetadata::metadata)) {
+        strncpy(beacon.env_name, FirmwareMetadata::metadata.env_name, sizeof(beacon.env_name) - 1);
+        beacon.env_name[sizeof(beacon.env_name) - 1] = '\0';
+        beacon.version_major = FirmwareMetadata::metadata.version_major;
+        beacon.version_minor = FirmwareMetadata::metadata.version_minor;
+        beacon.version_patch = FirmwareMetadata::metadata.version_patch;
+    } else {
+        // Fallback to compile-time values if metadata invalid
+        strncpy(beacon.env_name, DEVICE_NAME, sizeof(beacon.env_name) - 1);
+        beacon.env_name[sizeof(beacon.env_name) - 1] = '\0';
+        beacon.version_major = FW_VERSION_MAJOR;
+        beacon.version_minor = FW_VERSION_MINOR;
+        beacon.version_patch = FW_VERSION_PATCH;
+    }
+    beacon.reserved[0] = 0;
+    
     // Send via ESP-NOW to receiver (if connected)
-    if (EspnowMessageHandler::instance().is_receiver_connected()) {
-        // Get receiver MAC from espnow_transmitter library
-        extern uint8_t receiver_mac[];
+    if (EspNowConnectionManager::instance().is_connected()) {
+        // Get receiver MAC from connection manager
+        const uint8_t* peer_mac = EspNowConnectionManager::instance().get_peer_mac();
         
         esp_err_t result = esp_now_send(
-            receiver_mac,
+            peer_mac,
             (const uint8_t*)&beacon,
             sizeof(beacon)
         );
         
         if (result == ESP_OK) {
-            LOG_DEBUG("[VERSION_BEACON] Sent: MQTT:v%u, Net:v%u, Batt:v%u, Profile:v%u (MQTT:%s, ETH:%s)",
+            LOG_DEBUG("VERSION_BEACON", "Sent: MQTT:v%u, Net:v%u, Batt:v%u, Profile:v%u, Meta:v%u (MQTT:%s, ETH:%s)",
                      beacon.mqtt_config_version,
                      beacon.network_config_version,
                      beacon.battery_settings_version,
                      beacon.power_profile_version,
+                     beacon.metadata_config_version,
                      beacon.mqtt_connected ? "CONN" : "DISC",
                      beacon.ethernet_connected ? "UP" : "DOWN");
         } else {
-            LOG_ERROR("[VERSION_BEACON] Send failed: %s", esp_err_to_name(result));
+            LOG_ERROR("VERSION_BEACON", "Send failed: %s", esp_err_to_name(result));
         }
     }
     
@@ -141,7 +166,7 @@ void VersionBeaconManager::send_version_beacon(bool force) {
 }
 
 void VersionBeaconManager::send_config_section(config_section_t section, const uint8_t* receiver_mac) {
-    LOG_INFO("[VERSION_BEACON] Sending config section: %d", (int)section);
+    LOG_INFO("VERSION_BEACON", "Sending config section: %d", (int)section);
     
     // Send the appropriate config message based on section requested
     switch (section) {
@@ -248,34 +273,40 @@ void VersionBeaconManager::send_config_section(config_section_t section, const u
             net_msg.message[sizeof(net_msg.message) - 1] = '\0';
             
             esp_now_send(receiver_mac, (const uint8_t*)&net_msg, sizeof(net_msg));
-            LOG_INFO("[VERSION_BEACON] Sent network config (v%u) in response to request", net_msg.config_version);
+            LOG_INFO("VERSION_BEACON", "Sent network config (v%u) in response to request", net_msg.config_version);
             break;
         }
         
         case config_section_battery: {
             // Battery settings would be sent here
             // For now, log that this needs to be implemented  
-            LOG_WARN("[VERSION_BEACON] Battery config section send not yet implemented");
+            LOG_WARN("VERSION_BEACON", "Battery config section send not yet implemented");
             break;
         }
         
         case config_section_power_profile: {
             // Power profile would be sent here
-            LOG_WARN("[VERSION_BEACON] Power profile section send not yet implemented");
+            LOG_WARN("VERSION_BEACON", "Power profile section send not yet implemented");
+            break;
+        }
+
+        case config_section_metadata: {
+            // Metadata is now sent directly in VERSION_BEACON - no separate response needed
+            LOG_INFO("VERSION_BEACON", "Metadata request received but metadata is now in VERSION_BEACON");
             break;
         }
     }
 }
 
 void VersionBeaconManager::handle_config_request(const config_section_request_t* request, const uint8_t* sender_mac) {
-    LOG_INFO("[VERSION_BEACON] Config request received: section=%d, version=%u",
+    LOG_INFO("VERSION_BEACON", "Config request received: section=%d, version=%u",
              (int)request->section, request->requested_version);
     
     // Verify the requested version matches current version
     uint32_t current_version = get_config_version(request->section);
     
     if (current_version != request->requested_version) {
-        LOG_WARN("[VERSION_BEACON] Version mismatch: requested v%u, current v%u",
+        LOG_WARN("VERSION_BEACON", "Version mismatch: requested v%u, current v%u",
                  request->requested_version, current_version);
         // Send anyway - receiver wants to update
     }

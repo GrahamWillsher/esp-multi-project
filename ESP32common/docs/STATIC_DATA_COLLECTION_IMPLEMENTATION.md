@@ -5,6 +5,17 @@
 
 ---
 
+## ⚠️ Important: Scope - Static Configuration Only
+
+**This document covers STATIC CONFIGURATION SYNCHRONIZATION only** (MQTT server/port, network settings, battery config, etc.).
+
+**For runtime status handling (connection states, keep-alive), see:**
+- [ESPNOW_HEARTBEAT.md](../docs/ESPNOW_HEARTBEAT.md) - Heartbeat protocol for connection detection (10s interval, 90s timeout)
+- [PHASE4_VERSION_BEACON_IMPLEMENTATION_COMPLETE.md](../PHASE4_VERSION_BEACON_IMPLEMENTATION_COMPLETE.md) - Runtime status broadcasting (MQTT/Ethernet connected, 15s beacons)
+- [STATIC_DATA_CACHE_ARCHITECTURE_REVIEW.md](../STATIC_DATA_CACHE_ARCHITECTURE_REVIEW.md) - Overall cache architecture and data flow
+
+---
+
 ## Executive Summary
 
 This document outlines the implementation of a professional-grade static configuration synchronization system between the ESP-NOW receiver (master) and transmitter (slave) devices. The system follows industry best practices used by Bosch, Sonoff, Philips Hue, and Matter devices.

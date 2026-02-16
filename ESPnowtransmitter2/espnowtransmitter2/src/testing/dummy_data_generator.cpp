@@ -11,6 +11,7 @@
 #include <espnow_common.h>
 #include <espnow_transmitter.h>
 #include <espnow_send_utils.h>  // Phase 3: Use unified retry utility with automatic backoff
+#include <connection_manager.h>
 #include "../config/logging_config.h"
 #include "../settings/settings_manager.h"
 
@@ -69,8 +70,9 @@ namespace DummyData {
         
         msg.checksum = calculate_checksum(&msg, sizeof(msg) - 2);
         
-        if (EspnowSendUtils::send_with_retry(receiver_mac, &msg, sizeof(msg), "Battery status")) {
-            LOG_TRACE("[DUMMY] Battery: SOC=%d.%02d%%, V=%dmV, I=%dmA, P=%dW",
+        const uint8_t* peer_mac = EspNowConnectionManager::instance().get_peer_mac();
+        if (EspnowSendUtils::send_with_retry(peer_mac, &msg, sizeof(msg), "Battery status")) {
+            LOG_TRACE("DUMMY", "Battery: SOC=%d.%02d%%, V=%dmV, I=%dmA, P=%dW",
                      soc/100, soc%100, msg.voltage_mV, msg.current_mA, msg.power_W);
         }
     }
@@ -112,9 +114,10 @@ namespace DummyData {
         
         msg.checksum = calculate_checksum(&msg, sizeof(msg) - 2);
         
-        if (EspnowSendUtils::send_with_retry(receiver_mac, &msg, sizeof(msg), "Battery info")) {
+        const uint8_t* peer_mac = EspNowConnectionManager::instance().get_peer_mac();
+        if (EspnowSendUtils::send_with_retry(peer_mac, &msg, sizeof(msg), "Battery info")) {
             const char* chem[] = {"NCA", "NMC", "LFP", "LTO"};
-            LOG_INFO("[DUMMY] Battery info sent: %dWh, %dS, %s chemistry (%s)",
+            LOG_INFO("DUMMY", "Battery info sent: %dWh, %dS, %s chemistry (%s)",
                      msg.capacity_wh, msg.cell_count, chem[msg.chemistry],
                      use_nvs ? "from NVS" : "dummy defaults");
         }
@@ -136,8 +139,9 @@ namespace DummyData {
         msg.charger_status = (power > 0) ? 1 : 0;      // 1=charging, 0=off
         msg.checksum = calculate_checksum(&msg, sizeof(msg) - 2);
         
-        if (EspnowSendUtils::send_with_retry(receiver_mac, &msg, sizeof(msg), "Charger status")) {
-            LOG_TRACE("[DUMMY] Charger: %s, HV=%dV/%dA, P=%dW",
+        const uint8_t* peer_mac = EspNowConnectionManager::instance().get_peer_mac();
+        if (EspnowSendUtils::send_with_retry(peer_mac, &msg, sizeof(msg), "Charger status")) {
+            LOG_TRACE("DUMMY", "Charger: %s, HV=%dV/%dA, P=%dW",
                      msg.charger_status ? "CHARGING" : "OFF",
                      msg.hv_voltage_dV/10, msg.hv_current_dA/10, msg.power_W);
         }
@@ -156,8 +160,9 @@ namespace DummyData {
         msg.inverter_status = (power < 0) ? 1 : 0;     // 1=on, 0=off
         msg.checksum = calculate_checksum(&msg, sizeof(msg) - 2);
         
-        if (EspnowSendUtils::send_with_retry(receiver_mac, &msg, sizeof(msg), "Inverter status")) {
-            LOG_TRACE("[DUMMY] Inverter: %s, AC=%dV/%dA@%dHz, P=%dW",
+        const uint8_t* peer_mac = EspNowConnectionManager::instance().get_peer_mac();
+        if (EspnowSendUtils::send_with_retry(peer_mac, &msg, sizeof(msg), "Inverter status")) {
+            LOG_TRACE("DUMMY", "Inverter: %s, AC=%dV/%dA@%dHz, P=%dW",
                      msg.inverter_status ? "ON" : "OFF",
                      msg.ac_voltage_V, msg.ac_current_dA/10, msg.ac_frequency_dHz/10, msg.power_W);
         }
@@ -175,8 +180,9 @@ namespace DummyData {
         msg.uptime_seconds = uptime;
         msg.checksum = calculate_checksum(&msg, sizeof(msg) - 2);
         
-        if (EspnowSendUtils::send_with_retry(receiver_mac, &msg, sizeof(msg), "System status")) {
-            LOG_TRACE("[DUMMY] System: contactors=0x%02X, errors=0x%02X, warnings=0x%02X, uptime=%us",
+        const uint8_t* peer_mac = EspNowConnectionManager::instance().get_peer_mac();
+        if (EspnowSendUtils::send_with_retry(peer_mac, &msg, sizeof(msg), "System status")) {
+            LOG_TRACE("DUMMY", "System: contactors=0x%02X, errors=0x%02X, warnings=0x%02X, uptime=%us",
                      msg.contactor_state, msg.error_flags, msg.warning_flags, msg.uptime_seconds);
         }
     }
@@ -185,7 +191,7 @@ namespace DummyData {
      * @brief Dummy data generator task
      */
     static void task(void* parameter) {
-        LOG_INFO("[DUMMY] Data generator started (TEMPORARY - will be removed in Phase 4)");
+        LOG_INFO("DUMMY", "Data generator started (TEMPORARY - will be removed in Phase 4)");
         
         // Send battery info once at startup
         vTaskDelay(pdMS_TO_TICKS(2000));  // Wait for receiver to be ready
@@ -230,7 +236,7 @@ namespace DummyData {
     
     void start(uint8_t priority, uint8_t core) {
         if (task_handle != NULL) {
-            LOG_WARN("[DUMMY] Data generator already running");
+            LOG_WARN("DUMMY", "Data generator already running");
             return;
         }
         
@@ -244,14 +250,14 @@ namespace DummyData {
             core
         );
         
-        LOG_INFO("[DUMMY] Data generator task created (Priority %d, Core %d)", priority, core);
+        LOG_INFO("DUMMY", "Data generator task created (Priority %d, Core %d)", priority, core);
     }
     
     void stop() {
         if (task_handle != NULL) {
             vTaskDelete(task_handle);
             task_handle = NULL;
-            LOG_INFO("[DUMMY] Data generator stopped");
+            LOG_INFO("DUMMY", "Data generator stopped");
         }
     }
     

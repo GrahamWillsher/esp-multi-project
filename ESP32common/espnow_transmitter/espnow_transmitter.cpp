@@ -8,8 +8,6 @@
 // VERSION MARKER - Force rebuild detection
 #define ESPNOW_TRANSMITTER_VERSION "v2.0-request-abort-20260122"
 
-// Initialize receiver_mac to broadcast - will be updated when receiver sends PROBE
-uint8_t receiver_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 static const uint8_t k_channels[] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 };
 volatile bool g_ack_received = false;
 volatile uint32_t g_ack_seq = 0;
@@ -23,67 +21,41 @@ uint16_t calculate_checksum(espnow_payload_t* data) {
     return (uint16_t)(data->soc + data->power);
 }
 
+// CRC16-CCITT implementation for heartbeat messages
+uint16_t calculate_crc16(const void* data, size_t len) {
+    const uint8_t* ptr = (const uint8_t*)data;
+    uint16_t crc = 0xFFFF;
+    
+    for (size_t i = 0; i < len; i++) {
+        crc ^= (uint16_t)ptr[i] << 8;
+        for (uint8_t bit = 0; bit < 8; bit++) {
+            if (crc & 0x8000) {
+                crc = (crc << 1) ^ 0x1021;
+            } else {
+                crc = crc << 1;
+            }
+        }
+    }
+    
+    return crc;
+}
+
+// Validate CRC16 checksum (checksum field must be last in struct)
+bool validate_crc16(const void* data, size_t len) {
+    if (len < sizeof(uint16_t)) return false;
+    
+    // Extract stored checksum (last 2 bytes)
+    const uint8_t* ptr = (const uint8_t*)data;
+    uint16_t stored_crc = (uint16_t)ptr[len - 2] | ((uint16_t)ptr[len - 1] << 8);
+    
+    // Calculate CRC over all bytes except checksum field
+    uint16_t calculated_crc = calculate_crc16(data, len - sizeof(uint16_t));
+    
+    return stored_crc == calculated_crc;
+}
+
 bool set_channel(uint8_t ch) {
     return esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE) == ESP_OK;
-}
-
-bool ensure_peer_added(uint8_t channel) {
-    esp_now_peer_info_t peer{};
-    memcpy(peer.peer_addr, receiver_mac, 6);
-    peer.ifidx = WIFI_IF_STA;
-    peer.channel = channel;
-    peer.encrypt = false;
-    if (esp_now_is_peer_exist(receiver_mac)) {
-        esp_now_del_peer(receiver_mac);
-    }
-    esp_err_t result = esp_now_add_peer(&peer);
-    if (result == ESP_OK) {
-        MQTT_LOG_DEBUG("ESPNOW_TX", "Peer added on channel %d", channel);
-    } else {
-        MQTT_LOG_ERROR("ESPNOW_TX", "Failed to add peer (error %d)", result);
-    }
-    return result == ESP_OK;
-}
-
-bool send_probe(uint32_t seq) {
-    probe_t p{ msg_probe, seq };
-    return esp_now_send(receiver_mac, reinterpret_cast<uint8_t*>(&p), sizeof(p)) == ESP_OK;
-}
-
-int hop_and_lock_channel(uint8_t* out_channel, uint8_t attempts_per_channel, uint16_t ack_wait_ms) {
-    MQTT_LOG_INFO("ESPNOW_TX", "Starting full channel sweep...");
-    for (uint8_t ch : k_channels) {
-        MQTT_LOG_DEBUG("ESPNOW_TX", "Trying channel %d...", ch);
-        if (!set_channel(ch)) {
-            MQTT_LOG_ERROR("ESPNOW_TX", "Failed to set channel");
-            continue;
-        }
-        if (!ensure_peer_added(ch)) {
-            MQTT_LOG_ERROR("ESPNOW_TX", "Failed to add peer");
-            continue;
-        }
-        for (uint8_t a = 0; a < attempts_per_channel; ++a) {
-            g_ack_received = false;
-            g_ack_seq = (uint32_t)esp_random();
-            if (!send_probe(g_ack_seq)) {
-                MQTT_LOG_ERROR("ESPNOW_TX", "Send probe failed");
-                continue;
-            }
-            MQTT_LOG_DEBUG("ESPNOW_TX", "Probe sent (seq=%u), waiting...", g_ack_seq);
-            uint32_t t0 = millis();
-            while (!g_ack_received && (millis() - t0) < ack_wait_ms) {
-                delay(1);
-            }
-            if (g_ack_received) {
-                MQTT_LOG_INFO("ESPNOW_TX", "ACK received! Locking to channel %d", g_lock_channel);
-                *out_channel = g_lock_channel;
-                return g_lock_channel;
-            }
-        }
-        MQTT_LOG_DEBUG("ESPNOW_TX", "No ACK on channel %d", ch);
-    }
-    MQTT_LOG_WARNING("ESPNOW_TX", "Channel sweep complete - no gateway found");
-    return 0;
 }
 
 void on_espnow_recv(const uint8_t *mac_addr, const uint8_t *data, int len) {
@@ -180,20 +152,7 @@ void on_data_sent(const uint8_t *mac_addr, esp_now_send_status_t status) {
             }
         }
         
-        // Check if peer still exists (only log when checking, not on every failure)
-        if (!esp_now_is_peer_exist(receiver_mac)) {
-            if (should_log) {
-                MQTT_LOG_ERROR("ESPNOW_TX", "Peer %s lost!", mac_str);
-            }
-            
-            // Attempt to re-add peer, but with rate limiting
-            if (consecutive_failures <= MAX_CONSECUTIVE_FAILURES && 
-                (now - last_peer_readd_time) >= PEER_READD_INTERVAL_MS) {
-                MQTT_LOG_INFO("ESPNOW_TX", "Re-adding peer (attempt after %ums)", now - last_peer_readd_time);
-                ensure_peer_added(g_lock_channel);
-                last_peer_readd_time = now;
-            }
-        }
+        // Peer management is now handled by ConnectionManager - no legacy re-add logic needed
     }
 }
 
@@ -241,14 +200,7 @@ void send_test_data() {
     }
     tx_data.power = random(-4000, 4001);
     tx_data.checksum = calculate_checksum(&tx_data);
-    uint8_t current_ch = 0;
-    wifi_second_chan_t second;
-    esp_wifi_get_channel(&current_ch, &second);
-    MQTT_LOG_DEBUG("ESPNOW_TX", "Sending data - Ch:%d Lock:%d SOC:%d%% Power:%dW Chk:%u", 
-                   current_ch, g_lock_channel, tx_data.soc, tx_data.power, tx_data.checksum);
-    esp_err_t result = esp_now_send(receiver_mac, (uint8_t*)&tx_data, sizeof(tx_data));
-    // Note: Delivery success/failure is already logged by on_data_sent() callback
-    // No need to log here - would cause duplicate log spam
+    // Legacy send_test_data() function removed - modern code uses DataSender class
 }
 
 // ============================================================================
@@ -281,40 +233,4 @@ void init_espnow(QueueHandle_t rx_queue) {
     esp_now_register_send_cb(on_data_sent);
 }
 
-void discover_and_lock_channel() {
-    uint8_t locked = 0;
-    int found = hop_and_lock_channel(&locked);
-    if (found > 0) {
-        MQTT_LOG_INFO("ESPNOW_TX", "Locked to channel %d", found);
-        g_lock_channel = locked;
-        
-        // Ensure we're on the correct channel
-        if (!set_channel(locked)) {
-            MQTT_LOG_ERROR("ESPNOW_TX", "Failed to set channel to %d", locked);
-        }
-        
-        // Verify channel was actually set
-        uint8_t current_ch = 0;
-        wifi_second_chan_t second;
-        esp_wifi_get_channel(&current_ch, &second);
-        MQTT_LOG_INFO("ESPNOW_TX", "Current WiFi channel: %d (locked: %d)", current_ch, locked);
-        
-        delay(100);
-        
-        // Re-add peer with correct channel (removes old peer first)
-        ensure_peer_added(locked);
-        
-        MQTT_LOG_INFO("ESPNOW_TX", "Channel lock complete - using channel %d", locked);
-    } else {
-        MQTT_LOG_WARNING("ESPNOW_TX", "No receiver found during initial discovery");
-        MQTT_LOG_INFO("ESPNOW_TX", "Using WiFi channel - bidirectional announcements will establish connection");
-        // Use current WiFi channel instead of forcing channel 1
-        uint8_t current_ch = 0;
-        wifi_second_chan_t second;
-        esp_wifi_get_channel(&current_ch, &second);
-        g_lock_channel = current_ch;
-        MQTT_LOG_INFO("ESPNOW_TX", "Using WiFi channel %d for ESP-NOW", current_ch);
-        delay(100);
-        // Don't add peer yet - will be added when receiver responds to our announcements
-    }
-}
+// Legacy discover_and_lock_channel() function removed - modern code uses DiscoveryTask class

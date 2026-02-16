@@ -1,6 +1,9 @@
 # Battery Emulator 9.2.4 to ESP32Projects Migration Plan
 
 **Related Documentation**:
+- [STAGE_1_DATA_LAYER_EXPANDED.md](STAGE_1_DATA_LAYER_EXPANDED.md) - **COMPLETE Stage 1 design with packet definitions and implementation checklist**
+- [MQTT_TOPICS_REFERENCE.md](MQTT_TOPICS_REFERENCE.md) - **MQTT topics from Battery Emulator v9.2.4 with receiver configuration guide**
+- [HARDWARE_HAL.md](HARDWARE_HAL.md) - **Hardware Abstraction Layer: Waveshare RS485/CAN HAT (B) GPIO and configuration**
 - [WEBSERVER_PAGES_MAPPING.md](WEBSERVER_PAGES_MAPPING.md) - Web page migration details
 - [DATA_LAYER_MAPPING.md](DATA_LAYER_MAPPING.md) - ESP-NOW message structures
 - [SETTINGS_MAPPING.md](SETTINGS_MAPPING.md) - Settings storage and sync
@@ -10,8 +13,65 @@
 
 ## Executive Summary
 Migrate the single-device Battery-Emulator-9.2.4 project to a two-device architecture:
-- **Transmitter (ESP32-POE-ISO)**: Real-time battery control system with Ethernet/MQTT
-- **Receiver (LilyGo T-Display-S3)**: Web interface and display with ESP-NOW communication
+- **Transmitter (ESP32-POE-ISO)**: Real-time battery control system with Ethernet (to MQTT broker) and ESP-NOW (to receiver)
+- **Receiver (LilyGo T-Display-S3)**: Web interface and display with ESP-NOW (from transmitter) and WiFi/MQTT (to broker)
+
+### Key Architectural Change: Separation of Concerns
+**Original**: Single board (multiple hardware variants) running battery control + WiFi AP web UI + display
+**New**: Dual-board split:
+- **Transmitter (ESP32-POE-ISO)**: Battery ↔ Inverter control via CAN (primary mission)
+  - Reads/writes BMS, charger, inverter CAN messages
+  - Maintains datalayer (battery status, charger status, etc.)
+  - Runs 10ms control loop (contactors, precharge, safety logic)
+  - **Sends ESP-NOW summaries to receiver ONLY when needed** (on-demand, on-change, or periodic low-rate summaries) via WiFi peer-to-peer
+  - **Publishes MQTT events/telemetry to broker via Ethernet** (persistence, independent of receiver connectivity)
+  - Zero real-time display requirements—control is independent of receiver
+  
+- **Receiver (LilyGo T-Display-S3)**: UI and monitoring (secondary mission)
+  - Receives **ESP-NOW summaries** from transmitter via WiFi peer-to-peer (low-latency, real-time)
+  - **Subscribes to MQTT broker via WiFi** (BE/info, BE/spec_data, BE/spec_data_2, BE/status topics)
+  - Displays current state on web UI and TFT screen
+  - Allows user to modify settings (sent back to transmitter via ESP-NOW)
+  - Can be offline without affecting transmitter operation (both ESP-NOW and MQTT are independent)
+
+**Implication**: Monitoring/logging is **not real-time-critical**. The transmitter's job is to manage the battery/inverter reliably. The receiver's job is to show what the transmitter is doing. Therefore, data transfer from transmitter → receiver should be **low-rate, on-change, or on-request**.
+
+---
+
+## Data Transfer Analysis: ESP-NOW vs MQTT
+
+### Cell Data Constraints
+**Cell array size**: 96 cells × 2 bytes (voltage per cell) = 192 bytes per battery
+**Multiple batteries**: Some systems have 2 batteries in parallel/series → up to 384 bytes
+
+### Transport Viability
+
+**ESP-NOW Capabilities**:
+- Max packet size: **250 bytes** (after ESP-NOW overhead)
+- Latency: <100ms typical
+- Throughput: ~100 packets/sec (10 kbps)
+- Use case: Real-time config sync, quick settings updates, immediate user feedback
+- **Cell data viability**: ✓ YES - 192 bytes fits in a single ESP-NOW packet. But only send on-request or low-rate (<1 Hz).
+
+**MQTT Capabilities**:
+- Packet size: Effectively unlimited (multi-packet payloads)
+- Latency: 100ms–10s (depends on broker + network)
+- Throughput: Broker-dependent (typically 100–1000 packets/sec)
+- Storage: ✓ Durable persistence (broker can retain messages)
+- Use case: Historical logs, events, large bulk transfers, offline storage
+- **Cell data viability**: ✓ YES - ideal for storing cell arrays with timestamps
+
+### Recommended Transport Split
+| Data Type | ESP-NOW | MQTT | Rationale |
+|-----------|---------|------|-----------|
+| System/Battery/Inverter status (summary) | ✓ | ✓ | Low-rate ESP-NOW for UI; periodic MQTT for history |
+| Settings (update/snapshot) | ✓ | — | Fast interactive sync via ESP-NOW |
+| Cell data (raw voltages) | ✗ (on-request only) | ✓ | Too large for high-rate; store via MQTT |
+| Events (faults/alarms) | ✓ (immediate) | ✓ (durable) | ESP-NOW for instant UI alert; MQTT for log |
+
+**Recommendation**: 
+- **ESP-NOW**: Summaries + settings + event notifications (real-time, low-rate)
+- **MQTT**: Detailed logs, cell arrays, historical telemetry (persistent, bulk)
 
 ---
 
@@ -82,21 +142,27 @@ Software/
 
 **Current Projects**:
 1. **espnowreciever_2** (Receiver - LilyGo T-Display-S3)
+   - **Connectivity**: ESP-NOW (from transmitter via WiFi) + WiFi/MQTT (to broker)
    - Web server with pages: monitor, OTA, debug, settings, systeminfo, reboot
    - ESP-NOW message router with 15 registered routes
+   - MQTT client for subscribing to broker (BE/info, BE/spec_data, BE/spec_data_2, BE/status)
    - TFT display showing SOC, power, LED status
    - Test mode and normal operation states
-   - Configuration sync via ESP-NOW
-   - TransmitterManager for tracking transmitter state
+   - Configuration sync via ESP-NOW (settings sent to transmitter)
+   - MQTT configuration in web UI (broker IP/port/credentials)
+   - TransmitterManager for tracking transmitter state (integrates ESP-NOW + MQTT data)
 
-2. **ESPnowtransmitter2** (Transmitter - ESP32-POE-ISO)
+2. **ESPnowtransmitter2** (Transmitter - Olimex ESP32-POE2)
+   - **Hardware**: Olimex ESP32-POE2 (WROVER variant with 4MB PSRAM) + Waveshare RS485/CAN HAT (B)
+   - **CAN/RS485**: SPI-connected MCP2515 CAN controller + TJA1050 transceiver (GPIO configuration in [HARDWARE_HAL.md](HARDWARE_HAL.md))
    - Ethernet connectivity (static/DHCP)
    - ESP-NOW transmitter with periodic announcements
-   - MQTT telemetry publishing
+   - MQTT telemetry publishing (via Ethernet)
    - HTTP OTA server
    - Discovery and channel locking
    - Message handlers for control commands
    - Data sender task for battery metrics
+   - **CAN I/O**: BMS, charger, inverter communication via MCP2515 SPI interface
 
 3. **esp32common** (Shared Libraries)
    - espnow_transmitter/
@@ -1275,6 +1341,205 @@ The following improvements should be implemented AFTER migration is complete:
 
 **Next Steps**:
 1. Review and approve migration plan
-2. Set up Phase 0 workspace
-3. Begin Phase 1 implementation
-4. Schedule weekly progress reviews
+2. Use the checklist below to execute in bite-size stages
+
+---
+
+## Implementation Checklist (Bite-Size Stages)
+
+### Stage 0: Project Hygiene (Done)
+- [x] Migration docs created (mapping docs, timing, settings)
+- [x] Single-branch workflow established (feature/battery-emulator-migration)
+
+### Stage 1: Data Layer Packets + Transport Choice (Foundation)
+**Goal**: Define what data is sent to the receiver and choose the correct transport for each class of data.
+
+**See Detailed Design & Implementation**:
+- [STAGE_1_DATA_LAYER_EXPANDED.md](STAGE_1_DATA_LAYER_EXPANDED.md) - Complete architecture, packet definitions (7 ESP-NOW packets), MQTT implementation for receiver, cell monitor layout (based on Battery Emulator), 6-phase implementation checklist
+- [MQTT_TOPICS_REFERENCE.md](MQTT_TOPICS_REFERENCE.md) - Actual MQTT topics from Battery Emulator v9.2.4, JSON payload schemas, receiver MQTT configuration guide
+
+**Transport Guidance (Updated)**
+- **ESP-NOW**: Low-latency device-to-device. Use for real-time summaries, settings sync, immediate user feedback. Transmitter → Receiver only (1–5s updates).
+- **MQTT**: Persistent broker-based messaging. Use for detailed logs, cell arrays, historical data, and cross-network communication. Data stored on MQTT broker.
+
+**Priority Alignment**
+- Primary goal is **battery ↔ inverter control on transmitter (CAN/logic)**.
+- Monitoring/logging is **lower priority**. Therefore, status updates should be **low‑rate, on‑change, or on‑request**.
+
+**Cell Data Constraints** (Key Discovery)
+```
+- 96-cell battery: 192 bytes (voltages + temps + balance state)
+- Dual battery system: 384 bytes
+- ESP-NOW limit: 250 bytes per packet
+- **Implication**: Single battery cell data fits in ESP-NOW if sent on-request only (<1 Hz). Dual battery systems must use MQTT.
+
+**Recommended Packet Set (ESP-NOW)**
+Send only what the receiver needs for UI and configuration. Keep rates low.
+
+1) **System Status (low‑rate heartbeat)** — ~50 bytes
+  - Purpose: connection health, state summary, fault flags
+  - Fields: uptime_sec, system_state, fault_flags, contactor_main_plus, contactor_main_minus, contactor_charger, precharge_active, led_color
+  - Rate: 1–5s or on-change
+
+2) **Battery Status (summary only)** — ~60 bytes
+  - Purpose: UI display (SOC, pack V/I/P, temps)
+  - Fields: soc_percent_100, pack_voltage_mv, pack_current_ma, pack_power_w, temp_min_dc, temp_max_dc, max_charge_power_w, max_discharge_power_w, bms_status
+  - Rate: 1–5s or on-change
+  - NOTE: No cell-by-cell data in this packet—only summaries
+
+3) **Inverter Status (summary only)** — ~40 bytes
+  - Purpose: UI display (AC power, mode)
+  - Fields: inverter_state, ac_voltage_v, ac_current_a, ac_power_w, ac_freq_hz, fault_flags
+  - Rate: 1–5s or on-change
+
+4) **Charger Status (summary only)** — ~40 bytes
+  - Purpose: UI display (charging power/status)
+  - Fields: charger_state, dc_voltage_v, dc_current_a, dc_power_w, charger_temp_dc, fault_flags
+  - Rate: 5–10s or on-change
+
+5) **Settings Snapshot (on request / on change)** — ~80–150 bytes
+  - Purpose: receiver refresh after reconnect; one category at a time
+  - Fields: category, version, payload[], checksum
+  - Trigger: receiver requests, or transmitter sends when settings version increments
+
+6) **Events (on event only)** — ~30 bytes
+  - Purpose: Immediate UI alerting + MQTT log entry
+  - Fields: event_code, severity, timestamp_sec, param1, checksum
+  - Rate: on event only (not periodic)
+
+7) **Cell Data (on-request only)** — 192–384 bytes
+  - Purpose: Detailed cell voltages, temps, balance state (NOT periodic)
+  - Single battery: cell_voltages[96], cell_temps[16], balance_state[12] = ~222 bytes (fits ESP-NOW)
+  - Dual battery: cell arrays × 2 = ~384 bytes (does NOT fit—use MQTT instead)
+  - Bandwidth: Send <1 Hz maximum (on-request from receiver)
+
+**Recommended Packet Set (MQTT)**
+Send all *persisted* telemetry and diagnostics via MQTT so storage is durable.
+
+1) **Event Log Stream** (primary)
+  - Topic: `telemetry/events`
+  - All events/alarms/faults with timestamps and JSON context
+  - Transmitted immediately; broker retains
+
+2) **Cell Data** (optional, on-request or slow periodic)
+  - Topic: `telemetry/battery/cells`
+  - Full 96-cell array (single or dual) as JSON
+  - Rate: on-request or 30–60s if periodic trending enabled
+
+3) **Periodic Telemetry** (optional)
+  - Topic: `telemetry/battery/summary`, `telemetry/inverter/summary`, etc.
+  - Battery/inverter/charger summaries at 10–60s cadence for trending/graphing
+
+**Data Rate Summary**
+- ESP-NOW: ~83 bytes/sec (negligible; comfortable margins)
+- MQTT: ~11 bytes/sec (trivial load on Ethernet)
+
+**Stage 1 Checklist (Bite-Size)**
+
+**Phase A: Packet Definition**
+- [ ] Define ESP-NOW status packets in `ESP32common/espnow_transmitter/espnow_common.h`
+  - System status struct (50 bytes, packed)
+  - Battery status struct (60 bytes, packed)
+  - Inverter status struct (40 bytes, packed)
+  - Charger status struct (40 bytes, packed)
+  - Settings snapshot struct (variable, packed)
+  - Event struct (30 bytes, packed)
+  - Cell data struct (single and dual, with size limit warnings)
+- [ ] Verify all ESP-NOW packets <250 bytes (add inline comments: "X bytes used, Y bytes free")
+- [ ] Create `docs/MQTT_TOPICS.md` with all topics and JSON schemas
+
+**Phase B: Transmitter Senders**
+- [ ] Implement status senders: system_status, battery_status, inverter_status, charger_status (low-rate, on-change)
+- [ ] Implement event handling: send_event_espnow (immediate) + publish_event_mqtt (durable)
+- [ ] Implement settings snapshot sender (on-request, one category)
+- [ ] Implement cell data sender (on-request, with size warnings for dual battery)
+
+**Phase C: Receiver Handlers**
+- [ ] Create ESP-NOW handlers for all 6 packet types (system, battery, inverter, charger, events, cell data)
+- [ ] Update TransmitterManager cache with timestamp tracking and "data available" flags
+- [ ] Wire cache updates to SSE notifications (push to monitor page)
+
+**Phase D: Web UI Integration**
+- [ ] Enhance monitor page: system status, battery summary, inverter summary, charger summary
+- [ ] Add "Waiting for data..." placeholders if transmitter not connected
+- [ ] Show last-update timestamp for each section
+- [ ] Add optional "Cell Data" page (on-demand request via MQTT; low priority)
+
+**Phase E: Testing**
+- [ ] Create dummy transmitter senders (simulate realistic status at 1–5s)
+- [ ] Verify packet sizes: sizeof() for all structs, all <250 bytes
+- [ ] Verify data rates: transmitter <1 Hz total, cell data <0.2 Hz
+- [ ] Smoke test: transmitter sends status → receiver displays + MQTT logs
+
+**Phase F: Documentation**
+- [ ] Create `PACKET_DEFINITIONS.md` (structs with field descriptions, size analysis)
+- [ ] Create `DATA_TRANSFER_DESIGN.md` (ESP-NOW vs MQTT rationale, bandwidth estimates)
+
+### Stage 2: Settings Sync (Complete)
+**Goal**: Receiver can edit and persist transmitter settings via ESP-NOW.
+- [x] Settings update/ack messages implemented
+- [x] Transmitter NVS persistence for battery/power/inverter/can/contactor
+- [x] Receiver UI editable + save handler
+- [x] Receiver cache + NVS write-through
+- [ ] Add optional settings snapshot CRC/version validation on load
+- [ ] Add UI feedback on ACK timeout/failure
+
+### Stage 3: Web UI Expansion (Receiver)
+**Goal**: Match Battery Emulator web pages with receiver pages.
+- [ ] Enhance monitor page with charger/inverter/system sections
+- [ ] Add charger settings page
+- [ ] Add inverter settings page
+- [ ] Add events/logs page (SSE-capable)
+- [ ] Add cells page (table + min/max highlighting)
+- [ ] Update nav buttons and page definitions
+- [ ] Mobile responsiveness pass
+
+### Stage 4: Transmitter Core Integration (Simulated Hardware)
+**Goal**: Port Battery Emulator control loop and replace dummy sender.
+- [ ] Port datalayer and core control loop to transmitter
+- [ ] Simulated CAN inputs (battery/charger/inverter) with test vectors
+- [ ] Move ESP-NOW status sending to low-priority sender task
+- [ ] Remove dummy_data_generator task
+- [ ] Validate control loop timing (<10ms) under load
+
+### Stage 5: LED Migration
+**Goal**: Transmitter sends LED color; receiver renders.
+- [ ] Implement LED color state mapping on transmitter
+- [ ] Send msg_flash_led color updates
+- [ ] Verify receiver display LED state transitions
+
+### Stage 6: Hardware Simplification
+**Goal**: Lock transmitter to ESP32-POE-ISO only.
+- [ ] Simplify platformio.ini to single env
+- [ ] Remove legacy board ifdefs and unused configs
+- [ ] Update README/pinouts
+
+### Stage 7: MQTT PSRAM Optimization
+**Goal**: Move MQTT queues/buffers to PSRAM for stability.
+- [ ] Identify MQTT queues and large buffers
+- [ ] Allocate MQTT message queues in PSRAM
+- [ ] Validate heap usage and publish stability under load
+
+### Stage 8: System Testing (No Real Hardware)
+**Goal**: Reliability and performance validation with simulated data.
+- [ ] 10ms control loop timing verification
+- [ ] ESP-NOW reliability and reconnection tests
+- [ ] Settings persistence across reboots
+- [ ] 24-hour stability soak test
+
+### Stage 9: Documentation
+**Goal**: Final docs for users and developers.
+- [ ] User Guide
+- [ ] Developer Guide
+- [ ] API Reference
+- [ ] Hardware Setup
+
+---
+
+## Suggested Execution Order (Bite-Size)
+1. Stage 1 (Data Layer) – unblock live monitor data
+2. Stage 3 (Web UI Expansion) – complete receiver pages
+3. Stage 4 (Transmitter Core Integration) – replace dummy sources
+4. Stage 7 (MQTT PSRAM Optimization) – stabilize messaging
+5. Stage 5 (LED) + Stage 6 (Hardware simplification)
+6. Stage 8 (Testing) + Stage 9 (Docs)

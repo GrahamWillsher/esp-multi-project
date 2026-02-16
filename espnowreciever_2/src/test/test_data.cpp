@@ -31,13 +31,13 @@ void generate_test_data() {
             if (TestMode::power <= -4000) powerIncreasing = true;
         }
         
-        LOG_TRACE("Generated test: SOC=%d%%, Power=%ldW", TestMode::soc, TestMode::power);
+        LOG_TRACE("TEST", "Generated test: SOC=%d%%, Power=%ldW", TestMode::soc, TestMode::power);
         notify_sse_data_updated();
     }
 }
 
 void task_generate_test_data(void *parameter) {
-    LOG_DEBUG("TestDataGen task started");
+    LOG_DEBUG("TEST", "TestDataGen task started");
     
     for (;;) {
         if (TestMode::enabled) {
@@ -57,7 +57,7 @@ void task_generate_test_data(void *parameter) {
 
 // Status indicator task
 void taskStatusIndicator(void *parameter) {
-    LOG_DEBUG("StatusIndicator task started");
+    LOG_DEBUG("TEST", "StatusIndicator task started");
     
     for (;;) {
         // Flash LED based on current SOC band color from ESP-NOW
@@ -65,8 +65,8 @@ void taskStatusIndicator(void *parameter) {
         
         static int heartbeat = 0;
         if (++heartbeat % 10 == 0) {
-            LOG_DEBUG("Heartbeat %d - Test Mode: %s", 
-                         heartbeat, TestMode::enabled ? "ON" : "OFF");
+            LOG_DEBUG("TEST", "Heartbeat %d - Test Mode: %s", 
+                      heartbeat, TestMode::enabled ? "ON" : "OFF");
         }
         
         smart_delay(500);

@@ -61,9 +61,44 @@ public:
     uint8_t get_battery_soc_low_limit() const { return battery_soc_low_limit_; }
     uint8_t get_battery_cell_count() const { return battery_cell_count_; }
     uint8_t get_battery_chemistry() const { return battery_chemistry_; }
+    bool get_battery_double_enabled() const { return battery_double_enabled_; }
+    uint16_t get_battery_pack_max_voltage_dV() const { return battery_pack_max_voltage_dV_; }
+    uint16_t get_battery_pack_min_voltage_dV() const { return battery_pack_min_voltage_dV_; }
+    uint16_t get_battery_cell_max_voltage_mV() const { return battery_cell_max_voltage_mV_; }
+    uint16_t get_battery_cell_min_voltage_mV() const { return battery_cell_min_voltage_mV_; }
+    bool get_battery_soc_estimated() const { return battery_soc_estimated_; }
+
+    // Power settings getters
+    uint16_t get_power_charge_w() const { return power_charge_w_; }
+    uint16_t get_power_discharge_w() const { return power_discharge_w_; }
+    uint16_t get_power_max_precharge_ms() const { return power_max_precharge_ms_; }
+    uint16_t get_power_precharge_duration_ms() const { return power_precharge_duration_ms_; }
+
+    // Inverter settings getters
+    uint8_t get_inverter_cells() const { return inverter_cells_; }
+    uint8_t get_inverter_modules() const { return inverter_modules_; }
+    uint8_t get_inverter_cells_per_module() const { return inverter_cells_per_module_; }
+    uint16_t get_inverter_voltage_level() const { return inverter_voltage_level_; }
+    uint16_t get_inverter_capacity_ah() const { return inverter_capacity_ah_; }
+    uint8_t get_inverter_battery_type() const { return inverter_battery_type_; }
+
+    // CAN settings getters
+    uint16_t get_can_frequency_khz() const { return can_frequency_khz_; }
+    uint16_t get_can_fd_frequency_mhz() const { return can_fd_frequency_mhz_; }
+    uint16_t get_can_sofar_id() const { return can_sofar_id_; }
+    uint16_t get_can_pylon_send_interval_ms() const { return can_pylon_send_interval_ms_; }
+
+    // Contactor settings getters
+    bool get_contactor_control_enabled() const { return contactor_control_enabled_; }
+    bool get_contactor_nc_mode() const { return contactor_nc_mode_; }
+    uint16_t get_contactor_pwm_frequency_hz() const { return contactor_pwm_frequency_hz_; }
     
     // Version getters
     uint32_t get_battery_settings_version() const { return battery_settings_version_; }
+    uint32_t get_power_settings_version() const { return power_settings_version_; }
+    uint32_t get_inverter_settings_version() const { return inverter_settings_version_; }
+    uint32_t get_can_settings_version() const { return can_settings_version_; }
+    uint32_t get_contactor_settings_version() const { return contactor_settings_version_; }
     
     // Initialization status
     bool is_initialized() const { return initialized_; }
@@ -110,6 +145,26 @@ private:
      * @return true if saved successfully
      */
     bool save_battery_settings();
+
+    bool save_power_setting(uint8_t field_id, uint32_t value_uint32);
+    bool save_inverter_setting(uint8_t field_id, uint32_t value_uint32);
+    bool save_can_setting(uint8_t field_id, uint32_t value_uint32);
+    bool save_contactor_setting(uint8_t field_id, uint32_t value_uint32);
+
+    bool load_power_settings();
+    bool load_inverter_settings();
+    bool load_can_settings();
+    bool load_contactor_settings();
+
+    bool save_power_settings();
+    bool save_inverter_settings();
+    bool save_can_settings();
+    bool save_contactor_settings();
+
+    void increment_power_version();
+    void increment_inverter_version();
+    void increment_can_version();
+    void increment_contactor_version();
     
     // Battery settings storage
     uint32_t battery_capacity_wh_{30000};              // 30kWh default
@@ -121,9 +176,44 @@ private:
     uint8_t battery_soc_low_limit_{20};                // 20% default
     uint8_t battery_cell_count_{16};                   // 16S default
     uint8_t battery_chemistry_{2};                     // LFP default
+    bool battery_double_enabled_{false};               // Double battery disabled
+    uint16_t battery_pack_max_voltage_dV_{580};        // 58.0V default
+    uint16_t battery_pack_min_voltage_dV_{460};        // 46.0V default
+    uint16_t battery_cell_max_voltage_mV_{4200};       // 4.2V default
+    uint16_t battery_cell_min_voltage_mV_{3000};       // 3.0V default
+    bool battery_soc_estimated_{false};                // SOC estimation disabled
+
+    // Power settings storage
+    uint16_t power_charge_w_{3000};                    // 3kW default
+    uint16_t power_discharge_w_{3000};                 // 3kW default
+    uint16_t power_max_precharge_ms_{15000};           // 15s default
+    uint16_t power_precharge_duration_ms_{100};        // 100ms default
+
+    // Inverter settings storage
+    uint8_t inverter_cells_{0};
+    uint8_t inverter_modules_{0};
+    uint8_t inverter_cells_per_module_{0};
+    uint16_t inverter_voltage_level_{0};
+    uint16_t inverter_capacity_ah_{0};
+    uint8_t inverter_battery_type_{0};
+
+    // CAN settings storage
+    uint16_t can_frequency_khz_{8};
+    uint16_t can_fd_frequency_mhz_{40};
+    uint16_t can_sofar_id_{0};
+    uint16_t can_pylon_send_interval_ms_{0};
+
+    // Contactor settings storage
+    bool contactor_control_enabled_{false};
+    bool contactor_nc_mode_{false};
+    uint16_t contactor_pwm_frequency_hz_{20000};
     
     // Version tracking
     uint32_t battery_settings_version_{0};             // Incremented on any change
+    uint32_t power_settings_version_{0};
+    uint32_t inverter_settings_version_{0};
+    uint32_t can_settings_version_{0};
+    uint32_t contactor_settings_version_{0};
     
     bool initialized_{false};
 };

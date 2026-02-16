@@ -6,6 +6,12 @@ This document describes a comprehensive time synchronization design for ESP-NOW 
 
 ---
 
+## See Also
+
+- **[WEBSERVER_TIME_UPTIME_DISPLAY.md](../WEBSERVER_TIME_UPTIME_DISPLAY.md)** - Detailed design for displaying transmitter uptime and time on receiver's webserver dashboard (recommended reading for UI/UX implementation)
+
+---
+
 ## 1. Overview of Synchronisation Design
 
 ### 1.1 Core Objectives
@@ -523,6 +529,8 @@ void setup() {
 Add to receiver web dashboard:
 
 ```html
+<!-- ESP-NOW Link Visualization -->
+<!-- Place the time sync card directly below the ESP-NOW link visualization -->
 <div class="time-status-card">
     <h3>Transmitter Status</h3>
     <div class="time-info">
@@ -536,7 +544,7 @@ Add to receiver web dashboard:
         </div>
         <div class="time-row">
             <span class="label">Last Updated:</span>
-            <span id="last-update" class="value stale">Never</span>
+            <span id="last-update" class="value stale">---</span>
         </div>
         <div class="time-row">
             <span class="label">Time Source:</span>
@@ -551,7 +559,8 @@ Add to receiver web dashboard:
     padding: 16px;
     margin: 16px 0;
     border-radius: 8px;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    /* Match the System Tools Section background */
+    background: var(--system-tools-bg, #2b2f3a);
     color: white;
 }
 
@@ -623,15 +632,20 @@ function updateTimeDisplay() {
             // Display "last updated" with freshness indicator
             const lastUpdate = document.getElementById('last-update');
             const secondsSince = data.seconds_since_update;
+            const timeSynced = Boolean(data.time_synced);
+            const hours = Math.floor(secondsSince / 3600);
+            const mins = Math.floor((secondsSince % 3600) / 60);
+            const secs = Math.floor(secondsSince % 60);
+            const formattedElapsed = `${hours.toString().padStart(2,'0')}H:${mins.toString().padStart(2,'0')}M:${secs.toString().padStart(2,'0')}S ago`;
             
-            if (secondsSince === 0xFFFFFFFF) {
-                lastUpdate.textContent = 'Never';
+            if (!timeSynced || secondsSince === 0xFFFFFFFF) {
+                lastUpdate.textContent = '---';
                 lastUpdate.className = 'value stale';
             } else if (data.is_stale) {
-                lastUpdate.textContent = `${secondsSince}s ago (STALE)`;
+                lastUpdate.textContent = formattedElapsed;
                 lastUpdate.className = 'value stale';
             } else {
-                lastUpdate.textContent = `${secondsSince}s ago`;
+                lastUpdate.textContent = formattedElapsed;
                 lastUpdate.className = 'value fresh';
             }
             
@@ -660,6 +674,7 @@ void handle_time_status(AsyncWebServerRequest* request) {
     doc["seconds_since_update"] = TimeSyncManager::instance().get_seconds_since_update();
     doc["is_stale"] = TimeSyncManager::instance().is_stale();
     doc["time_source"] = TimeSyncManager::instance().get_time_source_string();
+    doc["time_synced"] = TimeSyncManager::instance().is_time_synced();
     
     String response;
     serializeJson(doc, response);

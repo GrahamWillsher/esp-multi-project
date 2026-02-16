@@ -8,28 +8,28 @@ extern TFT_eSPI tft;
 // Optimized JPEG display function - fast rendering from LittleFS
 void displaySplashJpeg2(const char* filename) {
     if (!LittleFS.exists(filename)) {
-        LOG_ERROR("[JPEG2] File not found: %s", filename);
+        LOG_ERROR("DISPLAY", "JPEG2 file not found: %s", filename);
         return;
     }
     
     File f = LittleFS.open(filename, "r");
     if (!f) {
-        LOG_ERROR("[JPEG2] Failed to open: %s", filename);
+        LOG_ERROR("DISPLAY", "JPEG2 failed to open: %s", filename);
         return;
     }
     
     size_t fileSize = f.size();
-    LOG_DEBUG("[JPEG2] Loading %s (%d bytes)", filename, fileSize);
+    LOG_DEBUG("DISPLAY", "JPEG2 loading %s (%d bytes)", filename, fileSize);
     
     uint8_t* buffer = (uint8_t*)malloc(fileSize);
     if (!buffer) {
-        LOG_ERROR("[JPEG2] Memory allocation failed");
+        LOG_ERROR("DISPLAY", "JPEG2 memory allocation failed");
         f.close();
         return;
     }
     
     if (f.read(buffer, fileSize) != fileSize) {
-        LOG_ERROR("[JPEG2] File read error");
+        LOG_ERROR("DISPLAY", "JPEG2 file read error");
         free(buffer);
         f.close();
         return;
@@ -37,7 +37,7 @@ void displaySplashJpeg2(const char* filename) {
     f.close();
     
     if (!JpegDec.decodeArray(buffer, fileSize)) {
-        LOG_ERROR("[JPEG2] Decode failed");
+        LOG_ERROR("DISPLAY", "JPEG2 decode failed");
         free(buffer);
         return;
     }
@@ -70,14 +70,14 @@ void displaySplashJpeg2(const char* filename) {
     }
     
     free(buffer);
-    LOG_DEBUG("[JPEG2] Displayed %dx%d at (%d,%d)", JpegDec.width, JpegDec.height, xOffset, yOffset);
+    LOG_DEBUG("DISPLAY", "JPEG2 displayed %dx%d at (%d,%d)", JpegDec.width, JpegDec.height, xOffset, yOffset);
 }
 
 void displaySplashScreenContent() {
-    LOG_DEBUG("[SPLASH] Displaying splash screen content...");
+    LOG_DEBUG("DISPLAY", "Displaying splash screen content...");
     
     tft.fillScreen(TFT_BLACK);
-    LOG_DEBUG("[SPLASH] Screen cleared");
+    LOG_DEBUG("DISPLAY", "Screen cleared");
 
     const char* splashFile = "/BatteryEmulator4_320x170.jpg";
     displaySplashJpeg2(splashFile);
@@ -85,7 +85,7 @@ void displaySplashScreenContent() {
     bool imageDisplayed = LittleFS.exists(splashFile);
     
     if (!imageDisplayed) {
-        LOG_INFO("[SPLASH] No splash image found, showing text splash");
+        LOG_INFO("DISPLAY", "No splash image found, showing text splash");
         
         tft.setTextColor(TFT_WHITE, TFT_BLACK);
         tft.setTextSize(2);
@@ -104,12 +104,12 @@ void displaySplashScreenContent() {
         tft.setCursor(x, y);
         tft.println(text);
     }
-    LOG_DEBUG("[SPLASH] Splash screen content displayed");
+    LOG_DEBUG("DISPLAY", "Splash screen content displayed");
 }
 
 void fadeBacklight(uint8_t targetBrightness, uint32_t durationMs) {
     if (Display::current_backlight_brightness == targetBrightness) {
-        LOG_DEBUG("Backlight already at target brightness: %d", targetBrightness);
+        LOG_DEBUG("DISPLAY", "Backlight already at target brightness: %d", targetBrightness);
         return;
     }
     
@@ -120,8 +120,8 @@ void fadeBacklight(uint8_t targetBrightness, uint32_t durationMs) {
     int16_t startBrightness = Display::current_backlight_brightness;
     int16_t brightnessDelta = targetBrightness - startBrightness;
     
-    LOG_DEBUG("Fading backlight from %d to %d in %d steps (%dms delay)", 
-                  startBrightness, targetBrightness, steps, stepDelay);
+    LOG_DEBUG("DISPLAY", "Fading backlight from %d to %d in %d steps (%dms delay)", 
+              startBrightness, targetBrightness, steps, stepDelay);
     
     for (uint16_t step = 0; step <= steps; step++) {
         float progress = (float)step / (float)steps;
@@ -140,11 +140,11 @@ void fadeBacklight(uint8_t targetBrightness, uint32_t durationMs) {
     }
     
     Display::current_backlight_brightness = targetBrightness;
-    LOG_DEBUG("Backlight fade complete - final brightness: %d", targetBrightness);
+    LOG_DEBUG("DISPLAY", "Backlight fade complete - final brightness: %d", targetBrightness);
 }
 
 void displaySplashWithFade() {
-    LOG_INFO("[SPLASH] === Starting Splash Screen Sequence ===");
+    LOG_INFO("DISPLAY", "=== Starting Splash Screen Sequence ===");
     
     #if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5,0,0)
     ledcWrite(0, 0);
@@ -154,21 +154,21 @@ void displaySplashWithFade() {
     Display::current_backlight_brightness = 0;
     smart_delay(200);
     
-    LOG_DEBUG("[SPLASH] Displaying content...");
+    LOG_DEBUG("DISPLAY", "Displaying content...");
     displaySplashScreenContent();
-    LOG_DEBUG("[SPLASH] Content displayed");
+    LOG_DEBUG("DISPLAY", "Content displayed");
     
-    LOG_DEBUG("[SPLASH] Fading in splash screen...");
+    LOG_DEBUG("DISPLAY", "Fading in splash screen...");
     fadeBacklight(255, 2000);
-    LOG_DEBUG("[SPLASH] Fade in complete");
+    LOG_DEBUG("DISPLAY", "Fade in complete");
     
     smart_delay(3000);
     
-    LOG_DEBUG("[SPLASH] Fading out splash screen...");
+    LOG_DEBUG("DISPLAY", "Fading out splash screen...");
     fadeBacklight(0, 2000);
-    LOG_DEBUG("[SPLASH] Fade out complete");
+    LOG_DEBUG("DISPLAY", "Fade out complete");
     
     tft.fillScreen(TFT_BLACK);
-    LOG_DEBUG("[SPLASH] Screen cleared, backlight remains OFF");
-    LOG_INFO("[SPLASH] === Splash Screen Sequence Complete ===");
+    LOG_DEBUG("DISPLAY", "Screen cleared, backlight remains OFF");
+    LOG_INFO("DISPLAY", "=== Splash Screen Sequence Complete ===");
 }

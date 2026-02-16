@@ -25,7 +25,7 @@ EnhancedCache::EnhancedCache()
     state_mqtt_.type = CacheDataType::STATE_MQTT;
     state_battery_.type = CacheDataType::STATE_BATTERY;
     
-    LOG_INFO("[CACHE] Enhanced cache initialized (Transient: %d, State: 3 slots)", 
+    LOG_INFO("CACHE", "Enhanced cache initialized (Transient: %d, State: 3 slots)", 
              TRANSIENT_QUEUE_SIZE);
 }
 
@@ -43,7 +43,7 @@ bool EnhancedCache::add_transient(const espnow_payload_t& data, uint32_t timesta
     // Try to acquire mutex with timeout (non-blocking for control code)
     if (xSemaphoreTake(mutex_, pdMS_TO_TICKS(MUTEX_TIMEOUT_MS)) != pdTRUE) {
         stats_.mutex_timeouts++;
-        LOG_WARN("[CACHE] Mutex timeout - data dropped (control code priority)");
+        LOG_WARN("CACHE", "Mutex timeout - data dropped (control code priority)");
         return false;
     }
     
@@ -52,7 +52,7 @@ bool EnhancedCache::add_transient(const espnow_payload_t& data, uint32_t timesta
         stats_.overflow_events++;
         stats_.transient_dropped++;
         
-        LOG_WARN("[CACHE] Transient queue full (%d/%d) - oldest entry dropped",
+        LOG_WARN("CACHE", "Transient queue full (%d/%d) - oldest entry dropped",
                  transient_count_, TRANSIENT_QUEUE_SIZE);
         
         // Drop oldest entry (FIFO overflow)
@@ -196,7 +196,7 @@ size_t EnhancedCache::cleanup_acked_transient() {
     xSemaphoreGive(mutex_);
     
     if (removed > 0) {
-        LOG_DEBUG("[CACHE] Cleaned up %d acked transient entries", removed);
+        LOG_DEBUG("CACHE", "Cleaned up %d acked transient entries", removed);
     }
     
     return removed;
@@ -261,7 +261,7 @@ void EnhancedCache::update_state(CacheDataType type, const StateEntry& entry) {
         
         stats_.state_updates++;
         
-        LOG_INFO("[CACHE] State updated: type=%d, version=%u",
+        LOG_INFO("CACHE", "State updated: type=%d, version=%u",
                  static_cast<int>(type), entry.version);
     }
     
@@ -364,7 +364,7 @@ bool EnhancedCache::persist_state_to_nvs(CacheDataType type) {
     nvs_handle_t nvs_handle;
     esp_err_t err = nvs_open("cache_state", NVS_READWRITE, &nvs_handle);
     if (err != ESP_OK) {
-        LOG_ERROR("[CACHE] Failed to open NVS for write: %s", esp_err_to_name(err));
+        LOG_ERROR("CACHE", "Failed to open NVS for write: %s", esp_err_to_name(err));
         return false;
     }
     
@@ -381,7 +381,7 @@ bool EnhancedCache::persist_state_to_nvs(CacheDataType type) {
         if (err == ESP_OK) {
             err = nvs_commit(nvs_handle);
             if (err == ESP_OK) {
-                LOG_INFO("[CACHE] State persisted to NVS: type=%d, version=%u",
+                LOG_INFO("CACHE", "State persisted to NVS: type=%d, version=%u",
                          static_cast<int>(type), slot->version);
             }
         }
@@ -413,7 +413,7 @@ bool EnhancedCache::restore_state_from_nvs(CacheDataType type) {
         
         err = nvs_get_blob(nvs_handle, key, slot, &required_size);
         if (err == ESP_OK) {
-            LOG_INFO("[CACHE] State restored from NVS: type=%d, version=%u",
+            LOG_INFO("CACHE", "State restored from NVS: type=%d, version=%u",
                      static_cast<int>(type), slot->version);
         }
     }
@@ -425,13 +425,13 @@ bool EnhancedCache::restore_state_from_nvs(CacheDataType type) {
 }
 
 void EnhancedCache::restore_all_from_nvs() {
-    LOG_INFO("[CACHE] Restoring all state from NVS...");
+    LOG_INFO("CACHE", "Restoring all state from NVS...");
     
     bool network_restored = restore_state_from_nvs(CacheDataType::STATE_NETWORK);
     bool mqtt_restored = restore_state_from_nvs(CacheDataType::STATE_MQTT);
     bool battery_restored = restore_state_from_nvs(CacheDataType::STATE_BATTERY);
     
-    LOG_INFO("[CACHE] NVS restore complete: Network=%s, MQTT=%s, Battery=%s",
+    LOG_INFO("CACHE", "NVS restore complete: Network=%s, MQTT=%s, Battery=%s",
              network_restored ? "OK" : "NONE",
              mqtt_restored ? "OK" : "NONE",
              battery_restored ? "OK" : "NONE");
@@ -442,26 +442,26 @@ void EnhancedCache::restore_all_from_nvs() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 void EnhancedCache::log_stats() const {
-    LOG_INFO("[CACHE] ═══ Cache Statistics ═══");
-    LOG_INFO("[CACHE] Transient Queue:");
-    LOG_INFO("[CACHE]   Current: %d/%d (%.1f%% full)",
+    LOG_INFO("CACHE", "═══ Cache Statistics ═══");
+    LOG_INFO("CACHE", "Transient Queue:");
+    LOG_INFO("CACHE", "  Current: %d/%d (%.1f%% full)",
              stats_.transient_current, TRANSIENT_QUEUE_SIZE,
              (stats_.transient_current * 100.0f) / TRANSIENT_QUEUE_SIZE);
-    LOG_INFO("[CACHE]   Added: %u, Sent: %u, Acked: %u, Dropped: %u",
+    LOG_INFO("CACHE", "  Added: %u, Sent: %u, Acked: %u, Dropped: %u",
              stats_.transient_added, stats_.transient_sent,
              stats_.transient_acked, stats_.transient_dropped);
-    LOG_INFO("[CACHE]   Max reached: %d", stats_.transient_max_reached);
+    LOG_INFO("CACHE", "  Max reached: %d", stats_.transient_max_reached);
     
-    LOG_INFO("[CACHE] State Data:");
-    LOG_INFO("[CACHE]   Updates: %u, Sent: %u, Acked: %u, Conflicts: %u",
+    LOG_INFO("CACHE", "State Data:");
+    LOG_INFO("CACHE", "  Updates: %u, Sent: %u, Acked: %u, Conflicts: %u",
              stats_.state_updates, stats_.state_sent,
              stats_.state_acked, stats_.state_conflicts);
     
-    LOG_INFO("[CACHE] Timing:");
-    LOG_INFO("[CACHE]   Max cache duration: %ums", stats_.max_cache_duration_ms);
+    LOG_INFO("CACHE", "Timing:");
+    LOG_INFO("CACHE", "  Max cache duration: %ums", stats_.max_cache_duration_ms);
     
-    LOG_INFO("[CACHE] Errors:");
-    LOG_INFO("[CACHE]   Mutex timeouts: %u, Overflows: %u",
+    LOG_INFO("CACHE", "Errors:");
+    LOG_INFO("CACHE", "  Mutex timeouts: %u, Overflows: %u",
              stats_.mutex_timeouts, stats_.overflow_events);
 }
 
@@ -474,7 +474,7 @@ void EnhancedCache::reset_stats() {
     stats_.transient_current = transient_count_;
     
     xSemaphoreGive(mutex_);
-    LOG_INFO("[CACHE] Statistics reset");
+    LOG_INFO("CACHE", "Statistics reset");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

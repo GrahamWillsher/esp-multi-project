@@ -3,6 +3,7 @@
 #include "message_handler.h"
 #include "../config/logging_config.h"
 #include <Arduino.h>
+#include <connection_manager.h>
 #include <espnow_transmitter.h>
 
 // ============================================================================
@@ -20,13 +21,13 @@ TransmissionTask& TransmissionTask::instance() {
 
 void TransmissionTask::start(uint8_t priority, uint8_t core) {
     if (task_handle_ != nullptr) {
-        LOG_WARN("[TX_TASK] Task already running");
+        LOG_WARN("TX_TASK", "Task already running");
         return;
     }
     
-    LOG_INFO("[TX_TASK] Starting background transmission task (Priority: %d, Core: %d)", 
+    LOG_INFO("TX_TASK", "Starting background transmission task (Priority: %d, Core: %d)", 
              priority, core);
-    LOG_INFO("[TX_TASK] Rate limit: %dms (%d msg/sec max)", 
+    LOG_INFO("TX_TASK", "Rate limit: %dms (%d msg/sec max)", 
              TRANSMIT_INTERVAL_MS, 1000 / TRANSMIT_INTERVAL_MS);
     
     xTaskCreatePinnedToCore(
@@ -40,22 +41,22 @@ void TransmissionTask::start(uint8_t priority, uint8_t core) {
     );
     
     if (task_handle_ == nullptr) {
-        LOG_ERROR("[TX_TASK] Failed to create task!");
+        LOG_ERROR("TX_TASK", "Failed to create task!");
     } else {
-        LOG_INFO("[TX_TASK] Task started successfully");
+        LOG_INFO("TX_TASK", "Task started successfully");
     }
 }
 
 void TransmissionTask::stop() {
     if (task_handle_ == nullptr) {
-        LOG_WARN("[TX_TASK] Task not running");
+        LOG_WARN("TX_TASK", "Task not running");
         return;
     }
     
-    LOG_INFO("[TX_TASK] Stopping transmission task...");
+    LOG_INFO("TX_TASK", "Stopping transmission task...");
     vTaskDelete(task_handle_);
     task_handle_ = nullptr;
-    LOG_INFO("[TX_TASK] Task stopped");
+    LOG_INFO("TX_TASK", "Task stopped");
 }
 
 // ============================================================================
@@ -65,18 +66,21 @@ void TransmissionTask::stop() {
 void TransmissionTask::task_impl(void* parameter) {
     TransmissionTask* self = static_cast<TransmissionTask*>(parameter);
     
-    LOG_INFO("[TX_TASK] ═══ BACKGROUND TRANSMISSION STARTED ═══");
-    LOG_INFO("[TX_TASK] Transmitting from EnhancedCache at %dms intervals", TRANSMIT_INTERVAL_MS);
+    LOG_INFO("TX_TASK", "═══ BACKGROUND TRANSMISSION STARTED ═══");
+    LOG_INFO("TX_TASK", "Transmitting from EnhancedCache at %dms intervals", TRANSMIT_INTERVAL_MS);
     
     TickType_t last_wake_time = xTaskGetTickCount();
     const TickType_t interval_ticks = pdMS_TO_TICKS(TRANSMIT_INTERVAL_MS);
+    
+    // State machine update counter (update every 10 iterations = 1s)
+    uint32_t sm_update_counter = 0;
     
     while (true) {
         vTaskDelayUntil(&last_wake_time, interval_ticks);
         
         // Only transmit if receiver is connected
-        if (!EspnowMessageHandler::instance().is_receiver_connected()) {
-            LOG_TRACE("[TX_TASK] Receiver not connected - skipping transmission");
+        if (!EspNowConnectionManager::instance().is_connected()) {
+            LOG_TRACE("TX_TASK", "Receiver not connected - skipping transmission");
             continue;
         }
         
@@ -102,22 +106,23 @@ void TransmissionTask::transmit_next_transient() {
     
     // Peek at next unsent transient entry (non-destructive)
     if (!EnhancedCache::instance().peek_next_transient(entry)) {
-        LOG_TRACE("[TX_TASK] No transient data to transmit");
+        LOG_TRACE("TX_TASK", "No transient data to transmit");
         return;  // No unsent data
     }
     
     // Send via ESP-NOW
-    esp_err_t result = esp_now_send(receiver_mac, 
+    const uint8_t* peer_mac = EspNowConnectionManager::instance().get_peer_mac();
+    esp_err_t result = esp_now_send(peer_mac, 
                                      (const uint8_t*)&entry.data, 
                                      sizeof(espnow_payload_t));
     
     if (result == ESP_OK) {
         // Mark as sent in cache
         EnhancedCache::instance().mark_transient_sent(entry.seq);
-        LOG_DEBUG("[TX_TASK] Transient sent (seq: %u, SOC: %d%%, Power: %dW)", 
+        LOG_DEBUG("TX_TASK", "Transient sent (seq: %u, SOC: %d%%, Power: %dW)", 
                   entry.seq, entry.data.soc, entry.data.power);
     } else {
-        LOG_ERROR("[TX_TASK] Failed to send transient (seq: %u): %s", 
+        LOG_ERROR("TX_TASK", "Failed to send transient (seq: %u): %s", 
                   entry.seq, esp_err_to_name(result));
         
         // Retry will happen on next iteration (entry stays unsent)
@@ -128,7 +133,7 @@ void TransmissionTask::transmit_next_transient() {
 void TransmissionTask::transmit_next_state() {
     // Check if any state has unsent updates
     if (!EnhancedCache::instance().has_unsent_state()) {
-        LOG_TRACE("[TX_TASK] No state data to transmit");
+        LOG_TRACE("TX_TASK", "No state data to transmit");
         return;
     }
     
@@ -172,17 +177,18 @@ void TransmissionTask::transmit_next_state() {
         }
         
         // Send via ESP-NOW
-        esp_err_t result = esp_now_send(receiver_mac, 
+        const uint8_t* peer_mac = EspNowConnectionManager::instance().get_peer_mac();
+        esp_err_t result = esp_now_send(peer_mac, 
                                          (const uint8_t*)&msg, 
                                          sizeof(config_changed_t));
         
         if (result == ESP_OK) {
             // Mark as sent in cache
             EnhancedCache::instance().mark_state_sent(type);
-            LOG_INFO("[TX_TASK] State config sent (type: %d, version: %d, timestamp: %u)", 
+            LOG_INFO("TX_TASK", "State config sent (type: %d, version: %d, timestamp: %u)", 
                      static_cast<uint8_t>(type), entry.version, entry.timestamp);
         } else {
-            LOG_ERROR("[TX_TASK] Failed to send state config (type: %d): %s", 
+            LOG_ERROR("TX_TASK", "Failed to send state config (type: %d): %s", 
                       static_cast<uint8_t>(type), esp_err_to_name(result));
         }
         

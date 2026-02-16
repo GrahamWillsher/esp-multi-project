@@ -1,0 +1,16 @@
+{
+  "name": "receiver_config",
+  "version": "1.0.0",
+  "description": "Receiver network configuration management with NVS storage",
+  "keywords": "esp32, wifi, nvs, configuration, storage",
+  "authors": {
+    "name": "ESP32 Project"
+  },
+  "dependencies": [
+    {
+      "name": "Preferences"
+    }
+  ],
+  "frameworks": "arduino",
+  "platforms": "espressif32"
+}

@@ -8,7 +8,7 @@ BatterySettingsCache& BatterySettingsCache::instance() {
 
 void BatterySettingsCache::init() {
     if (initialized_) {
-        LOG_WARN("[BATTERY_CACHE] Already initialized");
+        LOG_WARN("BATTERY_CACHE", "Already initialized");
         return;
     }
     
@@ -16,9 +16,9 @@ void BatterySettingsCache::init() {
     if (prefs.begin("batt_cache", true)) {
         version_ = prefs.getUInt("version", 0);
         prefs.end();
-        LOG_INFO("[BATTERY_CACHE] Loaded version %u from NVS", version_);
+        LOG_INFO("BATTERY_CACHE", "Loaded version %u from NVS", version_);
     } else {
-        LOG_INFO("[BATTERY_CACHE] No cached version, starting at 0");
+        LOG_INFO("BATTERY_CACHE", "No cached version, starting at 0");
         version_ = 0;
     }
     
@@ -27,7 +27,7 @@ void BatterySettingsCache::init() {
 
 bool BatterySettingsCache::update_version(uint32_t new_version) {
     if (new_version != version_) {
-        LOG_INFO("[BATTERY_CACHE] Version changed: %u → %u", version_, new_version);
+        LOG_INFO("BATTERY_CACHE", "Version changed: %u → %u", version_, new_version);
         version_ = new_version;
         save_version();
         return true;  // Needs refresh
@@ -40,14 +40,14 @@ void BatterySettingsCache::save_version() {
     if (prefs.begin("batt_cache", false)) {
         prefs.putUInt("version", version_);
         prefs.end();
-        LOG_DEBUG("[BATTERY_CACHE] Saved version %u to NVS", version_);
+        LOG_DEBUG("BATTERY_CACHE", "Saved version %u to NVS", version_);
     } else {
-        LOG_ERROR("[BATTERY_CACHE] Failed to save version to NVS");
+        LOG_ERROR("BATTERY_CACHE", "Failed to save version to NVS");
     }
 }
 
 void BatterySettingsCache::mark_updated(uint32_t new_version) {
-    LOG_INFO("[BATTERY_CACHE] Settings updated to version %u", new_version);
+    LOG_INFO("BATTERY_CACHE", "Settings updated to version %u", new_version);
     version_ = new_version;
     save_version();
 }

@@ -1,7 +1,62 @@
 #include "transmitter_manager.h"
 #include "sse_notifier.h"
+#include <connection_manager.h>
 #include <esp_now.h>
 #include <string.h>
+#include <Preferences.h>
+
+namespace {
+    constexpr const char* kTxCacheNamespace = "tx_cache";
+
+    constexpr const char* kKeyMqttEnabled = "mqtt_enabled";
+    constexpr const char* kKeyMqttServer = "mqtt_server";
+    constexpr const char* kKeyMqttPort = "mqtt_port";
+    constexpr const char* kKeyMqttUser = "mqtt_user";
+    constexpr const char* kKeyMqttPass = "mqtt_pass";
+    constexpr const char* kKeyMqttClient = "mqtt_client";
+    constexpr const char* kKeyMqttVersion = "mqtt_ver";
+    constexpr const char* kKeyMqttKnown = "mqtt_known";
+
+    constexpr const char* kKeyNetCurrIp = "net_curr_ip";
+    constexpr const char* kKeyNetCurrGw = "net_curr_gw";
+    constexpr const char* kKeyNetCurrSn = "net_curr_sn";
+    constexpr const char* kKeyNetStatIp = "net_stat_ip";
+    constexpr const char* kKeyNetStatGw = "net_stat_gw";
+    constexpr const char* kKeyNetStatSn = "net_stat_sn";
+    constexpr const char* kKeyNetDns1 = "net_dns1";
+    constexpr const char* kKeyNetDns2 = "net_dns2";
+    constexpr const char* kKeyNetIsStatic = "net_is_static";
+    constexpr const char* kKeyNetVersion = "net_ver";
+    constexpr const char* kKeyNetKnown = "net_known";
+
+    constexpr const char* kKeyMetaKnown = "meta_known";
+    constexpr const char* kKeyMetaValid = "meta_valid";
+    constexpr const char* kKeyMetaEnv = "meta_env";
+    constexpr const char* kKeyMetaDevice = "meta_device";
+    constexpr const char* kKeyMetaMajor = "meta_major";
+    constexpr const char* kKeyMetaMinor = "meta_minor";
+    constexpr const char* kKeyMetaPatch = "meta_patch";
+    constexpr const char* kKeyMetaBuild = "meta_build";
+    constexpr const char* kKeyMetaVersion = "meta_ver";
+
+    constexpr const char* kKeyBatteryKnown = "batt_known";
+    constexpr const char* kKeyBatterySettings = "batt_settings";
+
+    constexpr const char* kKeyBatteryEmuKnown = "batt_emu_known";
+    constexpr const char* kKeyBatteryEmuSettings = "batt_emu_set";
+
+    constexpr const char* kKeyPowerKnown = "power_known";
+    constexpr const char* kKeyPowerSettings = "power_settings";
+
+    constexpr const char* kKeyInverterKnown = "inv_known";
+    constexpr const char* kKeyInverterSettings = "inv_settings";
+
+    constexpr const char* kKeyCanKnown = "can_known";
+    constexpr const char* kKeyCanSettings = "can_settings";
+
+    constexpr const char* kKeyContactorKnown = "contactor_known";
+    constexpr const char* kKeyContactorSettings = "contactor_set";
+}
 
 // Static member initialization
 uint8_t TransmitterManager::mac[6] = {0};
@@ -37,6 +92,12 @@ bool TransmitterManager::mqtt_config_known = false;
 // Phase 4: Runtime status initialization
 bool TransmitterManager::ethernet_connected = false;
 unsigned long TransmitterManager::last_beacon_time_ms = 0;
+bool TransmitterManager::last_espnow_send_success = true;
+
+// Phase 4: Time and uptime data from heartbeats
+uint64_t TransmitterManager::uptime_ms = 0;
+uint64_t TransmitterManager::unix_time = 0;
+uint8_t TransmitterManager::time_source = 0;  // 0=unsynced, 1=NTP, 2=manual, 3=GPS
 
 // V2: Legacy version tracking removed
 bool TransmitterManager::metadata_received = false;
@@ -47,6 +108,7 @@ uint8_t TransmitterManager::metadata_major = 0;
 uint8_t TransmitterManager::metadata_minor = 0;
 uint8_t TransmitterManager::metadata_patch = 0;
 char TransmitterManager::metadata_build_date[48] = {0};
+uint32_t TransmitterManager::metadata_version = 0;
 
 // Battery settings initialization
 BatterySettings TransmitterManager::battery_settings = {
@@ -61,6 +123,181 @@ BatterySettings TransmitterManager::battery_settings = {
     .chemistry = 2
 };
 bool TransmitterManager::battery_settings_known = false;
+
+BatteryEmulatorSettings TransmitterManager::battery_emulator_settings = {
+    .double_battery = false,
+    .pack_max_voltage_dV = 580,
+    .pack_min_voltage_dV = 460,
+    .cell_max_voltage_mV = 4200,
+    .cell_min_voltage_mV = 3000,
+    .soc_estimated = false
+};
+bool TransmitterManager::battery_emulator_settings_known = false;
+
+PowerSettings TransmitterManager::power_settings = {
+    .charge_w = 3000,
+    .discharge_w = 3000,
+    .max_precharge_ms = 15000,
+    .precharge_duration_ms = 100
+};
+bool TransmitterManager::power_settings_known = false;
+
+InverterSettings TransmitterManager::inverter_settings = {
+    .cells = 0,
+    .modules = 0,
+    .cells_per_module = 0,
+    .voltage_level = 0,
+    .capacity_ah = 0,
+    .battery_type = 0
+};
+bool TransmitterManager::inverter_settings_known = false;
+
+CanSettings TransmitterManager::can_settings = {
+    .frequency_khz = 8,
+    .fd_frequency_mhz = 40,
+    .sofar_id = 0,
+    .pylon_send_interval_ms = 0
+};
+bool TransmitterManager::can_settings_known = false;
+
+ContactorSettings TransmitterManager::contactor_settings = {
+    .control_enabled = false,
+    .nc_contactor = false,
+    .pwm_frequency_hz = 20000
+};
+bool TransmitterManager::contactor_settings_known = false;
+
+void TransmitterManager::init() {
+    loadFromNVS();
+}
+
+void TransmitterManager::loadFromNVS() {
+    Preferences prefs;
+    if (!prefs.begin(kTxCacheNamespace, true)) {
+        return;
+    }
+
+    mqtt_enabled = prefs.getBool(kKeyMqttEnabled, false);
+    prefs.getBytes(kKeyMqttServer, mqtt_server, sizeof(mqtt_server));
+    mqtt_port = prefs.getUShort(kKeyMqttPort, 1883);
+    String mqtt_user = prefs.getString(kKeyMqttUser, "");
+    String mqtt_pass = prefs.getString(kKeyMqttPass, "");
+    String mqtt_client = prefs.getString(kKeyMqttClient, "");
+    strncpy(mqtt_username, mqtt_user.c_str(), sizeof(mqtt_username) - 1);
+    strncpy(mqtt_password, mqtt_pass.c_str(), sizeof(mqtt_password) - 1);
+    strncpy(mqtt_client_id, mqtt_client.c_str(), sizeof(mqtt_client_id) - 1);
+    mqtt_username[sizeof(mqtt_username) - 1] = '\0';
+    mqtt_password[sizeof(mqtt_password) - 1] = '\0';
+    mqtt_client_id[sizeof(mqtt_client_id) - 1] = '\0';
+    mqtt_config_version = prefs.getUInt(kKeyMqttVersion, 0);
+    mqtt_config_known = prefs.getBool(kKeyMqttKnown, false);
+
+    prefs.getBytes(kKeyNetCurrIp, current_ip, sizeof(current_ip));
+    prefs.getBytes(kKeyNetCurrGw, current_gateway, sizeof(current_gateway));
+    prefs.getBytes(kKeyNetCurrSn, current_subnet, sizeof(current_subnet));
+    prefs.getBytes(kKeyNetStatIp, static_ip, sizeof(static_ip));
+    prefs.getBytes(kKeyNetStatGw, static_gateway, sizeof(static_gateway));
+    prefs.getBytes(kKeyNetStatSn, static_subnet, sizeof(static_subnet));
+    prefs.getBytes(kKeyNetDns1, static_dns_primary, sizeof(static_dns_primary));
+    prefs.getBytes(kKeyNetDns2, static_dns_secondary, sizeof(static_dns_secondary));
+    is_static_ip = prefs.getBool(kKeyNetIsStatic, false);
+    network_config_version = prefs.getUInt(kKeyNetVersion, 0);
+    ip_known = prefs.getBool(kKeyNetKnown, false);
+
+    metadata_received = prefs.getBool(kKeyMetaKnown, false);
+    metadata_valid = prefs.getBool(kKeyMetaValid, false);
+    String meta_env = prefs.getString(kKeyMetaEnv, "");
+    String meta_device = prefs.getString(kKeyMetaDevice, "");
+    String meta_build = prefs.getString(kKeyMetaBuild, "");
+    strncpy(metadata_env, meta_env.c_str(), sizeof(metadata_env) - 1);
+    strncpy(metadata_device, meta_device.c_str(), sizeof(metadata_device) - 1);
+    strncpy(metadata_build_date, meta_build.c_str(), sizeof(metadata_build_date) - 1);
+    metadata_env[sizeof(metadata_env) - 1] = '\0';
+    metadata_device[sizeof(metadata_device) - 1] = '\0';
+    metadata_build_date[sizeof(metadata_build_date) - 1] = '\0';
+    metadata_major = prefs.getUChar(kKeyMetaMajor, 0);
+    metadata_minor = prefs.getUChar(kKeyMetaMinor, 0);
+    metadata_patch = prefs.getUChar(kKeyMetaPatch, 0);
+    metadata_version = prefs.getUInt(kKeyMetaVersion, 0);
+
+    size_t batt_len = prefs.getBytes(kKeyBatterySettings, &battery_settings, sizeof(battery_settings));
+    battery_settings_known = prefs.getBool(kKeyBatteryKnown, false) && batt_len == sizeof(battery_settings);
+
+    size_t batt_emu_len = prefs.getBytes(kKeyBatteryEmuSettings, &battery_emulator_settings, sizeof(battery_emulator_settings));
+    battery_emulator_settings_known = prefs.getBool(kKeyBatteryEmuKnown, false) && batt_emu_len == sizeof(battery_emulator_settings);
+
+    size_t power_len = prefs.getBytes(kKeyPowerSettings, &power_settings, sizeof(power_settings));
+    power_settings_known = prefs.getBool(kKeyPowerKnown, false) && power_len == sizeof(power_settings);
+
+    size_t inverter_len = prefs.getBytes(kKeyInverterSettings, &inverter_settings, sizeof(inverter_settings));
+    inverter_settings_known = prefs.getBool(kKeyInverterKnown, false) && inverter_len == sizeof(inverter_settings);
+
+    size_t can_len = prefs.getBytes(kKeyCanSettings, &can_settings, sizeof(can_settings));
+    can_settings_known = prefs.getBool(kKeyCanKnown, false) && can_len == sizeof(can_settings);
+
+    size_t contactor_len = prefs.getBytes(kKeyContactorSettings, &contactor_settings, sizeof(contactor_settings));
+    contactor_settings_known = prefs.getBool(kKeyContactorKnown, false) && contactor_len == sizeof(contactor_settings);
+
+    prefs.end();
+}
+
+void TransmitterManager::saveToNVS() {
+    Preferences prefs;
+    if (!prefs.begin(kTxCacheNamespace, false)) {
+        return;
+    }
+
+    prefs.putBool(kKeyMqttEnabled, mqtt_enabled);
+    prefs.putBytes(kKeyMqttServer, mqtt_server, sizeof(mqtt_server));
+    prefs.putUShort(kKeyMqttPort, mqtt_port);
+    prefs.putString(kKeyMqttUser, mqtt_username);
+    prefs.putString(kKeyMqttPass, mqtt_password);
+    prefs.putString(kKeyMqttClient, mqtt_client_id);
+    prefs.putUInt(kKeyMqttVersion, mqtt_config_version);
+    prefs.putBool(kKeyMqttKnown, mqtt_config_known);
+
+    prefs.putBytes(kKeyNetCurrIp, current_ip, sizeof(current_ip));
+    prefs.putBytes(kKeyNetCurrGw, current_gateway, sizeof(current_gateway));
+    prefs.putBytes(kKeyNetCurrSn, current_subnet, sizeof(current_subnet));
+    prefs.putBytes(kKeyNetStatIp, static_ip, sizeof(static_ip));
+    prefs.putBytes(kKeyNetStatGw, static_gateway, sizeof(static_gateway));
+    prefs.putBytes(kKeyNetStatSn, static_subnet, sizeof(static_subnet));
+    prefs.putBytes(kKeyNetDns1, static_dns_primary, sizeof(static_dns_primary));
+    prefs.putBytes(kKeyNetDns2, static_dns_secondary, sizeof(static_dns_secondary));
+    prefs.putBool(kKeyNetIsStatic, is_static_ip);
+    prefs.putUInt(kKeyNetVersion, network_config_version);
+    prefs.putBool(kKeyNetKnown, ip_known);
+
+    prefs.putBool(kKeyMetaKnown, metadata_received);
+    prefs.putBool(kKeyMetaValid, metadata_valid);
+    prefs.putString(kKeyMetaEnv, metadata_env);
+    prefs.putString(kKeyMetaDevice, metadata_device);
+    prefs.putUChar(kKeyMetaMajor, metadata_major);
+    prefs.putUChar(kKeyMetaMinor, metadata_minor);
+    prefs.putUChar(kKeyMetaPatch, metadata_patch);
+    prefs.putString(kKeyMetaBuild, metadata_build_date);
+    prefs.putUInt(kKeyMetaVersion, metadata_version);
+
+    prefs.putBool(kKeyBatteryKnown, battery_settings_known);
+    prefs.putBytes(kKeyBatterySettings, &battery_settings, sizeof(battery_settings));
+
+    prefs.putBool(kKeyBatteryEmuKnown, battery_emulator_settings_known);
+    prefs.putBytes(kKeyBatteryEmuSettings, &battery_emulator_settings, sizeof(battery_emulator_settings));
+
+    prefs.putBool(kKeyPowerKnown, power_settings_known);
+    prefs.putBytes(kKeyPowerSettings, &power_settings, sizeof(power_settings));
+
+    prefs.putBool(kKeyInverterKnown, inverter_settings_known);
+    prefs.putBytes(kKeyInverterSettings, &inverter_settings, sizeof(inverter_settings));
+
+    prefs.putBool(kKeyCanKnown, can_settings_known);
+    prefs.putBytes(kKeyCanSettings, &can_settings, sizeof(can_settings));
+
+    prefs.putBool(kKeyContactorKnown, contactor_settings_known);
+    prefs.putBytes(kKeyContactorSettings, &contactor_settings, sizeof(contactor_settings));
+
+    prefs.end();
+}
 
 void TransmitterManager::registerMAC(const uint8_t* transmitter_mac) {
     if (transmitter_mac == nullptr) return;
@@ -139,6 +376,9 @@ void TransmitterManager::storeIPData(const uint8_t* transmitter_ip,
     
     // Notify dashboard of cache update
     SSENotifier::notifyDataUpdated();
+
+    // Persist to NVS (write-through)
+    saveToNVS();
 }
 
 // Store complete network configuration (current + static)
@@ -195,6 +435,9 @@ void TransmitterManager::storeNetworkConfig(const uint8_t* curr_ip,
     
     // Notify dashboard of cache update
     SSENotifier::notifyDataUpdated();
+
+    // Persist to NVS (write-through)
+    saveToNVS();
 }
 
 // Current network configuration (active - could be DHCP or Static)
@@ -284,6 +527,9 @@ void TransmitterManager::storeMetadata(bool valid, const char* env, const char* 
     metadata_major = major;
     metadata_minor = minor;
     metadata_patch = patch;
+    metadata_version = (static_cast<uint32_t>(major) * 10000) +
+                       (static_cast<uint32_t>(minor) * 100) +
+                       static_cast<uint32_t>(patch);
     
     if (build_date_str != nullptr) {
         strncpy(metadata_build_date, build_date_str, sizeof(metadata_build_date) - 1);
@@ -299,6 +545,9 @@ void TransmitterManager::storeMetadata(bool valid, const char* env, const char* 
     
     // Notify dashboard of cache update
     SSENotifier::notifyDataUpdated();
+
+    // Persist to NVS (write-through)
+    saveToNVS();
 }
 
 bool TransmitterManager::hasMetadata() {
@@ -323,6 +572,10 @@ void TransmitterManager::getMetadataVersion(uint8_t& major, uint8_t& minor, uint
     patch = metadata_patch;
 }
 
+uint32_t TransmitterManager::getMetadataVersionNumber() {
+    return metadata_version;
+}
+
 const char* TransmitterManager::getMetadataBuildDate() {
     return metadata_build_date;
 }
@@ -338,6 +591,9 @@ void TransmitterManager::storeBatterySettings(const BatterySettings& settings) {
     Serial.printf("[TX_MGR] Battery settings stored: %uWh, %uS, %umV-%umV\n",
                   settings.capacity_wh, settings.cell_count,
                   settings.min_voltage_mv, settings.max_voltage_mv);
+
+    // Persist to NVS (write-through)
+    saveToNVS();
 }
 
 BatterySettings TransmitterManager::getBatterySettings() {
@@ -346,6 +602,76 @@ BatterySettings TransmitterManager::getBatterySettings() {
 
 bool TransmitterManager::hasBatterySettings() {
     return battery_settings_known;
+}
+
+void TransmitterManager::storeBatteryEmulatorSettings(const BatteryEmulatorSettings& settings) {
+    battery_emulator_settings = settings;
+    battery_emulator_settings_known = true;
+    saveToNVS();
+}
+
+BatteryEmulatorSettings TransmitterManager::getBatteryEmulatorSettings() {
+    return battery_emulator_settings;
+}
+
+bool TransmitterManager::hasBatteryEmulatorSettings() {
+    return battery_emulator_settings_known;
+}
+
+void TransmitterManager::storePowerSettings(const PowerSettings& settings) {
+    power_settings = settings;
+    power_settings_known = true;
+    saveToNVS();
+}
+
+PowerSettings TransmitterManager::getPowerSettings() {
+    return power_settings;
+}
+
+bool TransmitterManager::hasPowerSettings() {
+    return power_settings_known;
+}
+
+void TransmitterManager::storeInverterSettings(const InverterSettings& settings) {
+    inverter_settings = settings;
+    inverter_settings_known = true;
+    saveToNVS();
+}
+
+InverterSettings TransmitterManager::getInverterSettings() {
+    return inverter_settings;
+}
+
+bool TransmitterManager::hasInverterSettings() {
+    return inverter_settings_known;
+}
+
+void TransmitterManager::storeCanSettings(const CanSettings& settings) {
+    can_settings = settings;
+    can_settings_known = true;
+    saveToNVS();
+}
+
+CanSettings TransmitterManager::getCanSettings() {
+    return can_settings;
+}
+
+bool TransmitterManager::hasCanSettings() {
+    return can_settings_known;
+}
+
+void TransmitterManager::storeContactorSettings(const ContactorSettings& settings) {
+    contactor_settings = settings;
+    contactor_settings_known = true;
+    saveToNVS();
+}
+
+ContactorSettings TransmitterManager::getContactorSettings() {
+    return contactor_settings;
+}
+
+bool TransmitterManager::hasContactorSettings() {
+    return contactor_settings_known;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -389,6 +715,9 @@ void TransmitterManager::storeMqttConfig(bool enabled, const uint8_t* server, ui
                   enabled ? "ENABLED" : "DISABLED",
                   server[0], server[1], server[2], server[3], port,
                   version);
+
+    // Persist to NVS (write-through)
+    saveToNVS();
 }
 
 bool TransmitterManager::isMqttEnabled() {
@@ -458,4 +787,37 @@ bool TransmitterManager::isEthernetConnected() {
 
 unsigned long TransmitterManager::getLastBeaconTime() {
     return last_beacon_time_ms;
+}
+
+// Phase 4: Get transmitter time and uptime data
+uint64_t TransmitterManager::getUptimeMs() {
+    return uptime_ms;
+}
+
+uint64_t TransmitterManager::getUnixTime() {
+    return unix_time;
+}
+
+uint8_t TransmitterManager::getTimeSource() {
+    return time_source;
+}
+
+// Phase 4: Update time/uptime data from heartbeat
+void TransmitterManager::updateTimeData(uint64_t new_uptime_ms, uint64_t new_unix_time, uint8_t new_time_source) {
+    uptime_ms = new_uptime_ms;
+    unix_time = new_unix_time;
+    time_source = new_time_source;
+}
+
+void TransmitterManager::updateSendStatus(bool success) {
+    last_espnow_send_success = success;
+}
+
+bool TransmitterManager::wasLastSendSuccessful() {
+    return last_espnow_send_success;
+}
+
+bool TransmitterManager::isTransmitterConnected() {
+    // Check ESP-NOW connection state machine for accurate status
+    return EspNowConnectionManager::instance().is_connected() && mac_known;
 }

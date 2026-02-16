@@ -4,6 +4,36 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <firmware_version.h>
+#include <firmware_metadata.h>
+
+/**
+ * @brief Helper function to capitalize first letter of each word
+ */
+static String capitalizeWords(const char* str) {
+    if (!str || strlen(str) == 0) return String("");
+    
+    // Convert to String first to avoid char-by-char issues
+    String input = String(str);
+    String result;
+    result.reserve(input.length() + 10);  // Pre-allocate to avoid reallocation
+    
+    bool capitalize_next = true;
+    
+    for (unsigned int i = 0; i < input.length(); i++) {
+        char c = input.charAt(i);
+        if (c == '-' || c == '_' || c == ' ') {
+            result += ' ';
+            capitalize_next = true;
+        } else if (capitalize_next) {
+            result += (char)toupper(c);
+            capitalize_next = false;
+        } else {
+            result += (char)tolower(c);
+        }
+    }
+    
+    return result;
+}
 
 /**
  * @brief Handler for the dashboard landing page
@@ -19,6 +49,7 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
     String tx_ip = "Unknown";
     String tx_ip_mode = "";  // (D) or (S)
     String tx_version = "Unknown";
+    String tx_device_name = "ESP32 Transmitter";  // Default friendly name
     bool request_metadata = false;
     
     if (tx_connected) {
@@ -38,6 +69,12 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
             char version_str[16];
             snprintf(version_str, sizeof(version_str), "%d.%d.%d", major, minor, patch);
             tx_version = String(version_str);
+            
+            // Get device name from env if available
+            const char* env = TransmitterManager::getMetadataEnv();
+            if (env && strlen(env) > 0) {
+                tx_device_name = capitalizeWords(env);
+            }
         } else {
             // No metadata in cache - request it
             request_metadata = true;
@@ -51,6 +88,12 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
     String rx_ip = WiFi.localIP().toString();
     String rx_ip_mode = " (S)";  // Receiver always uses static IP from Config
     
+    // Get receiver device name from metadata
+    String rx_device_name = "Unknown Device";
+    if (FirmwareMetadata::isValid(FirmwareMetadata::metadata)) {
+        rx_device_name = capitalizeWords(FirmwareMetadata::metadata.env_name);
+    }
+    
     String content = R"rawliteral(
     <h1>ESP-NOW System Dashboard</h1>
     
@@ -62,7 +105,9 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
                 <div onmouseover='this.parentElement.style.transform="translateY(-5px)"; this.parentElement.style.boxShadow="0 8px 20px rgba(0,0,0,0.3)";' 
                      onmouseout='this.parentElement.style.transform="translateY(0)"; this.parentElement.style.boxShadow="0 4px 6px rgba(0,0,0,0.2)";'>
                     <h2 style='margin: 0 0 15px 0; color: #2196F3;'>📡 Transmitter</h2>
-                    <p style='color: #888; font-size: 14px; margin: 5px 0;'>ESP32-POE-ISO</p>
+                    <p style='color: #888; font-size: 14px; margin: 5px 0;'>)rawliteral";
+    content += tx_device_name;
+    content += R"rawliteral(</p>
                     
                     <div style='margin: 20px 0; padding: 15px; background: rgba(0,0,0,0.3); border-radius: 8px;'>
                         <div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;'>
@@ -116,7 +161,9 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
                 <div onmouseover='this.parentElement.style.transform="translateY(-5px)"; this.parentElement.style.boxShadow="0 8px 20px rgba(0,0,0,0.3)";' 
                      onmouseout='this.parentElement.style.transform="translateY(0)"; this.parentElement.style.boxShadow="0 4px 6px rgba(0,0,0,0.2)";'>
                     <h2 style='margin: 0 0 15px 0; color: #4CAF50;'>📱 Receiver</h2>
-                    <p style='color: #888; font-size: 14px; margin: 5px 0;'>T-Display-S3</p>
+                    <p style='color: #888; font-size: 14px; margin: 5px 0;'>)rawliteral";
+    content += rx_device_name;
+    content += R"rawliteral(</p>
                     
                     <div style='margin: 20px 0; padding: 15px; background: rgba(0,0,0,0.3); border-radius: 8px;'>
                         <div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;'>
@@ -170,6 +217,33 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
     content += R"rawliteral(</span>
     </div>
     
+    <!-- Transmitter Time & Uptime Display -->
+    <div style='margin: 20px 0; padding: 15px; background: rgba(0,0,0,0.3); border-radius: 8px;'>
+        <h3 style='margin: 0 0 15px 0; color: #2196F3;'>⏰ Transmitter Time & Uptime</h3>
+        <div style='display: grid; grid-template-columns: 1fr 1fr; gap: 15px;'>
+            <div>
+                <div style='display: flex; justify-content: space-between; align-items: center; margin: 8px 0;'>
+                    <span style='color: #FFD700; font-weight: bold;'>Time:</span>
+                    <span id='txTime' style='font-family: monospace; color: #fff; font-size: 12px;'>-- -- ----</span>
+                </div>
+                <div style='display: flex; justify-content: space-between; align-items: center; margin: 8px 0;'>
+                    <span style='color: #FFD700; font-weight: bold;'>Uptime:</span>
+                    <span id='txUptime' style='font-family: monospace; color: #fff; font-size: 12px;'>-- -- ----</span>
+                </div>
+            </div>
+            <div>
+                <div style='display: flex; justify-content: space-between; align-items: center; margin: 8px 0;'>
+                    <span style='color: #FFD700; font-weight: bold;'>Source:</span>
+                    <span id='txTimeSource' style='font-size: 12px;'>Unsynced</span>
+                </div>
+                <div style='display: flex; justify-content: space-between; align-items: center; margin: 8px 0;'>
+                    <span style='color: #999; font-size: 11px;'>Updated:</span>
+                    <span id='txLastUpdate' style='color: #999; font-size: 11px;'>Waiting...</span>
+                </div>
+            </div>
+        </div>
+    </div>
+    
     <!-- System Tools Section -->
     <div class='info-box' style='margin-top: 30px;'>
         <h3 style='margin: 0 0 20px 0; color: #FF9800;'>🛠️ System Tools</h3>
@@ -196,15 +270,101 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
     </div>
     
     <script>
-        // Request metadata if not available
-        )rawliteral";
-    if (request_metadata) {
-        content += R"rawliteral(
-        // Request firmware metadata from transmitter on page load
-        fetch('/api/request_metadata').catch(e => console.error('Failed to request metadata:', e));
-        )rawliteral";
-    }
-    content += R"rawliteral(
+        // Time formatting functions
+        function formatTimeWithTimezone(unixTime, timeZone = 'GMT') {
+            if (!unixTime || unixTime === 0) return '-- -- ----';
+            try {
+                const date = new Date(unixTime * 1000);
+                const formatter = new Intl.DateTimeFormat('en-GB', {
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit',
+                    timeZone: 'UTC'
+                });
+                const parts = formatter.formatToParts(date);
+                const values = {};
+                parts.forEach(part => {
+                    if (part.type !== 'literal') {
+                        values[part.type] = part.value;
+                    }
+                });
+                return `${values.day}-${values.month}-${values.year} ${values.hour}:${values.minute}:${values.second} ${timeZone}`;
+            } catch (e) {
+                return '-- -- ----';
+            }
+        }
+        
+        function formatUptime(ms) {
+            if (!ms || ms === 0) return '-- -- ----';
+            const totalSeconds = Math.floor(ms / 1000);
+            const days = Math.floor(totalSeconds / 86400);
+            const hours = Math.floor((totalSeconds % 86400) / 3600);
+            const minutes = Math.floor((totalSeconds % 3600) / 60);
+            const seconds = totalSeconds % 60;
+            
+            if (days > 0) {
+                return `${days}d ${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+            } else {
+                return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+            }
+        }
+        
+        function getTimeSourceLabel(source) {
+            switch(source) {
+                case 0: return 'Unsynced';
+                case 1: return 'NTP';
+                case 2: return 'Manual';
+                case 3: return 'GPS';
+                default: return 'Unknown';
+            }
+        }
+        
+        function getTimeSourceColor(source) {
+            switch(source) {
+                case 0: return '#ff6b35';  // Red - unsynced
+                case 1: return '#4CAF50';  // Green - NTP
+                case 2: return '#FF9800';  // Orange - Manual
+                case 3: return '#2196F3';  // Blue - GPS
+                default: return '#999';
+            }
+        }
+        
+        let lastUpdateTime = 0;
+        
+        function updateTimerDisplay() {
+            if (lastUpdateTime === 0) return;
+            const now = Date.now();
+            const elapsed = Math.floor((now - lastUpdateTime) / 1000);
+            
+            if (elapsed < 60) {
+                document.getElementById('txLastUpdate').textContent = elapsed + 's ago';
+            } else if (elapsed < 3600) {
+                const mins = Math.floor(elapsed / 60);
+                document.getElementById('txLastUpdate').textContent = mins + 'm ago';
+            } else if (elapsed < 86400) {
+                const hours = Math.floor(elapsed / 3600);
+                document.getElementById('txLastUpdate').textContent = hours + 'h ago';
+            } else {
+                const days = Math.floor(elapsed / 86400);
+                document.getElementById('txLastUpdate').textContent = days + 'd ago';
+            }
+            
+            // Update color based on staleness
+            const updateEl = document.getElementById('txLastUpdate');
+            if (elapsed <= 10) {
+                updateEl.style.color = '#4CAF50';  // Green - fresh
+            } else if (elapsed <= 30) {
+                updateEl.style.color = '#FF9800';  // Orange - stale
+            } else {
+                updateEl.style.color = '#ff6b35';  // Red - very stale
+            }
+        }
+        
+        // Update timer every 1 second
+        setInterval(updateTimerDisplay, 1000);
         
         // Update transmitter data every 10 seconds
         setInterval(async function() {
@@ -247,10 +407,53 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
                         linkEl.style.color = '#ff6b35';
                     }
                 }
+                
+                // Fetch transmitter time data
+                try {
+                    const timeResponse = await fetch('/api/transmitter_health');
+                    const timeData = await timeResponse.json();
+                    
+                    if (timeData && timeData.uptime_ms !== undefined) {
+                        // Update time display
+                        document.getElementById('txTime').textContent = formatTimeWithTimezone(timeData.unix_time, 'GMT');
+                        document.getElementById('txUptime').textContent = formatUptime(timeData.uptime_ms);
+                        
+                        // Update time source
+                        const sourceEl = document.getElementById('txTimeSource');
+                        sourceEl.textContent = getTimeSourceLabel(timeData.time_source);
+                        sourceEl.style.color = getTimeSourceColor(timeData.time_source);
+                        
+                        // Update last update time
+                        lastUpdateTime = Date.now();
+                        updateTimerDisplay();
+                    }
+                } catch (e) {
+                    console.debug('Time data not yet available:', e);
+                }
             } catch (e) {
                 console.error('Failed to update dashboard:', e);
             }
         }, 10000);
+        
+        // Initial fetch on page load
+        setTimeout(async function() {
+            try {
+                const timeResponse = await fetch('/api/transmitter_health');
+                const timeData = await timeResponse.json();
+                
+                if (timeData && timeData.uptime_ms !== undefined) {
+                    document.getElementById('txTime').textContent = formatTimeWithTimezone(timeData.unix_time, 'GMT');
+                    document.getElementById('txUptime').textContent = formatUptime(timeData.uptime_ms);
+                    const sourceEl = document.getElementById('txTimeSource');
+                    sourceEl.textContent = getTimeSourceLabel(timeData.time_source);
+                    sourceEl.style.color = getTimeSourceColor(timeData.time_source);
+                    lastUpdateTime = Date.now();
+                    updateTimerDisplay();
+                }
+            } catch (e) {
+                console.debug('Initial time data fetch failed:', e);
+            }
+        }, 500);
     </script>
     )rawliteral";
     

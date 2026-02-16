@@ -78,7 +78,7 @@ void handle_battery_status(const espnow_queue_msg_t* msg) {
     
     // Validate checksum
     if (!validate_checksum(data, sizeof(*data))) {
-        LOG_ERROR("Battery status: Invalid checksum - message rejected");
+        LOG_ERROR("BATTERY", "Battery status: Invalid checksum - message rejected");
         return;
     }
     
@@ -93,7 +93,7 @@ void handle_battery_status(const espnow_queue_msg_t* msg) {
     BatteryData::bms_status = data->bms_status;
     BatteryData::status_received = true;
     
-    LOG_DEBUG("Battery Status: SOC=%.2f%%, V=%.2fV, I=%.2fA, T=%.1fC, P=%dW, BMS=%d",
+    LOG_DEBUG("BATTERY", "Battery Status: SOC=%.2f%%, V=%.2fV, I=%.2fA, T=%.1fC, P=%dW, BMS=%d",
               BatteryData::soc_percent, BatteryData::voltage_V, BatteryData::current_A,
               BatteryData::temperature_C, BatteryData::power_W, BatteryData::bms_status);
     
@@ -109,7 +109,7 @@ void handle_battery_info(const espnow_queue_msg_t* msg) {
     // Legacy battery_info_msg_t (26 bytes) support removed
     
     if (msg->len != sizeof(battery_settings_full_msg_t)) {
-        LOG_ERROR("Battery info: Invalid message size %d, expected %d (v2 full settings only)",
+        LOG_ERROR("BATTERY", "Battery info: Invalid message size %d, expected %d (v2 full settings only)",
                   msg->len, sizeof(battery_settings_full_msg_t));
         return;
     }
@@ -118,7 +118,7 @@ void handle_battery_info(const espnow_queue_msg_t* msg) {
     
     // Validate checksum
     if (!validate_checksum(data, sizeof(*data))) {
-        LOG_ERROR("Battery settings: Invalid checksum - message rejected");
+        LOG_ERROR("BATTERY", "Battery settings: Invalid checksum - message rejected");
         return;
     }
     
@@ -146,7 +146,7 @@ void handle_battery_info(const espnow_queue_msg_t* msg) {
     BatteryData::info_received = true;
     
     const char* chemistry_str[] = {"NCA", "NMC", "LFP", "LTO"};
-    LOG_INFO("Battery Settings: %dWh, %d-%dmV, %.1f/%.1fA, SOC:%d-%d%%, %dS %s",
+    LOG_INFO("BATTERY", "Battery Settings: %dWh, %d-%dmV, %.1f/%.1fA, SOC:%d-%d%%, %dS %s",
              settings.capacity_wh, settings.min_voltage_mv, settings.max_voltage_mv,
              settings.max_charge_current_a, settings.max_discharge_current_a,
              settings.soc_low_limit, settings.soc_high_limit,
@@ -158,7 +158,7 @@ void handle_charger_status(const espnow_queue_msg_t* msg) {
     
     // Validate checksum
     if (!validate_checksum(data, sizeof(*data))) {
-        LOG_ERROR("Charger status: Invalid checksum - message rejected");
+        LOG_ERROR("BATTERY", "Charger status: Invalid checksum - message rejected");
         return;
     }
     
@@ -171,7 +171,7 @@ void handle_charger_status(const espnow_queue_msg_t* msg) {
     BatteryData::charger_status = data->charger_status;
     BatteryData::charger_received = true;
     
-    LOG_DEBUG("Charger Status=%d, HV=%.1fV/%.1fA, AC=%dV, P=%dW",
+    LOG_DEBUG("BATTERY", "Charger Status=%d, HV=%.1fV/%.1fA, AC=%dV, P=%dW",
               BatteryData::charger_status, BatteryData::charger_hv_voltage_V,
               BatteryData::charger_hv_current_A, BatteryData::charger_ac_voltage_V,
               BatteryData::charger_power_W);
@@ -184,7 +184,7 @@ void handle_inverter_status(const espnow_queue_msg_t* msg) {
     
     // Validate checksum
     if (!validate_checksum(data, sizeof(*data))) {
-        LOG_ERROR("Inverter status: Invalid checksum - message rejected");
+        LOG_ERROR("BATTERY", "Inverter status: Invalid checksum - message rejected");
         return;
     }
     
@@ -196,7 +196,7 @@ void handle_inverter_status(const espnow_queue_msg_t* msg) {
     BatteryData::inverter_status = data->inverter_status;
     BatteryData::inverter_received = true;
     
-    LOG_DEBUG("Inverter Status=%d, AC=%dV/%.1fA@%.1fHz, P=%dW",
+    LOG_DEBUG("BATTERY", "Inverter Status=%d, AC=%dV/%.1fA@%.1fHz, P=%dW",
               BatteryData::inverter_status, BatteryData::inverter_ac_voltage_V,
               BatteryData::inverter_ac_current_A, BatteryData::inverter_ac_frequency_Hz,
               BatteryData::inverter_power_W);
@@ -209,7 +209,7 @@ void handle_system_status(const espnow_queue_msg_t* msg) {
     
     // Validate checksum
     if (!validate_checksum(data, sizeof(*data))) {
-        LOG_ERROR("System status: Invalid checksum - message rejected");
+        LOG_ERROR("BATTERY", "System status: Invalid checksum - message rejected");
         return;
     }
     
@@ -220,7 +220,7 @@ void handle_system_status(const espnow_queue_msg_t* msg) {
     BatteryData::uptime_seconds = data->uptime_seconds;
     BatteryData::system_received = true;
     
-    LOG_DEBUG("System Status: Contactors=0x%02X, Errors=0x%02X, Warnings=0x%02X, Uptime=%us",
+    LOG_DEBUG("BATTERY", "System Status: Contactors=0x%02X, Errors=0x%02X, Warnings=0x%02X, Uptime=%us",
               BatteryData::contactor_state, BatteryData::error_flags,
               BatteryData::warning_flags, BatteryData::uptime_seconds);
     

@@ -73,11 +73,11 @@ void handle_ack(const espnow_queue_msg_t* msg, void* context) {
     MQTT_LOG_DEBUG("ACK", "Received (seq=%u, channel=%d) from %s", 
                   a->seq, a->channel, mac_str);
     
-    // Validate sequence if provided
-    if (config && config->expected_seq) {
-        if (*config->expected_seq == 0 || a->seq != *config->expected_seq) {
+    // Validate sequence if provided (only if it's been set to a non-zero value during PROBE)
+    if (config && config->expected_seq && *config->expected_seq != 0) {
+        if (a->seq != *config->expected_seq) {
             MQTT_LOG_WARNING("ACK", "Sequence mismatch (expected=%u, got=%u)",
-                           config->expected_seq ? *config->expected_seq : 0, a->seq);
+                           *config->expected_seq, a->seq);
             return;
         }
         MQTT_LOG_DEBUG("ACK", "Sequence validated!");

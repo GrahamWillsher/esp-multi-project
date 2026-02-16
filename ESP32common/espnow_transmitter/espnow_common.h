@@ -20,20 +20,12 @@ enum msg_type : uint8_t {
     msg_debug_control,  // Debug level control (receiver → transmitter)
     msg_debug_ack,      // Debug level acknowledgment (transmitter → receiver)
     
-    // Configuration synchronization messages
-    msg_config_request_full,    // Request full configuration snapshot
-    msg_config_snapshot,        // Full configuration snapshot response
-    msg_config_update_delta,    // Delta update (single field change)
-    msg_config_ack,             // Configuration ACK with version
-    msg_config_request_resync,  // Request resync (delta failed)
-    
     // Firmware version exchange messages
     msg_version_announce,       // Periodic version announcement
     msg_version_request,        // Request version from peer
     msg_version_response,       // Version response to request
     
     // Firmware metadata exchange messages
-    msg_metadata_request,       // Request firmware metadata from peer
     msg_metadata_response,      // Firmware metadata response
     
     // =========================================================================
@@ -92,6 +84,7 @@ enum msg_type : uint8_t {
     
     // Keep-alive messages
     msg_heartbeat,                  // Heartbeat message (10s interval, both directions)
+    msg_heartbeat_ack,              // Heartbeat acknowledgment (confirms receipt)
     
     // Bidirectional config sync
     msg_config_changed              // Configuration changed notification (versioned, timestamped)
@@ -178,12 +171,27 @@ typedef struct __attribute__((packed)) {
 // SECTION 11: Keep-Alive and Config Sync Messages
 // ============================================================================
 
-// Keep-alive heartbeat (10s interval)
+// Heartbeat message (bidirectional keep-alive with sequence tracking)
 typedef struct __attribute__((packed)) {
-    uint8_t type;       // msg_heartbeat
-    uint32_t timestamp; // Sender's timestamp (millis)
-    uint32_t seq;       // Heartbeat sequence number
+    uint8_t  type;          // msg_heartbeat
+    uint32_t seq;           // Monotonic sequence number (detects loss/resets)
+    uint32_t uptime_ms;     // Sender uptime in milliseconds
+    uint64_t unix_time;     // Unix timestamp in seconds (NTP-synchronized)
+    uint8_t  time_source;   // 0=unsynced, 1=NTP, 2=manual, 3=GPS
+    uint8_t  state;         // Connection state enum
+    uint8_t  rssi;          // Last RX RSSI (if known, 0 if N/A)
+    uint8_t  flags;         // Status flags (e.g., low_batt, degraded)
+    uint16_t checksum;      // CRC16 checksum
 } heartbeat_t;
+
+// Heartbeat acknowledgment (receiver confirms receipt)
+typedef struct __attribute__((packed)) {
+    uint8_t  type;          // msg_heartbeat_ack
+    uint32_t ack_seq;       // Sequence number being acknowledged
+    uint32_t uptime_ms;     // Receiver uptime in milliseconds
+    uint8_t  state;         // Receiver connection state
+    uint16_t checksum;      // CRC16 checksum
+} heartbeat_ack_t;
 
 // Placeholder config types (simplified for now - will expand in Phase 3)
 typedef struct __attribute__((packed)) {
@@ -213,8 +221,13 @@ typedef struct __attribute__((packed)) {
     uint8_t config_type;    // 1=network, 2=mqtt, 3=battery (maps to CacheDataType)
     uint32_t version;       // Configuration version number
     uint32_t timestamp;     // Change timestamp (millis)
-    uint8_t data[128];      // Configuration payload (union of network/mqtt/battery)
+    uint8_t data[160];      // Configuration payload (union of network/mqtt/battery)
 } config_changed_t;
+
+#ifdef __cplusplus
+static_assert(sizeof(mqtt_config_t) <= sizeof(((config_changed_t*)0)->data),
+              "mqtt_config_t too large for config_changed_t payload");
+#endif
 
 // Fragmented packet structure for large data transfers
 typedef struct __attribute__((packed)) {
@@ -227,43 +240,6 @@ typedef struct __attribute__((packed)) {
     uint16_t  checksum;      // Simple checksum for payload integrity
     uint8_t   payload[230];  // Payload data (230 bytes max to keep total <= 250)
 } espnow_packet_t;
-
-// Configuration synchronization message structures
-#include "../config_sync/config_structures.h"
-
-// Request full configuration snapshot
-typedef struct __attribute__((packed)) {
-    uint8_t type;             // msg_config_request_full
-    uint32_t request_id;      // For tracking responses
-} config_request_full_t;
-
-// Delta update message (sent when a config value changes)
-typedef struct __attribute__((packed)) {
-    uint8_t type;             // msg_config_update_delta
-    uint16_t global_version;  // New global version
-    uint16_t section_version; // New section version
-    uint8_t section;          // ConfigSection
-    uint8_t field_id;         // Specific field changed
-    uint8_t value_length;     // Length of value data
-    uint8_t value_data[64];   // Actual value (variable length)
-    uint32_t timestamp;       // When change occurred
-} config_delta_update_t;
-
-// Configuration ACK
-typedef struct __attribute__((packed)) {
-    uint8_t type;             // msg_config_ack
-    uint16_t acked_version;   // Version being acknowledged
-    uint8_t section;          // ConfigSection acknowledged
-    uint8_t success;          // Success/failure flag (0 or 1)
-    uint32_t timestamp;       // When ACK sent
-} config_ack_t;
-
-// Request resync (fallback when delta updates fail)
-typedef struct __attribute__((packed)) {
-    uint8_t type;             // msg_config_request_resync
-    uint16_t last_known_version; // Last version receiver had
-    char reason[32];          // Why resync needed
-} config_request_resync_t;
 
 // Firmware version announcement packet
 typedef struct __attribute__((packed)) {
@@ -295,12 +271,6 @@ typedef struct __attribute__((packed)) {
     char build_time[9];             // Build time
     uint32_t uptime_seconds;        // Device uptime
 } version_response_t;
-
-// Firmware metadata request packet
-typedef struct __attribute__((packed)) {
-    uint8_t type;             // msg_metadata_request
-    uint32_t request_id;      // For tracking responses
-} metadata_request_t;
 
 // Firmware metadata response packet
 typedef struct __attribute__((packed)) {
@@ -417,7 +387,10 @@ enum SettingsCategory : uint8_t {
     SETTINGS_INVERTER = 2,
     SETTINGS_SYSTEM = 3,
     SETTINGS_MQTT = 4,
-    SETTINGS_NETWORK = 5
+    SETTINGS_NETWORK = 5,
+    SETTINGS_POWER = 6,
+    SETTINGS_CAN = 7,
+    SETTINGS_CONTACTOR = 8
 };
 
 // Battery settings field IDs
@@ -430,7 +403,46 @@ enum BatterySettingsField : uint8_t {
     BATTERY_SOC_HIGH_LIMIT = 5,
     BATTERY_SOC_LOW_LIMIT = 6,
     BATTERY_CELL_COUNT = 7,
-    BATTERY_CHEMISTRY = 8
+    BATTERY_CHEMISTRY = 8,
+    BATTERY_DOUBLE_ENABLED = 9,
+    BATTERY_PACK_MAX_VOLTAGE_DV = 10,
+    BATTERY_PACK_MIN_VOLTAGE_DV = 11,
+    BATTERY_CELL_MAX_VOLTAGE_MV = 12,
+    BATTERY_CELL_MIN_VOLTAGE_MV = 13,
+    BATTERY_SOC_ESTIMATED = 14
+};
+
+// Power settings field IDs
+enum PowerSettingsField : uint8_t {
+    POWER_CHARGE_W = 0,
+    POWER_DISCHARGE_W = 1,
+    POWER_MAX_PRECHARGE_MS = 2,
+    POWER_PRECHARGE_DURATION_MS = 3
+};
+
+// Inverter settings field IDs
+enum InverterSettingsField : uint8_t {
+    INVERTER_CELLS = 0,
+    INVERTER_MODULES = 1,
+    INVERTER_CELLS_PER_MODULE = 2,
+    INVERTER_VOLTAGE_LEVEL = 3,
+    INVERTER_CAPACITY_AH = 4,
+    INVERTER_BATTERY_TYPE = 5
+};
+
+// CAN settings field IDs
+enum CanSettingsField : uint8_t {
+    CAN_FREQUENCY_KHZ = 0,
+    CAN_FD_FREQUENCY_MHZ = 1,
+    CAN_SOFAR_ID = 2,
+    CAN_PYLON_SEND_INTERVAL_MS = 3
+};
+
+// Contactor control field IDs
+enum ContactorSettingsField : uint8_t {
+    CONTACTOR_CONTROL_ENABLED = 0,
+    CONTACTOR_NC_MODE = 1,
+    CONTACTOR_PWM_FREQUENCY_HZ = 2
 };
 
 // Settings update message - Receiver → Transmitter
@@ -554,7 +566,8 @@ enum config_section_t : uint8_t {
     config_section_mqtt = 0x01,
     config_section_network = 0x02,
     config_section_battery = 0x03,
-    config_section_power_profile = 0x04
+    config_section_power_profile = 0x04,
+    config_section_metadata = 0x05
 };
 
 // Lightweight version beacon (transmitter → receiver, every 15s)
@@ -564,10 +577,17 @@ typedef struct __attribute__((packed)) {
     uint32_t network_config_version;    // Network config version number
     uint32_t battery_settings_version;  // Battery settings version number
     uint32_t power_profile_version;     // Power profile version number
+    uint32_t metadata_config_version;   // Metadata version number
     bool mqtt_connected;                // Runtime MQTT connection status
     bool ethernet_connected;            // Runtime Ethernet link status
-    uint8_t reserved[2];                // Future expansion
-} version_beacon_t;  // Total: 20 bytes
+    
+    // Firmware metadata (no need for separate metadata_response message)
+    char env_name[32];                  // Environment name (e.g., "olimex_esp32_poe2")
+    uint8_t version_major;              // Major version
+    uint8_t version_minor;              // Minor version
+    uint8_t version_patch;              // Patch version
+    uint8_t reserved[1];                // Future expansion
+} version_beacon_t;  // Total: 62 bytes (still well under ESP-NOW's 250 byte limit)
 
 // Config section request (receiver → transmitter when version mismatch detected)
 typedef struct __attribute__((packed)) {

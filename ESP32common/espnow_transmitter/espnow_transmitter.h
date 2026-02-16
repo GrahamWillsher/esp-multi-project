@@ -11,7 +11,6 @@
 // EXTERNAL VARIABLES
 // ============================================================================
 
-extern uint8_t receiver_mac[6];
 extern volatile bool g_ack_received;
 extern volatile uint32_t g_ack_seq;
 extern volatile uint8_t g_lock_channel;
@@ -24,12 +23,9 @@ extern QueueHandle_t espnow_rx_queue;  // Project-specific queue
 
 // Utility functions
 uint16_t calculate_checksum(espnow_payload_t* data);
+uint16_t calculate_crc16(const void* data, size_t len);
+bool validate_crc16(const void* data, size_t len);
 bool set_channel(uint8_t ch);
-bool ensure_peer_added(uint8_t channel = 0);
-bool send_probe(uint32_t seq);
-
-// Channel discovery
-int hop_and_lock_channel(uint8_t* out_channel, uint8_t attempts_per_channel = 2, uint16_t ack_wait_ms = 120);
 
 // ESP-NOW callbacks (ISR - only queue data)
 void on_espnow_recv(const uint8_t *mac_addr, const uint8_t *data, int len);
@@ -38,12 +34,8 @@ void on_data_sent(const uint8_t *mac_addr, esp_now_send_status_t status);
 // Health check for graceful retry
 bool is_espnow_healthy();
 
-// Data transmission (example helper)
-void send_test_data();
-
 // Initialization functions
 void init_wifi();
 void init_espnow(QueueHandle_t rx_queue);
-void discover_and_lock_channel();
 
 #endif // ESPNOW_TRANSMITTER_H

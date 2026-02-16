@@ -2,8 +2,10 @@
 #include "../common.h"
 #include <esp_now.h>
 #include <espnow_common.h>
+#include "../../lib/webserver/utils/transmitter_manager.h"
 
 void on_espnow_sent(const uint8_t *mac, esp_now_send_status_t status) {
+    TransmitterManager::updateSendStatus(status == ESP_NOW_SEND_SUCCESS);
     if (status != ESP_NOW_SEND_SUCCESS) {
         Serial.printf("[ESP-NOW] Send failed to %02X:%02X:%02X:%02X:%02X:%02X\n",
                      mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);

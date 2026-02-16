@@ -17,6 +17,44 @@ struct BatterySettings {
     uint32_t version;  // Version tracking for synchronization
 };
 
+struct BatteryEmulatorSettings {
+    bool double_battery;
+    uint16_t pack_max_voltage_dV;
+    uint16_t pack_min_voltage_dV;
+    uint16_t cell_max_voltage_mV;
+    uint16_t cell_min_voltage_mV;
+    bool soc_estimated;
+};
+
+struct PowerSettings {
+    uint16_t charge_w;
+    uint16_t discharge_w;
+    uint16_t max_precharge_ms;
+    uint16_t precharge_duration_ms;
+};
+
+struct InverterSettings {
+    uint8_t cells;
+    uint8_t modules;
+    uint8_t cells_per_module;
+    uint16_t voltage_level;
+    uint16_t capacity_ah;
+    uint8_t battery_type;
+};
+
+struct CanSettings {
+    uint16_t frequency_khz;
+    uint16_t fd_frequency_mhz;
+    uint16_t sofar_id;
+    uint16_t pylon_send_interval_ms;
+};
+
+struct ContactorSettings {
+    bool control_enabled;
+    bool nc_contactor;
+    uint16_t pwm_frequency_hz;
+};
+
 class TransmitterManager {
 private:
     static uint8_t mac[6];
@@ -52,6 +90,7 @@ private:
     // Phase 4: Runtime status tracking (from version beacons)
     static bool ethernet_connected;
     static unsigned long last_beacon_time_ms;
+    static bool last_espnow_send_success;
     
     // V2: Legacy version tracking removed - only use firmware metadata
     
@@ -64,12 +103,38 @@ private:
     static uint8_t metadata_minor;
     static uint8_t metadata_patch;
     static char metadata_build_date[48];
+    static uint32_t metadata_version;
     
     // Battery settings (cached from PACKET/SETTINGS)
     static BatterySettings battery_settings;
     static bool battery_settings_known;
+
+    static BatteryEmulatorSettings battery_emulator_settings;
+    static bool battery_emulator_settings_known;
+
+    static PowerSettings power_settings;
+    static bool power_settings_known;
+
+    static InverterSettings inverter_settings;
+    static bool inverter_settings_known;
+
+    static CanSettings can_settings;
+    static bool can_settings_known;
+
+    static ContactorSettings contactor_settings;
+    static bool contactor_settings_known;
+    
+    // Time data (cached from heartbeat)
+    static uint64_t uptime_ms;
+    static uint64_t unix_time;
+    static uint8_t time_source;  // 0=unsynced, 1=NTP, 2=manual, 3=GPS
     
 public:
+    // Initialization (load cache from NVS)
+    static void init();
+    static void loadFromNVS();
+    static void saveToNVS();
+
     // MAC management
     static void registerMAC(const uint8_t* transmitter_mac);
     static const uint8_t* getMAC();
@@ -133,6 +198,9 @@ public:
     static void updateRuntimeStatus(bool mqtt_conn, bool eth_conn);
     static bool isEthernetConnected();
     static unsigned long getLastBeaconTime();
+    static void updateSendStatus(bool success);
+    static bool wasLastSendSuccessful();
+    static bool isTransmitterConnected();
     
     // V2: Legacy version functions removed - only use metadata
     
@@ -146,11 +214,38 @@ public:
     static const char* getMetadataDevice();
     static void getMetadataVersion(uint8_t& major, uint8_t& minor, uint8_t& patch);
     static const char* getMetadataBuildDate();
+    static uint32_t getMetadataVersionNumber();
     
     // Battery settings management
     static void storeBatterySettings(const BatterySettings& settings);
     static BatterySettings getBatterySettings();
     static bool hasBatterySettings();
+
+    static void storeBatteryEmulatorSettings(const BatteryEmulatorSettings& settings);
+    static BatteryEmulatorSettings getBatteryEmulatorSettings();
+    static bool hasBatteryEmulatorSettings();
+
+    static void storePowerSettings(const PowerSettings& settings);
+    static PowerSettings getPowerSettings();
+    static bool hasPowerSettings();
+
+    static void storeInverterSettings(const InverterSettings& settings);
+    static InverterSettings getInverterSettings();
+    static bool hasInverterSettings();
+
+    static void storeCanSettings(const CanSettings& settings);
+    static CanSettings getCanSettings();
+    static bool hasCanSettings();
+
+    static void storeContactorSettings(const ContactorSettings& settings);
+    static ContactorSettings getContactorSettings();
+    static bool hasContactorSettings();
+    
+    // Time data management
+    static uint64_t getUptimeMs();
+    static uint64_t getUnixTime();
+    static uint8_t getTimeSource();
+    static void updateTimeData(uint64_t new_uptime_ms, uint64_t new_unix_time, uint8_t new_time_source);
 };
 
 #endif

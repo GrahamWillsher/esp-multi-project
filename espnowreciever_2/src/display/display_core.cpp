@@ -61,7 +61,7 @@ void displayInitialScreen() {
     tft.drawString("Test Mode: ON", Display::SCREEN_WIDTH / 2, 35);
     
     // Now turn backlight on to full brightness (status messages are drawn)
-    LOG_DEBUG("Turning on backlight...");
+    LOG_DEBUG("DISPLAY", "Turning on backlight...");
     Serial.flush();
     #if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5,0,0)
     ledcWrite(0, 255);
@@ -69,7 +69,7 @@ void displayInitialScreen() {
     ledcWrite(Display::PIN_LCD_BL, 255);
     #endif
     Display::current_backlight_brightness = 255;
-    LOG_DEBUG("Backlight enabled at full brightness");
+    LOG_DEBUG("DISPLAY", "Backlight enabled at full brightness");
     Serial.flush();
 }
 

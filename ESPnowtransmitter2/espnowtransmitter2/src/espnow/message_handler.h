@@ -27,16 +27,6 @@ public:
      * @brief Check if receiver is currently connected
      * @return true if receiver peer is registered and active
      */
-    bool is_receiver_connected() const { return receiver_connected_; }
-    
-    /**
-     * @brief Connection state tracking for timeout detection
-     */
-    struct ConnectionState {
-        bool is_connected{false};
-        uint32_t last_rx_time_ms{0};
-    };
-    
     /**
      * @brief Check if data transmission is currently active
      * @return true if receiver requested data transmission
@@ -99,16 +89,10 @@ private:
     void handle_debug_control(const espnow_queue_msg_t& msg);
     
     /**
-     * @brief Handle CONFIG_REQUEST_FULL message (request configuration snapshot)
+     * @brief Handle HEARTBEAT_ACK message from receiver
      * @param msg ESP-NOW message
      */
-    void handle_config_request_full(const espnow_queue_msg_t& msg);
-    
-    /**
-     * @brief Handle METADATA_REQUEST message (send firmware metadata)
-     * @param msg ESP-NOW message
-     */
-    void handle_metadata_request(const espnow_queue_msg_t& msg);
+    void handle_heartbeat_ack(const espnow_queue_msg_t& msg);
     
     /**
      * @brief Handle NETWORK_CONFIG_REQUEST message (receiver requests current config)
@@ -172,10 +156,8 @@ private:
     EspnowStandardHandlers::ProbeHandlerConfig probe_config_;
     EspnowStandardHandlers::AckHandlerConfig ack_config_;
     
-    volatile bool receiver_connected_{false};
     volatile bool transmission_active_{false};
     uint8_t receiver_mac_[6]{0};  // Store receiver MAC for sending ACKs
-    ConnectionState receiver_state_;  // Track receiver timeout
     
     // Network configuration task management
     static TaskHandle_t network_config_task_handle_;

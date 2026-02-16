@@ -9,13 +9,13 @@
 void transition_to_state(SystemState new_state) {
     if (current_state == new_state) return;
     
-    LOG_INFO("[STATE] Transitioning: %d -> %d", (int)current_state, (int)new_state);
+    LOG_INFO("STATE", "Transitioning: %d -> %d", (int)current_state, (int)new_state);
     
     // Exit current state
     switch (current_state) {
         case SystemState::TEST_MODE:
             if (RTOS::task_test_data != NULL) {
-                LOG_INFO("[STATE] Stopping test data task");
+                LOG_INFO("STATE", "Stopping test data task");
                 vTaskDelete(RTOS::task_test_data);
                 RTOS::task_test_data = NULL;
             }
@@ -31,12 +31,12 @@ void transition_to_state(SystemState new_state) {
     // Enter new state
     switch (new_state) {
         case SystemState::TEST_MODE:
-            LOG_INFO("[STATE] Entering TEST_MODE");
+            LOG_INFO("STATE", "Entering TEST_MODE");
             TestMode::enabled = true;
             break;
             
         case SystemState::NORMAL_OPERATION:
-            LOG_INFO("[STATE] Entering NORMAL_OPERATION");
+            LOG_INFO("STATE", "Entering NORMAL_OPERATION");
             
             // Direct TFT access with mutex
             if (xSemaphoreTake(RTOS::tft_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
@@ -48,7 +48,7 @@ void transition_to_state(SystemState new_state) {
             break;
             
         case SystemState::ERROR_STATE:
-            LOG_ERROR("[STATE] Entering ERROR_STATE");
+            LOG_ERROR("STATE", "Entering ERROR_STATE");
             if (xSemaphoreTake(RTOS::tft_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
                 tft.fillScreen(TFT_RED);
                 xSemaphoreGive(RTOS::tft_mutex);
@@ -67,13 +67,13 @@ void transition_to_state(SystemState new_state) {
 void handle_error(ErrorSeverity severity, const char* component, const char* message) {
     switch (severity) {
         case ErrorSeverity::WARNING:
-            LOG_WARN("[%s] %s", component, message);
+            LOG_WARN(component, "%s", message);
             break;
         case ErrorSeverity::ERROR:
-            LOG_ERROR("[%s] %s", component, message);
+            LOG_ERROR(component, "%s", message);
             break;
         case ErrorSeverity::FATAL:
-            LOG_ERROR("[FATAL] [%s] %s", component, message);
+            LOG_ERROR(component, "FATAL: %s", message);
             break;
     }
     
