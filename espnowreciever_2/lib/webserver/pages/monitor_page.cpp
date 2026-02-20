@@ -29,6 +29,9 @@ static esp_err_t monitor_handler(httpd_req_t *req) {
         
         <div class='data-label' style='margin-top: 30px;'>Power</div>
         <div class='data-value' id='power'>--</div>
+
+        <div class='data-label' style='margin-top: 30px;'>Voltage</div>
+        <div class='data-value' id='voltage'>--</div>
     </div>
     
     <p class='update-note'>📊 Auto-update every 1 second</p>
@@ -68,9 +71,10 @@ static esp_err_t monitor_handler(httpd_req_t *req) {
             fetch('/api/monitor')
                 .then(response => response.json())
                 .then(data => {
-                    document.getElementById('mode').innerText = 'Mode: ' + (data.mode === 'test' ? 'Test Data' : 'Real ESP-NOW Data');
+                    document.getElementById('mode').innerText = 'Mode: ' + (data.mode === 'simulated' ? 'Simulated Data' : 'Live ESP-NOW Data');
                     document.getElementById('soc').innerText = data.soc + ' %';
                     document.getElementById('power').innerText = data.power + ' W';
+                    document.getElementById('voltage').innerText = (data.voltage_v || 0).toFixed(1) + ' V';
                 })
                 .catch(err => console.error('Update failed:', err));
         }

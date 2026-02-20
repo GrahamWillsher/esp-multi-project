@@ -83,6 +83,11 @@ private:
     SemaphoreHandle_t channel_mutex_;  // Mutex for thread-safe access
     uint8_t current_channel_;          // Current WiFi channel
     bool channel_locked_;              // Whether channel is locked
+    uint8_t saved_channel_;            // Last locked channel for persistence
+    
+    // Persistence functions
+    bool save_channel_to_nvs(uint8_t channel);
+    uint8_t load_channel_from_nvs();
     
     // Private constructor (singleton)
     ChannelManager();

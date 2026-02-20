@@ -32,9 +32,11 @@ namespace Display {
 namespace ESPNow {
     volatile uint8_t received_soc = 50;
     volatile int32_t received_power = 0;
+    volatile uint32_t received_voltage_mv = 0;
     volatile bool data_received = false;
     
     LEDColor current_led_color = LED_ORANGE;  // Start with orange (medium)
+    LEDEffect current_led_effect = LED_EFFECT_FLASH;
     
     DirtyFlags dirty_flags;
     volatile int wifi_channel = 1;
@@ -45,9 +47,10 @@ namespace ESPNow {
 
 // Test Mode (definitions)
 namespace TestMode {
-    bool enabled = true;
+    bool enabled = false;  // DISABLED - use live data from transmitter via MQTT/ESP-NOW
     volatile int soc = 50;
     volatile int32_t power = 0;
+    volatile uint32_t voltage_mv = 0;
 }
 
 // FreeRTOS Resources (definitions)
@@ -73,5 +76,7 @@ SystemState current_state = SystemState::BOOTING;
 bool& test_mode_enabled = TestMode::enabled;
 volatile int& g_test_soc = TestMode::soc;
 volatile int32_t& g_test_power = TestMode::power;
+volatile uint32_t& g_test_voltage_mv = TestMode::voltage_mv;
 volatile uint8_t& g_received_soc = ESPNow::received_soc;
 volatile int32_t& g_received_power = ESPNow::received_power;
+volatile uint32_t& g_received_voltage_mv = ESPNow::received_voltage_mv;

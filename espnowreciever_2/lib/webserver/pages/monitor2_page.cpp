@@ -23,6 +23,9 @@ esp_err_t monitor2_handler(httpd_req_t *req) {
         
         <div class='data-label' style='margin-top: 30px;'>Power</div>
         <div class='data-value' id='power'>--</div>
+
+        <div class='data-label' style='margin-top: 30px;'>Voltage</div>
+        <div class='data-value' id='voltage'>--</div>
     </div>
     
     <p class='update-note'>📡 Real-time updates via Server-Sent Events</p>
@@ -98,9 +101,10 @@ esp_err_t monitor2_handler(httpd_req_t *req) {
             eventSource.onmessage = function(event) {
                 try {
                     const data = JSON.parse(event.data);
-                    document.getElementById('mode').innerText = 'Mode: ' + (data.mode === 'test' ? 'Test Data' : 'Real ESP-NOW Data');
+                    document.getElementById('mode').innerText = 'Mode: ' + (data.mode === 'simulated' ? 'Simulated Data' : 'Live ESP-NOW Data');
                     document.getElementById('soc').innerText = data.soc + ' %';
                     document.getElementById('power').innerText = data.power + ' W';
+                    document.getElementById('voltage').innerText = (data.voltage_v || 0).toFixed(1) + ' V';
                     lastUpdate = Date.now();
                 } catch (err) {
                     console.error('Failed to parse SSE data:', err);

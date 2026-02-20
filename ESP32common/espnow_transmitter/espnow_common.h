@@ -45,6 +45,9 @@ enum msg_type : uint8_t {
     // System data messages
     msg_system_status,          // System status (contactors, BMS state, errors)
     
+    // Component configuration messages
+    msg_component_config,       // Component type selections (BMS, inverter, charger, shunt)
+    
     // =========================================================================
     // PHASE 2: Settings Bidirectional Flow
     // =========================================================================
@@ -375,6 +378,20 @@ typedef struct __attribute__((packed)) {
     uint32_t uptime_seconds;         // System uptime in seconds
     uint16_t checksum;               // Message checksum
 } system_status_msg_t;  // Total: 10 bytes
+
+// Component configuration message - Active component selections (sent on connect + every 5s)
+typedef struct __attribute__((packed)) {
+    uint8_t type;                    // msg_component_config
+    uint8_t bms_type;                // Primary BMS type (0-45)
+    uint8_t secondary_bms_type;      // Secondary BMS type (0=disabled)
+    uint8_t battery_type;            // Battery profile type (0-31, 29=PYLON_BATTERY)
+    uint8_t inverter_type;           // Inverter type (0-21, 0=disabled)
+    uint8_t charger_type;            // Charger type (0-2, 0=disabled)
+    uint8_t shunt_type;              // Shunt type (0-2, 0=disabled)
+    uint8_t multi_battery_enabled;   // Multi-battery mode (0=off, 1=on)
+    uint32_t config_version;         // Configuration version for change tracking
+    uint16_t checksum;               // Message checksum
+} component_config_msg_t;  // Total: 16 bytes
 
 // =============================================================================
 // PHASE 2: Settings Bidirectional Flow Message Structures

@@ -4,6 +4,7 @@
 #include <connection_event.h>
 #include "../config/logging_config.h"
 #include "../network/time_manager.h"
+#include "../network/ethernet_manager.h"
 
 void HeartbeatManager::init() {
     if (m_initialized) {
@@ -22,9 +23,14 @@ void HeartbeatManager::init() {
 void HeartbeatManager::tick() {
     if (!m_initialized) return;
     
-    // Only send heartbeat when connected
+    // ✅ NEW: Check Ethernet first - must have cable + IP
+    if (!EthernetManager::instance().is_fully_ready()) {
+        return;  // Cable not present or IP not assigned
+    }
+    
+    // ✅ EXISTING: Check ESP-NOW connection
     if (EspNowConnectionManager::instance().get_state() != EspNowConnectionState::CONNECTED) {
-        return;
+        return;  // No receiver connection
     }
     
     uint32_t now = millis();

@@ -70,7 +70,7 @@ void init_webserver() {
     LOG_INFO("WEBSERVER", "WiFi connected - proceeding with initialization");
     
     // Count expected handlers (update this when adding/removing handlers)
-    const int EXPECTED_HANDLER_COUNT = 33;  // 10 pages + 23 API handlers (22 specific + 1 firmware + 1 catch-all 404)
+    const int EXPECTED_HANDLER_COUNT = 41;  // 15 pages + 26 API handlers (25 specific + 1 firmware + 1 catch-all 404)
     
     // Initialize SSE notification system
     SSENotifier::init();
@@ -92,11 +92,13 @@ void init_webserver() {
     // Configure HTTP server
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.task_priority = tskIDLE_PRIORITY + 2;
-    config.stack_size = 6144;
+    config.stack_size = 8192;  // Increased from 6144 for battery emulator data handling
     config.max_open_sockets = 4;
     config.max_uri_handlers = 50;  // Phase 3: Increased to 50 for granular settings pages + future expansion
     config.uri_match_fn = httpd_uri_match_wildcard;
     config.server_port = 80;
+    config.recv_wait_timeout = 10;  // Receive timeout for battery data uploads
+    config.send_wait_timeout = 10;  // Send timeout for large JSON responses
     config.lru_purge_enable = true;
     
     // Verify configuration can handle all handlers
@@ -133,6 +135,14 @@ void init_webserver() {
     
     // Register receiver pages
     if (register_systeminfo_page(server) == ESP_OK) registered_count++;
+
+    if (register_cellmonitor_page(server) == ESP_OK) registered_count++;
+    
+    // Register battery emulator spec pages (Phase 3)
+    if (register_battery_specs_page(server) == ESP_OK) registered_count++;
+    if (register_inverter_specs_page(server) == ESP_OK) registered_count++;
+    if (register_charger_specs_page(server) == ESP_OK) registered_count++;
+    if (register_system_specs_page(server) == ESP_OK) registered_count++;
     
     // Register system tool pages
     if (register_ota_page(server) == ESP_OK) registered_count++;
@@ -161,6 +171,10 @@ void init_webserver() {
     LOG_DEBUG("WEBSERVER", "  - /transmitter/battery (Battery Settings)");
     LOG_DEBUG("WEBSERVER", "  - /transmitter/monitor (Monitor Page)");
     LOG_DEBUG("WEBSERVER", "  - /receiver/config (Receiver Info)");
+    LOG_DEBUG("WEBSERVER", "  - /battery_settings.html (Battery Specs - BE/MQTT)");
+    LOG_DEBUG("WEBSERVER", "  - /inverter_settings.html (Inverter Specs - BE/MQTT)");
+    LOG_DEBUG("WEBSERVER", "  - /charger_settings.html (Charger Specs - BE/MQTT)");
+    LOG_DEBUG("WEBSERVER", "  - /system_settings.html (System Specs - BE/MQTT)");
     LOG_DEBUG("WEBSERVER", "  - /ota (OTA Updates)");
     LOG_DEBUG("WEBSERVER", "  - /debug (Debug Info)");
 }

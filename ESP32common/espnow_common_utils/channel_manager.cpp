@@ -5,6 +5,7 @@
 
 #include "channel_manager.h"
 #include <Arduino.h>
+#include <Preferences.h>
 
 // Singleton instance
 static ChannelManager* g_channel_manager = nullptr;
@@ -19,7 +20,8 @@ ChannelManager& ChannelManager::instance() {
 ChannelManager::ChannelManager()
     : channel_mutex_(nullptr),
       current_channel_(0),
-      channel_locked_(false) {
+      channel_locked_(false),
+      saved_channel_(0) {
 }
 
 bool ChannelManager::init() {
@@ -33,12 +35,23 @@ bool ChannelManager::init() {
         return false;
     }
     
+    // Load saved channel from NVS
+    saved_channel_ = load_channel_from_nvs();
+    
     // Get current WiFi channel
     wifi_second_chan_t second;
     esp_wifi_get_channel(&current_channel_, &second);
     
+    // If we have a saved channel, try to start on it
+    if (saved_channel_ > 0 && saved_channel_ <= 13) {
+        Serial.printf("[CHANNEL_MGR] Found saved channel: %d, setting as starting channel\n", saved_channel_);
+        esp_wifi_set_channel(saved_channel_, WIFI_SECOND_CHAN_NONE);
+        current_channel_ = saved_channel_;
+    }
+    
     Serial.printf("[CHANNEL_MGR] ✓ Channel Manager initialized\n");
     Serial.printf("[CHANNEL_MGR]   Current channel: %d\n", current_channel_);
+    Serial.printf("[CHANNEL_MGR]   Saved channel: %d\n", saved_channel_);
     Serial.printf("[CHANNEL_MGR]   Channel locked: %s\n", channel_locked_ ? "YES" : "NO");
     
     return true;
@@ -98,8 +111,12 @@ void ChannelManager::lock_channel(uint8_t channel, const char* source) {
     }
     
     channel_locked_ = true;
+    saved_channel_ = channel;
     
-    Serial.printf("[CHANNEL_MGR] ✓ Channel locked at %d\n", current_channel_);
+    // Save to NVS for persistence across reboots
+    save_channel_to_nvs(channel);
+    
+    Serial.printf("[CHANNEL_MGR] ✓ Channel locked at %d (saved to NVS)\n", current_channel_);
     
     xSemaphoreGive(channel_mutex_);
 }
@@ -119,4 +136,38 @@ void ChannelManager::unlock_channel(const char* source) {
 
 uint8_t ChannelManager::get_channel() const {
     return current_channel_;
+}
+
+bool ChannelManager::save_channel_to_nvs(uint8_t channel) {
+    Preferences prefs;
+    if (!prefs.begin("espnow", false)) {
+        Serial.printf("[CHANNEL_MGR] ERROR: Failed to open NVS for writing\n");
+        return false;
+    }
+    
+    prefs.putUChar("channel", channel);
+    prefs.end();
+    
+    Serial.printf("[CHANNEL_MGR] Channel %d saved to NVS\n", channel);
+    return true;
+}
+
+uint8_t ChannelManager::load_channel_from_nvs() {
+    Preferences prefs;
+    if (!prefs.begin("espnow", true)) {  // Read-only
+        Serial.printf("[CHANNEL_MGR] No saved channel found in NVS\n");
+        return 0;
+    }
+    
+    uint8_t channel = prefs.getUChar("channel", 0);
+    prefs.end();
+    
+    if (channel > 0 && channel <= 13) {
+        Serial.printf("[CHANNEL_MGR] Loaded channel %d from NVS\n", channel);
+    } else {
+        Serial.printf("[CHANNEL_MGR] Invalid channel %d in NVS, ignoring\n", channel);
+        channel = 0;
+    }
+    
+    return channel;
 }

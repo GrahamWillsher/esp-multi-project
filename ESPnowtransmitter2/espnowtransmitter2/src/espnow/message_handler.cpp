@@ -3,10 +3,18 @@
 #include "version_beacon_manager.h"
 #include "heartbeat_manager.h"
 #include "../network/ethernet_manager.h"
+#include "../network/mqtt_manager.h"
+#include "../system_settings.h"
+#include "../datalayer/static_data.h"
 #include "../config/task_config.h"
 #include "../config/logging_config.h"
 #include "../config/network_config.h"
 #include "../settings/settings_manager.h"
+#if CONFIG_CAN_ENABLED
+#include "../battery/battery_manager.h"
+#include "../battery_emulator/battery/Battery.h"
+#include "../battery_emulator/inverter/InverterProtocol.h"
+#endif
 #include <Arduino.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
@@ -119,6 +127,13 @@ void EspnowMessageHandler::setup_message_routes() {
     router.register_route(msg_battery_settings_update,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             SettingsManager::instance().handle_settings_update(*msg);
+        },
+        0xFF, this);
+
+    // Component configuration update handler (receiver → transmitter)
+    router.register_route(msg_component_config,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            static_cast<EspnowMessageHandler*>(ctx)->handle_component_config(*msg);
         },
         0xFF, this);
     
@@ -640,6 +655,96 @@ void EspnowMessageHandler::handle_heartbeat_ack(const espnow_queue_msg_t& msg) {
     
     // Forward to heartbeat manager
     HeartbeatManager::instance().on_heartbeat_ack(ack);
+}
+
+void EspnowMessageHandler::handle_component_config(const espnow_queue_msg_t& msg) {
+    if (msg.len < (int)sizeof(component_config_msg_t)) {
+        LOG_WARN("COMP_CFG", "Invalid component config packet size: %d", msg.len);
+        return;
+    }
+
+    const component_config_msg_t* config = reinterpret_cast<const component_config_msg_t*>(msg.data);
+
+    uint16_t calculated = 0;
+    const uint8_t* data = reinterpret_cast<const uint8_t*>(config);
+    for (size_t i = 0; i < sizeof(component_config_msg_t) - sizeof(config->checksum); i++) {
+        calculated += data[i];
+    }
+
+    if (calculated != config->checksum) {
+        LOG_WARN("COMP_CFG", "Checksum mismatch: calc=%u, recv=%u", calculated, config->checksum);
+        return;
+    }
+
+    SystemSettings& settings = SystemSettings::instance();
+    bool battery_updated = false;
+    bool inverter_updated = false;
+
+    if (config->battery_type <= 46) {
+        if (settings.get_battery_profile_type() != config->battery_type) {
+            settings.set_battery_profile_type(config->battery_type);
+            battery_updated = true;
+        }
+
+#if CONFIG_CAN_ENABLED
+        user_selected_battery_type = static_cast<BatteryType>(config->battery_type);
+        if (!BatteryManager::instance().is_primary_battery_initialized()) {
+            BatteryManager::instance().init_primary_battery(static_cast<BatteryType>(config->battery_type));
+        } else {
+            LOG_WARN("COMP_CFG", "Battery already initialized - change will apply on reboot");
+        }
+#endif
+    } else {
+        LOG_WARN("COMP_CFG", "Invalid battery type: %u", config->battery_type);
+    }
+
+    if (config->inverter_type <= 21) {
+        if (settings.get_inverter_type() != config->inverter_type) {
+            settings.set_inverter_type(config->inverter_type);
+            inverter_updated = true;
+        }
+
+#if CONFIG_CAN_ENABLED
+        user_selected_inverter_protocol = static_cast<InverterProtocolType>(config->inverter_type);
+        if (!BatteryManager::instance().is_inverter_initialized()) {
+            BatteryManager::instance().init_inverter(static_cast<InverterProtocolType>(config->inverter_type));
+        } else {
+            LOG_WARN("COMP_CFG", "Inverter already initialized - change will apply on reboot");
+        }
+#endif
+    } else {
+        LOG_WARN("COMP_CFG", "Invalid inverter type: %u", config->inverter_type);
+    }
+
+    if (battery_updated) {
+        StaticData::update_battery_specs(config->battery_type);
+    }
+
+    if (inverter_updated) {
+        StaticData::update_inverter_specs(config->inverter_type);
+    }
+
+    if (battery_updated || inverter_updated) {
+        if (MqttManager::instance().is_connected()) {
+            if (battery_updated) {
+                MqttManager::instance().publish_battery_specs();
+            }
+            if (inverter_updated) {
+                MqttManager::instance().publish_inverter_specs();
+            }
+            MqttManager::instance().publish_static_specs();
+        }
+    }
+
+    LOG_INFO("COMP_CFG", "Applied component selection: battery=%u inverter=%u",
+             config->battery_type, config->inverter_type);
+
+    if (battery_updated || inverter_updated) {
+        LOG_WARN("COMP_CFG", ">>> Rebooting to apply component selection...");
+        Serial.flush();
+        delay(1000);
+        ESP.restart();
+    }
 }
 
 void EspnowMessageHandler::save_debug_level(uint8_t level) {

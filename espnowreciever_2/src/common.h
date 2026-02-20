@@ -23,6 +23,13 @@ enum LEDColor {
     LED_ORANGE = 2
 };
 
+// LED effect modes for simulated/status indicator
+enum LEDEffect {
+    LED_EFFECT_SOLID = 0,
+    LED_EFFECT_FLASH = 1,
+    LED_EFFECT_HEARTBEAT = 2
+};
+
 // Connection state tracking for timeout detection
 struct ConnectionState {
     bool is_connected;
@@ -90,6 +97,7 @@ namespace ESPNow {
     // Received data
     extern volatile uint8_t received_soc;
     extern volatile int32_t received_power;
+    extern volatile uint32_t received_voltage_mv;
     extern volatile bool data_received;
     
     // Dirty flags for display optimization
@@ -103,6 +111,7 @@ namespace ESPNow {
     
     // LED indicator state
     extern LEDColor current_led_color;
+    extern LEDEffect current_led_effect;
     
     // Connection state
     extern volatile int wifi_channel;
@@ -119,6 +128,7 @@ namespace TestMode {
     extern bool enabled;
     extern volatile int soc;
     extern volatile int32_t power;
+    extern volatile uint32_t voltage_mv;
 }
 
 // FreeRTOS Resources
@@ -168,7 +178,9 @@ void smart_delay(uint32_t ms);
 extern bool& test_mode_enabled;
 extern volatile int& g_test_soc;
 extern volatile int32_t& g_test_power;
+extern volatile uint32_t& g_test_voltage_mv;
 
 // Received data aliases (references to ESPNow namespace)
 extern volatile uint8_t& g_received_soc;
 extern volatile int32_t& g_received_power;
+extern volatile uint32_t& g_received_voltage_mv;

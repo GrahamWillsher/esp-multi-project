@@ -2,6 +2,7 @@
 #include "ethernet_manager.h"
 #include "../config/network_config.h"
 #include "../config/logging_config.h"
+#include "../datalayer/static_data.h"
 #include <Arduino.h>
 #include <HTTPUpdate.h>
 
@@ -20,6 +21,8 @@ void MqttManager::init() {
     }
     
     LOG_INFO("MQTT", "Initializing MQTT client...");
+    // Set buffer size to accommodate 710-byte cell data payload + MQTT overhead
+    client_.setBufferSize(1024);
     client_.setServer(config::get_mqtt_config().server, config::get_mqtt_config().port);
     client_.setCallback(message_callback);
     client_.setKeepAlive(60);
@@ -90,6 +93,125 @@ bool MqttManager::publish_data(int soc, long power, const char* timestamp, bool 
 bool MqttManager::publish_status(const char* message, bool retained) {
     if (!is_connected()) return false;
     return client_.publish(config::get_mqtt_config().topics.status, message, retained);
+}
+
+bool MqttManager::publish_static_specs() {
+    if (!is_connected()) return false;
+    
+    // Allocate buffer in PSRAM to avoid stack overflow
+    char* buffer = (char*)ps_malloc(2048);
+    if (!buffer) {
+        LOG_ERROR("MQTT", "Failed to allocate PSRAM for static specs");
+        return false;
+    }
+    
+    size_t len = StaticData::serialize_all_specs(buffer, 2048);
+    
+    if (len > 0) {
+        bool success = client_.publish("BE/spec_data", buffer, true); // Retained
+        if (success) {
+            LOG_INFO("MQTT", "Published static specs (%u bytes)", len);
+        } else {
+            LOG_ERROR("MQTT", "Failed to publish static specs");
+        }
+        free(buffer);
+        return success;
+    }
+    
+    LOG_ERROR("MQTT", "Failed to serialize static specs");
+    free(buffer);
+    return false;
+}
+
+bool MqttManager::publish_battery_specs() {
+    if (!is_connected()) return false;
+    
+    // Allocate buffer in PSRAM
+    char* buffer = (char*)ps_malloc(512);
+    if (!buffer) {
+        LOG_ERROR("MQTT", "Failed to allocate PSRAM for battery specs");
+        return false;
+    }
+    
+    size_t len = StaticData::serialize_battery_specs(buffer, 512);
+    
+    bool success = false;
+    if (len > 0) {
+        success = client_.publish("BE/battery_specs", buffer, true); // Retained
+        if (success) {
+            LOG_DEBUG("MQTT", "Published battery specs (%u bytes)", len);
+        }
+    }
+    
+    free(buffer);
+    return success;
+}
+
+bool MqttManager::publish_cell_data() {
+    Serial.println("[MQTT_DEBUG] publish_cell_data() called");
+    
+    if (!is_connected()) {
+        Serial.println("[MQTT_DEBUG] Not connected, skipping cell data publish");
+        return false;
+    }
+    
+    Serial.println("[MQTT_DEBUG] Allocating PSRAM buffer for cell data");
+    // Allocate buffer in PSRAM (needs 2KB+ for 96 cells)
+    char* buffer = (char*)ps_malloc(2048);
+    if (!buffer) {
+        LOG_ERROR("MQTT", "Failed to allocate PSRAM for cell data");
+        Serial.println("[MQTT_DEBUG] PSRAM allocation FAILED");
+        return false;
+    }
+    
+    Serial.println("[MQTT_DEBUG] Calling serialize_cell_data()");
+    size_t len = StaticData::serialize_cell_data(buffer, 2048);
+    Serial.printf("[MQTT_DEBUG] serialize_cell_data() returned %u bytes\n", len);
+    
+    if (len > 0) {
+        Serial.printf("[MQTT_DEBUG] First 200 chars of JSON: %.200s\n", buffer);
+    }
+    
+    bool success = false;
+    if (len > 0) {
+        Serial.println("[MQTT_DEBUG] Publishing to BE/cell_data...");
+        success = client_.publish("BE/cell_data", buffer, true); // Retained
+        if (success) {
+            LOG_DEBUG("MQTT", "Published cell data (%u bytes)", len);
+            Serial.println("[MQTT_DEBUG] ✓ Publish successful!");
+        } else {
+            Serial.println("[MQTT_DEBUG] ✗ Publish FAILED!");
+        }
+    } else {
+        Serial.println("[MQTT_DEBUG] serialize returned 0 bytes, not publishing");
+    }
+    
+    free(buffer);
+    return success;
+}
+
+bool MqttManager::publish_inverter_specs() {
+    if (!is_connected()) return false;
+    
+    // Allocate buffer in PSRAM
+    char* buffer = (char*)ps_malloc(512);
+    if (!buffer) {
+        LOG_ERROR("MQTT", "Failed to allocate PSRAM for inverter specs");
+        return false;
+    }
+    
+    size_t len = StaticData::serialize_inverter_specs(buffer, 512);
+    
+    bool success = false;
+    if (len > 0) {
+        success = client_.publish("BE/spec_data_2", buffer, true); // Retained
+        if (success) {
+            LOG_DEBUG("MQTT", "Published inverter specs (%u bytes)", len);
+        }
+    }
+    
+    free(buffer);
+    return success;
 }
 
 void MqttManager::loop() {

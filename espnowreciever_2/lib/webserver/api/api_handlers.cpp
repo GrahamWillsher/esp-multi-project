@@ -15,17 +15,137 @@
 #include <firmware_version.h>
 #include <firmware_metadata.h>
 #include <ArduinoJson.h>
+#include <algorithm>
+#include <cstring>
 
 // External references to global variables (backward compatibility aliases from src/globals.cpp)
 extern bool& test_mode_enabled;
 extern volatile int& g_test_soc;
 extern volatile int32_t& g_test_power;
+extern volatile uint32_t& g_test_voltage_mv;
 extern volatile uint8_t& g_received_soc;
 extern volatile int32_t& g_received_power;
+extern volatile uint32_t& g_received_voltage_mv;
+extern void notify_sse_data_updated();
 
 // OTA firmware storage
 static const char* OTA_FIRMWARE_FILE = "/firmware.bin";
 extern size_t ota_firmware_size;
+
+// ═══════════════════════════════════════════════════════════════════════
+// TYPE SELECTION STRUCTURES & HELPERS
+// ═══════════════════════════════════════════════════════════════════════
+
+struct TypeEntry {
+    uint8_t id;
+    const char* name;
+    
+    // Comparison operator for sorting by name (case-insensitive)
+    bool operator<(const TypeEntry& other) const {
+        return strcasecmp(name, other.name) < 0;
+    }
+};
+
+// Battery types array - will be sorted dynamically
+static TypeEntry battery_types[] = {
+    {0, "None"},
+    {2, "BMW i3"},
+    {3, "BMW iX"},
+    {4, "Bolt/Ampera"},
+    {5, "BYD Atto 3"},
+    {6, "Cellpower BMS"},
+    {7, "CHAdeMO"},
+    {8, "CMFA EV"},
+    {9, "Foxess"},
+    {10, "Geely Geometry C"},
+    {11, "Orion BMS"},
+    {12, "Sono"},
+    {13, "ECMP"},
+    {14, "i-MiEV/C-Zero"},
+    {15, "Jaguar I-PACE"},
+    {16, "Kia E-GMP"},
+    {17, "Kia/Hyundai 64"},
+    {18, "Kia/Hyundai Hybrid"},
+    {19, "VW MEB"},
+    {20, "MG 5"},
+    {21, "Nissan Leaf"},
+    {22, "Pylon"},
+    {23, "Daly BMS"},
+    {24, "RJXZS BMS"},
+    {25, "Range Rover PHEV"},
+    {26, "Renault Kangoo"},
+    {27, "Renault Twizy"},
+    {28, "Renault Zoe Gen1"},
+    {29, "Renault Zoe Gen2"},
+    {30, "Santa Fe PHEV"},
+    {31, "SimpBMS"},
+    {32, "Tesla Model 3/Y"},
+    {33, "Tesla Model S/X"},
+    {34, "Test/Fake"},
+    {35, "Volvo SPA"},
+    {36, "Volvo SPA Hybrid"},
+    {37, "MG HS PHEV"},
+    {38, "Samsung SDI LV"},
+    {39, "Hyundai Ioniq 28"},
+    {40, "Kia 64FD"},
+    {41, "Relion LV"},
+    {42, "Rivian"},
+    {43, "BMW PHEV"},
+    {44, "Ford Mach-E"},
+    {45, "CMP Smart"},
+    {46, "Maxus EV80"}
+};
+
+// Inverter types array - will be sorted dynamically
+static TypeEntry inverter_types[] = {
+    {0, "None"},
+    {1, "Afore battery over CAN"},
+    {2, "BYD Battery-Box Premium HVS over CAN Bus"},
+    {3, "BYD 11kWh HVM battery over Modbus RTU"},
+    {4, "Ferroamp Pylon battery over CAN bus"},
+    {5, "FoxESS compatible HV2600/ECS4100 battery"},
+    {6, "Growatt High Voltage protocol via CAN"},
+    {7, "Growatt Low Voltage (48V) protocol via CAN"},
+    {8, "Growatt WIT compatible battery via CAN"},
+    {9, "BYD battery via Kostal RS485"},
+    {10, "Pylontech HV battery over CAN bus"},
+    {11, "Pylontech LV battery over CAN bus"},
+    {12, "Schneider V2 SE BMS CAN"},
+    {13, "SMA compatible BYD H"},
+    {14, "SMA compatible BYD Battery-Box HVS"},
+    {15, "SMA Low Voltage (48V) protocol via CAN"},
+    {16, "SMA Tripower CAN"},
+    {17, "Sofar BMS (Extended) via CAN, Battery ID"},
+    {18, "SolaX Triple Power LFP over CAN bus"},
+    {19, "Solxpow compatible battery"},
+    {20, "Sol-Ark LV protocol over CAN bus"},
+    {21, "Sungrow SBRXXX emulation over CAN bus"}
+};
+
+// Helper function to generate sorted JSON response from type array
+static String generateSortedTypeJson(TypeEntry* types, size_t count) {
+    // Create a copy of the array for sorting (don't modify the original)
+    TypeEntry* sorted_copy = new TypeEntry[count];
+    if (!sorted_copy) {
+        return "{\"types\":[]}";  // Fallback on memory failure
+    }
+    
+    memcpy(sorted_copy, types, count * sizeof(TypeEntry));
+    
+    // Sort by name
+    std::sort(sorted_copy, sorted_copy + count);
+    
+    // Build JSON response
+    String json = "{\"types\":[";
+    for (size_t i = 0; i < count; i++) {
+        if (i > 0) json += ",";
+        json += "{\"id\":" + String(sorted_copy[i].id) + ",\"name\":\"" + sorted_copy[i].name + "\"}";
+    }
+    json += "]}";
+    
+    delete[] sorted_copy;
+    return json;
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 // API ENDPOINT HANDLERS
@@ -33,7 +153,7 @@ extern size_t ota_firmware_size;
 
 // System information API
 static esp_err_t api_data_handler(httpd_req_t *req) {
-    char json[768];
+    char json[1024];  // Increased from 768 for additional system data
     
     String ssid = WiFi.SSID();
     String ip = WiFi.localIP().toString();
@@ -71,24 +191,167 @@ static esp_err_t api_get_receiver_info_handler(httpd_req_t *req) {
 }
 
 // Battery monitor data API
+// Buffer sized for future battery detail data expansion (voltage, current, temp, cells)
 static esp_err_t api_monitor_handler(httpd_req_t *req) {
-    char json[256];
-    const char* mode = test_mode_enabled ? "test" : "real";
+    char json[512];  // Increased from 256 for future battery data fields
+    const char* mode = test_mode_enabled ? "simulated" : "live";
     uint8_t soc = test_mode_enabled ? g_test_soc : g_received_soc;
     int32_t power = test_mode_enabled ? g_test_power : g_received_power;
+    uint32_t voltage_mv = test_mode_enabled ? g_test_voltage_mv : g_received_voltage_mv;
     
     snprintf(json, sizeof(json), 
-             "{\"mode\":\"%s\",\"soc\":%d,\"power\":%ld}",
-             mode, soc, power);
+             "{\"mode\":\"%s\",\"soc\":%d,\"power\":%ld,\"voltage_mv\":%u,\"voltage_v\":%.1f}",
+             mode, soc, power, voltage_mv, voltage_mv / 1000.0f);
     
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, json, strlen(json));
     return ESP_OK;
 }
 
+// Get current data source (simulated/live)
+static esp_err_t api_get_data_source_handler(httpd_req_t *req) {
+    const char* mode = test_mode_enabled ? "simulated" : "live";
+    char json[96];
+    snprintf(json, sizeof(json), "{\"mode\":\"%s\"}", mode);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json, strlen(json));
+    return ESP_OK;
+}
+
+// Set data source (simulated/live)
+static esp_err_t api_set_data_source_handler(httpd_req_t *req) {
+    char buf[128];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) {
+        const char* json = "{\"success\":false,\"error\":\"No data received\"}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, json, strlen(json));
+        return ESP_OK;
+    }
+    buf[ret] = '\0';
+
+    StaticJsonDocument<128> doc;
+    DeserializationError error = deserializeJson(doc, buf);
+    if (error) {
+        const char* json = "{\"success\":false,\"error\":\"JSON parse error\"}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, json, strlen(json));
+        return ESP_OK;
+    }
+
+    bool enable_sim = false;
+    if (doc.containsKey("mode")) {
+        const char* mode = doc["mode"] | "";
+        enable_sim = (strcmp(mode, "simulated") == 0 || strcmp(mode, "test") == 0);
+    } else if (doc.containsKey("simulated")) {
+        enable_sim = doc["simulated"].as<bool>();
+    } else {
+        const char* json = "{\"success\":false,\"error\":\"Missing mode\"}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, json, strlen(json));
+        return ESP_OK;
+    }
+
+    ReceiverNetworkConfig::setSimulationMode(enable_sim);
+    test_mode_enabled = enable_sim;
+
+    notify_sse_data_updated();
+
+    const char* json = "{\"success\":true}\n";
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json, strlen(json));
+    return ESP_OK;
+}
+
+// Cell monitor data (simulated when in simulation mode)
+static esp_err_t api_cell_data_handler(httpd_req_t *req) {
+    Serial.printf("[API_DEBUG] api_cell_data_handler called: test_mode=%d, hasCellData=%d\n", 
+                  test_mode_enabled, TransmitterManager::hasCellData());
+    
+    // Check if we have real cell data from MQTT (live mode)
+    if (!test_mode_enabled && TransmitterManager::hasCellData()) {
+        // Use real cell data from transmitter
+        uint16_t cell_count = TransmitterManager::getCellCount();
+        const uint16_t* voltages = TransmitterManager::getCellVoltages();
+        const bool* balancing = TransmitterManager::getCellBalancingStatus();
+        uint16_t min_voltage = TransmitterManager::getCellMinVoltage();
+        uint16_t max_voltage = TransmitterManager::getCellMaxVoltage();
+        bool balancing_active = TransmitterManager::isBalancingActive();
+        
+        Serial.printf("[API_DEBUG] Using live data: %d cells, first voltage=%dmV, min=%dmV, max=%dmV\n",
+                      cell_count, (cell_count > 0 ? voltages[0] : 0), min_voltage, max_voltage);
+        
+        String json = "{\"success\":true,\"mode\":\"live\",\"cells\":[";
+        for (uint16_t i = 0; i < cell_count; i++) {
+            if (i > 0) json += ",";
+            json += String(voltages[i]);
+        }
+        json += "],\"balancing\":[";
+        for (uint16_t i = 0; i < cell_count; i++) {
+            if (i > 0) json += ",";
+            json += balancing[i] ? "true" : "false";
+        }
+        json += "],\"cell_min_voltage_mV\":";
+        json += String(min_voltage);
+        json += ",\"cell_max_voltage_mV\":";
+        json += String(max_voltage);
+        json += ",\"balancing_active\":";
+        json += balancing_active ? "true" : "false";
+        json += "}";
+        
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, json.c_str(), json.length());
+        return ESP_OK;
+    }
+    
+    // Fallback to simulated data or error message
+    if (!test_mode_enabled) {
+        const char* json = "{\"success\":false,\"mode\":\"live\",\"message\":\"Cell data not available\"}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, json, strlen(json));
+        return ESP_OK;
+    }
+
+    uint16_t cell_count = 96;
+    if (TransmitterManager::hasBatterySettings()) {
+        auto settings = TransmitterManager::getBatterySettings();
+        if (settings.cell_count > 0 && settings.cell_count <= 200) {
+            cell_count = settings.cell_count;
+        }
+    }
+
+    uint32_t pack_mv = g_test_voltage_mv;
+    if (pack_mv == 0) {
+        const uint32_t min_mv = 30000;
+        const uint32_t max_mv = 42000;
+        uint32_t clamped_soc = (g_test_soc < 0) ? 0 : (g_test_soc > 100 ? 100 : (uint32_t)g_test_soc);
+        pack_mv = min_mv + ((max_mv - min_mv) * clamped_soc) / 100;
+    }
+
+    float base_cell_mv = (cell_count > 0) ? (pack_mv / (float)cell_count) : 0.0f;
+
+    String json = "{\"success\":true,\"mode\":\"simulated\",\"cells\":[";
+    for (uint16_t i = 0; i < cell_count; i++) {
+        if (i > 0) json += ",";
+        int jitter = random(-15, 16);
+        int cell_mv = (int)(base_cell_mv + jitter);
+        json += String(cell_mv);
+    }
+    json += "],\"balancing\":[";
+    for (uint16_t i = 0; i < cell_count; i++) {
+        if (i > 0) json += ",";
+        json += (random(0, 100) < 5) ? "true" : "false";  // 5% balancing
+    }
+    json += "]}";
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json.c_str(), json.length());
+    return ESP_OK;
+}
+
 // Dashboard data API - returns transmitter and receiver status
 static esp_err_t api_dashboard_data_handler(httpd_req_t *req) {
-    char json[1024];
+    char json[2048];  // Increased from 1024 for battery emulator metadata
     
     // Get transmitter data from cache
     bool tx_connected = TransmitterManager::isTransmitterConnected();
@@ -173,17 +436,19 @@ static esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
     
     uint8_t last_soc = 255;
     int32_t last_power = INT32_MAX;
+    uint32_t last_voltage = 0;
     bool last_mode = false;
     
     // Send initial data
     char event_data[512];
-    const char* mode = test_mode_enabled ? "test" : "real";
+    const char* mode = test_mode_enabled ? "simulated" : "live";
     uint8_t current_soc = test_mode_enabled ? g_test_soc : g_received_soc;
     int32_t current_power = test_mode_enabled ? g_test_power : g_received_power;
+    uint32_t current_voltage = test_mode_enabled ? g_test_voltage_mv : g_received_voltage_mv;
     
     snprintf(event_data, sizeof(event_data),
-             "data: {\"mode\":\"%s\",\"soc\":%d,\"power\":%ld}\n\n",
-             mode, current_soc, current_power);
+             "data: {\"mode\":\"%s\",\"soc\":%d,\"power\":%ld,\"voltage_mv\":%u,\"voltage_v\":%.1f}\n\n",
+             mode, current_soc, current_power, current_voltage, current_voltage / 1000.0f);
     
     if (httpd_resp_send_chunk(req, event_data, strlen(event_data)) != ESP_OK) {
         return ESP_FAIL;
@@ -191,6 +456,7 @@ static esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
     
     last_soc = current_soc;
     last_power = current_power;
+    last_voltage = current_voltage;
     last_mode = test_mode_enabled;
     
     // Event-driven loop (max 5 minutes)
@@ -209,13 +475,14 @@ static esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
         if (bits & (1 << 0)) {
             current_soc = test_mode_enabled ? g_test_soc : g_received_soc;
             current_power = test_mode_enabled ? g_test_power : g_received_power;
+            current_voltage = test_mode_enabled ? g_test_voltage_mv : g_received_voltage_mv;
             
-            if (current_soc != last_soc || current_power != last_power || test_mode_enabled != last_mode) {
-                mode = test_mode_enabled ? "test" : "real";
+            if (current_soc != last_soc || current_power != last_power || current_voltage != last_voltage || test_mode_enabled != last_mode) {
+                mode = test_mode_enabled ? "simulated" : "live";
                 
                 snprintf(event_data, sizeof(event_data),
-                         "data: {\"mode\":\"%s\",\"soc\":%d,\"power\":%ld}\n\n",
-                         mode, current_soc, current_power);
+                         "data: {\"mode\":\"%s\",\"soc\":%d,\"power\":%ld,\"voltage_mv\":%u,\"voltage_v\":%.1f}\n\n",
+                         mode, current_soc, current_power, current_voltage, current_voltage / 1000.0f);
                 
                 if (httpd_resp_send_chunk(req, event_data, strlen(event_data)) != ESP_OK) {
                     break;
@@ -223,6 +490,7 @@ static esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
                 
                 last_soc = current_soc;
                 last_power = current_power;
+                last_voltage = current_voltage;
                 last_mode = test_mode_enabled;
             }
         } else {
@@ -618,13 +886,25 @@ static esp_err_t api_transmitter_metadata_handler(httpd_req_t *req) {
 static esp_err_t api_get_battery_settings_handler(httpd_req_t *req) {
     char json[512];
     
-    // Get battery settings from TransmitterManager
-    // Note: These are cached from the last PACKET/SETTINGS message received
+    bool requested = false;
+    if (TransmitterManager::isMACKnown()) {
+        request_data_t req_msg = { msg_request_data, subtype_battery_config };
+        esp_err_t result = esp_now_send(TransmitterManager::getMAC(), (const uint8_t*)&req_msg, sizeof(req_msg));
+        if (result == ESP_OK) {
+            requested = true;
+            LOG_DEBUG("API", "Requested battery settings from transmitter");
+        } else {
+            LOG_WARN("API", "Failed to request battery settings: %s", esp_err_to_name(result));
+        }
+    }
+
+    const bool known = TransmitterManager::hasBatterySettings();
     auto settings = TransmitterManager::getBatterySettings();
     
     snprintf(json, sizeof(json),
         "{"
-        "\"success\":true,"
+        "\"success\":%s,"
+        "\"requested\":%s,"
         "\"capacity_wh\":%u,"
         "\"max_voltage_mv\":%u,"
         "\"min_voltage_mv\":%u,"
@@ -635,6 +915,8 @@ static esp_err_t api_get_battery_settings_handler(httpd_req_t *req) {
         "\"cell_count\":%u,"
         "\"chemistry\":%u"
         "}",
+        known ? "true" : "false",
+        requested ? "true" : "false",
         settings.capacity_wh,
         settings.max_voltage_mv,
         settings.min_voltage_mv,
@@ -872,6 +1154,12 @@ static esp_err_t api_get_receiver_network_handler(httpd_req_t *req) {
     const uint8_t* dns_primary = ReceiverNetworkConfig::getDNSPrimary();
     const uint8_t* dns_secondary = ReceiverNetworkConfig::getDNSSecondary();
     
+    // Get MQTT configuration
+    bool mqtt_enabled = ReceiverNetworkConfig::isMqttEnabled();
+    const uint8_t* mqtt_server = ReceiverNetworkConfig::getMqttServer();
+    uint16_t mqtt_port = ReceiverNetworkConfig::getMqttPort();
+    const char* mqtt_username = ReceiverNetworkConfig::getMqttUsername();
+    
     // Build JSON response
     snprintf(json, sizeof(json),
         "{"
@@ -889,7 +1177,12 @@ static esp_err_t api_get_receiver_network_handler(httpd_req_t *req) {
         "\"gateway\":\"%d.%d.%d.%d\","
         "\"subnet\":\"%d.%d.%d.%d\","
         "\"dns_primary\":\"%d.%d.%d.%d\","
-        "\"dns_secondary\":\"%d.%d.%d.%d\""
+        "\"dns_secondary\":\"%d.%d.%d.%d\","
+        "\"mqtt_enabled\":%s,"
+        "\"mqtt_server\":\"%d.%d.%d.%d\","
+        "\"mqtt_port\":%d,"
+        "\"mqtt_username\":\"%s\","
+        "\"mqtt_password\":\"%s\""
         "}",
         is_ap_mode ? "true" : "false",
         wifi_mac.c_str(),
@@ -904,7 +1197,12 @@ static esp_err_t api_get_receiver_network_handler(httpd_req_t *req) {
         gateway[0], gateway[1], gateway[2], gateway[3],
         subnet[0], subnet[1], subnet[2], subnet[3],
         dns_primary[0], dns_primary[1], dns_primary[2], dns_primary[3],
-        dns_secondary[0], dns_secondary[1], dns_secondary[2], dns_secondary[3]
+        dns_secondary[0], dns_secondary[1], dns_secondary[2], dns_secondary[3],
+        mqtt_enabled ? "true" : "false",
+        mqtt_server[0], mqtt_server[1], mqtt_server[2], mqtt_server[3],
+        mqtt_port,
+        mqtt_username,
+        "********"  // Never send actual password
     );
     
     httpd_resp_set_type(req, "application/json");
@@ -949,6 +1247,13 @@ static esp_err_t api_save_receiver_network_handler(httpd_req_t *req) {
     const char* ssid = doc["ssid"] | "";
     const char* password = doc["password"] | "";
     bool use_static_ip = doc["use_static_ip"].as<bool>();
+    
+    // MQTT configuration
+    bool mqtt_enabled = doc["mqtt_enabled"].as<bool>();
+    const char* mqtt_server_str = doc["mqtt_server"] | "";
+    uint16_t mqtt_port = doc["mqtt_port"] | 1883;
+    const char* mqtt_username = doc["mqtt_username"] | "";
+    const char* mqtt_password = doc["mqtt_password"] | "";
 
     if (!ssid || ssid[0] == '\0') {
         snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"SSID is required\"}");
@@ -967,6 +1272,7 @@ static esp_err_t api_save_receiver_network_handler(httpd_req_t *req) {
     uint8_t subnet[4] = {0};
     uint8_t dns_primary[4] = {8, 8, 8, 8};
     uint8_t dns_secondary[4] = {8, 8, 4, 4};
+    uint8_t mqtt_server[4] = {0};
 
     if (use_static_ip) {
         const char* ip_str = doc["ip"] | "";
@@ -990,6 +1296,16 @@ static esp_err_t api_save_receiver_network_handler(httpd_req_t *req) {
             dns_secondary[0] = 8; dns_secondary[1] = 8; dns_secondary[2] = 4; dns_secondary[3] = 4;
         }
     }
+    
+    // Parse MQTT server IP
+    if (mqtt_enabled && mqtt_server_str && mqtt_server_str[0] != '\0') {
+        if (!parse_ip_string(mqtt_server_str, mqtt_server)) {
+            snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"Invalid MQTT server IP\"}");
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_send(req, json, strlen(json));
+            return ESP_OK;
+        }
+    }
 
     bool saved = ReceiverNetworkConfig::saveConfig(
         hostname,
@@ -1000,7 +1316,12 @@ static esp_err_t api_save_receiver_network_handler(httpd_req_t *req) {
         gateway,
         subnet,
         dns_primary,
-        dns_secondary
+        dns_secondary,
+        mqtt_enabled,
+        mqtt_server,
+        mqtt_port,
+        mqtt_username,
+        mqtt_password
     );
 
     if (saved) {
@@ -1372,6 +1693,200 @@ static esp_err_t api_transmitter_health_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+// Phase 3: Static specs API - returns battery emulator static configuration
+static esp_err_t api_static_specs_handler(httpd_req_t *req) {
+    if (!TransmitterManager::hasStaticSpecs()) {
+        // No static specs available yet
+        const char* json = "{\"success\":false,\"error\":\"Static specs not available\"}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, json, strlen(json));
+        return ESP_OK;
+    }
+    
+    // Return the combined static specs JSON
+    String specs_json = TransmitterManager::getStaticSpecsJson();
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, specs_json.c_str(), specs_json.length());
+    return ESP_OK;
+}
+
+// Phase 3: Battery specs API
+static esp_err_t api_battery_specs_handler(httpd_req_t *req) {
+    String specs_json = TransmitterManager::getBatterySpecsJson();
+    if (specs_json.length() == 0) {
+        const char* json = "{\"success\":false,\"error\":\"Battery specs not available\"}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, json, strlen(json));
+        return ESP_OK;
+    }
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, specs_json.c_str(), specs_json.length());
+    return ESP_OK;
+}
+
+// Phase 3: Inverter specs API
+static esp_err_t api_inverter_specs_handler(httpd_req_t *req) {
+    String specs_json = TransmitterManager::getInverterSpecsJson();
+    if (specs_json.length() == 0) {
+        const char* json = "{\"success\":false,\"error\":\"Inverter specs not available\"}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, json, strlen(json));
+        return ESP_OK;
+    }
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, specs_json.c_str(), specs_json.length());
+    return ESP_OK;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// PHASE 3.1: BATTERY & INVERTER TYPE SELECTION APIs
+// ═══════════════════════════════════════════════════════════════════════
+
+// Get list of available battery types (sorted alphabetically)
+static esp_err_t api_get_battery_types_handler(httpd_req_t *req) {
+    // Generate sorted JSON from battery types array
+    String json_response = generateSortedTypeJson(battery_types, sizeof(battery_types) / sizeof(TypeEntry));
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json_response.c_str(), json_response.length());
+    return ESP_OK;
+}
+
+// Get list of available inverter types (sorted alphabetically)
+static esp_err_t api_get_inverter_types_handler(httpd_req_t *req) {
+    // Generate sorted JSON from inverter types array
+    String json_response = generateSortedTypeJson(inverter_types, sizeof(inverter_types) / sizeof(TypeEntry));
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json_response.c_str(), json_response.length());
+    return ESP_OK;
+}
+
+// Get currently selected battery and inverter types
+static esp_err_t api_get_selected_types_handler(httpd_req_t *req) {
+    char json[128];
+    uint8_t battery_type = ReceiverNetworkConfig::getBatteryType();
+    uint8_t inverter_type = ReceiverNetworkConfig::getInverterType();
+    
+    snprintf(json, sizeof(json),
+             "{\"battery_type\":%d,\"inverter_type\":%d}",
+             battery_type, inverter_type);
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json, strlen(json));
+    return ESP_OK;
+}
+
+// Set battery type
+static esp_err_t api_set_battery_type_handler(httpd_req_t *req) {
+    char content[100] = {0};
+    int ret = httpd_req_recv(req, content, sizeof(content) - 1);
+    
+    if (ret <= 0) {
+        const char* json = "{\"success\":false,\"error\":\"No data received\"}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, json, strlen(json));
+        return ESP_OK;
+    }
+    
+    // Parse JSON: {"type":29}
+    StaticJsonDocument<128> doc;
+    DeserializationError error = deserializeJson(doc, content);
+    if (error) {
+        const char* json = "{\"success\":false,\"error\":\"JSON parse error\"}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, json, strlen(json));
+        return ESP_OK;
+    }
+    
+    if (!doc.containsKey("type")) {
+        const char* json = "{\"success\":false,\"error\":\"Invalid JSON format\"}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, json, strlen(json));
+        return ESP_OK;
+    }
+    
+    int type = doc["type"];
+    
+    if (type < 0 || type > 255) {
+        const char* json = "{\"success\":false,\"error\":\"Type must be 0-255\"}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, json, strlen(json));
+        return ESP_OK;
+    }
+    
+    // Save to NVS
+    ReceiverNetworkConfig::setBatteryType((uint8_t)type);
+    
+    // Send ESP-NOW message to transmitter (attempt to notify, don't fail if transmitter not connected)
+    if (send_component_type_selection((uint8_t)type, ReceiverNetworkConfig::getInverterType())) {
+        Serial.printf("[API] Battery type %d sent to transmitter via ESP-NOW\n", type);
+    } else {
+        Serial.printf("[API] Warning: Could not send battery type to transmitter (may be offline)\n");
+    }
+    
+    const char* json = "{\"success\":true,\"message\":\"Battery type updated\"}";
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json, strlen(json));
+    return ESP_OK;
+}
+
+// Set inverter type
+static esp_err_t api_set_inverter_type_handler(httpd_req_t *req) {
+    char content[100] = {0};
+    int ret = httpd_req_recv(req, content, sizeof(content) - 1);
+    
+    if (ret <= 0) {
+        const char* json = "{\"success\":false,\"error\":\"No data received\"}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, json, strlen(json));
+        return ESP_OK;
+    }
+    
+    // Parse JSON: {"type":5}
+    StaticJsonDocument<128> doc;
+    DeserializationError error = deserializeJson(doc, content);
+    if (error) {
+        const char* json = "{\"success\":false,\"error\":\"JSON parse error\"}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, json, strlen(json));
+        return ESP_OK;
+    }
+    
+    if (!doc.containsKey("type")) {
+        const char* json = "{\"success\":false,\"error\":\"Invalid JSON format\"}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, json, strlen(json));
+        return ESP_OK;
+    }
+    
+    int type = doc["type"];
+    
+    if (type < 0 || type > 255) {
+        const char* json = "{\"success\":false,\"error\":\"Type must be 0-255\"}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, json, strlen(json));
+        return ESP_OK;
+    }
+    
+    // Save to NVS
+    ReceiverNetworkConfig::setInverterType((uint8_t)type);
+    
+    // Send ESP-NOW message to transmitter (attempt to notify, don't fail if transmitter not connected)
+    if (send_component_type_selection(ReceiverNetworkConfig::getBatteryType(), (uint8_t)type)) {
+        Serial.printf("[API] Inverter type %d sent to transmitter via ESP-NOW\n", type);
+    } else {
+        Serial.printf("[API] Warning: Could not send inverter type to transmitter (may be offline)\n");
+    }
+    
+    const char* json = "{\"success\":true,\"message\":\"Inverter type updated\"}";
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json, strlen(json));
+    return ESP_OK;
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // REGISTRATION FUNCTION
 // ═══════════════════════════════════════════════════════════════════════
@@ -1384,6 +1899,9 @@ int register_all_api_handlers(httpd_handle_t server) {
         {.uri = "/api/get_receiver_info", .method = HTTP_GET, .handler = api_get_receiver_info_handler, .user_ctx = NULL},
         {.uri = "/api/dashboard_data", .method = HTTP_GET, .handler = api_dashboard_data_handler, .user_ctx = NULL},
         {.uri = "/api/monitor", .method = HTTP_GET, .handler = api_monitor_handler, .user_ctx = NULL},
+        {.uri = "/api/get_data_source", .method = HTTP_GET, .handler = api_get_data_source_handler, .user_ctx = NULL},
+        {.uri = "/api/set_data_source", .method = HTTP_POST, .handler = api_set_data_source_handler, .user_ctx = NULL},
+        {.uri = "/api/cell_data", .method = HTTP_GET, .handler = api_cell_data_handler, .user_ctx = NULL},
         {.uri = "/api/transmitter_ip", .method = HTTP_GET, .handler = api_transmitter_ip_handler, .user_ctx = NULL},
         {.uri = "/api/transmitter_health", .method = HTTP_GET, .handler = api_transmitter_health_handler, .user_ctx = NULL},
         {.uri = "/api/version", .method = HTTP_GET, .handler = api_version_handler, .user_ctx = NULL},
@@ -1400,6 +1918,14 @@ int register_all_api_handlers(httpd_handle_t server) {
         {.uri = "/api/save_network_config", .method = HTTP_POST, .handler = api_save_network_config_handler, .user_ctx = NULL},
         {.uri = "/api/get_mqtt_config", .method = HTTP_GET, .handler = api_get_mqtt_config_handler, .user_ctx = NULL},
         {.uri = "/api/save_mqtt_config", .method = HTTP_POST, .handler = api_save_mqtt_config_handler, .user_ctx = NULL},
+        {.uri = "/api/static_specs", .method = HTTP_GET, .handler = api_static_specs_handler, .user_ctx = NULL},
+        {.uri = "/api/battery_specs", .method = HTTP_GET, .handler = api_battery_specs_handler, .user_ctx = NULL},
+        {.uri = "/api/inverter_specs", .method = HTTP_GET, .handler = api_inverter_specs_handler, .user_ctx = NULL},
+        {.uri = "/api/get_battery_types", .method = HTTP_GET, .handler = api_get_battery_types_handler, .user_ctx = NULL},
+        {.uri = "/api/get_inverter_types", .method = HTTP_GET, .handler = api_get_inverter_types_handler, .user_ctx = NULL},
+        {.uri = "/api/get_selected_types", .method = HTTP_GET, .handler = api_get_selected_types_handler, .user_ctx = NULL},
+        {.uri = "/api/set_battery_type", .method = HTTP_POST, .handler = api_set_battery_type_handler, .user_ctx = NULL},
+        {.uri = "/api/set_inverter_type", .method = HTTP_POST, .handler = api_set_inverter_type_handler, .user_ctx = NULL},
         {.uri = "/api/ota_upload", .method = HTTP_POST, .handler = api_ota_upload_handler, .user_ctx = NULL},
         {.uri = "/firmware.bin", .method = HTTP_GET, .handler = firmware_bin_handler, .user_ctx = NULL}
     };

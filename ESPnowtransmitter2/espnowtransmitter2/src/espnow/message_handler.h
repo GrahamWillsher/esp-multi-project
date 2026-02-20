@@ -93,6 +93,12 @@ private:
      * @param msg ESP-NOW message
      */
     void handle_heartbeat_ack(const espnow_queue_msg_t& msg);
+
+    /**
+     * @brief Handle COMPONENT_CONFIG message (receiver-selected component types)
+     * @param msg ESP-NOW message
+     */
+    void handle_component_config(const espnow_queue_msg_t& msg);
     
     /**
      * @brief Handle NETWORK_CONFIG_REQUEST message (receiver requests current config)

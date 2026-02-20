@@ -39,17 +39,20 @@ struct VersionCompatibility {
     uint32_t max_peer_version;
 };
 
-// Device identification (set by build flags)
+// Device identification (set by build flags from platformio.ini)
 #ifdef RECEIVER_DEVICE
     #define DEVICE_TYPE "RECEIVER"
-    #define DEVICE_NAME "LilyGo-T-Display-S3"
 #elif defined(TRANSMITTER_DEVICE)
     #define DEVICE_TYPE "TRANSMITTER"
-    #define DEVICE_NAME "ESP32-POE-ISO"
 #else
     #define DEVICE_TYPE "UNKNOWN"
-    #define DEVICE_NAME "UNKNOWN"
 #endif
+
+// Device hardware name (pulled from platformio.ini build flags)
+#ifndef DEVICE_HARDWARE
+    #define DEVICE_HARDWARE "UNKNOWN"
+#endif
+#define DEVICE_NAME DEVICE_HARDWARE
 
 // Helper function to format version string
 inline String getFirmwareVersionString() {

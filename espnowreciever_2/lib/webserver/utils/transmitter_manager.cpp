@@ -167,6 +167,23 @@ ContactorSettings TransmitterManager::contactor_settings = {
 };
 bool TransmitterManager::contactor_settings_known = false;
 
+// Phase 3: Static spec data (MQTT) initialization
+String TransmitterManager::static_specs_json_ = "";
+String TransmitterManager::battery_specs_json_ = "";
+String TransmitterManager::inverter_specs_json_ = "";
+String TransmitterManager::charger_specs_json_ = "";
+String TransmitterManager::system_specs_json_ = "";
+bool TransmitterManager::static_specs_known_ = false;
+
+// Cell monitor data initialization
+uint16_t* TransmitterManager::cell_voltages_mV_ = nullptr;
+bool* TransmitterManager::cell_balancing_status_ = nullptr;
+uint16_t TransmitterManager::cell_count_ = 0;
+uint16_t TransmitterManager::cell_min_voltage_mV_ = 0;
+uint16_t TransmitterManager::cell_max_voltage_mV_ = 0;
+bool TransmitterManager::balancing_active_ = false;
+bool TransmitterManager::cell_data_known_ = false;
+
 void TransmitterManager::init() {
     loadFromNVS();
 }
@@ -820,4 +837,173 @@ bool TransmitterManager::wasLastSendSuccessful() {
 bool TransmitterManager::isTransmitterConnected() {
     // Check ESP-NOW connection state machine for accurate status
     return EspNowConnectionManager::instance().is_connected() && mac_known;
+}
+
+// Phase 3: Static spec data storage (battery emulator specs via MQTT)
+void TransmitterManager::storeStaticSpecs(const JsonObject& specs) {
+    // Store combined specs from BE/spec_data topic
+    DynamicJsonDocument doc(2048);
+    doc.set(specs);
+    
+    static_specs_json_ = "";
+    serializeJson(doc, static_specs_json_);
+    
+    // Extract individual spec sections if present
+    if (specs.containsKey("battery")) {
+        DynamicJsonDocument batteryDoc(512);
+        batteryDoc.set(specs["battery"]);
+        battery_specs_json_ = "";
+        serializeJson(batteryDoc, battery_specs_json_);
+    }
+    
+    if (specs.containsKey("inverter")) {
+        DynamicJsonDocument inverterDoc(512);
+        inverterDoc.set(specs["inverter"]);
+        inverter_specs_json_ = "";
+        serializeJson(inverterDoc, inverter_specs_json_);
+    }
+    
+    if (specs.containsKey("charger")) {
+        DynamicJsonDocument chargerDoc(512);
+        chargerDoc.set(specs["charger"]);
+        charger_specs_json_ = "";
+        serializeJson(chargerDoc, charger_specs_json_);
+    }
+    
+    if (specs.containsKey("system")) {
+        DynamicJsonDocument systemDoc(512);
+        systemDoc.set(specs["system"]);
+        system_specs_json_ = "";
+        serializeJson(systemDoc, system_specs_json_);
+    }
+    
+    static_specs_known_ = true;
+    Serial.println("[TX_MGR] Stored static specs from MQTT");
+}
+
+void TransmitterManager::storeBatterySpecs(const JsonObject& specs) {
+    DynamicJsonDocument doc(512);
+    doc.set(specs);
+    battery_specs_json_ = "";
+    serializeJson(doc, battery_specs_json_);
+    Serial.println("[TX_MGR] Stored battery specs from MQTT");
+}
+
+void TransmitterManager::storeInverterSpecs(const JsonObject& specs) {
+    DynamicJsonDocument doc(512);
+    doc.set(specs);
+    inverter_specs_json_ = "";
+    serializeJson(doc, inverter_specs_json_);
+    Serial.println("[TX_MGR] Stored inverter specs from MQTT");
+}
+
+void TransmitterManager::storeChargerSpecs(const JsonObject& specs) {
+    DynamicJsonDocument doc(512);
+    doc.set(specs);
+    charger_specs_json_ = "";
+    serializeJson(doc, charger_specs_json_);
+    Serial.println("[TX_MGR] Stored charger specs from MQTT");
+}
+
+void TransmitterManager::storeSystemSpecs(const JsonObject& specs) {
+    DynamicJsonDocument doc(512);
+    doc.set(specs);
+    system_specs_json_ = "";
+    serializeJson(doc, system_specs_json_);
+    Serial.println("[TX_MGR] Stored system specs from MQTT");
+}
+
+bool TransmitterManager::hasStaticSpecs() {
+    return static_specs_known_;
+}
+
+String TransmitterManager::getStaticSpecsJson() {
+    return static_specs_json_;
+}
+
+String TransmitterManager::getBatterySpecsJson() {
+    return battery_specs_json_;
+}
+
+String TransmitterManager::getInverterSpecsJson() {
+    return inverter_specs_json_;
+}
+
+String TransmitterManager::getChargerSpecsJson() {
+    return charger_specs_json_;
+}
+
+String TransmitterManager::getSystemSpecsJson() {
+    return system_specs_json_;
+}
+
+void TransmitterManager::storeCellData(const JsonObject& cell_data) {
+    if (!cell_data.containsKey("number_of_cells")) {
+        Serial.println("[TX_MGR] Invalid cell data: missing number_of_cells");
+        return;
+    }
+    
+    uint16_t new_cell_count = cell_data["number_of_cells"];
+    
+    // Reallocate arrays if cell count changed
+    if (new_cell_count != cell_count_ || cell_voltages_mV_ == nullptr) {
+        if (cell_voltages_mV_) {
+            free(cell_voltages_mV_);
+            cell_voltages_mV_ = nullptr;
+        }
+        if (cell_balancing_status_) {
+            free(cell_balancing_status_);
+            cell_balancing_status_ = nullptr;
+        }
+        
+        if (new_cell_count > 0) {
+            cell_voltages_mV_ = (uint16_t*)malloc(new_cell_count * sizeof(uint16_t));
+            cell_balancing_status_ = (bool*)malloc(new_cell_count * sizeof(bool));
+            
+            if (!cell_voltages_mV_ || !cell_balancing_status_) {
+                Serial.println("[TX_MGR] Failed to allocate cell data arrays");
+                if (cell_voltages_mV_) free(cell_voltages_mV_);
+                if (cell_balancing_status_) free(cell_balancing_status_);
+                cell_voltages_mV_ = nullptr;
+                cell_balancing_status_ = nullptr;
+                cell_data_known_ = false;
+                return;
+            }
+        }
+        
+        cell_count_ = new_cell_count;
+    }
+    
+    // Parse cell voltages
+    if (cell_data.containsKey("cell_voltages_mV")) {
+        JsonArray voltages = cell_data["cell_voltages_mV"];
+        uint16_t count = min((uint16_t)voltages.size(), cell_count_);
+        for (uint16_t i = 0; i < count; i++) {
+            cell_voltages_mV_[i] = voltages[i];
+        }
+    }
+    
+    // Parse balancing status
+    if (cell_data.containsKey("cell_balancing_status")) {
+        JsonArray balancing = cell_data["cell_balancing_status"];
+        uint16_t count = min((uint16_t)balancing.size(), cell_count_);
+        for (uint16_t i = 0; i < count; i++) {
+            cell_balancing_status_[i] = balancing[i];
+        }
+    }
+    
+    // Parse statistics
+    if (cell_data.containsKey("cell_min_voltage_mV")) {
+        cell_min_voltage_mV_ = cell_data["cell_min_voltage_mV"];
+    }
+    if (cell_data.containsKey("cell_max_voltage_mV")) {
+        cell_max_voltage_mV_ = cell_data["cell_max_voltage_mV"];
+    }
+    if (cell_data.containsKey("balancing_active")) {
+        balancing_active_ = cell_data["balancing_active"];
+    }
+    
+    cell_data_known_ = true;
+    Serial.printf("[TX_MGR] Stored cell data: %d cells, min=%dmV, max=%dmV\\n",
+                  cell_count_, cell_min_voltage_mV_, cell_max_voltage_mV_);
 }

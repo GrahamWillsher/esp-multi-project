@@ -216,6 +216,77 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
     content += (tx_connected ? "📡 Active" : "⚠️ Waiting for connection");
     content += R"rawliteral(</span>
     </div>
+
+    <!-- Data Source Toggle -->
+    <div class='info-box' style='margin: 20px 0; display: flex; align-items: center; justify-content: space-between;'>
+        <div>
+            <h3 style='margin: 0 0 6px 0; color: #FFD700;'>📊 Data Source</h3>
+            <div style='color: #888; font-size: 13px;'>Use simulated data when no battery is connected</div>
+        </div>
+        <div style='display: flex; align-items: center; gap: 10px;'>
+            <span id='dataSourceLabel' style='font-weight: bold; color: #FFD700;'>Loading...</span>
+            <label style='position: relative; display: inline-block; width: 50px; height: 24px;'>
+                <input id='dataSourceToggle' type='checkbox' style='opacity: 0; width: 0; height: 0;'>
+                <span style='position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #666; transition: .2s; border-radius: 24px;'
+                      id='dataSourceSlider'></span>
+                <span style='position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: .2s; border-radius: 50%;'
+                      id='dataSourceKnob'></span>
+            </label>
+        </div>
+    </div>
+    
+    <!-- Battery Emulator Specifications -->
+    <div class='info-box' style='margin: 20px 0;'>
+        <h3 style='margin: 0 0 20px 0; color: #4CAF50;'>🔋 Battery Emulator Specifications</h3>
+        <p style='color: #888; font-size: 14px; margin: 0 0 15px 0;'>View static configuration data received via MQTT from transmitter</p>
+        <div style='display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 15px;'>
+            <a href='/battery_settings.html' style='text-decoration: none;'>
+                <div style='padding: 15px; background: rgba(76,175,80,0.1); border: 2px solid #4CAF50; border-radius: 8px; text-align: center; cursor: pointer; transition: all 0.2s;'
+                     onmouseover='this.style.background="rgba(76,175,80,0.2)"; this.style.transform="translateY(-3px)";'
+                     onmouseout='this.style.background="rgba(76,175,80,0.1)"; this.style.transform="translateY(0)";'>
+                    <span style='font-size: 32px;'>🔋</span>
+                    <div style='margin-top: 10px; color: #4CAF50; font-weight: bold;'>Battery</div>
+                    <div style='font-size: 11px; color: #888; margin-top: 5px;'>Cell chemistry, limits</div>
+                </div>
+            </a>
+            <a href='/inverter_settings.html' style='text-decoration: none;'>
+                <div style='padding: 15px; background: rgba(33,150,243,0.1); border: 2px solid #2196F3; border-radius: 8px; text-align: center; cursor: pointer; transition: all 0.2s;'
+                     onmouseover='this.style.background="rgba(33,150,243,0.2)"; this.style.transform="translateY(-3px)";'
+                     onmouseout='this.style.background="rgba(33,150,243,0.1)"; this.style.transform="translateY(0)";'>
+                    <span style='font-size: 32px;'>⚡</span>
+                    <div style='margin-top: 10px; color: #2196F3; font-weight: bold;'>Inverter</div>
+                    <div style='font-size: 11px; color: #888; margin-top: 5px;'>Power limits, AC specs</div>
+                </div>
+            </a>
+            <a href='/charger_settings.html' style='text-decoration: none;'>
+                <div style='padding: 15px; background: rgba(255,193,7,0.1); border: 2px solid #FFC107; border-radius: 8px; text-align: center; cursor: pointer; transition: all 0.2s;'
+                     onmouseover='this.style.background="rgba(255,193,7,0.2)"; this.style.transform="translateY(-3px)";'
+                     onmouseout='this.style.background="rgba(255,193,7,0.1)"; this.style.transform="translateY(0)";'>
+                    <span style='font-size: 32px;'>🔌</span>
+                    <div style='margin-top: 10px; color: #FFC107; font-weight: bold;'>Charger</div>
+                    <div style='font-size: 11px; color: #888; margin-top: 5px;'>Charge rates, limits</div>
+                </div>
+            </a>
+            <a href='/system_settings.html' style='text-decoration: none;'>
+                <div style='padding: 15px; background: rgba(156,39,176,0.1); border: 2px solid #9C27B0; border-radius: 8px; text-align: center; cursor: pointer; transition: all 0.2s;'
+                     onmouseover='this.style.background="rgba(156,39,176,0.2)"; this.style.transform="translateY(-3px)";'
+                     onmouseout='this.style.background="rgba(156,39,176,0.1)"; this.style.transform="translateY(0)";'>
+                    <span style='font-size: 32px;'>⚙️</span>
+                    <div style='margin-top: 10px; color: #9C27B0; font-weight: bold;'>System</div>
+                    <div style='font-size: 11px; color: #888; margin-top: 5px;'>Capabilities, safety</div>
+                </div>
+            </a>
+            <a href='/cellmonitor' style='text-decoration: none;'>
+                <div style='padding: 15px; background: rgba(0,188,212,0.1); border: 2px solid #00BCD4; border-radius: 8px; text-align: center; cursor: pointer; transition: all 0.2s;'
+                     onmouseover='this.style.background="rgba(0,188,212,0.2)"; this.style.transform="translateY(-3px)";'
+                     onmouseout='this.style.background="rgba(0,188,212,0.1)"; this.style.transform="translateY(0)";'>
+                    <span style='font-size: 32px;'>🧪</span>
+                    <div style='margin-top: 10px; color: #00BCD4; font-weight: bold;'>Cell Monitor</div>
+                    <div style='font-size: 11px; color: #888; margin-top: 5px;'>Cell voltages</div>
+                </div>
+            </a>
+        </div>
+    </div>
     
     <!-- Transmitter Time & Uptime Display -->
     <div style='margin: 20px 0; padding: 15px; background: rgba(0,0,0,0.3); border-radius: 8px;'>
@@ -331,6 +402,49 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
                 default: return '#999';
             }
         }
+
+        function updateDataSourceUI(isSimulated) {
+            const label = document.getElementById('dataSourceLabel');
+            const toggle = document.getElementById('dataSourceToggle');
+            const slider = document.getElementById('dataSourceSlider');
+            const knob = document.getElementById('dataSourceKnob');
+
+            label.textContent = isSimulated ? 'Simulated' : 'Live';
+            label.style.color = isSimulated ? '#FFD700' : '#4CAF50';
+            toggle.checked = isSimulated;
+            slider.style.backgroundColor = isSimulated ? '#FFD700' : '#4CAF50';
+            knob.style.transform = isSimulated ? 'translateX(26px)' : 'translateX(0)';
+        }
+
+        async function loadDataSource() {
+            try {
+                const res = await fetch('/api/get_data_source');
+                const data = await res.json();
+                updateDataSourceUI(data.mode === 'simulated');
+            } catch (e) {
+                console.debug('Failed to load data source:', e);
+            }
+        }
+
+        async function setDataSource(isSimulated) {
+            try {
+                const res = await fetch('/api/set_data_source', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mode: isSimulated ? 'simulated' : 'live' })
+                });
+                const data = await res.json();
+                if (!data.success) {
+                    throw new Error(data.error || 'Failed to set data source');
+                }
+                updateDataSourceUI(isSimulated);
+            } catch (e) {
+                console.error('Failed to set data source:', e);
+                // Revert toggle state
+                const toggle = document.getElementById('dataSourceToggle');
+                updateDataSourceUI(!toggle.checked);
+            }
+        }
         
         let lastUpdateTime = 0;
         
@@ -365,6 +479,12 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
         
         // Update timer every 1 second
         setInterval(updateTimerDisplay, 1000);
+
+        // Data source toggle setup
+        document.getElementById('dataSourceToggle').addEventListener('change', function(e) {
+            setDataSource(e.target.checked);
+        });
+        loadDataSource();
         
         // Update transmitter data every 10 seconds
         setInterval(async function() {

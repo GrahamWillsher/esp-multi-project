@@ -2,53 +2,208 @@
 #include "../config/hardware_config.h"
 #include "../config/network_config.h"
 #include "../config/logging_config.h"
-#include "../espnow/version_beacon_manager.h"
 #include <Arduino.h>
 #include <ESP32Ping.h>
 
-// Forward declaration - implemented in message_handler.cpp
-void send_ip_to_receiver();
+// ============================================================================
+// SINGLETON
+// ============================================================================
+
+static EthernetManager* g_ethernet_manager_instance = nullptr;
 
 EthernetManager& EthernetManager::instance() {
-    static EthernetManager instance;
-    return instance;
+    if (g_ethernet_manager_instance == nullptr) {
+        g_ethernet_manager_instance = new EthernetManager();
+    }
+    return *g_ethernet_manager_instance;
 }
+
+EthernetManager::EthernetManager() {
+    LOG_DEBUG("ETH", "EthernetManager constructor");
+}
+
+EthernetManager::~EthernetManager() {
+    LOG_DEBUG("ETH", "EthernetManager destructor");
+}
+
+// ============================================================================
+// INITIALIZATION
+// ============================================================================
+
+bool EthernetManager::init() {
+    LOG_INFO("ETH", "Initializing Ethernet for Olimex ESP32-POE-ISO (WROVER)");
+    
+    // Validate state
+    if (current_state_ != EthernetConnectionState::UNINITIALIZED) {
+        LOG_WARN("ETH", "Already initialized (state: %s)", get_state_string());
+        return true;
+    }
+    
+    // Transition to PHY_RESET
+    set_state(EthernetConnectionState::PHY_RESET);
+    network_config_applied_ = false;
+    
+    // Load network configuration from NVS
+    load_network_config();
+    
+    // Register event handler
+    WiFi.onEvent(event_handler);
+    LOG_DEBUG("ETH", "Event handler registered");
+    
+    // Hardware reset sequence for PHY
+    LOG_DEBUG("ETH", "Performing PHY hardware reset...");
+    pinMode(hardware::ETH_POWER_PIN, OUTPUT);
+    digitalWrite(hardware::ETH_POWER_PIN, LOW);
+    delay(10);
+    digitalWrite(hardware::ETH_POWER_PIN, HIGH);
+    delay(150);
+    LOG_DEBUG("ETH", "PHY hardware reset complete");
+    
+    // Initialize Ethernet
+    LOG_INFO("ETH", "Calling ETH.begin() for LAN8720 PHY");
+    if (!ETH.begin(hardware::PHY_ADDR,
+                   hardware::ETH_POWER_PIN,
+                   hardware::ETH_MDC_PIN,
+                   hardware::ETH_MDIO_PIN,
+                   ETH_PHY_LAN8720,
+                   ETH_CLOCK_GPIO0_OUT)) {
+        LOG_ERROR("ETH", "Failed to initialize Ethernet hardware");
+        set_state(EthernetConnectionState::ERROR_STATE);
+        return false;
+    }
+
+    // Transition to LINK_ACQUIRING (wait for cable/link before applying DHCP/static config)
+    if (current_state_ == EthernetConnectionState::PHY_RESET) {
+        set_state(EthernetConnectionState::LINK_ACQUIRING);
+    } else {
+        LOG_WARN("ETH", "Skipping LINK_ACQUIRING transition (state: %s)", get_state_string());
+    }
+    
+    metrics_.total_initialization_ms = millis();
+    LOG_INFO("ETH", "Ethernet initialization complete (async, waiting for cable + IP)");
+    
+    return true;
+}
+
+// ============================================================================
+// STATE MANAGEMENT
+// ============================================================================
+
+void EthernetManager::set_state(EthernetConnectionState new_state) {
+    if (new_state == current_state_) {
+        return;  // No change
+    }
+    
+    previous_state_ = current_state_;
+    current_state_ = new_state;
+    state_enter_time_ms_ = millis();
+    metrics_.state_transitions++;
+    
+    LOG_INFO("ETH_STATE", "State transition: %s → %s",
+             ethernet_state_to_string(previous_state_),
+             ethernet_state_to_string(new_state));
+}
+
+const char* EthernetManager::get_state_string() const {
+    return ethernet_state_to_string(current_state_);
+}
+
+uint32_t EthernetManager::get_state_age_ms() const {
+    return millis() - state_enter_time_ms_;
+}
+
+// ============================================================================
+// EVENT HANDLER (Cable Detection)
+// ============================================================================
 
 void EthernetManager::event_handler(WiFiEvent_t event) {
     auto& mgr = instance();
     
     switch (event) {
         case ARDUINO_EVENT_ETH_START:
-            LOG_INFO("ETH", "Ethernet Started");
+            LOG_INFO("ETH_EVENT", "Ethernet driver started");
             ETH.setHostname("espnow-transmitter");
             break;
             
         case ARDUINO_EVENT_ETH_CONNECTED:
-            LOG_INFO("ETH", "Ethernet Link Connected");
-            // Notify version beacon manager that Ethernet link is up
-            VersionBeaconManager::instance().notify_ethernet_changed(true);
+            // ✅ PHYSICAL CABLE DETECTION
+            LOG_INFO("ETH_EVENT", "✓ CABLE DETECTED: Ethernet link connected");
+            if (mgr.current_state_ != EthernetConnectionState::CONNECTED &&
+                mgr.current_state_ != EthernetConnectionState::ERROR_STATE) {
+                // Ensure we move through LINK_ACQUIRING before applying DHCP/static config
+                if (mgr.current_state_ == EthernetConnectionState::PHY_RESET ||
+                    mgr.current_state_ == EthernetConnectionState::LINK_LOST ||
+                    mgr.current_state_ == EthernetConnectionState::RECOVERING) {
+                    mgr.set_state(EthernetConnectionState::LINK_ACQUIRING);
+                }
+
+                if (!mgr.network_config_applied_) {
+                    mgr.set_state(EthernetConnectionState::CONFIG_APPLYING);
+                    if (!mgr.apply_network_config()) {
+                        mgr.set_state(EthernetConnectionState::ERROR_STATE);
+                        break;
+                    }
+                    mgr.network_config_applied_ = true;
+                }
+                if (mgr.current_state_ == EthernetConnectionState::LINK_LOST ||
+                    mgr.current_state_ == EthernetConnectionState::RECOVERING) {
+                    LOG_INFO("ETH_EVENT", "Cable reconnected!");
+                    mgr.metrics_.recoveries_attempted++;
+                }
+
+                mgr.last_link_time_ms_ = millis();
+                mgr.metrics_.link_flaps++;
+                LOG_INFO("ETH_EVENT", "Transitioning to IP_ACQUIRING (waiting for DHCP)...");
+                // Immediately transition to IP_ACQUIRING to wait for DHCP
+                mgr.set_state(EthernetConnectionState::IP_ACQUIRING);
+            }
             break;
             
         case ARDUINO_EVENT_ETH_GOT_IP:
-            LOG_INFO("ETH", "IP Address: %s", ETH.localIP().toString().c_str());
-            LOG_INFO("ETH", "Gateway: %s", ETH.gatewayIP().toString().c_str());
-            LOG_INFO("ETH", "Link Speed: %d Mbps", ETH.linkSpeed());
-            mgr.connected_ = true;
-            
-            // Automatically send IP to receiver when we get IP address
-            send_ip_to_receiver();
+            LOG_INFO("ETH_EVENT", "✓ IP ASSIGNED: %s", ETH.localIP().toString().c_str());
+            LOG_INFO("ETH_EVENT", "  Gateway: %s", ETH.gatewayIP().toString().c_str());
+            LOG_INFO("ETH_EVENT", "  DNS: %s", ETH.dnsIP().toString().c_str());
+            LOG_INFO("ETH_EVENT", "  Link Speed: %d Mbps", ETH.linkSpeed());
+
+            if (mgr.current_state_ != EthernetConnectionState::CONNECTED &&
+                mgr.current_state_ != EthernetConnectionState::ERROR_STATE) {
+                EthernetConnectionState prior_state = mgr.current_state_;
+                mgr.set_state(EthernetConnectionState::CONNECTED);
+                mgr.last_ip_time_ms_ = millis();
+                mgr.metrics_.connection_established_timestamp = millis();
+                if (prior_state == EthernetConnectionState::LINK_LOST ||
+                    prior_state == EthernetConnectionState::RECOVERING) {
+                    mgr.metrics_.recoveries_successful++;
+                }
+                LOG_INFO("ETH_EVENT", "✓ ETHERNET FULLY READY (link + IP + gateway)");
+                mgr.trigger_connected_callbacks();
+            }
             break;
             
         case ARDUINO_EVENT_ETH_DISCONNECTED:
-            LOG_WARN("ETH", "Ethernet Disconnected");
-            mgr.connected_ = false;
-            // Notify version beacon manager that Ethernet link is down
-            VersionBeaconManager::instance().notify_ethernet_changed(false);
+            // ✅ PHYSICAL CABLE REMOVAL DETECTION
+            LOG_WARN("ETH_EVENT", "✗ CABLE REMOVED: Ethernet link disconnected");
+
+            if (ETH.linkUp()) {
+                LOG_WARN("ETH_EVENT", "Disconnect event received but link is still up; ignoring");
+                break;
+            }
+
+            if (mgr.current_state_ >= EthernetConnectionState::LINK_ACQUIRING &&
+                mgr.current_state_ <= EthernetConnectionState::CONNECTED) {
+                mgr.network_config_applied_ = false;
+                mgr.set_state(EthernetConnectionState::LINK_LOST);
+                mgr.metrics_.link_flaps++;
+                LOG_WARN("ETH_EVENT", "Waiting for cable to be reconnected...");
+                mgr.trigger_disconnected_callbacks();
+            }
             break;
             
         case ARDUINO_EVENT_ETH_STOP:
-            LOG_WARN("ETH", "Ethernet Stopped");
-            mgr.connected_ = false;
+            LOG_WARN("ETH_EVENT", "Ethernet driver stopped");
+            if (mgr.current_state_ != EthernetConnectionState::ERROR_STATE) {
+                mgr.set_state(EthernetConnectionState::ERROR_STATE);
+            }
             break;
             
         default:
@@ -56,75 +211,145 @@ void EthernetManager::event_handler(WiFiEvent_t event) {
     }
 }
 
-bool EthernetManager::init() {
-    LOG_DEBUG("ETH", "Initializing Ethernet for Olimex ESP32-POE-ISO (WROVER)...");
+// ============================================================================
+// STATE MACHINE UPDATE
+// ============================================================================
+
+void EthernetManager::update_state_machine() {
+    check_state_timeout();
     
-    // Load network configuration from NVS
-    loadNetworkConfig();
-    
-    // Register event handler
-    WiFi.onEvent(event_handler);
-    
-    // Hardware reset sequence for PHY
-    pinMode(hardware::ETH_POWER_PIN, OUTPUT);
-    digitalWrite(hardware::ETH_POWER_PIN, LOW);
-    delay(10);
-    digitalWrite(hardware::ETH_POWER_PIN, HIGH);
-    delay(150);
-    
-    // Initialize Ethernet with GPIO0 clock (WROVER requirement)
-    if (!ETH.begin(hardware::PHY_ADDR, 
-                   hardware::ETH_POWER_PIN, 
-                   hardware::ETH_MDC_PIN, 
-                   hardware::ETH_MDIO_PIN, 
-                   ETH_PHY_LAN8720,
-                   ETH_CLOCK_GPIO0_OUT)) {
-        LOG_ERROR("ETH", "Failed to initialize Ethernet");
-        return false;
-    }
-    
-    // Configure IP settings from NVS (or DHCP as fallback)
-    LOG_INFO("ETH", "========== APPLYING NETWORK CONFIGURATION ==========");
-    if (use_static_ip_) {
-        LOG_INFO("ETH", "Applying STATIC IP configuration:");
-        LOG_INFO("ETH", "  IP: %s", static_ip_.toString().c_str());
-        LOG_INFO("ETH", "  Gateway: %s", static_gateway_.toString().c_str());
-        LOG_INFO("ETH", "  Subnet: %s", static_subnet_.toString().c_str());
-        LOG_INFO("ETH", "  DNS: %s", static_dns_primary_.toString().c_str());
-        if (!ETH.config(static_ip_, static_gateway_, static_subnet_, static_dns_primary_)) {
-            LOG_ERROR("ETH", "Failed to apply static IP configuration");
-            return false;
+    // Handle automatic transitions
+    if (current_state_ == EthernetConnectionState::LINK_LOST) {
+        // Check if we should move to RECOVERING
+        uint32_t age = get_state_age_ms();
+        if (age > 1000 && metrics_.recoveries_attempted == 0) {
+            // Immediately move to RECOVERING after 1 second
+            set_state(EthernetConnectionState::RECOVERING);
+            metrics_.recoveries_attempted++;
+            LOG_INFO("ETH", "Starting recovery sequence...");
         }
-    } else {
-        LOG_INFO("ETH", "Applying DHCP configuration");
-        // Reset to DHCP by passing all zeros (this clears any previous static config)
-        if (!ETH.config(IPAddress(0, 0, 0, 0), IPAddress(0, 0, 0, 0), IPAddress(0, 0, 0, 0))) {
-            LOG_WARN("ETH", "Failed to reset to DHCP, but continuing...");
-        }
-        LOG_INFO("ETH", "DHCP enabled - waiting for IP assignment from server");
     }
-    LOG_INFO("ETH", "======================================================");
-    
-    LOG_INFO("ETH", "Ethernet initialization started (async)");
-    delay(1000);  // Give time for initialization
-    return true;
 }
 
+void EthernetManager::check_state_timeout() {
+    uint32_t age = get_state_age_ms();
+    
+    switch (current_state_) {
+        case EthernetConnectionState::PHY_RESET:
+            if (age > PHY_RESET_TIMEOUT_MS) {
+                LOG_ERROR("ETH_TIMEOUT", "PHY reset timeout (%lu ms)", age);
+                set_state(EthernetConnectionState::ERROR_STATE);
+            }
+            break;
+            
+        case EthernetConnectionState::CONFIG_APPLYING:
+            if (age > CONFIG_APPLY_TIMEOUT_MS) {
+                LOG_ERROR("ETH_TIMEOUT", "Config apply timeout (%lu ms)", age);
+                set_state(EthernetConnectionState::ERROR_STATE);
+            }
+            break;
+            
+        case EthernetConnectionState::LINK_ACQUIRING:
+            if (age > LINK_ACQUIRING_TIMEOUT_MS) {
+                LOG_ERROR("ETH_TIMEOUT", "Link acquiring timeout - cable may not be present (%lu ms)", age);
+                set_state(EthernetConnectionState::ERROR_STATE);
+            }
+            break;
+            
+        case EthernetConnectionState::IP_ACQUIRING:
+            if (age > IP_ACQUIRING_TIMEOUT_MS) {
+                LOG_ERROR("ETH_TIMEOUT", "IP acquiring timeout - DHCP server may be down (%lu ms)", age);
+                set_state(EthernetConnectionState::ERROR_STATE);
+            } else if (age % 5000 == 0) {
+                LOG_INFO("ETH_TIMEOUT", "Still waiting for IP... (%lu ms)", age);
+            }
+            break;
+            
+        case EthernetConnectionState::RECOVERING:
+            if (age > RECOVERY_TIMEOUT_MS) {
+                LOG_ERROR("ETH_TIMEOUT", "Recovery timeout - cable may not be reconnected (%lu ms)", age);
+                set_state(EthernetConnectionState::ERROR_STATE);
+            }
+            break;
+            
+        default:
+            break;
+    }
+}
+
+// ============================================================================
+// NETWORK INFORMATION
+// ============================================================================
+
 IPAddress EthernetManager::get_local_ip() const {
-    return connected_ ? ETH.localIP() : IPAddress(0, 0, 0, 0);
+    return is_fully_ready() ? ETH.localIP() : IPAddress(0, 0, 0, 0);
 }
 
 IPAddress EthernetManager::get_gateway_ip() const {
-    return connected_ ? ETH.gatewayIP() : IPAddress(0, 0, 0, 0);
+    return is_fully_ready() ? ETH.gatewayIP() : IPAddress(0, 0, 0, 0);
 }
 
 IPAddress EthernetManager::get_subnet_mask() const {
-    return connected_ ? ETH.subnetMask() : IPAddress(0, 0, 0, 0);
+    return is_fully_ready() ? ETH.subnetMask() : IPAddress(0, 0, 0, 0);
+}
+
+IPAddress EthernetManager::get_dns_ip() const {
+    return is_fully_ready() ? ETH.dnsIP() : IPAddress(0, 0, 0, 0);
+}
+
+int EthernetManager::get_link_speed() const {
+    return is_link_present() ? ETH.linkSpeed() : 0;
+}
+
+// ============================================================================
+// CALLBACKS
+// ============================================================================
+
+void EthernetManager::trigger_connected_callbacks() {
+    LOG_DEBUG("ETH", "Triggering %zu connected callbacks", connected_callbacks_.size());
+    for (auto& callback : connected_callbacks_) {
+        if (callback) {
+            callback();
+        }
+    }
+}
+
+void EthernetManager::trigger_disconnected_callbacks() {
+    LOG_DEBUG("ETH", "Triggering %zu disconnected callbacks", disconnected_callbacks_.size());
+    for (auto& callback : disconnected_callbacks_) {
+        if (callback) {
+            callback();
+        }
+    }
 }
 
 // =============================================================================
 // Network Configuration Management Implementation
 // =============================================================================
+
+bool EthernetManager::apply_network_config() {
+    LOG_INFO("ETH", "Applying network configuration...");
+    if (use_static_ip_) {
+        LOG_INFO("ETH", "Static IP Mode:");
+        LOG_INFO("ETH", "  IP: %s", static_ip_.toString().c_str());
+        LOG_INFO("ETH", "  Gateway: %s", static_gateway_.toString().c_str());
+        LOG_INFO("ETH", "  Subnet: %s", static_subnet_.toString().c_str());
+        LOG_INFO("ETH", "  DNS: %s", static_dns_primary_.toString().c_str());
+
+        if (!ETH.config(static_ip_, static_gateway_, static_subnet_, static_dns_primary_)) {
+            LOG_ERROR("ETH", "Failed to apply static IP configuration");
+            return false;
+        }
+    } else {
+        LOG_INFO("ETH", "DHCP Mode: Waiting for IP assignment from DHCP server...");
+        if (!ETH.config(IPAddress(0, 0, 0, 0), IPAddress(0, 0, 0, 0),
+                       IPAddress(0, 0, 0, 0))) {
+            LOG_WARN("ETH", "Failed to reset to DHCP, but continuing...");
+        }
+    }
+
+    return true;
+}
 
 bool EthernetManager::loadNetworkConfig() {
     Preferences prefs;
@@ -289,4 +514,18 @@ bool EthernetManager::checkIPConflict(const uint8_t ip[4]) {
     LOG_INFO("NET_CONFLICT", "✓ No live device responded (IP appears available)");
     LOG_INFO("NET_CONFLICT", "Warning: Offline devices with this IP will not be detected");
     return false;  // No conflict detected (but could exist offline)
+}
+
+// ============================================================================
+// Snake_case wrapper implementations
+// ============================================================================
+
+bool EthernetManager::load_network_config() {
+    return loadNetworkConfig();
+}
+
+bool EthernetManager::save_network_config(bool use_static, const uint8_t ip[4],
+                                         const uint8_t gateway[4], const uint8_t subnet[4],
+                                         const uint8_t dns_primary[4], const uint8_t dns_secondary[4]) {
+    return saveNetworkConfig(use_static, ip, gateway, subnet, dns_primary, dns_secondary);
 }

@@ -4,6 +4,7 @@
 
 #include "common.h"
 #include "display/display_led.h"
+#include "test/test_data.h"
 
 // State transition function
 void transition_to_state(SystemState new_state) {
@@ -14,11 +15,6 @@ void transition_to_state(SystemState new_state) {
     // Exit current state
     switch (current_state) {
         case SystemState::TEST_MODE:
-            if (RTOS::task_test_data != NULL) {
-                LOG_INFO("STATE", "Stopping test data task");
-                vTaskDelete(RTOS::task_test_data);
-                RTOS::task_test_data = NULL;
-            }
             TestMode::enabled = false;
             break;
         case SystemState::BOOTING:
@@ -33,6 +29,20 @@ void transition_to_state(SystemState new_state) {
         case SystemState::TEST_MODE:
             LOG_INFO("STATE", "Entering TEST_MODE");
             TestMode::enabled = true;
+
+            // Ensure test data task is running (allow re-entry)
+            if (RTOS::task_test_data == NULL) {
+                LOG_INFO("STATE", "Starting test data task");
+                xTaskCreatePinnedToCore(
+                    task_generate_test_data,
+                    "TestDataGen",
+                    4096,
+                    NULL,
+                    1,
+                    &RTOS::task_test_data,
+                    1
+                );
+            }
             break;
             
         case SystemState::NORMAL_OPERATION:

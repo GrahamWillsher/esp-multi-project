@@ -69,6 +69,19 @@ void flash_led(LEDColor color, uint32_t cycle_duration_ms) {
     }
 }
 
+// Heartbeat LED effect (brief pulse, longer idle)
+void heartbeat_led(LEDColor color, uint32_t cycle_duration_ms) {
+    if (cycle_duration_ms < 400) cycle_duration_ms = 400;
+
+    uint32_t pulse_on_ms = cycle_duration_ms / 5;   // 20% on
+    uint32_t pulse_off_ms = cycle_duration_ms - pulse_on_ms;
+
+    set_led(color);
+    smart_delay(pulse_on_ms);
+    clear_led();
+    smart_delay(pulse_off_ms);
+}
+
 // Clear LED
 void clear_led() {
     tft.fillCircle(LED_X_POSITION, LED_Y_POSITION, LED_RADIUS, Display::tft_background);

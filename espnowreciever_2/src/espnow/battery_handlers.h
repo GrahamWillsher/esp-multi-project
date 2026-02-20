@@ -42,6 +42,12 @@ void handle_inverter_status(const espnow_queue_msg_t* msg);
 void handle_system_status(const espnow_queue_msg_t* msg);
 
 /**
+ * @brief Handle component configuration message
+ * @param msg ESP-NOW message from queue
+ */
+void handle_component_config(const espnow_queue_msg_t* msg);
+
+/**
  * @brief Validate message checksum
  * @param data Pointer to message data
  * @param len Length of message (including checksum field)

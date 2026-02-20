@@ -37,6 +37,20 @@ private:
     static uint8_t dns_primary_[4];
     static uint8_t dns_secondary_[4];
     
+    // MQTT configuration
+    static bool mqtt_enabled_;
+    static uint8_t mqtt_server_[4];
+    static uint16_t mqtt_port_;
+    static char mqtt_username_[32];
+    static char mqtt_password_[64];
+    
+    // Battery and Inverter type selection
+    static uint8_t battery_type_;      // BMS type (e.g., 29 = PYLON_BATTERY)
+    static uint8_t inverter_type_;     // Inverter protocol type (e.g., 0 = NONE, 5 = SOLAX)
+
+    // Simulation mode (dashboard data source)
+    static bool simulation_mode_;
+    
     static constexpr const char* NVS_NAMESPACE = "rx_net_cfg";
     static constexpr const char* NVS_KEY_HOSTNAME = "hostname";
     static constexpr const char* NVS_KEY_SSID = "ssid";
@@ -47,6 +61,14 @@ private:
     static constexpr const char* NVS_KEY_SUBNET = "subnet";
     static constexpr const char* NVS_KEY_DNS_PRIMARY = "dns_primary";
     static constexpr const char* NVS_KEY_DNS_SECONDARY = "dns_secondary";
+    static constexpr const char* NVS_KEY_MQTT_ENABLED = "mqtt_en";
+    static constexpr const char* NVS_KEY_MQTT_SERVER = "mqtt_srv";
+    static constexpr const char* NVS_KEY_MQTT_PORT = "mqtt_port";
+    static constexpr const char* NVS_KEY_MQTT_USERNAME = "mqtt_user";
+    static constexpr const char* NVS_KEY_MQTT_PASSWORD = "mqtt_pass";
+    static constexpr const char* NVS_KEY_BATTERY_TYPE = "batt_type";
+    static constexpr const char* NVS_KEY_INVERTER_TYPE = "inv_type";
+    static constexpr const char* NVS_KEY_SIMULATION_MODE = "sim_mode";
     
 public:
     /**
@@ -66,6 +88,11 @@ public:
      * @param subnet Subnet mask (4 bytes, required if use_static_ip)
      * @param dns_primary Primary DNS (4 bytes, optional)
      * @param dns_secondary Secondary DNS (4 bytes, optional)
+     * @param mqtt_enabled Enable MQTT client
+     * @param mqtt_server MQTT broker IP (4 bytes)
+     * @param mqtt_port MQTT broker port (default 1883)
+     * @param mqtt_username MQTT username (optional)
+     * @param mqtt_password MQTT password (optional)
      * @return true if saved successfully, false on validation error
      */
     static bool saveConfig(
@@ -77,7 +104,12 @@ public:
         const uint8_t gateway[4],
         const uint8_t subnet[4],
         const uint8_t dns_primary[4],
-        const uint8_t dns_secondary[4]
+        const uint8_t dns_secondary[4],
+        bool mqtt_enabled = false,
+        const uint8_t mqtt_server[4] = nullptr,
+        uint16_t mqtt_port = 1883,
+        const char* mqtt_username = "",
+        const char* mqtt_password = ""
     );
     
     /**
@@ -101,6 +133,27 @@ public:
     static const uint8_t* getSubnet() { return subnet_; }
     static const uint8_t* getDNSPrimary() { return dns_primary_; }
     static const uint8_t* getDNSSecondary() { return dns_secondary_; }
+    
+    // Getters for MQTT configuration
+    static bool isMqttEnabled() { return mqtt_enabled_; }
+    static const uint8_t* getMqttServer() { return mqtt_server_; }
+    static uint16_t getMqttPort() { return mqtt_port_; }
+    static const char* getMqttUsername() { return mqtt_username_; }
+    static const char* getMqttPassword() { return mqtt_password_; }
+    
+    // Getters for Battery and Inverter types
+    static uint8_t getBatteryType() { return battery_type_; }
+    static uint8_t getInverterType() { return inverter_type_; }
+
+    // Simulation mode (data source)
+    static bool isSimulationMode() { return simulation_mode_; }
+    
+    // Setters for Battery and Inverter types
+    static void setBatteryType(uint8_t type);
+    static void setInverterType(uint8_t type);
+
+    // Set simulation mode
+    static void setSimulationMode(bool enabled);
 };
 
 #endif // RECEIVER_NETWORK_CONFIG_H

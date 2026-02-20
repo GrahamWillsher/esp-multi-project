@@ -23,6 +23,22 @@ extern void notify_sse_data_updated();
 
 static constexpr const char* kLogTag = "ESPNOW";
 
+static uint32_t estimate_voltage_mv(uint8_t soc) {
+    uint32_t min_mv = 30000;
+    uint32_t max_mv = 42000;
+
+    if (TransmitterManager::hasBatterySettings()) {
+        auto settings = TransmitterManager::getBatterySettings();
+        if (settings.min_voltage_mv > 0 && settings.max_voltage_mv > settings.min_voltage_mv) {
+            min_mv = settings.min_voltage_mv;
+            max_mv = settings.max_voltage_mv;
+        }
+    }
+
+    uint32_t clamped_soc = (soc > 100) ? 100 : soc;
+    return min_mv + ((max_mv - min_mv) * clamped_soc) / 100;
+}
+
 // Forward declarations for handler functions
 void handle_data_message(const espnow_queue_msg_t* msg);
 void handle_flash_led_message(const espnow_queue_msg_t* msg);
@@ -79,6 +95,18 @@ static void request_config_section(const uint8_t* mac, config_section_t section,
     }
 }
 
+static void request_data_stream(const uint8_t* mac, uint8_t subtype, const char* label) {
+    if (!mac) return;
+
+    request_data_t request = { msg_request_data, subtype };
+    esp_err_t result = esp_now_send(mac, reinterpret_cast<const uint8_t*>(&request), sizeof(request));
+    if (result == ESP_OK) {
+        LOG_INFO(kLogTag, "[DATA_REQ] Sent %s request", label);
+    } else {
+        LOG_WARN(kLogTag, "[DATA_REQ] Failed %s request: %s", label, esp_err_to_name(result));
+    }
+}
+
 static void request_initial_config_sections(const uint8_t* mac) {
     if (!TransmitterManager::isMqttConfigKnown()) {
         request_config_section(mac, config_section_mqtt, 0, "MQTT");
@@ -123,6 +151,9 @@ void setup_message_routes() {
         LOG_INFO(kLogTag, "Transmitter connected via PROBE");
         // Initialization requests are now sent when connection state reaches CONNECTED
         // This ensures transmitter has registered us as a peer before we try to send back
+        if (connected) {
+            request_data_stream(mac, subtype_battery_config, "battery config");
+        }
     };
     
     // Setup ACK handler configuration (receiver sends ACKs, doesn't usually receive them)
@@ -139,6 +170,7 @@ void setup_message_routes() {
             TransmitterManager::registerMAC(mac);
             LOG_INFO(kLogTag, "Transmitter MAC registered: %02X:%02X:%02X:%02X:%02X:%02X",
                      mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+            request_data_stream(mac, subtype_battery_config, "battery config");
         }
         LOG_INFO(kLogTag, "Transmitter connected via ACK");
     };
@@ -218,6 +250,12 @@ void setup_message_routes() {
     router.register_route(msg_system_status,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             handle_system_status(msg);
+        },
+        0xFF, nullptr);
+    
+    router.register_route(msg_component_config,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            handle_component_config(msg);
         },
         0xFF, nullptr);
     
@@ -605,6 +643,7 @@ void handle_flash_led_message(const espnow_queue_msg_t* msg) {
         
         // Store the current LED color for status indicator task to use
         ESPNow::current_led_color = color;
+        ESPNow::current_led_effect = LED_EFFECT_FLASH;
     }
 }
 
@@ -647,6 +686,7 @@ void handle_data_message(const espnow_queue_msg_t* msg) {
                 ESPNow::received_power = payload->power;
                 ESPNow::dirty_flags.power_changed = true;
             }
+            ESPNow::received_voltage_mv = estimate_voltage_mv(payload->soc);
             ESPNow::data_received = true;
             
             // Store transmitter MAC for sending control messages
@@ -655,7 +695,7 @@ void handle_data_message(const espnow_queue_msg_t* msg) {
             
             // State machine transition
             extern SystemState current_state;
-            if (current_state == SystemState::TEST_MODE) {
+            if (current_state == SystemState::TEST_MODE && !TestMode::enabled) {
                 transition_to_state(SystemState::NORMAL_OPERATION);
             }
             
@@ -665,7 +705,7 @@ void handle_data_message(const espnow_queue_msg_t* msg) {
                          msg->mac[3], msg->mac[4], msg->mac[5]);
             
             // Batch display updates in single mutex acquisition to reduce contention
-            if (ESPNow::dirty_flags.soc_changed || ESPNow::dirty_flags.power_changed) {
+            if (!TestMode::enabled && (ESPNow::dirty_flags.soc_changed || ESPNow::dirty_flags.power_changed)) {
                 if (xSemaphoreTake(RTOS::tft_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
                     if (ESPNow::dirty_flags.soc_changed) {
                         display_soc((float)payload->soc);
@@ -708,12 +748,27 @@ void handle_packet_events(const espnow_queue_msg_t* msg) {
             ESPNow::received_power = power;
             ESPNow::dirty_flags.power_changed = true;
         }
+        ESPNow::received_voltage_mv = estimate_voltage_mv(soc);
         ESPNow::data_received = true;
         
         // Store transmitter MAC for sending control messages
         memcpy(ESPNow::transmitter_mac, msg->mac, 6);
         notify_sse_data_updated();
         
+        if (!TestMode::enabled && (ESPNow::dirty_flags.soc_changed || ESPNow::dirty_flags.power_changed)) {
+            if (xSemaphoreTake(RTOS::tft_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+                if (ESPNow::dirty_flags.soc_changed) {
+                    display_soc((float)soc);
+                    ESPNow::dirty_flags.soc_changed = false;
+                }
+                if (ESPNow::dirty_flags.power_changed) {
+                    display_power(power);
+                    ESPNow::dirty_flags.power_changed = false;
+                }
+                xSemaphoreGive(RTOS::tft_mutex);
+            }
+        }
+
         LOG_TRACE(kLogTag, "EVENTS: SOC=%d%%, Power=%dW", soc, power);
         
         // Batch display updates in single mutex acquisition to reduce contention

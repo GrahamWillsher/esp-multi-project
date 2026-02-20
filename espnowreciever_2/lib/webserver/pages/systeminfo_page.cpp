@@ -128,6 +128,41 @@ esp_err_t systeminfo_handler(httpd_req_t *req) {
         </div>
     </div>
 
+    <div class='settings-card'>
+        <h3>MQTT Client Configuration (Receiver)</h3>
+        <p style='color: #666; font-size: 14px; margin-bottom: 15px;'>
+            Configure the receiver's MQTT client to subscribe to battery emulator specs
+        </p>
+        <div class='settings-row'>
+            <label>MQTT Enabled:</label>
+            <input type='checkbox' id='mqttEnabled' />
+        </div>
+        <div class='settings-row'>
+            <label>MQTT Server:</label>
+            <div class='ip-row'>
+                <input class='octet' id='mqtt0' type='text' maxlength='3' />
+                <span class='dot'>.</span>
+                <input class='octet' id='mqtt1' type='text' maxlength='3' />
+                <span class='dot'>.</span>
+                <input class='octet' id='mqtt2' type='text' maxlength='3' />
+                <span class='dot'>.</span>
+                <input class='octet' id='mqtt3' type='text' maxlength='3' />
+            </div>
+        </div>
+        <div class='settings-row'>
+            <label>MQTT Port:</label>
+            <input type='text' id='mqttPort' value='1883' class='editable-field' />
+        </div>
+        <div class='settings-row'>
+            <label>MQTT Username:</label>
+            <input type='text' id='mqttUsername' value='' class='editable-field' placeholder='(optional)' />
+        </div>
+        <div class='settings-row'>
+            <label>MQTT Password:</label>
+            <input type='password' id='mqttPassword' value='' class='editable-field' placeholder='(optional)' />
+        </div>
+    </div>
+
     <div style='text-align: center; margin-top: 30px; margin-bottom: 30px;'>
         <button id='saveNetworkBtn' onclick='saveReceiverConfig()' style='padding: 12px 40px; font-size: 16px; background-color: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;'>
             Save Receiver Configuration
@@ -142,7 +177,8 @@ esp_err_t systeminfo_handler(httpd_req_t *req) {
             'gw0', 'gw1', 'gw2', 'gw3',
             'sub0', 'sub1', 'sub2', 'sub3',
             'dns1_0', 'dns1_1', 'dns1_2', 'dns1_3',
-            'dns2_0', 'dns2_1', 'dns2_2', 'dns2_3'
+            'dns2_0', 'dns2_1', 'dns2_2', 'dns2_3',
+            'mqttEnabled', 'mqtt0', 'mqtt1', 'mqtt2', 'mqtt3', 'mqttPort', 'mqttUsername', 'mqttPassword'
         ];
 
         let initialReceiverConfig = {};
@@ -226,6 +262,17 @@ esp_err_t systeminfo_handler(httpd_req_t *req) {
                 setOctets('dns1_', data.dns_primary);
                 setOctets('dns2_', data.dns_secondary);
 
+                // Load MQTT configuration
+                document.getElementById('mqttEnabled').checked = data.mqtt_enabled || false;
+                setOctets('mqtt', data.mqtt_server);
+                document.getElementById('mqttPort').value = data.mqtt_port || '1883';
+                document.getElementById('mqttUsername').value = data.mqtt_username || '';
+                if (data.mqtt_password && data.mqtt_password !== '') {
+                    document.getElementById('mqttPassword').value = '********';
+                } else {
+                    document.getElementById('mqttPassword').value = '';
+                }
+
                 RECEIVER_CONFIG_FIELDS.forEach(fieldId => {
                     const element = document.getElementById(fieldId);
                     if (element) {
@@ -276,7 +323,12 @@ esp_err_t systeminfo_handler(httpd_req_t *req) {
                     hostname: document.getElementById('hostname').value.trim(),
                     ssid: ssid,
                     password: document.getElementById('password').value,
-                    use_static_ip: document.getElementById('useStaticIP').checked
+                    use_static_ip: document.getElementById('useStaticIP').checked,
+                    mqtt_enabled: document.getElementById('mqttEnabled').checked,
+                    mqtt_server: `${document.getElementById('mqtt0').value}.${document.getElementById('mqtt1').value}.${document.getElementById('mqtt2').value}.${document.getElementById('mqtt3').value}`,
+                    mqtt_port: parseInt(document.getElementById('mqttPort').value) || 1883,
+                    mqtt_username: document.getElementById('mqttUsername').value.trim(),
+                    mqtt_password: document.getElementById('mqttPassword').value
                 };
 
                 if (payload.use_static_ip) {

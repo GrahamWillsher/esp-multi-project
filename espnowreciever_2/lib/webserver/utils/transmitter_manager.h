@@ -2,6 +2,7 @@
 #define TRANSMITTER_MANAGER_H
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
 
 // Battery settings structure (matches transmitter)
 struct BatterySettings {
@@ -129,6 +130,23 @@ private:
     static uint64_t unix_time;
     static uint8_t time_source;  // 0=unsynced, 1=NTP, 2=manual, 3=GPS
     
+    // Phase 3: Static spec data from battery emulator (via MQTT)
+    static String static_specs_json_;
+    static String battery_specs_json_;
+    static String inverter_specs_json_;
+    static String charger_specs_json_;
+    static String system_specs_json_;
+    static bool static_specs_known_;
+    
+    // Cell monitor data (from BE/cell_data MQTT topic)
+    static uint16_t* cell_voltages_mV_;      // Dynamically allocated array
+    static bool* cell_balancing_status_;     // Dynamically allocated array
+    static uint16_t cell_count_;
+    static uint16_t cell_min_voltage_mV_;
+    static uint16_t cell_max_voltage_mV_;
+    static bool balancing_active_;
+    static bool cell_data_known_;
+    
 public:
     // Initialization (load cache from NVS)
     static void init();
@@ -246,6 +264,29 @@ public:
     static uint64_t getUnixTime();
     static uint8_t getTimeSource();
     static void updateTimeData(uint64_t new_uptime_ms, uint64_t new_unix_time, uint8_t new_time_source);
+    
+    // Phase 3: Static spec data from battery emulator (via MQTT)
+    static void storeStaticSpecs(const JsonObject& specs);
+    static void storeBatterySpecs(const JsonObject& specs);
+    static void storeInverterSpecs(const JsonObject& specs);
+    static void storeChargerSpecs(const JsonObject& specs);
+    static void storeSystemSpecs(const JsonObject& specs);
+    static bool hasStaticSpecs();
+    static String getStaticSpecsJson();  // Returns combined JSON for API
+    static String getBatterySpecsJson();
+    static String getInverterSpecsJson();
+    static String getChargerSpecsJson();
+    static String getSystemSpecsJson();
+    
+    // Cell monitor data (from BE/cell_data MQTT topic)
+    static void storeCellData(const JsonObject& cell_data);
+    static bool hasCellData() { return cell_data_known_; }
+    static uint16_t getCellCount() { return cell_count_; }
+    static const uint16_t* getCellVoltages() { return cell_voltages_mV_; }
+    static const bool* getCellBalancingStatus() { return cell_balancing_status_; }
+    static uint16_t getCellMinVoltage() { return cell_min_voltage_mV_; }
+    static uint16_t getCellMaxVoltage() { return cell_max_voltage_mV_; }
+    static bool isBalancingActive() { return balancing_active_; }
 };
 
 #endif

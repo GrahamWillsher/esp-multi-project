@@ -3,6 +3,8 @@
 #include "enhanced_cache.h"  // Section 11: Dual storage cache (replaces data_cache)
 #include "../config/task_config.h"
 #include "../config/logging_config.h"
+#include "../datalayer/datalayer.h"  // Phase 4a: Real battery data
+#include "../battery_emulator/test_data_generator.h"  // Test data for development
 #include <Arduino.h>
 #include <connection_manager.h>
 #include <espnow_transmitter.h>
@@ -36,11 +38,22 @@ void DataSender::start() {
 
 void DataSender::task_impl(void* parameter) {
     LOG_DEBUG("DATA_SENDER", "Data sender task running");
+    
+    // Initialize test data generator if enabled (for development without physical battery)
+    if (TestDataGenerator::is_enabled()) {
+        TestDataGenerator::init();
+    }
+    
     TickType_t last_wake_time = xTaskGetTickCount();
     const TickType_t interval_ticks = pdMS_TO_TICKS(timing::ESPNOW_SEND_INTERVAL_MS);
     
     while (true) {
         vTaskDelayUntil(&last_wake_time, interval_ticks);
+        
+        // Update test data if generator is enabled (simulates changing battery conditions)
+        if (TestDataGenerator::is_enabled()) {
+            TestDataGenerator::update();
+        }
         
         if (EspnowMessageHandler::instance().is_transmission_active()) {
             LOG_TRACE("DATA_SENDER", "Sending test data (transmission active)");
@@ -52,7 +65,9 @@ void DataSender::task_impl(void* parameter) {
 }
 
 /**
- * @brief Send test data with SOC-based LED flash control
+ * @brief Send real battery data with SOC-based LED flash control
+ * 
+ * Phase 4a: Uses real datalayer from CAN bus instead of dummy data
  * 
  * Section 11 Architecture: ALWAYS cache-first (non-blocking)
  * - Data flows through EnhancedCache regardless of connection state
@@ -69,23 +84,24 @@ void DataSender::task_impl(void* parameter) {
  * LED flash command is only sent once when transitioning between bands.
  */
 void DataSender::send_test_data_with_led_control() {
-    // Generate test data (oscillating SOC between 20-80%, random power -4000 to +4000W)
-    static bool soc_increasing = true;
-    if (soc_increasing) {
-        tx_data.soc += 1;
-        if (tx_data.soc >= 80) soc_increasing = false;
-    } else {
-        tx_data.soc -= 1;
-        if (tx_data.soc <= 20) soc_increasing = true;
-    }
-    tx_data.power = random(-4000, 4001);
+    // Phase 4a: Read real battery data from datalayer
+    // Convert from datalayer format (pptt = percent * 100) to simple percentage
+    uint16_t soc_pptt = datalayer.battery.status.reported_soc;  // e.g., 8000 = 80.00%
+    uint8_t soc_percent = soc_pptt / 100;  // Convert to 0-100 range
+    
+    int32_t power_w = datalayer.battery.status.active_power_W;
+    
+    // Populate tx_data structure from datalayer
+    tx_data.soc = soc_percent;
+    tx_data.power = power_w;
     tx_data.checksum = calculate_checksum(&tx_data);
     
     // Section 11: ALWAYS write to cache first (cache-centric pattern)
     // Background transmission task will handle sending from cache
     if (EnhancedCache::instance().add_transient(tx_data)) {
-        LOG_TRACE("DATA_SENDER", "Data cached (SOC:%d%%, Power:%dW)", 
-                 tx_data.soc, tx_data.power);
+        LOG_TRACE("DATA_SENDER", "Data cached (SOC:%d%%, Power:%dW, BMS:%s)", 
+                 tx_data.soc, tx_data.power, 
+                 datalayer.battery.status.real_bms_status == BatteryEmulator_real_bms_status_enum::BMS_ACTIVE ? "connected" : "disconnected");
     } else {
         // Cache write failed (mutex timeout or overflow)
         // Data dropped - doesn't block control code

@@ -19,4 +19,126 @@ LDF: Library Dependency Finder -> https://bit.ly/configure-pio-ldf
 LDF Modes: Finder ~ chain, Compatibility ~ soft
 Found 48 compatible libraries
 Scanning dependencies...
-Build interrupted.
+Dependency Graph
+|-- PubSubClient @ 2.8.0
+|-- TFT_eSPI @ 2.5.43
+|-- JPEGDecoder @ 1.8.1
+|-- ArduinoJson @ 6.21.5
+|-- LittleFS @ 2.0.0
+|-- WiFi @ 2.0.0
+|-- webserver
+|-- espnow_transmitter @ 1.0.0
+|-- espnow_common_utils @ 1.0.0
+|-- firmware_metadata @ 1.0.0
+|-- Preferences @ 2.0.0
+Building in release mode
+============================================================
+Firmware Versioning Script Loaded
+============================================================
+Compiling .pio\build\lilygo-t-display-s3\src\config\littlefs_init.cpp.o
+Compiling .pio\build\lilygo-t-display-s3\src\config\wifi_setup.cpp.o
+Compiling .pio\build\lilygo-t-display-s3\src\display\display_core.cpp.o
+Compiling .pio\build\lilygo-t-display-s3\src\display\display_led.cpp.o
+Compiling .pio\build\lilygo-t-display-s3\src\display\display_splash.cpp.o
+<command-line>: error: macro names must be identifiers
+<command-line>: warning: extra tokens at end of #undef directive
+<command-line>: error: macro names must be identifiers
+<command-line>: warning: extra tokens at end of #undef directive
+Compiling .pio\build\lilygo-t-display-s3\src\espnow\battery_handlers.cpp.o
+<command-line>: error: macro names must be identifiers
+<command-line>: warning: extra tokens at end of #undef directive
+<command-line>: error: macro names must be identifiers
+<command-line>: warning: extra tokens at end of #undef directive
+Compiling .pio\build\lilygo-t-display-s3\src\espnow\battery_settings_cache.cpp.o
+<command-line>: error: macro names must be identifiers
+<command-line>: warning: extra tokens at end of #undef directive
+Compiling .pio\build\lilygo-t-display-s3\src\espnow\component_config_handler.cpp.o
+Compiling .pio\build\lilygo-t-display-s3\src\espnow\espnow_callbacks.cpp.o
+<command-line>: error: macro names must be identifiers
+<command-line>: warning: extra tokens at end of #undef directive
+Compiling .pio\build\lilygo-t-display-s3\src\espnow\espnow_send.cpp.o
+<command-line>: error: macro names must be identifiers
+<command-line>: warning: extra tokens at end of #undef directive
+<command-line>: error: macro names must be identifiers
+<command-line>: warning: extra tokens at end of #undef directive
+Compiling .pio\build\lilygo-t-display-s3\src\espnow\espnow_tasks.cpp.o
+<command-line>: error: macro names must be identifiers
+<command-line>: warning: extra tokens at end of #undef directive
+Compiling .pio\build\lilygo-t-display-s3\src\espnow\receiver_connection_manager.cpp.o
+<command-line>: error: macro names must be identifiers
+<command-line>: warning: extra tokens at end of #undef directive
+Compiling .pio\build\lilygo-t-display-s3\src\espnow\rx_connection_handler.cpp.o
+In file included from C:/Users/GrahamWillsher/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/esp_common/include/esp_attr.h:14,
+                 from C:/Users/GrahamWillsher/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/nvs_flash/include/nvs.h:12,
+                 from src/espnow/component_config_handler.h:18,
+                 from src/espnow/component_config_handler.cpp:6:
+C:/Users/GrahamWillsher/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/qio_opi/include/sdkconfig.h:337: warning: "CONFIG_HTTPD_MAX_REQ_HDR_LEN" redefined
+ #define CONFIG_HTTPD_MAX_REQ_HDR_LEN 1024
+ 
+<command-line>: note: this is the location of the previous definition
+In file included from C:/Users/GrahamWillsher/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/esp_common/include/esp_attr.h:14,
+                 from C:/Users/GrahamWillsher/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/nvs_flash/include/nvs.h:12,
+                 from src/espnow/component_config_handler.h:18,
+                 from src/espnow/component_config_handler.cpp:6:
+C:/Users/GrahamWillsher/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/qio_opi/include/sdkconfig.h:338: warning: "CONFIG_HTTPD_MAX_URI_LEN" redefined
+ #define CONFIG_HTTPD_MAX_URI_LEN 512
+ 
+<command-line>: note: this is the location of the previous definition
+<command-line>: error: macro names must be identifiers
+<command-line>: warning: extra tokens at end of #undef directive
+Compiling .pio\build\lilygo-t-display-s3\src\espnow\rx_heartbeat_manager.cpp.o
+Compiling .pio\build\lilygo-t-display-s3\src\globals.cpp.o
+Compiling .pio\build\lilygo-t-display-s3\src\helpers.cpp.o
+<command-line>: error: macro names must be identifiers
+<command-line>: warning: extra tokens at end of #undef directive
+<command-line>: error: macro names must be identifiers
+<command-line>: warning: extra tokens at end of #undef directive
+<command-line>: error: macro names must be identifiers
+<command-line>: warning: extra tokens at end of #undef directive
+<command-line>: error: macro names must be identifiers
+<command-line>: warning: extra tokens at end of #undef directive
+<command-line>: error: macro names must be identifiers
+<command-line>: warning: extra tokens at end of #undef directive
+Compiling .pio\build\lilygo-t-display-s3\src\main.cpp.o
+Compiling .pio\build\lilygo-t-display-s3\src\state_machine.cpp.o
+Compiling .pio\build\lilygo-t-display-s3\src\test\test_data.cpp.o
+Compiling .pio\build\lilygo-t-display-s3\src\time\time_sync_manager.cpp.o
+Building .pio\build\lilygo-t-display-s3\bootloader.bin
+Generating partitions .pio\build\lilygo-t-display-s3\partitions.bin
+<command-line>: error: macro names must be identifiers
+<command-line>: warning: extra tokens at end of #undef directive
+<command-line>: error: macro names must be identifiers
+<command-line>: warning: extra tokens at end of #undef directive
+<command-line>: error: macro names must be identifiers
+<command-line>: warning: extra tokens at end of #undef directive
+<command-line>: error: macro names must be identifiers
+<command-line>: warning: extra tokens at end of #undef directive
+esptool.py v4.5.1
+Creating esp32s3 image...
+Merged 1 ELF section
+Successfully created esp32s3 image.
+Compiling .pio\build\lilygo-t-display-s3\libcad\PubSubClient\PubSubClient.cpp.o
+*** [.pio\build\lilygo-t-display-s3\src\time\time_sync_manager.cpp.o] Error 1
+<command-line>: error: macro names must be identifiers
+<command-line>: warning: extra tokens at end of #undef directive
+*** [.pio\build\lilygo-t-display-s3\src\espnow\battery_settings_cache.cpp.o] Error 1
+*** [.pio\build\lilygo-t-display-s3\src\espnow\receiver_connection_manager.cpp.o] Error 1
+*** [.pio\build\lilygo-t-display-s3\src\espnow\rx_connection_handler.cpp.o] Error 1
+*** [.pio\build\lilygo-t-display-s3\src\config\littlefs_init.cpp.o] Error 1
+*** [.pio\build\lilygo-t-display-s3\src\espnow\rx_heartbeat_manager.cpp.o] Error 1
+*** [.pio\build\lilygo-t-display-s3\src\config\wifi_setup.cpp.o] Error 1
+*** [.pio\build\lilygo-t-display-s3\src\display\display_core.cpp.o] Error 1
+*** [.pio\build\lilygo-t-display-s3\src\display\display_splash.cpp.o] Error 1
+*** [.pio\build\lilygo-t-display-s3\libcad\PubSubClient\PubSubClient.cpp.o] Error 1
+*** [.pio\build\lilygo-t-display-s3\src\display\display_led.cpp.o] Error 1
+*** [.pio\build\lilygo-t-display-s3\src\espnow\battery_handlers.cpp.o] Error 1
+*** [.pio\build\lilygo-t-display-s3\src\espnow\component_config_handler.cpp.o] Error 1
+*** [.pio\build\lilygo-t-display-s3\src\espnow\espnow_send.cpp.o] Error 1
+*** [.pio\build\lilygo-t-display-s3\src\espnow\espnow_callbacks.cpp.o] Error 1
+*** [.pio\build\lilygo-t-display-s3\src\espnow\espnow_tasks.cpp.o] Error 1
+*** [.pio\build\lilygo-t-display-s3\src\globals.cpp.o] Error 1
+*** [.pio\build\lilygo-t-display-s3\src\helpers.cpp.o] Error 1
+*** [.pio\build\lilygo-t-display-s3\src\test\test_data.cpp.o] Error 1
+*** [.pio\build\lilygo-t-display-s3\src\state_machine.cpp.o] Error 1
+*** [.pio\build\lilygo-t-display-s3\src\main.cpp.o] Error 1
+========================= [FAILED] Took 12.16 seconds =========================

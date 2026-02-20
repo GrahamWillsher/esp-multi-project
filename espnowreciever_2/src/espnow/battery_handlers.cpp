@@ -6,6 +6,7 @@
 
 #include "battery_handlers.h"
 #include "battery_settings_cache.h"
+#include "component_config_handler.h"
 #include "../../lib/webserver/utils/transmitter_manager.h"
 #include <Arduino.h>
 
@@ -225,4 +226,8 @@ void handle_system_status(const espnow_queue_msg_t* msg) {
               BatteryData::warning_flags, BatteryData::uptime_seconds);
     
     // TODO Phase 2: Notify SSE clients
+}
+void handle_component_config(const espnow_queue_msg_t* msg) {
+    // Forward to component config handler
+    ComponentConfigHandler::instance().handle_message(msg->data, msg->len);
 }

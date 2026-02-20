@@ -55,9 +55,17 @@
 
 // Settings manager
 #include "settings/settings_manager.h"
+#include "system_settings.h"
 
-// Phase 1: Dummy data generator (REMOVED IN PHASE 2 - clean codebase)
-// #include "testing/dummy_data_generator.h"
+// Data layer
+#include "datalayer/static_data.h"
+
+// Phase 4a: Battery Emulator integration
+#if CONFIG_CAN_ENABLED
+#include "battery_emulator/datalayer/datalayer.h"
+#include "communication/can/can_driver.h"
+#include "battery/battery_manager.h"
+#endif
 
 // MQTT Logger
 #include <mqtt_logger.h>
@@ -89,17 +97,21 @@ void setup() {
     
     LOG_INFO("MAIN", "Device: %s", DEVICE_NAME);
     LOG_INFO("MAIN", "Protocol Version: %d", PROTOCOL_VERSION);
-    
-    // Initialize Ethernet
-    LOG_INFO("ETHERNET", "Initializing Ethernet...");
-    if (!EthernetManager::instance().init()) {
-        LOG_ERROR("ETHERNET", "Ethernet initialization failed!");
+
+    LOG_INFO("SETTINGS", "Initializing system settings...");
+    if (!SystemSettings::instance().init()) {
+        LOG_ERROR("SETTINGS", "System settings initialization failed");
     }
     
-    // Initialize WiFi for ESP-NOW
+    // Initialize WiFi for ESP-NOW (BEFORE Ethernet to avoid disruption)
+    // WiFi radio needed for ESP-NOW, but STA mode disconnected (no IP/gateway)
+    // Ethernet will be the default route for all network traffic (MQTT, NTP, HTTP)
     LOG_INFO("WIFI", "Initializing WiFi for ESP-NOW...");
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();
+    // CRITICAL: Explicitly clear WiFi IP to force routing via Ethernet
+    WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
+    delay(100);  // Let WiFi radio stabilize
     // SECTION 11 ARCHITECTURE: Transmitter-active channel hopping
     // No need to force channel - active hopping will discover receiver's channel
     // 1s per channel (13s max) vs 6s per channel (78s max) in Section 10
@@ -108,6 +120,43 @@ void setup() {
     WiFi.macAddress(mac);
     LOG_DEBUG("WIFI", "WiFi MAC: %02X:%02X:%02X:%02X:%02X:%02X",
                   mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    
+    // Initialize Ethernet (AFTER WiFi radio is stable)
+    // Ethernet provides network connectivity (MQTT, NTP, OTA, HTTP)
+    // WiFiClient/WiFiUDP automatically route via Ethernet when it has IP+gateway
+    LOG_INFO("ETHERNET", "Initializing Ethernet...");
+    if (!EthernetManager::instance().init()) {
+        LOG_ERROR("ETHERNET", "Ethernet initialization failed!");
+    }
+    
+    // Register Ethernet callbacks for service gating
+    EthernetManager::instance().on_connected([] {
+        LOG_INFO("ETHERNET_CALLBACK", "Ethernet connected - starting dependent services");
+        // Services that depend on Ethernet will start here
+        // (Registered by their init functions)
+    });
+    
+    EthernetManager::instance().on_disconnected([] {
+        LOG_WARN("ETHERNET_CALLBACK", "Ethernet disconnected - stopping dependent services");
+        // Services that depend on Ethernet will stop here
+        // (Registered by their cleanup functions)
+    });
+    
+#if CONFIG_CAN_ENABLED
+    // Phase 4a: Initialize CAN driver (uses HSPI - no GPIO conflicts with Ethernet)
+    LOG_INFO("CAN", "Initializing CAN driver...");
+    if (!CANDriver::instance().init()) {
+        LOG_ERROR("CAN", "CAN initialization failed!");
+    } else {
+        LOG_INFO("CAN", "✓ CAN driver ready");
+    } else {
+        LOG_INFO("BMS", "✓ BMS initialized");
+    }
+    
+    // Phase 4a: Initialize datalayer
+    // Note: datalayer is initialized via BatteryManager::init_primary_battery()
+    LOG_INFO("DATALAYER", "✓ Datalayer initialized");
+#endif
     
     // Initialize ESP-NOW library
     LOG_INFO("ESPNOW", "Initializing ESP-NOW...");
@@ -233,6 +282,12 @@ void setup() {
     if (EthernetManager::instance().is_connected()) {
         LOG_INFO("ETHERNET", "Ethernet connected: %s", EthernetManager::instance().get_local_ip().toString().c_str());
         
+        // Initialize static configuration data
+        LOG_DEBUG("STATIC_DATA", "Initializing static configuration...");
+        StaticData::init();
+        StaticData::update_battery_specs(SystemSettings::instance().get_battery_profile_type());
+        StaticData::update_inverter_specs(SystemSettings::instance().get_inverter_type());
+        
         // Initialize OTA
         LOG_DEBUG("OTA", "Initializing OTA server...");
         OtaManager::instance().init_http_server();
@@ -260,19 +315,26 @@ void setup() {
     HeartbeatManager::instance().init();
     LOG_INFO("HEARTBEAT", "Heartbeat manager initialized (10s interval, ACK-based)");
     
-    // Initialize transmitter data (set starting SOC value)
-    tx_data.soc = 20;
+#if CONFIG_CAN_ENABLED
+    // Initialize transmitter data (set starting SOC value from datalayer)
+    tx_data.soc = datalayer.battery.status.reported_soc / 100;  // Convert pptt to percentage
+#else
+    // Initialize with test data
+    tx_data.soc = 50;  // Start at 50% for test mode
+#endif
     randomSeed(esp_random());
     
-    // PHASE 1: Use dummy data generator instead of real data sender
-    // This will be replaced in Phase 4 with real control loop
-    LOG_INFO("MAIN", "===== PHASE 1: USING DUMMY DATA GENERATOR =====");
-    LOG_INFO("MAIN", "This is TEMPORARY - will be replaced in Phase 4");
-    // DummyData::start(task_config::PRIORITY_LOW, 1);  // REMOVED IN PHASE 2 - clean codebase
-    LOG_INFO("MAIN", "Dummy data generator removed - using real data only");
-    
-    // Original data sender commented out for Phase 1
-    // DataSender::instance().start();
+#if CONFIG_CAN_ENABLED
+    // Phase 4a: Start real data sender (reads from datalayer)
+    LOG_INFO("MAIN", "===== PHASE 4a: REAL BATTERY DATA =====");
+    LOG_INFO("MAIN", "Using CAN bus data from datalayer");
+    DataSender::instance().start();
+    LOG_INFO("MAIN", "✓ Data sender started (real battery data)");
+#else
+    // Start test data sender (simulated battery data)
+    LOG_INFO("MAIN", "Using simulated test data (CAN disabled)");
+    DataSender::instance().start();
+#endif
     
     // Start discovery task (periodic announcements until receiver connects)
     DiscoveryTask::instance().start();
@@ -322,14 +384,43 @@ void setup() {
 }
 
 void loop() {
+#if CONFIG_CAN_ENABLED
+    // Phase 4a: Process CAN messages (high priority)
+    CANDriver::instance().update();
+    
+    // Phase 4a: Update periodic BMS transmitters (battery data publishing)
+    BatteryManager::instance().update_transmitters(millis());
+#endif
+    
+    // ✅ NEW: Update Ethernet state machine (check timeouts, recovery transitions)
+    static uint32_t last_eth_update = 0;
+    uint32_t now = millis();
+    if (now - last_eth_update > 1000) {
+        EthernetManager::instance().update_state_machine();
+        last_eth_update = now;
+    }
+    
     // All work is done in FreeRTOS tasks
     // Main loop handles periodic health checks and monitoring
     
     static uint32_t last_state_validation = 0;
     static uint32_t last_metrics_report = 0;
     static uint32_t last_peer_audit = 0;
+#if CONFIG_CAN_ENABLED
+    static uint32_t last_can_stats = 0;
     
-    uint32_t now = millis();
+    // Phase 4a: Periodic CAN statistics (every 10 seconds)
+    if (now - last_can_stats > 10000) {
+        if (CANDriver::instance().is_ready()) {
+            LOG_INFO("CAN", "Stats: RX=%u, TX=%u, Errors=%u, BMS=%s",
+                     CANDriver::instance().get_rx_count(),
+                     CANDriver::instance().get_tx_count(),
+                     CANDriver::instance().get_error_count(),
+                     datalayer.battery.status.real_bms_status == BatteryEmulator_real_bms_status_enum::BMS_ACTIVE ? "connected" : "disconnected");
+        }
+        last_can_stats = now;
+    }
+#endif
     
     // Periodic state validation (every 30 seconds) - Phase 2
     if (now - last_state_validation > 30000) {

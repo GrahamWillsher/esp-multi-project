@@ -9,11 +9,76 @@ This is a refactored, modular version of the ESP-NOW transmitter that reduces th
 ## Features
 
 - **ESP-NOW Protocol**: Bidirectional communication with ESP-NOW receivers
-- **Ethernet Connectivity**: W5500 chip for reliable wired networking
+- **Ethernet Connectivity**: LAN8720 PHY for reliable wired networking
 - **MQTT Telemetry**: Publish battery/power data to MQTT broker
 - **HTTP OTA Updates**: Remote firmware updates via HTTP
 - **NTP Time Sync**: Automatic time synchronization
-- **FreeRTOS Tasks**: 4 concurrent tasks for optimal performance
+- **CAN Bus**: MCP2515 controller for battery data acquisition
+- **FreeRTOS Tasks**: Multiple concurrent tasks for optimal performance
+
+## Hardware
+
+### Main Board
+- **Device**: Olimex ESP32-POE2 (WROVER-E)
+- **MCU**: ESP32 dual-core @ 240MHz
+- **Memory**: 4MB Flash, 8MB PSRAM
+- **Ethernet PHY**: LAN8720A (RMII interface)
+- **Power**: 802.3af PoE or USB-C
+
+### CAN HAT
+- **Device**: Waveshare RS485/CAN HAT
+- **CAN Controller**: MCP2515 (SPI interface)
+- **CAN Transceiver**: TJA1050
+- **Crystal**: 8 MHz
+- **Speed**: Up to 1 Mbps (configured for 500 kbps)
+
+### GPIO Pin Allocation
+
+#### Ethernet RMII (Hard-wired)
+| GPIO | Function | Description |
+|------|----------|-------------|
+| 0 | EMAC_CLK_OUT | 50MHz RMII clock output |
+| 12 | PHY_POWER | LAN8720 power enable |
+| 18 | MDIO | Management Data I/O |
+| 19 | EMAC_TXD0 | Transmit Data 0 |
+| 21 | EMAC_TX_EN | Transmit Enable |
+| 22 | EMAC_TXD1 | Transmit Data 1 |
+| 23 | MDC | Management Data Clock |
+| 25 | EMAC_RXD0 | Receive Data 0 |
+| 26 | EMAC_RXD1 | Receive Data 1 |
+| 27 | EMAC_CRS_DV | Carrier Sense |
+
+#### CAN SPI Bus (Custom Wiring)
+| GPIO | Function | Description |
+|------|----------|-------------|
+| 4 | MISO | SPI data in from MCP2515 |
+| 13 | MOSI | SPI data out to MCP2515 |
+| 14 | SCK | SPI clock |
+| 15 | CS | Chip Select |
+| 32 | INT | Interrupt from MCP2515 |
+
+⚠️ **IMPORTANT**: CAN HAT must be rewired:
+- Default Waveshare pinout uses GPIO 19 for MISO
+- GPIO 19 conflicts with Ethernet EMAC_TXD0
+- **Rewire MISO to GPIO 4** (see hardware setup guide)
+
+### Hardware Setup
+
+1. **CAN HAT Connection**:
+   - Connect CAN HAT to ESP32-POE2 GPIO headers
+   - **CRITICAL**: Disconnect MISO from GPIO 19
+   - Wire MISO to GPIO 4 instead
+   - Connect other pins as specified in GPIO table above
+
+2. **Ethernet Connection**:
+   - Connect RJ45 cable to ESP32-POE2 Ethernet port
+   - Device will obtain IP via DHCP (or use static IP from config)
+   - PoE or USB-C power required
+
+3. **CAN Bus Connection**:
+   - Connect CAN_H and CAN_L to battery BMS
+   - Ensure 120Ω termination resistors at both ends
+   - Check CAN bus speed matches BMS (500 kbps default)
 
 ## Architecture
 

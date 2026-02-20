@@ -4,6 +4,7 @@
 #include "version_beacon_manager.h"  // For sending initial beacon on connection
 #include "tx_connection_handler.h"
 #include <connection_manager.h>
+#include <channel_manager.h>
 #include "../config/task_config.h"
 #include "../config/logging_config.h"
 #include <Arduino.h>
@@ -401,9 +402,21 @@ void DiscoveryTask::send_probe_on_channel(uint8_t channel) {
 bool DiscoveryTask::active_channel_hop_scan(uint8_t* discovered_channel) {
     LOG_INFO("DISCOVERY", "═══ ACTIVE CHANNEL HOP SCAN (Broadcasting PROBE) ═══");
     
+    // Get saved channel from ChannelManager (last locked channel)
+    uint8_t saved_ch = ChannelManager::instance().get_channel();
+    
     // Channels to scan (regulatory domain dependent)
     const uint8_t channels[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13};
     const uint8_t num_channels = sizeof(channels) / sizeof(channels[0]);
+    
+    // Determine starting index: if we have a saved channel, start from there
+    uint8_t start_index = 0;
+    if (saved_ch >= 1 && saved_ch <= 13) {
+        start_index = saved_ch - 1;  // Convert channel number to array index
+        LOG_INFO("DISCOVERY", "Starting scan from saved channel %d (quick reconnect)", saved_ch);
+    } else {
+        LOG_INFO("DISCOVERY", "No saved channel, starting from channel 1");
+    }
     
     // Transmit duration per channel (ms)
     // Section 11: 1s per channel (vs 6s in Section 10 passive)
@@ -415,8 +428,9 @@ bool DiscoveryTask::active_channel_hop_scan(uint8_t* discovered_channel) {
     volatile uint8_t ack_channel = 0;
     uint8_t ack_mac[6] = {0};
     
-    // Scan each channel
-    for (uint8_t i = 0; i < num_channels; i++) {
+    // Scan channels starting from start_index, wrapping around to scan all channels
+    for (uint8_t offset = 0; offset < num_channels; offset++) {
+        uint8_t i = (start_index + offset) % num_channels;  // Circular scan
         uint8_t ch = channels[i];
         
         LOG_INFO("DISCOVERY", "Broadcasting PROBE on channel %d for %dms...", ch, TRANSMIT_DURATION_MS);

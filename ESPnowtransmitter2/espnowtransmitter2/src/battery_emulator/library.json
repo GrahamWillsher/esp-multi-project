@@ -1,0 +1,37 @@
+{
+  "name": "battery_emulator_src",
+  "version": "9.2.4",
+  "description": "Battery Emulator core sources used by ESP-NOW transmitter",
+  "frameworks": ["arduino"],
+  "platforms": ["espressif32"],
+  "build": {
+    "srcDir": ".",
+    "includeDir": ".",
+    "srcFilter": [
+      "+<*>",
+      "-<lib/>",
+      "-<devboard/display/>",
+      "-<devboard/mqtt/>",
+      "-<devboard/webserver/>",
+      "-<devboard/utils/led_handler.cpp>",
+      "-<devboard/hal/hw_lilygo.cpp>",
+      "-<devboard/hal/hw_lilygo2can.cpp>",
+      "-<devboard/hal/hw_lilygo_t_connect_pro.cpp>",
+      "-<devboard/hal/hw_stark.cpp>",
+      "-<devboard/hal/hw_3LB.cpp>",
+      "-<devboard/hal/hw_devkit.cpp>",
+      "-<**/test/>",
+      "-<**/tests/>",
+      "-<**/examples/>",
+      "-<**/extras/>",
+      "-<**/docs/>",
+      "-<**/data/>",
+      "-<**/*.md>"
+    ]
+  },
+  "dependencies": [
+    {
+      "name": "Preferences"
+    }
+  ]
+}

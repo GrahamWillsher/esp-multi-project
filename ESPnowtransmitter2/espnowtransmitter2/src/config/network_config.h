@@ -42,6 +42,8 @@ namespace config {
     // Feature flags
     namespace features {
         constexpr bool MQTT_ENABLED = true;     // Set to true to enable MQTT publishing
+        constexpr bool CAN_ENABLED = true;      // Set to true to enable CAN driver (GPIO 4 MISO)
+        constexpr bool BATTERY_EMULATOR_ENABLED = true;  // Set to true to enable Battery Emulator integration
     }
     
 } // namespace config

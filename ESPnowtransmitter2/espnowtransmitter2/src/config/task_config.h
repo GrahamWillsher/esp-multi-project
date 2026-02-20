@@ -6,7 +6,7 @@ namespace task_config {
     constexpr size_t STACK_SIZE_ESPNOW_RX = 4096;      // ESP-NOW message handling
     constexpr size_t STACK_SIZE_DATA_SENDER = 4096;    // Test data generation
     constexpr size_t STACK_SIZE_ANNOUNCEMENT = 4096;   // Periodic announcements (increased for settings notifications)
-    constexpr size_t STACK_SIZE_MQTT = 4096;           // MQTT client
+    constexpr size_t STACK_SIZE_MQTT = 8192;           // MQTT client (increased for large JSON payloads with PSRAM buffers)
     constexpr size_t STACK_SIZE_NETWORK_CONFIG = 4096; // Network configuration processing
     
     // Task priorities (higher number = higher priority)

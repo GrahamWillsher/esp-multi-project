@@ -6,6 +6,8 @@
 #include "../config/logging_config.h"
 #include "../espnow/message_handler.h"
 #include "../espnow/version_beacon_manager.h"
+#include "../datalayer/static_data.h"
+#include "../system_settings.h"
 #include <Arduino.h>
 #include <espnow_transmitter.h>
 #include <ethernet_utilities.h>
@@ -34,6 +36,7 @@ void task_mqtt_loop(void* parameter) {
     
     unsigned long last_reconnect_attempt = 0;
     unsigned long last_publish = 0;
+    unsigned long last_cell_publish = 0;
     bool logger_initialized = false;
     bool was_connected = false;  // Track previous MQTT connection state
     
@@ -72,6 +75,24 @@ void task_mqtt_loop(void* parameter) {
                                   EthernetManager::instance().get_local_ip().toString().c_str(),
                                   EthernetManager::instance().get_gateway_ip().toString().c_str());
                     
+                    // Update battery specs from datalayer (refresh number_of_cells after battery setup)
+                    // This ensures battery_specs.number_of_cells matches datalayer.battery.info.number_of_cells
+                    // which is set by the battery's setup() function (e.g., Nissan Leaf sets it to 96)
+                    LOG_INFO("MQTT", "Refreshing battery specs from datalayer...");
+                    StaticData::update_battery_specs(SystemSettings::instance().get_battery_profile_type());
+                    
+                    // Publish static configuration data (once on connect)
+                    LOG_INFO("MQTT", "Publishing static configuration...");
+                    if (MqttManager::instance().publish_static_specs()) {
+                        LOG_INFO("MQTT", "✓ Static specs published to BE/spec_data");
+                    }
+                    if (MqttManager::instance().publish_inverter_specs()) {
+                        LOG_INFO("MQTT", "✓ Inverter specs published to BE/spec_data_2");
+                    }
+                    if (MqttManager::instance().publish_battery_specs()) {
+                        LOG_INFO("MQTT", "✓ Battery specs published to BE/battery_specs");
+                    }
+                    
                     // Flush any buffered messages (if reconnecting)
                     MqttLogger::instance().flush_buffer();
                 }
@@ -99,6 +120,29 @@ void task_mqtt_loop(void* parameter) {
                 
                 // Test MQTT logger with periodic message
                 MQTT_LOG_INFO("TELEMETRY", "Data published: SOC=%d%%, Power=%ldW", tx_data.soc, tx_data.power);
+            }
+            
+            // Publish cell data periodically (less frequent - every 1 second)
+            if (config::features::MQTT_ENABLED && 
+                (now - last_cell_publish > 1000)) {
+                last_cell_publish = now;
+                
+                Serial.println("[MQTT_TASK_DEBUG] Calling publish_cell_data()...");
+                // Publish cell voltages and balancing status
+                if (MqttManager::instance().publish_cell_data()) {
+                    LOG_DEBUG("MQTT", "✓ Cell data published to BE/cell_data");
+                    Serial.println("[MQTT_TASK_DEBUG] ✓ publish_cell_data() returned true");
+                } else {
+                    Serial.println("[MQTT_TASK_DEBUG] ✗ publish_cell_data() returned false");
+                }
+            } else {
+                // Debug why it's not being called
+                static unsigned long last_debug = 0;
+                if (now - last_debug > 5000) {
+                    last_debug = now;
+                    Serial.printf("[MQTT_TASK_DEBUG] NOT calling publish_cell_data: MQTT_ENABLED=%d, time_since_last=%lu\n",
+                                  config::features::MQTT_ENABLED, now - last_cell_publish);
+                }
             }
         }
         

@@ -48,6 +48,30 @@ public:
     bool publish_status(const char* message, bool retained = false);
     
     /**
+     * @brief Publish static configuration data (BE/spec_data topic)
+     * @return true if published successfully, false otherwise
+     */
+    bool publish_static_specs();
+    
+    /**
+     * @brief Publish battery specifications (BE/spec_data topic)
+     * @return true if published successfully, false otherwise
+     */
+    bool publish_battery_specs();
+    
+    /**
+     * @brief Publish inverter specifications (BE/spec_data_2 topic)
+     * @return true if published successfully, false otherwise
+     */
+    bool publish_inverter_specs();
+    
+    /**
+     * @brief Publish cell voltages and balancing status (BE/cell_data topic)
+     * @return true if published successfully, false otherwise
+     */
+    bool publish_cell_data();
+    
+    /**
      * @brief Process MQTT messages (must be called regularly from task)
      */
     void loop();

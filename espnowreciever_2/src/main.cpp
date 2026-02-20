@@ -15,6 +15,8 @@
 #include "espnow/espnow_tasks.h"
 #include "espnow/rx_connection_handler.h"
 #include "espnow/rx_heartbeat_manager.h"
+#include "mqtt/mqtt_client.h"
+#include "mqtt/mqtt_task.h"
 #include <connection_manager.h>
 #include <connection_event_processor.h>
 #include <channel_manager.h>  // Centralized channel management
@@ -24,6 +26,7 @@
 #include "../lib/webserver/webserver.h"
 #include "../lib/webserver/utils/transmitter_manager.h"
 #include "../lib/webserver/utils/receiver_config_manager.h"
+#include "../lib/receiver_config/receiver_config_manager.h"  // ReceiverNetworkConfig
 #include <espnow_discovery.h>  // Common ESP-NOW discovery component
 #include <firmware_version.h>
 #include <firmware_metadata.h>  // Embed firmware metadata in binary
@@ -61,6 +64,12 @@ void setup() {
     
     // Initialize LittleFS filesystem
     initlittlefs();
+
+    // Load receiver network configuration from NVS
+    ReceiverNetworkConfig::loadConfig();
+
+    // Apply simulation mode preference
+    TestMode::enabled = ReceiverNetworkConfig::isSimulationMode();
 
     // Initialize WiFi with static IP and connect to network
     setupWiFi();
@@ -148,6 +157,17 @@ void setup() {
         1
     );
     
+    // Task: MQTT Client (priority 0, core 1) - low priority, receives spec data
+    xTaskCreatePinnedToCore(
+        task_mqtt_client,
+        "MqttClient",
+        4096,
+        NULL,
+        0,
+        NULL,
+        1
+    );
+    
     // Task: Status Indicator (priority 0, core 1)
     xTaskCreatePinnedToCore(
         taskStatusIndicator,
@@ -186,7 +206,11 @@ void setup() {
     LOG_INFO("HEARTBEAT", "RX Heartbeat manager initialized (90s timeout)");
     
     // *** PHASE 2: Initialize system state machine ***
-    transition_to_state(SystemState::TEST_MODE);
+    if (TestMode::enabled) {
+        transition_to_state(SystemState::TEST_MODE);
+    } else {
+        transition_to_state(SystemState::WAITING_FOR_TRANSMITTER);
+    }
     
     // NOW register ESP-NOW callbacks (queue is ready)
     esp_now_register_recv_cb(on_data_recv);

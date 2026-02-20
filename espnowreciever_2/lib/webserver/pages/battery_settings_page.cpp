@@ -71,8 +71,8 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
         <h3>Cell Configuration</h3>
         
         <div class='settings-row'>
-            <label for='cellCount'>Cell Count (series):</label>
-            <input type='number' id='cellCount' min='4' max='32' step='1' />
+            <label for='cellCount'>Cell Count (detected from battery):</label>
+            <input type='number' id='cellCount' readonly style='background-color: #f5f5f5; cursor: not-allowed;' />
         </div>
         
         <div class='settings-row'>
@@ -82,6 +82,19 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
                 <option value='1'>NMC (Nickel Manganese Cobalt)</option>
                 <option value='2'>LFP (Lithium Iron Phosphate)</option>
                 <option value='3'>LTO (Lithium Titanate)</option>
+            </select>
+        </div>
+    </div>
+    
+    <div class='settings-card'>
+        <h3>Battery Type Selection</h3>
+        <p style='color: #666; font-size: 14px;'>Select the battery profile to use. The transmitter will switch to the selected profile.</p>
+        <p style='color: #ff6b35; font-size: 14px; font-weight: bold;'>⚠️ Changing the battery or inverter type will reboot the transmitter to apply changes.</p>
+        
+        <div class='settings-row'>
+            <label for='batteryType'>Battery Type:</label>
+            <select id='batteryType' onchange='updateBatteryType()'>
+                <option value=''>Loading...</option>
             </select>
         </div>
     </div>
@@ -96,10 +109,14 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
     String script = R"rawliteral(
         // Store initial values to detect changes
         let initialValues = {};
+        let batterySettingsRetries = 0;
+        const MAX_BATTERY_SETTINGS_RETRIES = 5;
         
         window.onload = function() {
             // Load current settings from transmitter
             loadBatterySettings();
+            // Phase 3.1: Load battery types for selector
+            loadBatteryTypes();
         };
         
         // Map field names to BatterySettingsField enum values
@@ -127,7 +144,6 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
             { id: 'maxDischargeCurrent', field: 'MAX_DISCHARGE_CURRENT_A' },
             { id: 'socHighLimit', field: 'SOC_HIGH_LIMIT' },
             { id: 'socLowLimit', field: 'SOC_LOW_LIMIT' },
-            { id: 'cellCount', field: 'CELL_COUNT' },
             { id: 'chemistry', field: 'CHEMISTRY' }
         ];
         
@@ -138,6 +154,10 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
                     initialValues[mapping.id] = element.value;
                 }
             });
+            const typeSelect = document.getElementById('batteryType');
+            if (typeSelect) {
+                initialValues['batteryType'] = typeSelect.value;
+            }
             console.log('Initial values stored:', initialValues);
         }
         
@@ -147,14 +167,30 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
                 const el = document.getElementById(m.id);
                 if (el) {
                     el.addEventListener('input', () => {
-                        const changedCount = FIELD_MAP.filter(fm => {
-                            const fEl = document.getElementById(fm.id);
-                            return fEl && initialValues[fm.id] !== fEl.value;
-                        }).length;
-                        updateButtonText(changedCount);
+                        updateButtonText(getChangedCount());
                     });
                 }
             });
+            const typeSelect = document.getElementById('batteryType');
+            if (typeSelect) {
+                typeSelect.addEventListener('change', () => {
+                    updateButtonText(getChangedCount());
+                });
+            }
+        }
+
+        function getChangedCount() {
+            let changedCount = FIELD_MAP.filter(fm => {
+                const fEl = document.getElementById(fm.id);
+                return fEl && initialValues[fm.id] !== fEl.value;
+            }).length;
+
+            const typeSelect = document.getElementById('batteryType');
+            if (typeSelect && initialValues['batteryType'] !== typeSelect.value) {
+                changedCount++;
+            }
+
+            return changedCount;
         }
         
         function loadBatterySettings() {
@@ -165,6 +201,17 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
                 .then(data => {
                     console.log('Received battery settings:', data);
                     
+                    if (!data.success) {
+                        if (batterySettingsRetries < MAX_BATTERY_SETTINGS_RETRIES) {
+                            batterySettingsRetries++;
+                            console.log('Battery settings not ready, retrying (' + batterySettingsRetries + ')...');
+                            setTimeout(loadBatterySettings, 1000);
+                        } else {
+                            console.error('Battery settings not available after retries');
+                        }
+                        return;
+                    }
+
                     if (data.success) {
                         // Update form fields with loaded values
                         document.getElementById('batteryCapacity').value = data.capacity_wh;
@@ -174,13 +221,15 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
                         document.getElementById('maxDischargeCurrent').value = data.max_discharge_current_a;
                         document.getElementById('socHighLimit').value = data.soc_high_limit;
                         document.getElementById('socLowLimit').value = data.soc_low_limit;
-                        document.getElementById('cellCount').value = data.cell_count;
                         document.getElementById('chemistry').value = data.chemistry;
+                        
+                        // Load cell count from battery specs (read-only, detected from battery)
+                        loadCellCountFromSpecs();
                         
                         // Store these as initial values
                         storeInitialValues();
                         attachChangeListeners();
-                        updateButtonText(0);
+                        updateButtonText(getChangedCount());
                         
                         console.log('Battery settings loaded and populated');
                     } else {
@@ -190,6 +239,29 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
                 .catch(error => {
                     console.error('Error loading battery settings:', error);
                     // Keep default values from HTML on error
+                });
+        }
+        
+        function loadCellCountFromSpecs() {
+            // Fetch cell count from battery specs (detected from Battery Emulator)
+            fetch('/api/battery_specs')
+                .then(response => response.json())
+                .then(data => {
+                    const cellCountEl = document.getElementById('cellCount');
+                    if (data && data.number_of_cells && data.number_of_cells > 0) {
+                        cellCountEl.value = data.number_of_cells;
+                        console.log('Cell count loaded from battery specs: ' + data.number_of_cells);
+                    } else {
+                        cellCountEl.value = '';
+                        cellCountEl.placeholder = 'Not detected';
+                        console.warn('Battery specs available but no cell count:', data);
+                    }
+                })
+                .catch(error => {
+                    console.warn('Could not load cell count from specs:', error);
+                    const cellCountEl = document.getElementById('cellCount');
+                    cellCountEl.value = '';
+                    cellCountEl.placeholder = 'Not available';
                 });
         }
         
@@ -211,11 +283,29 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
                     });
                 }
             });
-            console.log('Total changed settings: ' + changedSettings.length);
+            const typeSelect = document.getElementById('batteryType');
+            const batteryTypeChanged = typeSelect && initialValues['batteryType'] !== typeSelect.value;
+            console.log('Total changed settings: ' + changedSettings.length + ', batteryTypeChanged=' + batteryTypeChanged);
             
-            if (changedSettings.length === 0) {
+            if (changedSettings.length === 0 && !batteryTypeChanged) {
                 console.log('No changed settings to save');
                 return;
+            }
+            
+            // Show confirmation if battery type changed (requires transmitter reboot)
+            if (batteryTypeChanged) {
+                const selectedName = typeSelect.options[typeSelect.selectedIndex].text;
+                const confirmed = confirm(
+                    '⚠️ TRANSMITTER REBOOT REQUIRED\\n\\n' +
+                    'Changing the battery type to "' + selectedName + '" will reboot the transmitter to apply changes.\\n\\n' +
+                    'This will temporarily interrupt data transmission (approximately 30 seconds).\\n\\n' +
+                    'Do you want to continue?'
+                );
+                
+                if (!confirmed) {
+                    console.log('Battery type change cancelled by user');
+                    return;
+                }
             }
             
             const saveButton = document.getElementById('saveButton');
@@ -223,25 +313,38 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
             
             let savedCount = 0;
             let failedCount = 0;
+
+            const pendingSaves = [...changedSettings];
+            if (batteryTypeChanged) {
+                pendingSaves.push({
+                    kind: 'batteryType',
+                    id: 'batteryType',
+                    value: typeSelect.value,
+                    name: typeSelect.options[typeSelect.selectedIndex].text
+                });
+            }
             
             // Save each changed setting sequentially with a small delay
             function saveNext(index) {
-                if (index >= changedSettings.length) {
+                if (index >= pendingSaves.length) {
                     // All done - update initial values for successfully saved settings
                     if (failedCount === 0) {
                         changedSettings.forEach(s => {
                             initialValues[s.id] = s.value;
                         });
+                        if (batteryTypeChanged) {
+                            initialValues['batteryType'] = typeSelect.value;
+                        }
                         saveButton.textContent = '✓ All Saved!';
                         saveButton.style.backgroundColor = '#28a745';
                         setTimeout(() => {
-                            updateButtonText(0);
+                            updateButtonText(getChangedCount());
                         }, 3000);
                     } else {
                         saveButton.textContent = '⚠ ' + failedCount + ' Failed';
                         saveButton.style.backgroundColor = '#dc3545';
                         setTimeout(() => {
-                            const remainingCount = changedSettings.length - savedCount;
+                            const remainingCount = pendingSaves.length - savedCount;
                             updateButtonText(remainingCount);
                         }, 3000);
                     }
@@ -249,9 +352,44 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
                 }
                 
                 // Update button text with current progress
-                saveButton.textContent = 'Saving ' + (index + 1) + ' of ' + changedSettings.length + '...';
+                saveButton.textContent = 'Saving ' + (index + 1) + ' of ' + pendingSaves.length + '...';
                 
-                const setting = changedSettings[index];
+                const setting = pendingSaves[index];
+                if (setting.kind === 'batteryType') {
+                    const typeId = parseInt(setting.value);
+                    console.log('Sending to API: battery type=' + typeId + ' (' + setting.name + ')');
+
+                    fetch('/api/set_battery_type', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({type: typeId})
+                    })
+                        .then(response => response.json())
+                        .then(data => {
+                            if (data.success) {
+                                savedCount++;
+                                console.log('Battery type saved successfully');
+                            } else {
+                                failedCount++;
+                                console.error('Failed to save battery type:', data.error);
+                                alert('ERROR saving battery type: ' + data.error);
+                            }
+                            setTimeout(() => saveNext(index + 1), 100);
+                        })
+                        .catch(error => {
+                            failedCount++;
+                            console.error('Error saving battery type:', error);
+                            alert('ERROR saving battery type: ' + error.message + '\n\nPlease check transmitter connection and try again.');
+                            saveButton.textContent = '✗ Save Failed!';
+                            saveButton.style.backgroundColor = '#dc3545';
+                            setTimeout(() => {
+                                const remainingCount = pendingSaves.length - index;
+                                updateButtonText(remainingCount);
+                            }, 3000);
+                        });
+                    return;
+                }
+
                 const fieldId = BATTERY_FIELDS[setting.field];
                 
                 // Determine if this field uses float or integer
@@ -304,7 +442,7 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
                     saveButton.textContent = '✗ Save Failed!';
                     saveButton.style.backgroundColor = '#dc3545';
                     setTimeout(() => {
-                        const remainingCount = changedSettings.length - index;
+                        const remainingCount = pendingSaves.length - index;
                         updateButtonText(remainingCount);
                     }, 3000);
                 });
@@ -312,6 +450,50 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
             
             // Start saving from first changed setting
             saveNext(0);
+        }
+        
+        // Phase 3.1: Battery Type Selection
+        function loadBatteryTypes() {
+            console.log('Loading battery types...');
+            
+            fetch('/api/get_battery_types')
+                .then(response => response.json())
+                .then(data => {
+                    const typeSelect = document.getElementById('batteryType');
+                    typeSelect.innerHTML = '';
+                    
+                    data.types.forEach(type => {
+                        const option = document.createElement('option');
+                        option.value = type.id;
+                        option.textContent = type.name;
+                        typeSelect.appendChild(option);
+                    });
+                    
+                    // Load current selection
+                    loadCurrentBatteryType();
+                    console.log('Battery types loaded');
+                })
+                .catch(error => console.error('Error loading battery types:', error));
+        }
+        
+        function loadCurrentBatteryType() {
+            fetch('/api/get_selected_types')
+                .then(response => response.json())
+                .then(data => {
+                    const typeSelect = document.getElementById('batteryType');
+                    typeSelect.value = data.battery_type;
+                    initialValues['batteryType'] = typeSelect.value;
+                    updateButtonText(getChangedCount());
+                    console.log('Current battery type loaded:', data.battery_type);
+                })
+                .catch(error => console.error('Error loading current type:', error));
+        }
+        
+        function updateBatteryType() {
+            const typeSelect = document.getElementById('batteryType');
+            const selectedOption = typeSelect.options[typeSelect.selectedIndex];
+            console.log(`Selected: ID=${typeSelect.value}, Name=${selectedOption.text}`);
+            updateButtonText(getChangedCount());
         }
         
         function updateButtonText(changedCount) {

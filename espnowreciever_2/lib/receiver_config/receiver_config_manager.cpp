@@ -11,6 +11,14 @@ uint8_t ReceiverNetworkConfig::gateway_[4] = {0};
 uint8_t ReceiverNetworkConfig::subnet_[4] = {0};
 uint8_t ReceiverNetworkConfig::dns_primary_[4] = {0};
 uint8_t ReceiverNetworkConfig::dns_secondary_[4] = {0};
+bool ReceiverNetworkConfig::mqtt_enabled_ = false;
+uint8_t ReceiverNetworkConfig::mqtt_server_[4] = {0};
+uint16_t ReceiverNetworkConfig::mqtt_port_ = 1883;
+char ReceiverNetworkConfig::mqtt_username_[32] = {0};
+char ReceiverNetworkConfig::mqtt_password_[64] = {0};
+uint8_t ReceiverNetworkConfig::battery_type_ = 29;      // Default to PYLON_BATTERY
+uint8_t ReceiverNetworkConfig::inverter_type_ = 0;      // Default to NONE
+bool ReceiverNetworkConfig::simulation_mode_ = true;    // Default to simulated data
 
 bool ReceiverNetworkConfig::loadConfig() {
     Preferences prefs;
@@ -55,6 +63,20 @@ bool ReceiverNetworkConfig::loadConfig() {
     prefs.getBytes(NVS_KEY_DNS_PRIMARY, dns_primary_, 4);
     prefs.getBytes(NVS_KEY_DNS_SECONDARY, dns_secondary_, 4);
     
+    // Load MQTT configuration (optional)
+    mqtt_enabled_ = prefs.getBool(NVS_KEY_MQTT_ENABLED, false);
+    prefs.getBytes(NVS_KEY_MQTT_SERVER, mqtt_server_, 4);
+    mqtt_port_ = prefs.getUShort(NVS_KEY_MQTT_PORT, 1883);
+    prefs.getString(NVS_KEY_MQTT_USERNAME, mqtt_username_, sizeof(mqtt_username_));
+    prefs.getString(NVS_KEY_MQTT_PASSWORD, mqtt_password_, sizeof(mqtt_password_));
+    
+    // Load Battery and Inverter type selection (with defaults)
+    battery_type_ = prefs.getUChar(NVS_KEY_BATTERY_TYPE, 29);    // 29 = PYLON_BATTERY
+    inverter_type_ = prefs.getUChar(NVS_KEY_INVERTER_TYPE, 0);   // 0 = NONE
+
+    // Load simulation mode (default ON)
+    simulation_mode_ = prefs.getBool(NVS_KEY_SIMULATION_MODE, true);
+    
     prefs.end();
     
     Serial.println("[ReceiverConfig] Configuration loaded successfully from NVS");
@@ -81,7 +103,12 @@ bool ReceiverNetworkConfig::saveConfig(
     const uint8_t gateway[4],
     const uint8_t subnet[4],
     const uint8_t dns_primary[4],
-    const uint8_t dns_secondary[4]
+    const uint8_t dns_secondary[4],
+    bool mqtt_enabled,
+    const uint8_t mqtt_server[4],
+    uint16_t mqtt_port,
+    const char* mqtt_username,
+    const char* mqtt_password
 ) {
     // Validation
     if (!ssid || ssid[0] == '\0') {
@@ -165,6 +192,34 @@ bool ReceiverNetworkConfig::saveConfig(
         memcpy(dns_secondary_, dns_secondary, 4);
     }
     
+    // Save MQTT configuration
+    prefs.putBool(NVS_KEY_MQTT_ENABLED, mqtt_enabled);
+    mqtt_enabled_ = mqtt_enabled;
+    
+    if (mqtt_server) {
+        prefs.putBytes(NVS_KEY_MQTT_SERVER, mqtt_server, 4);
+        memcpy(mqtt_server_, mqtt_server, 4);
+    }
+    
+    prefs.putUShort(NVS_KEY_MQTT_PORT, mqtt_port);
+    mqtt_port_ = mqtt_port;
+    
+    if (mqtt_username && mqtt_username[0] != '\0') {
+        prefs.putString(NVS_KEY_MQTT_USERNAME, mqtt_username);
+        strncpy(mqtt_username_, mqtt_username, sizeof(mqtt_username_) - 1);
+        mqtt_username_[sizeof(mqtt_username_) - 1] = '\0';
+    }
+    
+    if (mqtt_password && mqtt_password[0] != '\0' && strcmp(mqtt_password, "********") != 0) {
+        // Only save if password is provided and not the placeholder
+        prefs.putString(NVS_KEY_MQTT_PASSWORD, mqtt_password);
+        strncpy(mqtt_password_, mqtt_password, sizeof(mqtt_password_) - 1);
+        mqtt_password_[sizeof(mqtt_password_) - 1] = '\0';
+    } else if (strcmp(mqtt_password, "********") == 0) {
+        // Keep existing password
+        prefs.getString(NVS_KEY_MQTT_PASSWORD, mqtt_password_, sizeof(mqtt_password_));
+    }
+    
     prefs.end();
     
     Serial.println("[ReceiverConfig] Configuration saved successfully to NVS");
@@ -213,4 +268,43 @@ void ReceiverNetworkConfig::clearConfig() {
     memset(subnet_, 0, 4);
     memset(dns_primary_, 0, 4);
     memset(dns_secondary_, 0, 4);
+}
+
+void ReceiverNetworkConfig::setBatteryType(uint8_t type) {
+    battery_type_ = type;
+    
+    Preferences prefs;
+    if (prefs.begin(NVS_NAMESPACE, false)) {
+        prefs.putUChar(NVS_KEY_BATTERY_TYPE, type);
+        prefs.end();
+        Serial.printf("[ReceiverConfig] Battery type saved: %d\n", type);
+    } else {
+        Serial.println("[ReceiverConfig] Failed to save battery type to NVS");
+    }
+}
+
+void ReceiverNetworkConfig::setInverterType(uint8_t type) {
+    inverter_type_ = type;
+    
+    Preferences prefs;
+    if (prefs.begin(NVS_NAMESPACE, false)) {
+        prefs.putUChar(NVS_KEY_INVERTER_TYPE, type);
+        prefs.end();
+        Serial.printf("[ReceiverConfig] Inverter type saved: %d\n", type);
+    } else {
+        Serial.println("[ReceiverConfig] Failed to save inverter type to NVS");
+    }
+}
+
+void ReceiverNetworkConfig::setSimulationMode(bool enabled) {
+    simulation_mode_ = enabled;
+
+    Preferences prefs;
+    if (prefs.begin(NVS_NAMESPACE, false)) {
+        prefs.putBool(NVS_KEY_SIMULATION_MODE, enabled);
+        prefs.end();
+        Serial.printf("[ReceiverConfig] Simulation mode saved: %s\n", enabled ? "ON" : "OFF");
+    } else {
+        Serial.println("[ReceiverConfig] Failed to save simulation mode to NVS");
+    }
 }
