@@ -49,7 +49,7 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
     String tx_ip = "Unknown";
     String tx_ip_mode = "";  // (D) or (S)
     String tx_version = "Unknown";
-    String tx_device_name = "ESP32 Transmitter";  // Default friendly name
+    String tx_device_name = "Unknown Device";  // Default matches receiver fallback
     bool request_metadata = false;
     
     if (tx_connected) {
@@ -217,23 +217,6 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
     content += R"rawliteral(</span>
     </div>
 
-    <!-- Data Source Toggle -->
-    <div class='info-box' style='margin: 20px 0; display: flex; align-items: center; justify-content: space-between;'>
-        <div>
-            <h3 style='margin: 0 0 6px 0; color: #FFD700;'>📊 Data Source</h3>
-            <div style='color: #888; font-size: 13px;'>Use simulated data when no battery is connected</div>
-        </div>
-        <div style='display: flex; align-items: center; gap: 10px;'>
-            <span id='dataSourceLabel' style='font-weight: bold; color: #FFD700;'>Loading...</span>
-            <label style='position: relative; display: inline-block; width: 50px; height: 24px;'>
-                <input id='dataSourceToggle' type='checkbox' style='opacity: 0; width: 0; height: 0;'>
-                <span style='position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #666; transition: .2s; border-radius: 24px;'
-                      id='dataSourceSlider'></span>
-                <span style='position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: .2s; border-radius: 50%;'
-                      id='dataSourceKnob'></span>
-            </label>
-        </div>
-    </div>
     
     <!-- Battery Emulator Specifications -->
     <div class='info-box' style='margin: 20px 0;'>
@@ -341,6 +324,10 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
     </div>
     
     <script>
+        // Track last update time for "X seconds ago" display
+        let lastUpdateTime = Date.now();
+        let lastSeenUptimeMs = 0;  // Track previous uptime value to detect actual updates
+        
         // Time formatting functions
         function formatTimeWithTimezone(unixTime, timeZone = 'GMT') {
             if (!unixTime || unixTime === 0) return '-- -- ----';
@@ -383,6 +370,47 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
             }
         }
         
+        function formatLastUpdate(ms) {
+            if (!Number.isFinite(ms) || ms < 0) {
+                return 'Now';
+            }
+            const totalSeconds = Math.floor(ms / 1000);
+            const days = Math.floor(totalSeconds / 86400);
+            const hours = Math.floor((totalSeconds % 86400) / 3600);
+            const minutes = Math.floor((totalSeconds % 3600) / 60);
+            const seconds = totalSeconds % 60;
+            
+            if (days > 0) {
+                return `${days}d, ${String(hours).padStart(2, '0')}H:${String(minutes).padStart(2, '0')}M:${String(seconds).padStart(2, '0')}S ago`;
+            } else if (hours > 0) {
+                return `${String(hours).padStart(2, '0')}H:${String(minutes).padStart(2, '0')}M:${String(seconds).padStart(2, '0')}S ago`;
+            } else if (minutes > 0) {
+                return `${minutes}M:${String(seconds).padStart(2, '0')}S ago`;
+            } else {
+                return `${seconds}s ago`;
+            }
+        }
+        
+        function updateTimerDisplay() {
+            const msSinceUpdate = Date.now() - lastUpdateTime;
+            const secondsSinceUpdate = Math.floor(msSinceUpdate / 1000);
+            const lastUpdateStr = formatLastUpdate(msSinceUpdate);
+            
+            const lastUpdateEl = document.getElementById('txLastUpdate');
+            lastUpdateEl.textContent = lastUpdateStr;
+            
+            // Change color based on staleness
+            if (secondsSinceUpdate < 2) {
+                lastUpdateEl.style.color = '#4CAF50';  // Green - fresh
+            } else if (secondsSinceUpdate < 5) {
+                lastUpdateEl.style.color = '#FFD700';  // Yellow - slightly stale
+            } else if (secondsSinceUpdate < 10) {
+                lastUpdateEl.style.color = '#FF9800';  // Orange - getting stale
+            } else {
+                lastUpdateEl.style.color = '#ff6b35';  // Red - very stale
+            }
+        }
+        
         function getTimeSourceLabel(source) {
             switch(source) {
                 case 0: return 'Unsynced';
@@ -403,90 +431,8 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
             }
         }
 
-        function updateDataSourceUI(isSimulated) {
-            const label = document.getElementById('dataSourceLabel');
-            const toggle = document.getElementById('dataSourceToggle');
-            const slider = document.getElementById('dataSourceSlider');
-            const knob = document.getElementById('dataSourceKnob');
-
-            label.textContent = isSimulated ? 'Simulated' : 'Live';
-            label.style.color = isSimulated ? '#FFD700' : '#4CAF50';
-            toggle.checked = isSimulated;
-            slider.style.backgroundColor = isSimulated ? '#FFD700' : '#4CAF50';
-            knob.style.transform = isSimulated ? 'translateX(26px)' : 'translateX(0)';
-        }
-
-        async function loadDataSource() {
-            try {
-                const res = await fetch('/api/get_data_source');
-                const data = await res.json();
-                updateDataSourceUI(data.mode === 'simulated');
-            } catch (e) {
-                console.debug('Failed to load data source:', e);
-            }
-        }
-
-        async function setDataSource(isSimulated) {
-            try {
-                const res = await fetch('/api/set_data_source', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ mode: isSimulated ? 'simulated' : 'live' })
-                });
-                const data = await res.json();
-                if (!data.success) {
-                    throw new Error(data.error || 'Failed to set data source');
-                }
-                updateDataSourceUI(isSimulated);
-            } catch (e) {
-                console.error('Failed to set data source:', e);
-                // Revert toggle state
-                const toggle = document.getElementById('dataSourceToggle');
-                updateDataSourceUI(!toggle.checked);
-            }
-        }
         
-        let lastUpdateTime = 0;
-        
-        function updateTimerDisplay() {
-            if (lastUpdateTime === 0) return;
-            const now = Date.now();
-            const elapsed = Math.floor((now - lastUpdateTime) / 1000);
-            
-            if (elapsed < 60) {
-                document.getElementById('txLastUpdate').textContent = elapsed + 's ago';
-            } else if (elapsed < 3600) {
-                const mins = Math.floor(elapsed / 60);
-                document.getElementById('txLastUpdate').textContent = mins + 'm ago';
-            } else if (elapsed < 86400) {
-                const hours = Math.floor(elapsed / 3600);
-                document.getElementById('txLastUpdate').textContent = hours + 'h ago';
-            } else {
-                const days = Math.floor(elapsed / 86400);
-                document.getElementById('txLastUpdate').textContent = days + 'd ago';
-            }
-            
-            // Update color based on staleness
-            const updateEl = document.getElementById('txLastUpdate');
-            if (elapsed <= 10) {
-                updateEl.style.color = '#4CAF50';  // Green - fresh
-            } else if (elapsed <= 30) {
-                updateEl.style.color = '#FF9800';  // Orange - stale
-            } else {
-                updateEl.style.color = '#ff6b35';  // Red - very stale
-            }
-        }
-        
-        // Update timer every 1 second
-        setInterval(updateTimerDisplay, 1000);
-
-        // Data source toggle setup
-        document.getElementById('dataSourceToggle').addEventListener('change', function(e) {
-            setDataSource(e.target.checked);
-        });
-        loadDataSource();
-        
-        // Update transmitter data every 10 seconds
+        // Update transmitter data every 2 seconds (match transmission rate)
         setInterval(async function() {
             try {
                 const response = await fetch('/api/dashboard_data');
@@ -543,9 +489,12 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
                         sourceEl.textContent = getTimeSourceLabel(timeData.time_source);
                         sourceEl.style.color = getTimeSourceColor(timeData.time_source);
                         
-                        // Update last update time
-                        lastUpdateTime = Date.now();
-                        updateTimerDisplay();
+                        // Only update "last update" time if uptime_ms has actually changed (new data from transmitter)
+                        if (timeData.uptime_ms !== lastSeenUptimeMs) {
+                            lastSeenUptimeMs = timeData.uptime_ms;
+                            lastUpdateTime = Date.now();
+                            updateTimerDisplay();
+                        }
                     }
                 } catch (e) {
                     console.debug('Time data not yet available:', e);
@@ -553,7 +502,12 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
             } catch (e) {
                 console.error('Failed to update dashboard:', e);
             }
-        }, 10000);
+        }, 2000);
+        
+        // Update last update timer every second (shows "X seconds ago")
+        setInterval(function() {
+            updateTimerDisplay();
+        }, 1000);
         
         // Initial fetch on page load
         setTimeout(async function() {
@@ -567,6 +521,7 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
                     const sourceEl = document.getElementById('txTimeSource');
                     sourceEl.textContent = getTimeSourceLabel(timeData.time_source);
                     sourceEl.style.color = getTimeSourceColor(timeData.time_source);
+                    lastSeenUptimeMs = timeData.uptime_ms;
                     lastUpdateTime = Date.now();
                     updateTimerDisplay();
                 }

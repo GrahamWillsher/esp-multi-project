@@ -3,6 +3,12 @@
 #include <Arduino.h>
 
 /**
+ * @brief Get the last debug level sent to transmitter
+ * @return Current debug level (0-7)
+ */
+uint8_t get_last_debug_level();
+
+/**
  * @brief Send debug level control message to transmitter via ESP-NOW
  * @param level Debug level (0-7: EMERG, ALERT, CRIT, ERROR, WARNING, NOTICE, INFO, DEBUG)
  * @return true if sent successfully, false otherwise

@@ -1,5 +1,6 @@
 #include "mqtt_task.h"
 #include "mqtt_manager.h"
+#include "transmission_selector.h"
 #include "ethernet_manager.h"
 #include "../config/task_config.h"
 #include "../config/network_config.h"
@@ -25,6 +26,9 @@ bool MqttTask::is_connected() const {
 
 void task_mqtt_loop(void* parameter) {
     LOG_DEBUG("MQTT", "MQTT task started");
+    
+    // Initialize transmission selector with SMART mode (intelligent routing)
+    TransmissionSelector::init(TransmissionSelector::TransmissionMode::SMART);
     
     // Wait for Ethernet to be ready
     while (!EthernetManager::instance().is_connected()) {
@@ -84,13 +88,13 @@ void task_mqtt_loop(void* parameter) {
                     // Publish static configuration data (once on connect)
                     LOG_INFO("MQTT", "Publishing static configuration...");
                     if (MqttManager::instance().publish_static_specs()) {
-                        LOG_INFO("MQTT", "✓ Static specs published to BE/spec_data");
+                        LOG_INFO("MQTT", "✓ Static specs published to transmitter/BE/spec_data (SMART routing)");
                     }
                     if (MqttManager::instance().publish_inverter_specs()) {
-                        LOG_INFO("MQTT", "✓ Inverter specs published to BE/spec_data_2");
+                        LOG_INFO("MQTT", "✓ Inverter specs published to transmitter/BE/spec_data_2 (SMART routing)");
                     }
                     if (MqttManager::instance().publish_battery_specs()) {
-                        LOG_INFO("MQTT", "✓ Battery specs published to BE/battery_specs");
+                        LOG_INFO("MQTT", "✓ Battery specs published to transmitter/BE/battery_specs (SMART routing)");
                     }
                     
                     // Flush any buffered messages (if reconnecting)
@@ -128,9 +132,11 @@ void task_mqtt_loop(void* parameter) {
                 last_cell_publish = now;
                 
                 Serial.println("[MQTT_TASK_DEBUG] Calling publish_cell_data()...");
-                // Publish cell voltages and balancing status
+                // Publish cell voltages and balancing status (routes via transmission selector)
                 if (MqttManager::instance().publish_cell_data()) {
-                    LOG_DEBUG("MQTT", "✓ Cell data published to BE/cell_data");
+                    auto result = TransmissionSelector::get_last_result();
+                    LOG_DEBUG("MQTT", "✓ Cell data published to transmitter/BE/cell_data via %s (%u bytes)", 
+                              result.method, result.payload_size);
                     Serial.println("[MQTT_TASK_DEBUG] ✓ publish_cell_data() returned true");
                 } else {
                     Serial.println("[MQTT_TASK_DEBUG] ✗ publish_cell_data() returned false");

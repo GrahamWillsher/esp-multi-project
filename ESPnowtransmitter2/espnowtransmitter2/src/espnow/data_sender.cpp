@@ -5,6 +5,8 @@
 #include "../config/logging_config.h"
 #include "../datalayer/datalayer.h"  // Phase 4a: Real battery data
 #include "../battery_emulator/test_data_generator.h"  // Test data for development
+#include "../test_mode/test_mode.h"  // Phase 1: Test mode
+#include "../network/transmission_selector.h"  // Phase 2: Smart transmission routing
 #include <Arduino.h>
 #include <connection_manager.h>
 #include <espnow_transmitter.h>
@@ -39,10 +41,8 @@ void DataSender::start() {
 void DataSender::task_impl(void* parameter) {
     LOG_DEBUG("DATA_SENDER", "Data sender task running");
     
-    // Initialize test data generator if enabled (for development without physical battery)
-    if (TestDataGenerator::is_enabled()) {
-        TestDataGenerator::init();
-    }
+    // NOTE: Test data generator will auto-initialize on first update() call
+    // This ensures battery setup() has already run and configured number_of_cells
     
     TickType_t last_wake_time = xTaskGetTickCount();
     const TickType_t interval_ticks = pdMS_TO_TICKS(timing::ESPNOW_SEND_INTERVAL_MS);
@@ -50,13 +50,18 @@ void DataSender::task_impl(void* parameter) {
     while (true) {
         vTaskDelayUntil(&last_wake_time, interval_ticks);
         
-        // Update test data if generator is enabled (simulates changing battery conditions)
-        if (TestDataGenerator::is_enabled()) {
+        // Phase 1: Generate test data if test mode is enabled
+        if (TestMode::is_enabled()) {
+            TestMode::generate_sample();  // Advance internal state for realistic drift
+        }
+        // Phase 4a: Update real battery data from datalayer (if CAN is enabled and test mode is off)
+        else if (TestDataGenerator::is_enabled()) {
             TestDataGenerator::update();
         }
         
         if (EspnowMessageHandler::instance().is_transmission_active()) {
-            LOG_TRACE("DATA_SENDER", "Sending test data (transmission active)");
+            LOG_TRACE("DATA_SENDER", "Sending data (transmission active, mode: %s)", 
+                     TestMode::is_enabled() ? "TEST" : "LIVE");
             send_test_data_with_led_control();
         } else {
             LOG_TRACE("DATA_SENDER", "Skipping send (transmission inactive)");
@@ -65,9 +70,10 @@ void DataSender::task_impl(void* parameter) {
 }
 
 /**
- * @brief Send real battery data with SOC-based LED flash control
+ * @brief Send battery data (test or live) with SOC-based LED flash control
  * 
- * Phase 4a: Uses real datalayer from CAN bus instead of dummy data
+ * Phase 1: Determines data source (live vs test) based on test mode flag
+ * Phase 4a: Uses real datalayer from CAN bus when in live mode
  * 
  * Section 11 Architecture: ALWAYS cache-first (non-blocking)
  * - Data flows through EnhancedCache regardless of connection state
@@ -84,24 +90,45 @@ void DataSender::task_impl(void* parameter) {
  * LED flash command is only sent once when transitioning between bands.
  */
 void DataSender::send_test_data_with_led_control() {
-    // Phase 4a: Read real battery data from datalayer
-    // Convert from datalayer format (pptt = percent * 100) to simple percentage
-    uint16_t soc_pptt = datalayer.battery.status.reported_soc;  // e.g., 8000 = 80.00%
-    uint8_t soc_percent = soc_pptt / 100;  // Convert to 0-100 range
+    // Phase 1: Select data source (test vs live)
+    if (TestMode::is_enabled()) {
+        // Use test mode data
+        const TestMode::TestState& test_state = TestMode::get_current_state();
+        tx_data.soc = test_state.soc;
+        tx_data.power = test_state.power;
+        LOG_TRACE("DATA_SENDER", "Using TEST data: SOC:%d%%, Power:%dW", 
+                 tx_data.soc, tx_data.power);
+    } else {
+        // Phase 4a: Read real battery data from datalayer
+        // Convert from datalayer format (pptt = percent * 100) to simple percentage
+        uint16_t soc_pptt = datalayer.battery.status.reported_soc;  // e.g., 8000 = 80.00%
+        uint8_t soc_percent = soc_pptt / 100;  // Convert to 0-100 range
+        
+        int32_t power_w = datalayer.battery.status.active_power_W;
+        
+        // Populate tx_data structure from datalayer
+        tx_data.soc = soc_percent;
+        tx_data.power = power_w;
+        LOG_TRACE("DATA_SENDER", "Using LIVE data: SOC:%d%%, Power:%dW", 
+                 tx_data.soc, tx_data.power);
+    }
     
-    int32_t power_w = datalayer.battery.status.active_power_W;
-    
-    // Populate tx_data structure from datalayer
-    tx_data.soc = soc_percent;
-    tx_data.power = power_w;
     tx_data.checksum = calculate_checksum(&tx_data);
     
     // Section 11: ALWAYS write to cache first (cache-centric pattern)
     // Background transmission task will handle sending from cache
     if (EnhancedCache::instance().add_transient(tx_data)) {
-        LOG_TRACE("DATA_SENDER", "Data cached (SOC:%d%%, Power:%dW, BMS:%s)", 
-                 tx_data.soc, tx_data.power, 
-                 datalayer.battery.status.real_bms_status == BatteryEmulator_real_bms_status_enum::BMS_ACTIVE ? "connected" : "disconnected");
+        LOG_TRACE("DATA_SENDER", "Data cached (SOC:%d%%, Power:%dW)", 
+                 tx_data.soc, tx_data.power);
+        
+        // Phase 2: Report dynamic data to transmission selector (enables dual ESP-NOW/MQTT support)
+        // Transmission selector will intelligently route small frequent updates via fastest method
+        char timestamp_str[32];
+        snprintf(timestamp_str, sizeof(timestamp_str), "%lu", millis());
+        auto result = TransmissionSelector::transmit_dynamic_data(tx_data.soc, tx_data.power, timestamp_str);
+        if (result.espnow_sent) {
+            LOG_TRACE("DATA_SENDER", "Dynamic data sent via %s", result.method);
+        }
     } else {
         // Cache write failed (mutex timeout or overflow)
         // Data dropped - doesn't block control code

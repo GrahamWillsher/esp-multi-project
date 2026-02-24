@@ -45,14 +45,6 @@ namespace ESPNow {
     QueueHandle_t queue = NULL;
 }
 
-// Test Mode (definitions)
-namespace TestMode {
-    bool enabled = false;  // DISABLED - use live data from transmitter via MQTT/ESP-NOW
-    volatile int soc = 50;
-    volatile int32_t power = 0;
-    volatile uint32_t voltage_mv = 0;
-}
-
 // FreeRTOS Resources (definitions)
 namespace RTOS {
     TaskHandle_t task_test_data = NULL;
@@ -68,15 +60,7 @@ TFT_eSPI tft = TFT_eSPI();
 // State Machine
 SystemState current_state = SystemState::BOOTING;
 
-// ═══════════════════════════════════════════════════════════════════════
-// Backward Compatibility: Global aliases for legacy code (webserver, etc.)
-// ═══════════════════════════════════════════════════════════════════════
-
 // Reference aliases to namespace variables for backward compatibility
-bool& test_mode_enabled = TestMode::enabled;
-volatile int& g_test_soc = TestMode::soc;
-volatile int32_t& g_test_power = TestMode::power;
-volatile uint32_t& g_test_voltage_mv = TestMode::voltage_mv;
 volatile uint8_t& g_received_soc = ESPNow::received_soc;
 volatile int32_t& g_received_power = ESPNow::received_power;
 volatile uint32_t& g_received_voltage_mv = ESPNow::received_voltage_mv;

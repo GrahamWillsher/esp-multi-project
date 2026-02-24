@@ -135,6 +135,12 @@ size_t serialize_cell_data(char* buffer, size_t buffer_size) {
     // Get cell count from datalayer
     uint16_t cell_count = datalayer.battery.info.number_of_cells;
     
+    // DEBUG: Log what we're getting
+    Serial.printf("[SERIALIZE_DEBUG] cell_count from datalayer: %u\n", cell_count);
+    Serial.printf("[SERIALIZE_DEBUG] cell_voltages_mV[0]: %u\n", datalayer.battery.status.cell_voltages_mV[0]);
+    Serial.printf("[SERIALIZE_DEBUG] cell_voltages_mV[95]: %u\n", datalayer.battery.status.cell_voltages_mV[95]);
+    Serial.printf("[SERIALIZE_DEBUG] cell_voltages_mV[107]: %u\n", datalayer.battery.status.cell_voltages_mV[107]);
+    
     // Check if we have valid cell data (at least one non-zero voltage)
     bool has_real_data = false;
     for (uint16_t i = 0; i < cell_count && i < MAX_AMOUNT_CELLS; i++) {
@@ -143,6 +149,8 @@ size_t serialize_cell_data(char* buffer, size_t buffer_size) {
             break;
         }
     }
+    
+    Serial.printf("[SERIALIZE_DEBUG] has_real_data: %s\n", has_real_data ? "true" : "false");
     
     // If no real data, generate dummy data for testing
     if (!has_real_data && cell_count > 0) {

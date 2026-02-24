@@ -52,7 +52,7 @@ static const char* get_inverter_protocol_name(uint8_t inverter_type) {
  * @brief Inverter Specs Display Page
  * 
  * Displays static inverter configuration received from transmitter via MQTT
- * Source: BE/spec_data_2 MQTT topic
+ * Source: transmitter/BE/spec_data_2 MQTT topic
  */
 esp_err_t inverter_specs_page_handler(httpd_req_t *req) {
     // Get inverter specs from TransmitterManager
@@ -235,7 +235,7 @@ esp_err_t inverter_specs_page_handler(httpd_req_t *req) {
         </div>
         
         <div class="source-info">
-            📡 Source: Battery Emulator via MQTT Topic: <strong>BE/spec_data_2</strong>
+            📡 Source: Battery Emulator via MQTT Topic: <strong>transmitter/BE/spec_data_2</strong>
         </div>
 )";
 

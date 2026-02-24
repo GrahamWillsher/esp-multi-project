@@ -23,6 +23,12 @@ static String debug_page_processor() {
         html += "<div class='debug-control'>";
         html += "<h3>📊 Transmitter Debug Level Control</h3>";
         html += "<p>Control the debug logging level of the ESP-NOW transmitter. Messages are published to MQTT topic: <code>espnow/transmitter/debug/{level}</code></p>";
+        
+        html += "<div style='background-color: #1e1e1e; padding: 12px; border-left: 4px solid #50FA7B; margin-bottom: 15px; border-radius: 4px;'>";
+        html += "<strong style='color: #50FA7B;'>Current Debug Level:</strong>";
+        html += "<span id='currentLevel' style='margin-left: 10px; color: #fff; font-size: 18px; font-weight: bold;'>Loading...</span>";
+        html += "</div>";
+        
         html += "<label for='debugLevel'><strong>Select Debug Level:</strong></label><br>";
         html += "<select id='debugLevel' name='debugLevel'>";
         html += "<option value='0'>EMERG - Emergency (0) - System unusable</option>";
@@ -38,42 +44,51 @@ static String debug_page_processor() {
         html += "<div id='debug-status'></div>";
         html += "</div>";
         
-        // Information section
-        html += "<div class='debug-control'>";
-        html += "<h3>ℹ️ Debug System Information</h3>";
-        html += "<p><strong>Current System:</strong> Battery Emulator Receiver</p>";
-        html += "<p><strong>Debug Target:</strong> ESP-NOW Transmitter (Olimex ESP32-POE-ISO)</p>";
-        html += "<p><strong>Communication:</strong> ESP-NOW wireless protocol</p>";
-        html += "<p><strong>MQTT Broker:</strong> Subscribe to <code>espnow/transmitter/debug/#</code> to see all debug messages</p>";
-        html += "<p><strong>Level Storage:</strong> Debug level is saved to NVS on transmitter and persists across reboots</p>";
-        html += "</div>";
-        
         // JavaScript for AJAX control
         html += "<script>";
+        html += "var levelNames = ['EMERG', 'ALERT', 'CRIT', 'ERROR', 'WARNING', 'NOTICE', 'INFO', 'DEBUG'];";
         html += "function setDebugLevel() {";
         html += "  var level = document.getElementById('debugLevel').value;";
         html += "  var statusDiv = document.getElementById('debug-status');";
-        html += "  var levelNames = ['EMERG', 'ALERT', 'CRIT', 'ERROR', 'WARNING', 'NOTICE', 'INFO', 'DEBUG'];";
         html += "  statusDiv.textContent = 'Sending debug level ' + level + ' (' + levelNames[level] + ') to transmitter...';";
         html += "  statusDiv.className = 'status-info';";
-    html += "  fetch('/api/setDebugLevel?level=' + level)";
-    html += "    .then(response => response.json())";
-    html += "    .then(data => {";
-    html += "      if (data.success) {";
-    html += "        statusDiv.textContent = '✓ ' + data.message;";
-    html += "        statusDiv.className = 'status-success';";
-    html += "      } else {";
-    html += "        statusDiv.textContent = '✗ ' + data.message;";
-    html += "        statusDiv.className = 'status-error';";
-    html += "      }";
-    html += "      setTimeout(() => { statusDiv.style.display = 'none'; }, 5000);";
-    html += "    })";
-    html += "    .catch(error => {";
-    html += "      statusDiv.textContent = '✗ Error: ' + error;";
-    html += "      statusDiv.className = 'status-error';";
-    html += "    });";
-    html += "}";
-    html += "</script>";
+        html += "  fetch('/api/setDebugLevel?level=' + level)";
+        html += "    .then(response => response.json())";
+        html += "    .then(data => {";
+        html += "      if (data.success) {";
+        html += "        statusDiv.textContent = '✓ ' + data.message;";
+        html += "        statusDiv.className = 'status-success';";
+        html += "        loadCurrentDebugLevel();";
+        html += "      } else {";
+        html += "        statusDiv.textContent = '✗ ' + data.message;";
+        html += "        statusDiv.className = 'status-error';";
+        html += "      }";
+        html += "      setTimeout(() => { statusDiv.style.display = 'none'; }, 5000);";
+        html += "    })";
+        html += "    .catch(error => {";
+        html += "      statusDiv.textContent = '✗ Error: ' + error;";
+        html += "      statusDiv.className = 'status-error';";
+        html += "    });";
+        html += "}";
+        html += "function loadCurrentDebugLevel() {";
+        html += "  fetch('/api/debugLevel')";
+        html += "    .then(response => response.json())";
+        html += "    .then(data => {";
+        html += "      if (data.level !== undefined) {";
+        html += "        var levelNum = data.level;";
+        html += "        var levelName = levelNames[levelNum] || 'UNKNOWN';";
+        html += "        document.getElementById('currentLevel').textContent = levelName + ' (' + levelNum + ')';";
+        html += "        document.getElementById('debugLevel').value = levelNum;";
+        html += "      } else {";
+        html += "        document.getElementById('currentLevel').textContent = 'Unknown';";
+        html += "      }";
+        html += "    })";
+        html += "    .catch(error => {";
+        html += "      document.getElementById('currentLevel').textContent = 'Unable to load';";
+        html += "    });";
+        html += "}";
+        html += "window.addEventListener('load', loadCurrentDebugLevel);";
+        html += "</script>";
     
     // Navigation buttons
     html += generate_nav_buttons();

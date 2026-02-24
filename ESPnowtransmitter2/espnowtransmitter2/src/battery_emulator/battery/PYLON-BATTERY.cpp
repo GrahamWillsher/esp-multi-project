@@ -131,7 +131,7 @@ void PylonBattery::transmit_can(unsigned long currentMillis) {
 void PylonBattery::setup(void) {  // Performs one time setup at startup
   strncpy(datalayer.system.info.battery_protocol, "Pylon compatible battery", 63);
   datalayer.system.info.battery_protocol[63] = '\0';
-  datalayer_battery->info.number_of_cells = 2;
+  datalayer_battery->info.number_of_cells = 96;  // 96S configuration (typical for Pylon batteries)
   datalayer_battery->info.max_design_voltage_dV = user_selected_max_pack_voltage_dV;
   datalayer_battery->info.min_design_voltage_dV = user_selected_min_pack_voltage_dV;
   datalayer_battery->info.max_cell_voltage_mV = user_selected_max_cell_voltage_mV;

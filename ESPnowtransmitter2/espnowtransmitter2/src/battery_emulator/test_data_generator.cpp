@@ -22,22 +22,57 @@ void init() {
 #ifdef TEST_DATA_GENERATOR_ENABLED
     if (initialized) return;
     
+    LOG_INFO("TEST_DATA", "========== INIT() CALLED ==========");
+    LOG_INFO("TEST_DATA", "number_of_cells BEFORE init: %u", datalayer.battery.info.number_of_cells);
     LOG_INFO("TEST_DATA", "Initializing test data generator (NO REAL CAN BUS)");
     
-    // Initialize battery info (static)
-    datalayer.battery.info.total_capacity_Wh = 75000;  // 75 kWh battery
-    datalayer.battery.info.max_design_voltage_dV = 4200;  // 420V nominal
-    datalayer.battery.info.min_design_voltage_dV = 3000;  // 300V minimum
-    datalayer.battery.info.max_cell_voltage_mV = 3650;
-    datalayer.battery.info.min_cell_voltage_mV = 2800;
-    datalayer.battery.info.number_of_cells = 108;  // 108S for ~390V nominal
-    datalayer.battery.info.chemistry = battery_chemistry_enum::NMC;
+    // Preserve battery info values set by battery setup() function
+    // Only set values that haven't been configured yet (== 0)
     
-    // Initialize battery status (dynamic)
-    datalayer.battery.status.remaining_capacity_Wh = 48750;  // 65% SOC
+    if (datalayer.battery.info.total_capacity_Wh == 0) {
+        datalayer.battery.info.total_capacity_Wh = 75000;  // 75 kWh default
+    }
+    if (datalayer.battery.info.max_design_voltage_dV == 0) {
+        datalayer.battery.info.max_design_voltage_dV = 4200;  // 420V nominal
+    }
+    if (datalayer.battery.info.min_design_voltage_dV == 0) {
+        datalayer.battery.info.min_design_voltage_dV = 3000;  // 300V minimum
+    }
+    if (datalayer.battery.info.max_cell_voltage_mV == 0) {
+        datalayer.battery.info.max_cell_voltage_mV = 3650;
+    }
+    if (datalayer.battery.info.min_cell_voltage_mV == 0) {
+        datalayer.battery.info.min_cell_voltage_mV = 2800;
+    }
+    
+    // CRITICAL: Respect battery's configured cell count (Nissan Leaf = 96, etc.)
+    // Only use default if battery hasn't set it yet
+    if (datalayer.battery.info.number_of_cells == 0) {
+        datalayer.battery.info.number_of_cells = 108;  // 108S default for generic battery
+        LOG_WARN("TEST_DATA", "No battery cell count configured, using default: 108 cells");
+    } else {
+        LOG_INFO("TEST_DATA", "Using battery's configured cell count: %u cells", 
+                 datalayer.battery.info.number_of_cells);
+    }
+    
+    LOG_INFO("TEST_DATA", "number_of_cells AFTER init: %u", datalayer.battery.info.number_of_cells);
+    
+    if (datalayer.battery.info.chemistry == battery_chemistry_enum::Autodetect) {
+        datalayer.battery.info.chemistry = battery_chemistry_enum::NMC;
+    }
+    
+    if (datalayer.battery.info.chemistry == battery_chemistry_enum::Autodetect) {
+        datalayer.battery.info.chemistry = battery_chemistry_enum::NMC;
+    }
+    
+    // Initialize battery status (dynamic) based on actual cell count
+    uint16_t cell_count = datalayer.battery.info.number_of_cells;
+    uint16_t nominal_voltage_dV = (cell_count * 36);  // 3.6V per cell average
+    
+    datalayer.battery.status.remaining_capacity_Wh = datalayer.battery.info.total_capacity_Wh * 0.65;  // 65% SOC
     datalayer.battery.status.real_soc = 6500;  // 65.00% (pptt format)
     datalayer.battery.status.reported_soc = 6500;
-    datalayer.battery.status.voltage_dV = 3900;  // 390V
+    datalayer.battery.status.voltage_dV = nominal_voltage_dV;  // Based on cell count
     datalayer.battery.status.current_dA = 0;  // 0A initially
     datalayer.battery.status.active_power_W = 0;
     datalayer.battery.status.temperature_min_dC = 180;  // 18°C
@@ -52,7 +87,9 @@ void init() {
     datalayer.battery.status.bms_status = ACTIVE;
     
     initialized = true;
-    LOG_INFO("TEST_DATA", "✓ Test data initialized: 75kWh, 108S NMC, SOC=65%%");
+    LOG_INFO("TEST_DATA", "✓ Test data initialized: %uWh, %uS, SOC=65%%",
+             datalayer.battery.info.total_capacity_Wh,
+             datalayer.battery.info.number_of_cells);
 #endif
 }
 
@@ -118,10 +155,21 @@ void update() {
     
     // ===== Cell Voltage Simulation =====
     // Average cell voltage = total_voltage / cell_count
-    float avg_cell_v = voltage_v / 108.0;
+    uint16_t cell_count = datalayer.battery.info.number_of_cells;
+    float avg_cell_v = voltage_v / (float)cell_count;
     float cell_spread_mv = 30.0;  // 30mV spread between min/max
     datalayer.battery.status.cell_max_voltage_mV = (uint16_t)((avg_cell_v + cell_spread_mv/2000.0) * 1000);
     datalayer.battery.status.cell_min_voltage_mV = (uint16_t)((avg_cell_v - cell_spread_mv/2000.0) * 1000);
+    
+    // Populate individual cell voltages (required for MQTT JSON serialization)
+    // Each cell gets the average voltage +/- small random deviation
+    uint16_t avg_cell_mv = (uint16_t)(avg_cell_v * 1000);
+    for (uint16_t i = 0; i < cell_count && i < MAX_AMOUNT_CELLS; i++) {
+        // Each cell gets slightly different voltage for realism
+        int16_t deviation_mv = (int16_t)((i % 10) - 5) * 5;  // -25 to +25 mV variation
+        datalayer.battery.status.cell_voltages_mV[i] = avg_cell_mv + deviation_mv;
+        datalayer.battery.status.cell_balancing_status[i] = false;  // No balancing in test mode
+    }
     
     // ===== Update remaining capacity =====
     datalayer.battery.status.remaining_capacity_Wh = 

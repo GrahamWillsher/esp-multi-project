@@ -21,8 +21,9 @@ void MqttManager::init() {
     }
     
     LOG_INFO("MQTT", "Initializing MQTT client...");
-    // Set buffer size to accommodate 710-byte cell data payload + MQTT overhead
-    client_.setBufferSize(1024);
+    // Set buffer size to accommodate 108+ cells (~1600 bytes) + MQTT overhead (~400 bytes)
+    // Total: 2048 bytes to ensure we can handle large battery packs
+    client_.setBufferSize(2048);
     client_.setServer(config::get_mqtt_config().server, config::get_mqtt_config().port);
     client_.setCallback(message_callback);
     client_.setKeepAlive(60);
@@ -108,7 +109,7 @@ bool MqttManager::publish_static_specs() {
     size_t len = StaticData::serialize_all_specs(buffer, 2048);
     
     if (len > 0) {
-        bool success = client_.publish("BE/spec_data", buffer, true); // Retained
+        bool success = client_.publish("transmitter/BE/spec_data", buffer, true); // Retained
         if (success) {
             LOG_INFO("MQTT", "Published static specs (%u bytes)", len);
         } else {
@@ -137,7 +138,7 @@ bool MqttManager::publish_battery_specs() {
     
     bool success = false;
     if (len > 0) {
-        success = client_.publish("BE/battery_specs", buffer, true); // Retained
+        success = client_.publish("transmitter/BE/battery_specs", buffer, true); // Retained
         if (success) {
             LOG_DEBUG("MQTT", "Published battery specs (%u bytes)", len);
         }
@@ -174,8 +175,8 @@ bool MqttManager::publish_cell_data() {
     
     bool success = false;
     if (len > 0) {
-        Serial.println("[MQTT_DEBUG] Publishing to BE/cell_data...");
-        success = client_.publish("BE/cell_data", buffer, true); // Retained
+        Serial.println("[MQTT_DEBUG] Publishing to transmitter/BE/cell_data...");
+        success = client_.publish("transmitter/BE/cell_data", buffer, true); // Retained
         if (success) {
             LOG_DEBUG("MQTT", "Published cell data (%u bytes)", len);
             Serial.println("[MQTT_DEBUG] ✓ Publish successful!");
@@ -204,7 +205,7 @@ bool MqttManager::publish_inverter_specs() {
     
     bool success = false;
     if (len > 0) {
-        success = client_.publish("BE/spec_data_2", buffer, true); // Retained
+        success = client_.publish("transmitter/BE/spec_data_2", buffer, true); // Retained
         if (success) {
             LOG_DEBUG("MQTT", "Published inverter specs (%u bytes)", len);
         }

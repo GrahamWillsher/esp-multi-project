@@ -123,14 +123,6 @@ namespace ESPNow {
     extern QueueHandle_t queue;
 }
 
-// Test Mode
-namespace TestMode {
-    extern bool enabled;
-    extern volatile int soc;
-    extern volatile int32_t power;
-    extern volatile uint32_t voltage_mv;
-}
-
 // FreeRTOS Resources
 namespace RTOS {
     extern TaskHandle_t task_test_data;
@@ -149,7 +141,6 @@ extern TFT_eSPI tft;
 
 enum class SystemState {
     BOOTING,
-    TEST_MODE,
     WAITING_FOR_TRANSMITTER,
     NORMAL_OPERATION,
     ERROR_STATE
@@ -173,12 +164,6 @@ void smart_delay(uint32_t ms);
 // Backward Compatibility: Global aliases for namespaced variables
 // (Required by webserver and other legacy code)
 // ═══════════════════════════════════════════════════════════════════════
-
-// Test mode aliases (references to TestMode namespace)
-extern bool& test_mode_enabled;
-extern volatile int& g_test_soc;
-extern volatile int32_t& g_test_power;
-extern volatile uint32_t& g_test_voltage_mv;
 
 // Received data aliases (references to ESPNow namespace)
 extern volatile uint8_t& g_received_soc;

@@ -38,7 +38,20 @@ static esp_err_t cellmonitor_handler(httpd_req_t *req) {
         <div id='cellGrid' style='display: grid; grid-template-columns: repeat(9, 1fr); gap: 6px;'></div>
     </div>
 
+    <div class='info-box' style='margin-top: 30px;'>
+        <h2 style='margin-top: 0; color: #00FFFF;'>Voltage Distribution</h2>
+        <div style='margin-bottom: 10px; color: #888; font-size: 12px;'>
+            <span>Min: <strong id='barMin' style='color: #FF6B6B;'>-- mV</strong></span>
+            <span style='margin-left: 20px;'>Max: <strong id='barMax' style='color: #4CAF50;'>-- mV</strong></span>
+        </div>
+        <div id='voltageBar' style='display: flex; flex-direction: row; gap: 2px; height: 120px; width: 100%; background: #111; padding: 4px; align-items: flex-end; box-sizing: border-box;'></div>
+    </div>
+
     <script>
+        let selectedCellIdx = -1;
+        let selectedBarIdx = -1;
+        let eventSource = null;
+
         function renderCells(cells, balancing, minV, maxV) {
             const grid = document.getElementById('cellGrid');
             grid.innerHTML = '';
@@ -60,10 +73,14 @@ static esp_err_t cellmonitor_handler(httpd_req_t *req) {
             const balancingCount = balancing ? balancing.filter(b => b).length : 0;
             document.getElementById('balancingCount').textContent = balancingCount;
 
+            // Update voltage bar limits
+            document.getElementById('barMin').textContent = min + ' mV';
+            document.getElementById('barMax').textContent = max + ' mV';
+
             // Render cells in grid
             cells.forEach((mv, idx) => {
                 const cell = document.createElement('div');
-                cell.style.cssText = 'padding: 6px; border-radius: 6px; text-align: center; cursor: pointer; transition: transform 0.2s;';
+                cell.style.cssText = 'padding: 6px; border-radius: 6px; text-align: center; cursor: pointer; transition: transform 0.2s, box-shadow 0.2s;';
                 
                 // Background color
                 if (balancing && balancing[idx]) {
@@ -91,41 +108,167 @@ static esp_err_t cellmonitor_handler(httpd_req_t *req) {
                 
                 cell.title = `Cell ${idx + 1}: ${mv} mV${balancing && balancing[idx] ? ' (BALANCING)' : ''}${mv === max ? ' [MAX]' : ''}${mv === min ? ' [MIN]' : ''}`;
                 
-                cell.onmouseover = () => cell.style.transform = 'scale(1.05)';
-                cell.onmouseout = () => cell.style.transform = 'scale(1)';
+                // Phase 4: Enhanced hover - 15% enlargement + shadow
+                cell.onmouseover = () => {
+                    cell.style.transform = 'scale(1.15)';
+                    cell.style.boxShadow = '0 0 12px rgba(76, 175, 80, 0.6)';
+                    selectedCellIdx = idx;
+                    updateBarHighlight(idx);
+                };
+                cell.onmouseout = () => {
+                    cell.style.transform = 'scale(1)';
+                    cell.style.boxShadow = 'none';
+                    selectedCellIdx = -1;
+                    updateBarHighlight(-1);
+                };
                 
                 grid.appendChild(cell);
             });
+
+            // Render voltage distribution bar
+            renderVoltageBar(cells);
         }
 
-        async function loadCellData() {
-            try {
-                const res = await fetch('/api/cell_data');
-                const data = await res.json();
+        // Phase 4: Render voltage distribution bar graph
+        function renderVoltageBar(cells) {
+            const bar = document.getElementById('voltageBar');
+            bar.innerHTML = '';
 
-                const modeEl = document.getElementById('cellMode');
-                const statusEl = document.getElementById('cellStatus');
-
-                if (!data.success) {
-                    modeEl.textContent = data.mode || 'live';
-                    modeEl.style.color = '#ff6b35';
-                    statusEl.textContent = data.message || 'Cell data not available';
-                    renderCells([], []);
-                    return;
-                }
-
-                modeEl.textContent = data.mode || 'simulated';
-                modeEl.style.color = data.mode === 'simulated' ? '#FFD700' : '#4CAF50';
-                statusEl.textContent = `Cells: ${data.cells.length} | Min: ${data.cell_min_voltage_mV}mV | Max: ${data.cell_max_voltage_mV}mV`;
-
-                renderCells(data.cells, data.balancing, data.cell_min_voltage_mV, data.cell_max_voltage_mV);
-            } catch (e) {
-                document.getElementById('cellStatus').textContent = 'Failed to load cell data';
+            if (!cells || cells.length === 0) {
+                return;
             }
+
+            const min = Math.min(...cells);
+            const max = Math.max(...cells);
+            const range = max - min || 1;
+
+            cells.forEach((mv, idx) => {
+                const barSegment = document.createElement('div');
+                
+                // Calculate height proportional to voltage
+                const normalized = (mv - min) / range;
+                const height = Math.max(10, normalized * 100);
+                
+                // Color based on voltage level
+                let color = '#4CAF50';  // Green - normal
+                if (mv < min + range * 0.33) {
+                    color = '#FF6B6B';  // Red - low
+                } else if (mv > max - range * 0.1) {
+                    color = '#FFD700';  // Yellow - high
+                }
+                
+                barSegment.style.cssText = `
+                    background: linear-gradient(to top, ${color}, ${color});
+                    height: ${height}%;
+                    flex: 1 1 auto;
+                    border-radius: 2px;
+                    cursor: pointer;
+                    transition: all 0.2s;
+                    border: 1px solid rgba(255, 255, 255, 0.2);
+                `;
+                
+                barSegment.title = `Cell ${idx + 1}: ${mv} mV`;
+                
+                // Phase 4: Bi-directional highlighting (bar ↔ cell)
+                barSegment.onmouseover = () => {
+                    barSegment.style.opacity = '1';
+                    barSegment.style.boxShadow = '0 0 8px ' + color;
+                    selectedBarIdx = idx;
+                    updateBarHighlight(idx);
+                };
+                barSegment.onmouseout = () => {
+                    barSegment.style.opacity = '0.8';
+                    barSegment.style.boxShadow = 'none';
+                    selectedBarIdx = -1;
+                    updateBarHighlight(-1);
+                };
+                
+                barSegment.style.opacity = '0.8';
+                bar.appendChild(barSegment);
+            });
         }
 
-        loadCellData();
-        setInterval(loadCellData, 5000);
+        // Phase 4: Update bar highlight when cell is hovered
+        function updateBarHighlight(cellIdx) {
+            const bar = document.getElementById('voltageBar');
+            const segments = bar.querySelectorAll('div');
+            segments.forEach((seg, idx) => {
+                if (idx === cellIdx) {
+                    seg.style.opacity = '1';
+                } else if (cellIdx === -1) {
+                    seg.style.opacity = '0.8';
+                }
+            });
+        }
+
+        // Phase 4: Highlight cell when bar segment is hovered
+        function highlightCell(barIdx) {
+            const grid = document.getElementById('cellGrid');
+            const cells = grid.querySelectorAll('div');
+            cells.forEach((cell, idx) => {
+                if (idx === barIdx) {
+                    cell.style.opacity = '1';
+                } else if (barIdx === -1) {
+                    cell.style.opacity = '1';
+                } else {
+                    cell.style.opacity = '0.6';
+                }
+            });
+        }
+
+        function connectSSE() {
+            // Close previous connection if exists
+            if (eventSource) {
+                eventSource.close();
+            }
+            
+            eventSource = new EventSource('/api/cell_stream');
+            
+            eventSource.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.success) {
+                        const modeEl = document.getElementById('cellMode');
+                        const statusEl = document.getElementById('cellStatus');
+                        
+                        modeEl.textContent = data.mode || 'live';
+                        modeEl.style.color = '#4CAF50';
+                        statusEl.textContent = `Cells: ${data.cells.length} | Min: ${data.cell_min_voltage_mV}mV | Max: ${data.cell_max_voltage_mV}mV`;
+                        
+                        renderCells(data.cells, data.balancing, data.cell_min_voltage_mV, data.cell_max_voltage_mV);
+                    } else {
+                        // No MQTT data available yet
+                        const modeEl = document.getElementById('cellMode');
+                        const statusEl = document.getElementById('cellStatus');
+                        
+                        modeEl.textContent = data.mode || 'unavailable';
+                        modeEl.style.color = '#FFD700';
+                        statusEl.textContent = data.message || 'Waiting for data from transmitter...';
+                        statusEl.style.color = '#FFD700';
+                    }
+                } catch (e) {
+                    console.error('Failed to parse SSE data:', e);
+                }
+            };
+            
+            eventSource.onerror = function(event) {
+                console.error('SSE connection error:', event);
+                document.getElementById('cellStatus').textContent = 'Connection lost - reconnecting...';
+                // Reconnect after 3 seconds
+                setTimeout(connectSSE, 3000);
+            };
+        }
+        
+        // Connect to SSE stream on page load
+        connectSSE();
+        
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', function() {
+            if (eventSource) {
+                eventSource.close();
+            }
+        });
     </script>
     )rawliteral";
 

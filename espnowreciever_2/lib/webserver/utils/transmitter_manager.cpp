@@ -886,6 +886,16 @@ void TransmitterManager::storeBatterySpecs(const JsonObject& specs) {
     doc.set(specs);
     battery_specs_json_ = "";
     serializeJson(doc, battery_specs_json_);
+    
+    // Parse and update battery_settings.cell_count from MQTT data
+    if (specs.containsKey("number_of_cells")) {
+        uint16_t new_cell_count = specs["number_of_cells"];
+        if (new_cell_count > 0) {
+            battery_settings.cell_count = new_cell_count;
+            Serial.printf("[TX_MGR] Updated battery_settings.cell_count from MQTT: %u\n", new_cell_count);
+        }
+    }
+    
     Serial.println("[TX_MGR] Stored battery specs from MQTT");
 }
 

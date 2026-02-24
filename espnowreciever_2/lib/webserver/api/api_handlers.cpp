@@ -6,6 +6,7 @@
 #include "../page_definitions.h"
 #include "../logging.h"
 #include "../../src/espnow/espnow_send.h"
+#include "../../src/mqtt/mqtt_client.h"
 #include <Arduino.h>
 #include <esp_now.h>
 #include <espnow_common.h>
@@ -208,9 +209,9 @@ static esp_err_t api_monitor_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
-// Get current data source (simulated/live)
+// Get current data source (always live - receiver only displays MQTT data)
 static esp_err_t api_get_data_source_handler(httpd_req_t *req) {
-    const char* mode = test_mode_enabled ? "simulated" : "live";
+    const char* mode = "live";
     char json[96];
     snprintf(json, sizeof(json), "{\"mode\":\"%s\"}", mode);
     httpd_resp_set_type(req, "application/json");
@@ -218,7 +219,7 @@ static esp_err_t api_get_data_source_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
-// Set data source (simulated/live)
+// Set data source (deprecated - receiver always uses MQTT data)
 static esp_err_t api_set_data_source_handler(httpd_req_t *req) {
     char buf[128];
     int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
@@ -230,47 +231,22 @@ static esp_err_t api_set_data_source_handler(httpd_req_t *req) {
     }
     buf[ret] = '\0';
 
-    StaticJsonDocument<128> doc;
-    DeserializationError error = deserializeJson(doc, buf);
-    if (error) {
-        const char* json = "{\"success\":false,\"error\":\"JSON parse error\"}";
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
-    }
-
-    bool enable_sim = false;
-    if (doc.containsKey("mode")) {
-        const char* mode = doc["mode"] | "";
-        enable_sim = (strcmp(mode, "simulated") == 0 || strcmp(mode, "test") == 0);
-    } else if (doc.containsKey("simulated")) {
-        enable_sim = doc["simulated"].as<bool>();
-    } else {
-        const char* json = "{\"success\":false,\"error\":\"Missing mode\"}";
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
-    }
-
-    ReceiverNetworkConfig::setSimulationMode(enable_sim);
-    test_mode_enabled = enable_sim;
-
-    notify_sse_data_updated();
-
-    const char* json = "{\"success\":true}\n";
+    // Receiver no longer supports test mode - always uses MQTT data
+    // This endpoint kept for API compatibility but does nothing
+    const char* json = "{\"success\":true,\"message\":\"Receiver always uses MQTT data from transmitter\"}\n";
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, json, strlen(json));
     return ESP_OK;
 }
 
-// Cell monitor data (simulated when in simulation mode)
+// Cell monitor data - receiver only displays MQTT data from transmitter
 static esp_err_t api_cell_data_handler(httpd_req_t *req) {
-    Serial.printf("[API_DEBUG] api_cell_data_handler called: test_mode=%d, hasCellData=%d\n", 
-                  test_mode_enabled, TransmitterManager::hasCellData());
+    Serial.printf("[API_DEBUG] api_cell_data_handler called: hasCellData=%d\n", 
+                  TransmitterManager::hasCellData());
     
-    // Check if we have real cell data from MQTT (live mode)
-    if (!test_mode_enabled && TransmitterManager::hasCellData()) {
-        // Use real cell data from transmitter
+    // Check if we have cell data from MQTT
+    if (TransmitterManager::hasCellData()) {
+        // Use cell data from transmitter via MQTT
         uint16_t cell_count = TransmitterManager::getCellCount();
         const uint16_t* voltages = TransmitterManager::getCellVoltages();
         const bool* balancing = TransmitterManager::getCellBalancingStatus();
@@ -278,7 +254,7 @@ static esp_err_t api_cell_data_handler(httpd_req_t *req) {
         uint16_t max_voltage = TransmitterManager::getCellMaxVoltage();
         bool balancing_active = TransmitterManager::isBalancingActive();
         
-        Serial.printf("[API_DEBUG] Using live data: %d cells, first voltage=%dmV, min=%dmV, max=%dmV\n",
+        Serial.printf("[API_DEBUG] Using MQTT data: %d cells, first voltage=%dmV, min=%dmV, max=%dmV\n",
                       cell_count, (cell_count > 0 ? voltages[0] : 0), min_voltage, max_voltage);
         
         String json = "{\"success\":true,\"mode\":\"live\",\"cells\":[";
@@ -304,48 +280,92 @@ static esp_err_t api_cell_data_handler(httpd_req_t *req) {
         return ESP_OK;
     }
     
-    // Fallback to simulated data or error message
-    if (!test_mode_enabled) {
-        const char* json = "{\"success\":false,\"mode\":\"live\",\"message\":\"Cell data not available\"}";
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
-    }
+    // No MQTT data available
+    const char* json = "{\"success\":false,\"mode\":\"unavailable\",\"message\":\"No cell data received from transmitter\"}";
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json, strlen(json));
+    return ESP_OK;
+}
 
-    uint16_t cell_count = 96;
-    if (TransmitterManager::hasBatterySettings()) {
-        auto settings = TransmitterManager::getBatterySettings();
-        if (settings.cell_count > 0 && settings.cell_count <= 200) {
-            cell_count = settings.cell_count;
+// SSE endpoint for cell data - Server-Sent Events for real-time cell updates
+static esp_err_t api_cell_data_sse_handler(httpd_req_t *req) {
+    // Increment SSE subscriber count (tells MQTT to stay subscribed to cell_data)
+    MqttClient::incrementCellDataSubscribers();
+    LOG_DEBUG("[SSE]", "SSE client connected (subscribers: %d)", MqttClient::getCellDataSubscriberCount());
+    
+    // Set headers for SSE
+    httpd_resp_set_type(req, "text/event-stream");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    httpd_resp_set_hdr(req, "Connection", "keep-alive");
+    
+    // Lambda to send cell data as SSE event
+    auto sendCellData = [req]() -> bool {
+        // Check if we have MQTT data from transmitter
+        if (TransmitterManager::hasCellData()) {
+            // Stream MQTT cell data from transmitter
+            const uint16_t* voltages = TransmitterManager::getCellVoltages();
+            const bool* balancing = TransmitterManager::getCellBalancingStatus();
+            uint16_t min_voltage = TransmitterManager::getCellMinVoltage();
+            uint16_t max_voltage = TransmitterManager::getCellMaxVoltage();
+            bool balancing_active = TransmitterManager::isBalancingActive();
+            uint16_t cell_count = TransmitterManager::getCellCount();
+            
+            String json = "{\"success\":true,\"cells\":[";
+            for (uint16_t i = 0; i < cell_count; i++) {
+                if (i > 0) json += ",";
+                json += String(voltages[i]);
+            }
+            json += "],\"balancing\":[";
+            for (uint16_t i = 0; i < cell_count; i++) {
+                if (i > 0) json += ",";
+                json += balancing[i] ? "true" : "false";
+            }
+            json += "],\"cell_min_voltage_mV\":";
+            json += String(min_voltage);
+            json += ",\"cell_max_voltage_mV\":";
+            json += String(max_voltage);
+            json += ",\"balancing_active\":";
+            json += balancing_active ? "true" : "false";
+            json += ",\"mode\":\"live\"}";
+            
+            String event = "data: " + json + "\n\n";
+            return httpd_resp_send_chunk(req, event.c_str(), event.length()) == ESP_OK;
+        } else {
+            // No MQTT data available from transmitter
+            String json = "{\"success\":false,\"mode\":\"unavailable\",\"message\":\"Waiting for transmitter data\"}";
+            String event = "data: " + json + "\n\n";
+            return httpd_resp_send_chunk(req, event.c_str(), event.length()) == ESP_OK;
+        }
+    };
+    
+    // Send initial data
+    if (!sendCellData()) {
+        return ESP_FAIL;
+    }
+    
+    // Event-driven loop: Send updates continuously
+    // Timeout after 5 minutes to prevent indefinite connections
+    TickType_t start_time = xTaskGetTickCount();
+    const TickType_t max_duration = pdMS_TO_TICKS(300000);  // 5 minutes
+    const TickType_t poll_interval = pdMS_TO_TICKS(500);     // Poll every 500ms
+    
+    while ((xTaskGetTickCount() - start_time) < max_duration) {
+        // Poll for data updates every 500ms
+        vTaskDelay(poll_interval);
+        
+        // Try to send updated cell data
+        if (!sendCellData()) {
+            break;  // Connection closed by client
         }
     }
-
-    uint32_t pack_mv = g_test_voltage_mv;
-    if (pack_mv == 0) {
-        const uint32_t min_mv = 30000;
-        const uint32_t max_mv = 42000;
-        uint32_t clamped_soc = (g_test_soc < 0) ? 0 : (g_test_soc > 100 ? 100 : (uint32_t)g_test_soc);
-        pack_mv = min_mv + ((max_mv - min_mv) * clamped_soc) / 100;
-    }
-
-    float base_cell_mv = (cell_count > 0) ? (pack_mv / (float)cell_count) : 0.0f;
-
-    String json = "{\"success\":true,\"mode\":\"simulated\",\"cells\":[";
-    for (uint16_t i = 0; i < cell_count; i++) {
-        if (i > 0) json += ",";
-        int jitter = random(-15, 16);
-        int cell_mv = (int)(base_cell_mv + jitter);
-        json += String(cell_mv);
-    }
-    json += "],\"balancing\":[";
-    for (uint16_t i = 0; i < cell_count; i++) {
-        if (i > 0) json += ",";
-        json += (random(0, 100) < 5) ? "true" : "false";  // 5% balancing
-    }
-    json += "]}";
-
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json.c_str(), json.length());
+    
+    // Close the connection
+    httpd_resp_send_chunk(req, NULL, 0);
+    
+    // Decrement SSE subscriber count (tells MQTT to potentially pause cell_data subscription)
+    MqttClient::decrementCellDataSubscribers();
+    LOG_DEBUG("[SSE]", "SSE client disconnected (subscribers: %d)", MqttClient::getCellDataSubscriberCount());
+    
     return ESP_OK;
 }
 
@@ -419,6 +439,9 @@ static esp_err_t api_transmitter_ip_handler(httpd_req_t *req) {
 }
 
 // Server-Sent Events for real-time battery monitor
+// NOTE: SSE infrastructure is built but currently unused by frontend.
+// Frontend uses polling instead. This handler kept for future real-time updates.
+// LEGACY CODE CLEANED: Removed references to receiver stub variables (g_test_soc, etc.)
 static esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
     httpd_resp_set_type(req, "text/event-stream");
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
@@ -437,18 +460,17 @@ static esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
     uint8_t last_soc = 255;
     int32_t last_power = INT32_MAX;
     uint32_t last_voltage = 0;
-    bool last_mode = false;
     
-    // Send initial data
+    // Send initial data (using live data from TransmitterManager only)
     char event_data[512];
-    const char* mode = test_mode_enabled ? "simulated" : "live";
-    uint8_t current_soc = test_mode_enabled ? g_test_soc : g_received_soc;
-    int32_t current_power = test_mode_enabled ? g_test_power : g_received_power;
-    uint32_t current_voltage = test_mode_enabled ? g_test_voltage_mv : g_received_voltage_mv;
+    uint8_t current_soc = g_received_soc;
+    int32_t current_power = g_received_power;
+    uint32_t current_voltage = g_received_voltage_mv;
+    
     
     snprintf(event_data, sizeof(event_data),
-             "data: {\"mode\":\"%s\",\"soc\":%d,\"power\":%ld,\"voltage_mv\":%u,\"voltage_v\":%.1f}\n\n",
-             mode, current_soc, current_power, current_voltage, current_voltage / 1000.0f);
+             "data: {\"soc\":%d,\"power\":%ld,\"voltage_mv\":%u,\"voltage_v\":%.1f}\n\n",
+             current_soc, current_power, current_voltage, current_voltage / 1000.0f);
     
     if (httpd_resp_send_chunk(req, event_data, strlen(event_data)) != ESP_OK) {
         return ESP_FAIL;
@@ -457,7 +479,6 @@ static esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
     last_soc = current_soc;
     last_power = current_power;
     last_voltage = current_voltage;
-    last_mode = test_mode_enabled;
     
     // Event-driven loop (max 5 minutes)
     TickType_t start_time = xTaskGetTickCount();
@@ -473,16 +494,14 @@ static esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
         );
         
         if (bits & (1 << 0)) {
-            current_soc = test_mode_enabled ? g_test_soc : g_received_soc;
-            current_power = test_mode_enabled ? g_test_power : g_received_power;
-            current_voltage = test_mode_enabled ? g_test_voltage_mv : g_received_voltage_mv;
+            current_soc = g_received_soc;
+            current_power = g_received_power;
+            current_voltage = g_received_voltage_mv;
             
-            if (current_soc != last_soc || current_power != last_power || current_voltage != last_voltage || test_mode_enabled != last_mode) {
-                mode = test_mode_enabled ? "simulated" : "live";
-                
+            if (current_soc != last_soc || current_power != last_power || current_voltage != last_voltage) {
                 snprintf(event_data, sizeof(event_data),
-                         "data: {\"mode\":\"%s\",\"soc\":%d,\"power\":%ld,\"voltage_mv\":%u,\"voltage_v\":%.1f}\n\n",
-                         mode, current_soc, current_power, current_voltage, current_voltage / 1000.0f);
+                         "data: {\"soc\":%d,\"power\":%ld,\"voltage_mv\":%u,\"voltage_v\":%.1f}\n\n",
+                         current_soc, current_power, current_voltage, current_voltage / 1000.0f);
                 
                 if (httpd_resp_send_chunk(req, event_data, strlen(event_data)) != ESP_OK) {
                     break;
@@ -491,7 +510,6 @@ static esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
                 last_soc = current_soc;
                 last_power = current_power;
                 last_voltage = current_voltage;
-                last_mode = test_mode_enabled;
             }
         } else {
             const char* ping = ": ping\n\n";
@@ -706,6 +724,21 @@ static esp_err_t notfound_handler(httpd_req_t *req) {
     httpd_resp_set_status(req, "404 Not Found");
     httpd_resp_set_type(req, "text/plain");
     httpd_resp_sendstr(req, "Endpoint not found");
+    return ESP_OK;
+}
+
+// Get current debug level handler
+static esp_err_t api_get_debug_level_handler(httpd_req_t *req) {
+    uint8_t level = get_last_debug_level();
+    const char* level_names[] = {"EMERG", "ALERT", "CRIT", "ERROR", "WARNING", "NOTICE", "INFO", "DEBUG"};
+    
+    char json_response[256];
+    snprintf(json_response, sizeof(json_response), 
+             "{\"success\":true,\"level\":%d,\"level_name\":\"%s\"}",
+             level, level_names[level]);
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json_response);
     return ESP_OK;
 }
 
@@ -1908,7 +1941,9 @@ int register_all_api_handlers(httpd_handle_t server) {
         {.uri = "/api/firmware_info", .method = HTTP_GET, .handler = api_firmware_info_handler, .user_ctx = NULL},
         {.uri = "/api/transmitter_metadata", .method = HTTP_GET, .handler = api_transmitter_metadata_handler, .user_ctx = NULL},
         {.uri = "/api/monitor_sse", .method = HTTP_GET, .handler = api_monitor_sse_handler, .user_ctx = NULL},
+        {.uri = "/api/cell_stream", .method = HTTP_GET, .handler = api_cell_data_sse_handler, .user_ctx = NULL},
         {.uri = "/api/reboot", .method = HTTP_GET, .handler = api_reboot_handler, .user_ctx = NULL},
+        {.uri = "/api/debugLevel", .method = HTTP_GET, .handler = api_get_debug_level_handler, .user_ctx = NULL},
         {.uri = "/api/setDebugLevel", .method = HTTP_GET, .handler = api_set_debug_level_handler, .user_ctx = NULL},
         {.uri = "/api/get_battery_settings", .method = HTTP_GET, .handler = api_get_battery_settings_handler, .user_ctx = NULL},
         {.uri = "/api/save_setting", .method = HTTP_POST, .handler = api_save_setting_handler, .user_ctx = NULL},

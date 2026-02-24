@@ -178,7 +178,7 @@ typedef struct __attribute__((packed)) {
 typedef struct __attribute__((packed)) {
     uint8_t  type;          // msg_heartbeat
     uint32_t seq;           // Monotonic sequence number (detects loss/resets)
-    uint32_t uptime_ms;     // Sender uptime in milliseconds
+    uint64_t uptime_ms;     // Sender uptime in milliseconds (64-bit to avoid overflow after 49 days)
     uint64_t unix_time;     // Unix timestamp in seconds (NTP-synchronized)
     uint8_t  time_source;   // 0=unsynced, 1=NTP, 2=manual, 3=GPS
     uint8_t  state;         // Connection state enum
@@ -191,7 +191,7 @@ typedef struct __attribute__((packed)) {
 typedef struct __attribute__((packed)) {
     uint8_t  type;          // msg_heartbeat_ack
     uint32_t ack_seq;       // Sequence number being acknowledged
-    uint32_t uptime_ms;     // Receiver uptime in milliseconds
+    uint64_t uptime_ms;     // Receiver uptime in milliseconds (64-bit to avoid overflow after 49 days)
     uint8_t  state;         // Receiver connection state
     uint16_t checksum;      // CRC16 checksum
 } heartbeat_ack_t;

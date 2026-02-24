@@ -73,6 +73,21 @@ static esp_err_t transmitter_hub_handler(httpd_req_t *req) {
         </div>
     </div>
     
+    <!-- Data Source Status -->
+    <div class='info-box' style='margin: 20px 0; background: rgba(0,188,212,0.1); border-left: 5px solid #00BCD4;'>
+        <h3 style='margin: 0 0 10px 0; color: #00BCD4;'>📊 Data Mode</h3>
+        <div style='display: flex; align-items: center; gap: 15px;'>
+            <div>
+                <div style='color: #888; font-size: 13px;'>Current Mode</div>
+                <div id='txDataMode' style='font-size: 18px; font-weight: bold; color: #4CAF50; margin-top: 5px;'>Loading...</div>
+            </div>
+            <div style='color: #888; font-size: 12px;'>
+                <strong>Note:</strong> Test mode toggle is controlled on the transmitter.<br>
+                To switch between test (dummy) and live (battery) data, see transmitter settings.
+            </div>
+        </div>
+    </div>
+    
     <!-- Navigation Cards -->
     <h3 style='margin: 30px 0 15px 0;'>⚙️ Functions</h3>
     <div style='display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px;'>
@@ -142,6 +157,27 @@ static esp_err_t transmitter_hub_handler(httpd_req_t *req) {
             ← Back to Dashboard
         </a>
     </div>
+
+    <script>
+        async function updateDataMode() {
+            try {
+                const res = await fetch('/api/get_data_source');
+                const data = await res.json();
+                const modeEl = document.getElementById('txDataMode');
+                if (data.mode === 'simulated') {
+                    modeEl.textContent = 'Test Mode (Simulated Data)';
+                    modeEl.style.color = '#FFD700';
+                } else {
+                    modeEl.textContent = 'Live Mode (Real Data)';
+                    modeEl.style.color = '#4CAF50';
+                }
+            } catch (e) {
+                document.getElementById('txDataMode').textContent = 'Unknown';
+            }
+        }
+        updateDataMode();
+        setInterval(updateDataMode, 2000);  // Update every 2s
+    </script>
     )rawliteral";
     
     String page = generatePage("Transmitter Hub", content, "/transmitter");

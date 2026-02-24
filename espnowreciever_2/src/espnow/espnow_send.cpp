@@ -3,6 +3,13 @@
 #include <esp_now.h>
 #include <espnow_packet_utils.h>
 
+// Track the last debug level sent to transmitter
+static uint8_t last_debug_level_sent = 6;  // Default to INFO level
+
+uint8_t get_last_debug_level() {
+    return last_debug_level_sent;
+}
+
 bool send_debug_level_control(uint8_t level) {
     // Validate level
     if (level > 7) {
@@ -47,6 +54,8 @@ bool send_debug_level_control(uint8_t level) {
     esp_err_t result = esp_now_send(ESPNow::transmitter_mac, (uint8_t*)&packet, sizeof(packet));
     
     if (result == ESP_OK) {
+        // Store the level we just sent
+        last_debug_level_sent = level;
         Serial.printf("[ESP-NOW] Debug level control sent: level=%d to %02X:%02X:%02X:%02X:%02X:%02X\n",
                      level,
                      ESPNow::transmitter_mac[0], ESPNow::transmitter_mac[1], ESPNow::transmitter_mac[2],

@@ -19,8 +19,7 @@
 #include "mqtt/mqtt_task.h"
 #include <connection_manager.h>
 #include <connection_event_processor.h>
-#include <channel_manager.h>  // Centralized channel management
-#include "test/test_data.h"
+#include <channel_manager.h>
 #include "config/wifi_setup.h"
 #include "config/littlefs_init.h"
 #include "../lib/webserver/webserver.h"
@@ -30,9 +29,6 @@
 #include <espnow_discovery.h>  // Common ESP-NOW discovery component
 #include <firmware_version.h>
 #include <firmware_metadata.h>  // Embed firmware metadata in binary
-
-// Forward declaration for status indicator task (defined in test_data.cpp)
-void taskStatusIndicator(void *parameter);
 
 // ═══════════════════════════════════════════════════════════════════════
 // SETUP
@@ -68,9 +64,6 @@ void setup() {
     // Load receiver network configuration from NVS
     ReceiverNetworkConfig::loadConfig();
 
-    // Apply simulation mode preference
-    TestMode::enabled = ReceiverNetworkConfig::isSimulationMode();
-
     // Initialize WiFi with static IP and connect to network
     setupWiFi();
 
@@ -79,6 +72,11 @@ void setup() {
 
     // Initialize transmitter cache from NVS (write-through cache)
     TransmitterManager::init();
+    
+    // Initialize web server (after WiFi is connected)
+    LOG_INFO("MAIN", "Initializing web server...");
+    init_webserver();
+    LOG_INFO("MAIN", "Web server initialized");
     
     // Initialize ESP-NOW (but don't register callback yet - queue must be created first)
     esp_wifi_set_ps(WIFI_PS_NONE);
@@ -146,17 +144,6 @@ void setup() {
         4096   // Stack size (increased for MqttLogger usage)
     );
     
-    // Task: Generate Test Data (priority 1, core 1) - updates display directly
-    xTaskCreatePinnedToCore(
-        task_generate_test_data,
-        "TestDataGen",
-        4096,
-        NULL,
-        1,
-        &RTOS::task_test_data,
-        1
-    );
-    
     // Task: MQTT Client (priority 0, core 1) - low priority, receives spec data
     xTaskCreatePinnedToCore(
         task_mqtt_client,
@@ -165,17 +152,6 @@ void setup() {
         NULL,
         0,
         NULL,
-        1
-    );
-    
-    // Task: Status Indicator (priority 0, core 1)
-    xTaskCreatePinnedToCore(
-        taskStatusIndicator,
-        "StatusIndicator",
-        2048,
-        NULL,
-        0,
-        &RTOS::task_indicator,
         1
     );
     
@@ -206,22 +182,14 @@ void setup() {
     LOG_INFO("HEARTBEAT", "RX Heartbeat manager initialized (90s timeout)");
     
     // *** PHASE 2: Initialize system state machine ***
-    if (TestMode::enabled) {
-        transition_to_state(SystemState::TEST_MODE);
-    } else {
-        transition_to_state(SystemState::WAITING_FOR_TRANSMITTER);
-    }
+    transition_to_state(SystemState::WAITING_FOR_TRANSMITTER);
     
     // NOW register ESP-NOW callbacks (queue is ready)
     esp_now_register_recv_cb(on_data_recv);
     esp_now_register_send_cb(on_espnow_sent);
     LOG_DEBUG("MAIN", "ESP-NOW callbacks registered");
     
-    // Initialize web server (ESP-IDF http_server in lib/webserver.cpp)
-    init_webserver();
-    if (WiFi.status() == WL_CONNECTED) {
-        LOG_INFO("MAIN", "Web server: http://%s", WiFi.localIP().toString().c_str());
-    }
+    transition_to_state(SystemState::WAITING_FOR_TRANSMITTER);
 }
 
 // ═══════════════════════════════════════════════════════════════════════

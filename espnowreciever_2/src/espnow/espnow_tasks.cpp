@@ -693,19 +693,13 @@ void handle_data_message(const espnow_queue_msg_t* msg) {
             memcpy(ESPNow::transmitter_mac, msg->mac, 6);
             notify_sse_data_updated();
             
-            // State machine transition
-            extern SystemState current_state;
-            if (current_state == SystemState::TEST_MODE && !TestMode::enabled) {
-                transition_to_state(SystemState::NORMAL_OPERATION);
-            }
-            
             LOG_DEBUG(kLogTag, "Valid: SOC=%d%%, Power=%dW (MAC: %02X:%02X:%02X:%02X:%02X:%02X)", 
                          payload->soc, payload->power,
                          msg->mac[0], msg->mac[1], msg->mac[2],
                          msg->mac[3], msg->mac[4], msg->mac[5]);
             
             // Batch display updates in single mutex acquisition to reduce contention
-            if (!TestMode::enabled && (ESPNow::dirty_flags.soc_changed || ESPNow::dirty_flags.power_changed)) {
+            if (ESPNow::dirty_flags.soc_changed || ESPNow::dirty_flags.power_changed) {
                 if (xSemaphoreTake(RTOS::tft_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
                     if (ESPNow::dirty_flags.soc_changed) {
                         display_soc((float)payload->soc);
@@ -755,7 +749,7 @@ void handle_packet_events(const espnow_queue_msg_t* msg) {
         memcpy(ESPNow::transmitter_mac, msg->mac, 6);
         notify_sse_data_updated();
         
-        if (!TestMode::enabled && (ESPNow::dirty_flags.soc_changed || ESPNow::dirty_flags.power_changed)) {
+        if (ESPNow::dirty_flags.soc_changed || ESPNow::dirty_flags.power_changed) {
             if (xSemaphoreTake(RTOS::tft_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
                 if (ESPNow::dirty_flags.soc_changed) {
                     display_soc((float)soc);

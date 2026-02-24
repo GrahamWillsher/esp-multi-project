@@ -88,6 +88,10 @@ def rename_firmware(source, target, env):
 def generate_build_metadata(env):
     """Generate dynamic build-time metadata flags"""
     
+    # Guard against multiple invocations during build process
+    if env.get('__FIRMWARE_METADATA_GENERATED__'):
+        return
+    
     # Generate build timestamp
     build_date = time.strftime('%d-%m-%Y %H:%M:%S')
     
@@ -103,6 +107,9 @@ def generate_build_metadata(env):
         ('PIO_ENV_NAME', f'\\"{env_name}\\"'),
         ('BUILD_DATE', f'\\"{build_date}\\"'),
     ])
+    
+    # Mark as generated to prevent multiple invocations
+    env['__FIRMWARE_METADATA_GENERATED__'] = True
     
     print(f"  Dynamic metadata: DEVICE_HARDWARE={board}, ENV={env_name}")
 
