@@ -39,6 +39,9 @@
 #include "network/time_manager.h"
 #include <mqtt_manager.h>  // For MqttConfigManager
 
+// Battery Emulator HAL (for GPIO configuration)
+#include "battery_emulator/devboard/hal/hal.h"
+
 // ESP-NOW handlers
 #include "espnow/message_handler.h"
 #include "espnow/discovery_task.h"
@@ -60,9 +63,14 @@
 // Data layer
 #include "datalayer/static_data.h"
 
+// Test mode (Phase 1)
+#include "test_mode/test_mode.h"
+
 // Phase 4a: Battery Emulator integration
 #if CONFIG_CAN_ENABLED
 #include "battery_emulator/datalayer/datalayer.h"
+#include "battery_emulator/communication/nvm/comm_nvm.h"
+#include "battery_emulator/test_data_generator.h"
 #include "communication/can/can_driver.h"
 #include "battery/battery_manager.h"
 #endif
@@ -84,6 +92,10 @@ void setup() {
     Serial.begin(115200);
     delay(1000);
     LOG_INFO("MAIN", "\n=== ESP-NOW Transmitter (Modular) ===");
+    
+    // Initialize hardware abstraction layer (GPIO configuration for Waveshare HAT)
+    init_hal();
+    LOG_INFO("HAL", "Hardware abstraction layer initialized: %s", esp32hal->name());
     
     // Display firmware metadata (embedded in binary)
     char fwInfo[128];
@@ -143,18 +155,27 @@ void setup() {
     });
     
 #if CONFIG_CAN_ENABLED
-    // Phase 4a: Initialize CAN driver (uses HSPI - no GPIO conflicts with Ethernet)
+    // Phase 4a: Load battery settings from NVS (matches original Battery Emulator order)
+    LOG_INFO("BATTERY", "Loading battery configuration from NVS...");
+    init_stored_settings();  // Load battery type and other settings from NVS
+    
+    // Phase 4b: Initialize CAN driver (uses HSPI - no GPIO conflicts with Ethernet)
     LOG_INFO("CAN", "Initializing CAN driver...");
     if (!CANDriver::instance().init()) {
         LOG_ERROR("CAN", "CAN initialization failed!");
     } else {
         LOG_INFO("CAN", "✓ CAN driver ready");
-    } else {
-        LOG_INFO("BMS", "✓ BMS initialized");
     }
     
-    // Phase 4a: Initialize datalayer
-    // Note: datalayer is initialized via BatteryManager::init_primary_battery()
+    // Phase 4c: Initialize battery (after CAN, matches original Battery Emulator order)
+    LOG_INFO("BATTERY", "Initializing battery (type: %d)...", (int)user_selected_battery_type);
+    if (BatteryManager::instance().init_primary_battery(user_selected_battery_type)) {
+        LOG_INFO("BATTERY", "✓ Battery initialized: %u cells configured", 
+                 datalayer.battery.info.number_of_cells);
+    } else {
+        LOG_WARN("BATTERY", "Battery initialization returned false (may be None type)");
+    }
+    
     LOG_INFO("DATALAYER", "✓ Datalayer initialized");
 #endif
     
@@ -324,7 +345,23 @@ void setup() {
 #endif
     randomSeed(esp_random());
     
+    // Phase 1: Initialize test mode (disabled by default)
+    LOG_INFO("TEST_MODE", "Initializing test mode system...");
+    TestMode::initialize(96);  // Support 96 cells
+    TestMode::set_enabled(false);  // Start in live mode
+    LOG_INFO("TEST_MODE", "✓ Test mode initialized (disabled)");
+    
 #if CONFIG_CAN_ENABLED
+    // Phase 4a: Initialize test data generator NOW (not lazily)
+    // Must happen AFTER battery setup but BEFORE MQTT starts publishing
+    // This ensures cell_voltages_mV[] array is populated with correct cell count
+    if (TestDataGenerator::is_enabled()) {
+        LOG_INFO("TEST_DATA", "Explicitly initializing test data generator...");
+        TestDataGenerator::update();  // First call triggers init()
+        LOG_INFO("TEST_DATA", "✓ Test data generator initialized with %u cells", 
+                 datalayer.battery.info.number_of_cells);
+    }
+    
     // Phase 4a: Start real data sender (reads from datalayer)
     LOG_INFO("MAIN", "===== PHASE 4a: REAL BATTERY DATA =====");
     LOG_INFO("MAIN", "Using CAN bus data from datalayer");

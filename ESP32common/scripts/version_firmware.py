@@ -1,6 +1,7 @@
 """
-PlatformIO Post-Build Script
-Renames the firmware binary to include version information from build flags.
+PlatformIO Build Script
+- Pre-build: Generates dynamic build flags (DEVICE_HARDWARE, BUILD_DATE, PIO_ENV_NAME)
+- Post-build: Renames firmware binary to include version information
 
 Usage:
     Add to platformio.ini:
@@ -11,6 +12,7 @@ Import('env')
 import os
 import shutil
 import re
+import time
 
 def get_version_from_flags(env):
     """Extract version numbers from build flags"""
@@ -82,6 +84,30 @@ def rename_firmware(source, target, env):
         print(f"  Location: {versioned_path}")
     except Exception as e:
         print(f"Error creating versioned firmware: {e}")
+
+def generate_build_metadata(env):
+    """Generate dynamic build-time metadata flags"""
+    
+    # Generate build timestamp
+    build_date = time.strftime('%d-%m-%Y %H:%M:%S')
+    
+    # Extract device hardware from board setting (e.g., "esp32-poe2" -> "ESP32-POE2")
+    board = env.get('BOARD', 'unknown').upper().replace('-', '_')
+    
+    # Get environment name
+    env_name = env.get('PIOENV', 'unknown')
+    
+    # Append dynamic definitions to build flags
+    env.Append(CPPDEFINES=[
+        ('DEVICE_HARDWARE', f'\\"{board}\\"'),
+        ('PIO_ENV_NAME', f'\\"{env_name}\\"'),
+        ('BUILD_DATE', f'\\"{build_date}\\"'),
+    ])
+    
+    print(f"  Dynamic metadata: DEVICE_HARDWARE={board}, ENV={env_name}")
+
+# Generate build metadata before compilation
+generate_build_metadata(env)
 
 # Register the post-build action
 env.AddPostAction("$BUILD_DIR/${PROGNAME}.bin", rename_firmware)
