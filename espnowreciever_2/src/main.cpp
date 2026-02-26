@@ -31,7 +31,12 @@
 #include <firmware_metadata.h>  // Embed firmware metadata in binary
 
 // ═══════════════════════════════════════════════════════════════════════
-// SETUP
+// Globals
+// ═══════════════════════════════════════════════════════════════════════
+
+// Hardware display instance (lives for entire application lifetime)
+static TFT_eSPI tft_hardware = TFT_eSPI();
+
 // ═══════════════════════════════════════════════════════════════════════
 
 void setup() {
@@ -53,9 +58,8 @@ void setup() {
     LOG_INFO("MAIN", "========================================");
     Serial.flush();
 
-
-
-    // Initialize TFT display and backlight
+    // Initialize TFT display and backlight (legacy function - uses global tft object)
+    // TODO: Refactor to use Display::DisplayManager for HAL abstraction
     init_display();
     
     // Initialize LittleFS filesystem

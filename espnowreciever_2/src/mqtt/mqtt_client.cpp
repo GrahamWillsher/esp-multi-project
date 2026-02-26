@@ -231,10 +231,7 @@ void MqttClient::handleBatterySpecs(const char* json_payload, size_t length) {
 }
 
 void MqttClient::handleCellData(const char* json_payload, size_t length) {
-    LOG_DEBUG("MQTT", "Processing transmitter/BE/cell_data");
-    
-    // Log raw payload for debugging
-    Serial.printf("[MQTT_DEBUG] transmitter/BE/cell_data payload (%u bytes): %.200s\n", length, json_payload);
+    LOG_DEBUG("MQTT", "Processing transmitter/BE/cell_data (%u bytes)", length);
     
     // Parse cell voltage and balancing data
     // 711-byte payload needs ~3000-3500 bytes for ArduinoJson deserialization
@@ -246,31 +243,14 @@ void MqttClient::handleCellData(const char* json_payload, size_t length) {
         return;
     }
     
-    // Log parsed data
+    // Log parsed data summary
     if (doc.containsKey("number_of_cells")) {
-        Serial.printf("[MQTT_DEBUG] Parsed number_of_cells: %d\n", doc["number_of_cells"].as<int>());
-    }
-    if (doc.containsKey("cell_voltages_mV") && doc["cell_voltages_mV"].is<JsonArray>()) {
-        JsonArray voltages = doc["cell_voltages_mV"];
-        Serial.printf("[MQTT_DEBUG] First 5 voltages: ");
-        size_t max_display = (voltages.size() < 5) ? voltages.size() : 5;
-        for (size_t i = 0; i < max_display; i++) {
-            Serial.printf("%d ", voltages[i].as<int>());
-        }
-        Serial.println();
+        LOG_DEBUG("MQTT", "Parsed cell data: %d cells", doc["number_of_cells"].as<int>());
     }
     
-    // Debug data_source field
+    // Log data source if present
     if (doc.containsKey("data_source")) {
-        const char* source = doc["data_source"];
-        Serial.printf("[MQTT_DEBUG] Found data_source field: '%s'\n", source);
-    } else {
-        Serial.println("[MQTT_DEBUG] data_source field NOT FOUND in JSON!");
-        // Print all keys in the document
-        Serial.println("[MQTT_DEBUG] Available keys:");
-        for (JsonPair p : doc.as<JsonObject>()) {
-            Serial.printf("[MQTT_DEBUG]  - %s\n", p.key().c_str());
-        }
+        LOG_DEBUG("MQTT", "Data source: %s", doc["data_source"].as<const char*>());
     }
     
     // Store cell data in TransmitterManager
