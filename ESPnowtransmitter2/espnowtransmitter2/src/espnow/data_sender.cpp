@@ -5,7 +5,7 @@
 #include "../config/logging_config.h"
 #include "../datalayer/datalayer.h"  // Phase 4a: Real battery data
 #include "../battery_emulator/test_data_generator.h"  // Test data for development
-#include "../test_mode/test_mode.h"  // Phase 1: Test mode
+#include "../test_data/test_data_config.h"  // Phase 2: Runtime test data configuration
 #include "../network/transmission_selector.h"  // Phase 2: Smart transmission routing
 #include <Arduino.h>
 #include <connection_manager.h>
@@ -41,7 +41,7 @@ void DataSender::start() {
 void DataSender::task_impl(void* parameter) {
     LOG_DEBUG("DATA_SENDER", "Data sender task running");
     
-    // NOTE: Test data generator will auto-initialize on first update() call
+    // NOTE: Test data generator auto-initializes on first update() call
     // This ensures battery setup() has already run and configured number_of_cells
     
     TickType_t last_wake_time = xTaskGetTickCount();
@@ -50,21 +50,22 @@ void DataSender::task_impl(void* parameter) {
     while (true) {
         vTaskDelayUntil(&last_wake_time, interval_ticks);
         
-        // Phase 1: Generate test data if test mode is enabled
-        if (TestMode::is_enabled()) {
-            TestMode::generate_sample();  // Advance internal state for realistic drift
-        }
-        // Phase 4a: Update real battery data from datalayer (if CAN is enabled and test mode is off)
-        else if (TestDataGenerator::is_enabled()) {
+        // Phase 2: Update test data if enabled (runtime configuration)
+        if (TestDataGenerator::is_enabled()) {
             TestDataGenerator::update();
         }
         
         if (EspnowMessageHandler::instance().is_transmission_active()) {
-            LOG_TRACE("DATA_SENDER", "Sending data (transmission active, mode: %s)", 
-                     TestMode::is_enabled() ? "TEST" : "LIVE");
+            const char* mode_str = TestDataGenerator::is_enabled() ? "TEST" : "LIVE";
+            LOG_TRACE("DATA_SENDER", "Sending data (transmission active, mode: %s)", mode_str);
             send_test_data_with_led_control();
         } else {
-            LOG_TRACE("DATA_SENDER", "Skipping send (transmission inactive)");
+            static uint32_t last_inactive_log_ms = 0;
+            uint32_t now = millis();
+            if (now - last_inactive_log_ms > 5000) {
+                last_inactive_log_ms = now;
+                LOG_WARN("DATA_SENDER", "Transmission inactive - no ESP-NOW data being sent");
+            }
         }
     }
 }
@@ -90,28 +91,21 @@ void DataSender::task_impl(void* parameter) {
  * LED flash command is only sent once when transitioning between bands.
  */
 void DataSender::send_test_data_with_led_control() {
-    // Phase 1: Select data source (test vs live)
-    if (TestMode::is_enabled()) {
-        // Use test mode data
-        const TestMode::TestState& test_state = TestMode::get_current_state();
-        tx_data.soc = test_state.soc;
-        tx_data.power = test_state.power;
-        LOG_TRACE("DATA_SENDER", "Using TEST data: SOC:%d%%, Power:%dW", 
-                 tx_data.soc, tx_data.power);
-    } else {
-        // Phase 4a: Read real battery data from datalayer
-        // Convert from datalayer format (pptt = percent * 100) to simple percentage
-        uint16_t soc_pptt = datalayer.battery.status.reported_soc;  // e.g., 8000 = 80.00%
-        uint8_t soc_percent = soc_pptt / 100;  // Convert to 0-100 range
-        
-        int32_t power_w = datalayer.battery.status.active_power_W;
-        
-        // Populate tx_data structure from datalayer
-        tx_data.soc = soc_percent;
-        tx_data.power = power_w;
-        LOG_TRACE("DATA_SENDER", "Using LIVE data: SOC:%d%%, Power:%dW", 
-                 tx_data.soc, tx_data.power);
-    }
+    // Phase 2: Read battery data from datalayer (live or test depending on configuration)
+    // Convert from datalayer format (pptt = percent * 100) to simple percentage
+    uint16_t soc_pptt = datalayer.battery.status.reported_soc;  // e.g., 8000 = 80.00%
+    uint8_t soc_percent = soc_pptt / 100;  // Convert to 0-100 range
+    
+    int32_t power_w = datalayer.battery.status.active_power_W;
+    
+    // Populate tx_data structure from datalayer
+    tx_data.type = msg_data;  // Set message type for receiver routing
+    tx_data.soc = soc_percent;
+    tx_data.power = power_w;
+    
+    const char* mode_str = TestDataGenerator::is_enabled() ? "TEST" : "LIVE";
+    LOG_TRACE("DATA_SENDER", "Using %s data: SOC:%d%%, Power:%dW", mode_str,
+             tx_data.soc, tx_data.power);
     
     tx_data.checksum = calculate_checksum(&tx_data);
     

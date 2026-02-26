@@ -41,6 +41,7 @@ void task_mqtt_loop(void* parameter) {
     unsigned long last_reconnect_attempt = 0;
     unsigned long last_publish = 0;
     unsigned long last_cell_publish = 0;
+    unsigned long last_event_publish = 0;
     bool logger_initialized = false;
     bool was_connected = false;  // Track previous MQTT connection state
     
@@ -141,13 +142,22 @@ void task_mqtt_loop(void* parameter) {
                 } else {
                     Serial.println("[MQTT_TASK_DEBUG] ✗ publish_cell_data() returned false");
                 }
-            } else {
+            }
+
+            // Publish event logs periodically (every 5 seconds, only when subscribed)
+            if (config::features::MQTT_ENABLED && 
+                MqttManager::instance().get_event_log_subscribers() > 0 &&
+                (now - last_event_publish > 5000)) {
+                last_event_publish = now;
+                MqttManager::instance().publish_event_logs();
+            }
+            else {
                 // Debug why it's not being called
                 static unsigned long last_debug = 0;
                 if (now - last_debug > 5000) {
                     last_debug = now;
-                    Serial.printf("[MQTT_TASK_DEBUG] NOT calling publish_cell_data: MQTT_ENABLED=%d, time_since_last=%lu\n",
-                                  config::features::MQTT_ENABLED, now - last_cell_publish);
+                    Serial.printf("[MQTT_TASK_DEBUG] NOT calling publish_event_logs: MQTT_ENABLED=%d, time_since_last=%lu\n",
+                                  config::features::MQTT_ENABLED, now - last_event_publish);
                 }
             }
         }

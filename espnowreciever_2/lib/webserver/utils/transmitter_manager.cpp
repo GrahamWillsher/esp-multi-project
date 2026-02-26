@@ -183,6 +183,11 @@ uint16_t TransmitterManager::cell_min_voltage_mV_ = 0;
 uint16_t TransmitterManager::cell_max_voltage_mV_ = 0;
 bool TransmitterManager::balancing_active_ = false;
 bool TransmitterManager::cell_data_known_ = false;
+char TransmitterManager::cell_data_source_[32] = "unknown";
+
+std::vector<TransmitterManager::EventLogEntry> TransmitterManager::event_logs_ = {};
+bool TransmitterManager::event_logs_known_ = false;
+uint32_t TransmitterManager::event_logs_last_update_ms_ = 0;
 
 void TransmitterManager::init() {
     loadFromNVS();
@@ -1013,7 +1018,72 @@ void TransmitterManager::storeCellData(const JsonObject& cell_data) {
         balancing_active_ = cell_data["balancing_active"];
     }
     
+    // Parse data_source field (dummy/live/live_simulated)
+    // NOTE: Must extract immediately since cell_data (JsonObject) reference is temporary
+    if (cell_data.containsKey("data_source")) {
+        const char* source = cell_data["data_source"].as<const char*>();
+        if (source) {
+            strncpy(cell_data_source_, source, sizeof(cell_data_source_) - 1);
+            cell_data_source_[sizeof(cell_data_source_) - 1] = '\0';
+        } else {
+            strncpy(cell_data_source_, "unknown", sizeof(cell_data_source_) - 1);
+        }
+    } else {
+        // Default to unknown if not present
+        strncpy(cell_data_source_, "unknown", sizeof(cell_data_source_) - 1);
+    }
+    
     cell_data_known_ = true;
-    Serial.printf("[TX_MGR] Stored cell data: %d cells, min=%dmV, max=%dmV\\n",
-                  cell_count_, cell_min_voltage_mV_, cell_max_voltage_mV_);
+    Serial.printf("[TX_MGR] Stored cell data: %d cells, min=%dmV, max=%dmV, source=%s\\n",
+                  cell_count_, cell_min_voltage_mV_, cell_max_voltage_mV_, cell_data_source_);
+}
+
+void TransmitterManager::storeEventLogs(const JsonObject& logs) {
+    event_logs_.clear();
+
+    if (!logs.containsKey("events") || !logs["events"].is<JsonArray>()) {
+        event_logs_known_ = false;
+        Serial.println("[TX_MGR] Event logs missing 'events' array");
+        return;
+    }
+
+    JsonArray events = logs["events"].as<JsonArray>();
+    const size_t max_events = 200;
+
+    for (JsonObject evt : events) {
+        if (event_logs_.size() >= max_events) {
+            break;
+        }
+
+        EventLogEntry entry = {};
+        entry.timestamp = evt["timestamp"] | 0;
+        entry.level = evt["level"] | 0;
+        entry.data = evt["data"] | 0;
+
+        const char* msg = evt["message"] | "";
+        strncpy(entry.message, msg, sizeof(entry.message) - 1);
+        entry.message[sizeof(entry.message) - 1] = '\0';
+
+        event_logs_.push_back(entry);
+    }
+
+    event_logs_known_ = true;
+    event_logs_last_update_ms_ = millis();
+    Serial.printf("[TX_MGR] Stored %u event logs\n", (unsigned)event_logs_.size());
+}
+
+bool TransmitterManager::hasEventLogs() {
+    return event_logs_known_ && !event_logs_.empty();
+}
+
+const std::vector<TransmitterManager::EventLogEntry>& TransmitterManager::getEventLogs() {
+    return event_logs_;
+}
+
+uint32_t TransmitterManager::getEventLogCount() {
+    return static_cast<uint32_t>(event_logs_.size());
+}
+
+uint32_t TransmitterManager::getEventLogsLastUpdateMs() {
+    return event_logs_last_update_ms_;
 }

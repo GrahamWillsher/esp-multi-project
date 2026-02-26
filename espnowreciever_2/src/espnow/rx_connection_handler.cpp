@@ -36,6 +36,10 @@ void ReceiverConnectionHandler::init() {
                 ChannelManager::instance().lock_channel(current_channel, "RX_CONN");
                 LOG_INFO("RX_CONN", "✓ Connected - channel locked at %d", current_channel);
                 
+                // Send initialization requests now that connection is fully established
+                ReceiverConnectionHandler::instance().send_initialization_requests(
+                    EspNowConnectionManager::instance().get_peer_mac());
+                
             } else if (old_state == EspNowConnectionState::CONNECTED && 
                        new_state == EspNowConnectionState::IDLE) {
                 // Clean up peer when connection lost
@@ -98,9 +102,6 @@ void ReceiverConnectionHandler::on_peer_registered(const uint8_t* transmitter_ma
     EspNowConnectionManager& conn_mgr = EspNowConnectionManager::instance();
     if (conn_mgr.get_state() == EspNowConnectionState::CONNECTING) {
         post_connection_event(EspNowEvent::PEER_REGISTERED, transmitter_mac_);
-        
-        // Check if we've reached CONNECTED state and can send initialization
-        schedule_initialization_on_connect(transmitter_mac_);
     } else {
         LOG_WARN("RX_CONN", "on_peer_registered() called in state %d (expected CONNECTING), deferring event",
                  static_cast<int>(conn_mgr.get_state()));
@@ -115,20 +116,6 @@ void ReceiverConnectionHandler::on_data_received(const uint8_t* transmitter_mac)
 
     // Post DATA_RECEIVED event (common manager)
     post_connection_event(EspNowEvent::DATA_RECEIVED, transmitter_mac_);
-}
-
-void ReceiverConnectionHandler::schedule_initialization_on_connect(const uint8_t* transmitter_mac) {
-    // This is called after PEER_REGISTERED event
-    // Only send initialization if we've confirmed both devices are connected
-    // The connection state machine will transition to CONNECTED after PEER_REGISTERED
-    // We check here and send when ready, or retry from the main loop
-    
-    // For now, we'll let the retry mechanism in ConfigManager handle timing
-    // This ensures requests are sent only when both peers are ready
-    if (EspNowConnectionManager::instance().get_state() == EspNowConnectionState::CONNECTED) {
-        LOG_DEBUG("CONN_HANDLER", "Connection state already CONNECTED - sending initialization now");
-        send_initialization_requests(transmitter_mac);
-    }
 }
 
 void ReceiverConnectionHandler::send_initialization_requests(const uint8_t* transmitter_mac) {

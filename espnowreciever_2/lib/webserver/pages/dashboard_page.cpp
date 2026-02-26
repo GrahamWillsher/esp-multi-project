@@ -301,7 +301,7 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
     <!-- System Tools Section -->
     <div class='info-box' style='margin-top: 30px;'>
         <h3 style='margin: 0 0 20px 0; color: #FF9800;'>🛠️ System Tools</h3>
-        <div style='display: grid; grid-template-columns: 1fr 1fr; gap: 15px;'>
+        <div style='display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px;'>
             <a href='/debug' style='text-decoration: none;'>
                 <div style='padding: 15px; background: rgba(255,152,0,0.1); border: 2px solid #FF9800; border-radius: 8px; text-align: center; cursor: pointer; transition: background 0.2s;'
                      onmouseover='this.style.background="rgba(255,152,0,0.2)"'
@@ -318,6 +318,15 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
                     <span style='font-size: 24px;'>📤</span>
                     <div style='margin-top: 10px; color: #FF9800; font-weight: bold;'>OTA Update</div>
                     <div style='font-size: 12px; color: #888; margin-top: 5px;'>Update firmware</div>
+                </div>
+            </a>
+            <a id='eventLogLink' href='/events' style='text-decoration: none;'>
+                <div id='eventLogCard' style='padding: 15px; background: rgba(255,152,0,0.1); border: 2px solid #FF9800; border-radius: 8px; text-align: center; cursor: pointer; transition: all 0.2s;'
+                     onmouseover='if(!this.classList.contains("disabled")) this.style.background="rgba(255,152,0,0.2)"'
+                     onmouseout='if(!this.classList.contains("disabled")) this.style.background="rgba(255,152,0,0.1)"'>
+                    <span style='font-size: 24px;'>📋</span>
+                    <div style='margin-top: 10px; color: #FF9800; font-weight: bold;'>Event Logs</div>
+                    <div id='eventLogStatus' style='font-size: 12px; color: #888; margin-top: 5px;'>View system events</div>
                 </div>
             </a>
         </div>
@@ -504,12 +513,94 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
             }
         }, 2000);
         
-        // Update last update timer every second (shows "X seconds ago")
-        setInterval(function() {
-            updateTimerDisplay();
-        }, 1000);
+        // Load event logs from transmitter
+        async function loadEventLogs() {
+            const statusEl = document.getElementById('eventLogStatus');
+            const cardEl = document.getElementById('eventLogCard');
+            const linkEl = document.getElementById('eventLogLink');
+            statusEl.textContent = 'Loading...';
+            statusEl.style.color = '#FFD700';
+            
+            try {
+                const response = await fetch('/api/get_event_logs?limit=100');
+                const data = await response.json();
+                
+                if (data.success && data.event_count !== undefined && data.event_count > 0) {
+                    // Count event types if events array exists
+                    let errorCount = 0;
+                    let warningCount = 0;
+                    let infoCount = 0;
+                    
+                    if (data.events && Array.isArray(data.events)) {
+                        data.events.forEach(event => {
+                            if (event.level === 3) {  // ERROR
+                                errorCount++;
+                            } else if (event.level === 4) {  // WARNING
+                                warningCount++;
+                            } else if (event.level === 6) {  // INFO
+                                infoCount++;
+                            }
+                        });
+                    }
+                    
+                    // Update status display - enable card
+                    let statusText = data.event_count + ' events';
+                    if (errorCount > 0) {
+                        statusText += ` | ${errorCount} errors`;
+                    }
+                    if (warningCount > 0) {
+                        statusText += ` | ${warningCount} warnings`;
+                    }
+                    
+                    statusEl.textContent = statusText;
+                    statusEl.style.color = '#4CAF50';
+                    cardEl.classList.remove('disabled');
+                    linkEl.style.pointerEvents = 'auto';
+                    cardEl.style.opacity = '1';
+                    
+                    // Log event summary
+                    console.log('Event Summary:', {
+                        total: data.event_count,
+                        errors: errorCount,
+                        warnings: warningCount,
+                        info: infoCount
+                    });
+                } else {
+                    // No data available - disable card and show appropriate message
+                    cardEl.classList.add('disabled');
+                    linkEl.style.pointerEvents = 'none';
+                    cardEl.style.opacity = '0.5';
+                    cardEl.style.cursor = 'not-allowed';
+                    
+                    if (data.success && data.event_count === 0) {
+                        statusEl.textContent = 'No events to display';
+                        statusEl.style.color = '#888';
+                    } else if (data.success === false && data.error && data.error.includes('not connected')) {
+                        statusEl.textContent = 'Transmitter offline';
+                        statusEl.style.color = '#FFD700';
+                    } else {
+                        statusEl.textContent = 'Not available';
+                        statusEl.style.color = '#888';
+                    }
+                }
+            } catch (e) {
+                // Connection error - disable card
+                cardEl.classList.add('disabled');
+                linkEl.style.pointerEvents = 'none';
+                cardEl.style.opacity = '0.5';
+                cardEl.style.cursor = 'not-allowed';
+                statusEl.textContent = 'Connection error';
+                statusEl.style.color = '#ff6b35';
+                console.error('Event logs fetch failed:', e);
+            }
+        }
         
-        // Initial fetch on page load
+        // Load event logs on page load
+        window.addEventListener('load', function() {
+            loadEventLogs();
+        });
+        
+
         setTimeout(async function() {
             try {
                 const timeResponse = await fetch('/api/transmitter_health');

@@ -18,6 +18,8 @@ char ReceiverNetworkConfig::mqtt_username_[32] = {0};
 char ReceiverNetworkConfig::mqtt_password_[64] = {0};
 uint8_t ReceiverNetworkConfig::battery_type_ = 29;      // Default to PYLON_BATTERY
 uint8_t ReceiverNetworkConfig::inverter_type_ = 0;      // Default to NONE
+uint8_t ReceiverNetworkConfig::battery_interface_ = 2;  // Default to CAN (Native)
+uint8_t ReceiverNetworkConfig::inverter_interface_ = 2; // Default to CAN (Native)
 bool ReceiverNetworkConfig::simulation_mode_ = true;    // Default to simulated data
 
 bool ReceiverNetworkConfig::loadConfig() {
@@ -73,6 +75,10 @@ bool ReceiverNetworkConfig::loadConfig() {
     // Load Battery and Inverter type selection (with defaults)
     battery_type_ = prefs.getUChar(NVS_KEY_BATTERY_TYPE, 29);    // 29 = PYLON_BATTERY
     inverter_type_ = prefs.getUChar(NVS_KEY_INVERTER_TYPE, 0);   // 0 = NONE
+    
+    // Load Battery and Inverter interface selection (with defaults)
+    battery_interface_ = prefs.getUChar(NVS_KEY_BATTERY_INTERFACE, 2);   // 2 = CAN (Native)
+    inverter_interface_ = prefs.getUChar(NVS_KEY_INVERTER_INTERFACE, 2); // 2 = CAN (Native)
 
     // Load simulation mode (default ON)
     simulation_mode_ = prefs.getBool(NVS_KEY_SIMULATION_MODE, true);
@@ -268,6 +274,11 @@ void ReceiverNetworkConfig::clearConfig() {
     memset(subnet_, 0, 4);
     memset(dns_primary_, 0, 4);
     memset(dns_secondary_, 0, 4);
+    battery_type_ = 29;
+    inverter_type_ = 0;
+    battery_interface_ = 2;
+    inverter_interface_ = 2;
+    simulation_mode_ = true;
 }
 
 void ReceiverNetworkConfig::setBatteryType(uint8_t type) {
@@ -293,6 +304,32 @@ void ReceiverNetworkConfig::setInverterType(uint8_t type) {
         Serial.printf("[ReceiverConfig] Inverter type saved: %d\n", type);
     } else {
         Serial.println("[ReceiverConfig] Failed to save inverter type to NVS");
+    }
+}
+
+void ReceiverNetworkConfig::setBatteryInterface(uint8_t interface) {
+    battery_interface_ = interface;
+    
+    Preferences prefs;
+    if (prefs.begin(NVS_NAMESPACE, false)) {
+        prefs.putUChar(NVS_KEY_BATTERY_INTERFACE, interface);
+        prefs.end();
+        Serial.printf("[ReceiverConfig] Battery interface saved: %d\n", interface);
+    } else {
+        Serial.println("[ReceiverConfig] Failed to save battery interface to NVS");
+    }
+}
+
+void ReceiverNetworkConfig::setInverterInterface(uint8_t interface) {
+    inverter_interface_ = interface;
+    
+    Preferences prefs;
+    if (prefs.begin(NVS_NAMESPACE, false)) {
+        prefs.putUChar(NVS_KEY_INVERTER_INTERFACE, interface);
+        prefs.end();
+        Serial.printf("[ReceiverConfig] Inverter interface saved: %d\n", interface);
+    } else {
+        Serial.println("[ReceiverConfig] Failed to save inverter interface to NVS");
     }
 }
 

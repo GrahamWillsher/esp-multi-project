@@ -30,6 +30,12 @@ public:
     bool is_connected() const { return connected_; }
     
     /**
+     * @brief Disconnect from MQTT broker gracefully
+     * Should be called before reboot to prevent socket errors
+     */
+    void disconnect();
+    
+    /**
      * @brief Publish battery data as JSON
      * @param soc Battery state of charge (0-100%)
      * @param power Power in watts (positive = charging, negative = discharging)
@@ -70,6 +76,28 @@ public:
      * @return true if published successfully, false otherwise
      */
     bool publish_cell_data();
+
+    /**
+     * @brief Publish event logs (transmitter/BE/event_logs topic, only changed events when subscribed)
+     * @return true if published successfully, false otherwise
+     */
+    bool publish_event_logs();
+    
+    /**
+     * @brief Increment event log subscriber count (called when client opens /events page)
+     */
+    void increment_event_log_subscribers();
+    
+    /**
+     * @brief Decrement event log subscriber count (called when client closes /events page)
+     */
+    void decrement_event_log_subscribers();
+    
+    /**
+     * @brief Get current event log subscriber count
+     * @return number of active subscribers
+     */
+    int get_event_log_subscribers() const { return event_log_subscribers_; }
     
     /**
      * @brief Process MQTT messages (must be called regularly from task)
@@ -108,4 +136,5 @@ private:
     PubSubClient client_;
     volatile bool connected_{false};
     char payload_buffer_[384];
+    int event_log_subscribers_ = 0;  // Track number of clients subscribing to event logs
 };

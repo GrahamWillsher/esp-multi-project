@@ -1,4 +1,5 @@
 #include "display_splash.h"
+#include "../hal/hardware_config.h"
 #include <TFT_eSPI.h>
 #include <LittleFS.h>
 #include <JPEGDecoder.h>
@@ -129,9 +130,9 @@ void fadeBacklight(uint8_t targetBrightness, uint32_t durationMs) {
         uint8_t brightness = (uint8_t)(brightnessFloat + 0.5f);
         
         #if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5,0,0)
-        ledcWrite(0, brightness);
+        ledcWrite(HardwareConfig::BACKLIGHT_PWM_CHANNEL, brightness);
         #else
-        ledcWrite(Display::PIN_LCD_BL, brightness);
+        ledcWrite(HardwareConfig::GPIO_BACKLIGHT, brightness);
         #endif
         
         if (step < steps) {
@@ -147,9 +148,9 @@ void displaySplashWithFade() {
     LOG_INFO("DISPLAY", "=== Starting Splash Screen Sequence ===");
     
     #if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5,0,0)
-    ledcWrite(0, 0);
+    ledcWrite(HardwareConfig::BACKLIGHT_PWM_CHANNEL, 0);
     #else
-    ledcWrite(Display::PIN_LCD_BL, 0);
+    ledcWrite(HardwareConfig::GPIO_BACKLIGHT, 0);
     #endif
     Display::current_backlight_brightness = 0;
     smart_delay(200);

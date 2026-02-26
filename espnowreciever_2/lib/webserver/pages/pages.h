@@ -10,6 +10,7 @@
 // Transmitter pages (renamed/moved)
 #include "settings_page.h"           // Now at /transmitter/config
 #include "battery_settings_page.h"   // Now at /transmitter/battery
+#include "inverter_settings_page.h"  // Now at /transmitter/inverter
 #include "monitor_page.h"            // Now at /transmitter/monitor
 #include "monitor2_page.h"           // Now at /transmitter/monitor2
 #include "reboot_page.h"             // Now at /transmitter/reboot
@@ -29,3 +30,4 @@
 // System tool pages
 #include "ota_page.h"
 #include "debug_page.h"
+#include "event_logs_page.h"

@@ -1,6 +1,7 @@
 #include "mqtt_client.h"
 #include "../lib/webserver/utils/transmitter_manager.h"
 #include "../common.h"
+#include "../espnow/espnow_send.h"
 #include <ArduinoJson.h>
 
 // Static member initialization
@@ -19,6 +20,9 @@ int MqttClient::cell_data_subscribers_ = 0;
 MqttClient::CellDataSubscriptionState MqttClient::cell_data_state_ = MqttClient::PAUSED;
 TaskHandle_t MqttClient::cell_data_pause_timer_ = nullptr;
 
+// Event log subscription management
+int MqttClient::event_log_subscribers_ = 0;
+
 void MqttClient::init(const uint8_t* mqtt_server, uint16_t mqtt_port, const char* client_id) {
     if (!mqtt_server) return;
     
@@ -30,7 +34,7 @@ void MqttClient::init(const uint8_t* mqtt_server, uint16_t mqtt_port, const char
     IPAddress server_ip(broker_ip_[0], broker_ip_[1], broker_ip_[2], broker_ip_[3]);
     mqtt_client_.setServer(server_ip, broker_port_);
     mqtt_client_.setCallback(messageCallback);
-    mqtt_client_.setBufferSize(2048); // Large buffer for static specs
+    mqtt_client_.setBufferSize(6144); // Large buffer for cell_data + event logs
     
     LOG_INFO("MQTT", "Initialized: %d.%d.%d.%d:%d", 
              broker_ip_[0], broker_ip_[1], broker_ip_[2], broker_ip_[3], broker_port_);
@@ -129,10 +133,10 @@ bool MqttClient::isEnabled() {
 void MqttClient::messageCallback(char* topic, uint8_t* payload, unsigned int length) {
     LOG_DEBUG("MQTT", "Message received on topic: %s (%u bytes)", topic, length);
     
-    // Null-terminate payload for JSON parsing
-    char* json_payload = (char*)malloc(length + 1);
+    // Null-terminate payload for JSON parsing (use PSRAM to free up DRAM)
+    char* json_payload = (char*)ps_malloc(length + 1);
     if (!json_payload) {
-        LOG_ERROR("MQTT", "Failed to allocate memory for payload");
+        LOG_ERROR("MQTT", "Failed to allocate memory for payload in PSRAM");
         return;
     }
     
@@ -148,6 +152,8 @@ void MqttClient::messageCallback(char* topic, uint8_t* payload, unsigned int len
         handleBatterySpecs(json_payload, length);
     } else if (strcmp(topic, "transmitter/BE/cell_data") == 0) {
         handleCellData(json_payload, length);
+    } else if (strcmp(topic, "transmitter/BE/event_logs") == 0) {
+        handleEventLogs(json_payload, length);
     }
     
     free(json_payload);
@@ -159,6 +165,7 @@ void MqttClient::subscribeToTopics() {
     mqtt_client_.subscribe("transmitter/BE/spec_data");
     mqtt_client_.subscribe("transmitter/BE/spec_data_2");
     mqtt_client_.subscribe("transmitter/BE/battery_specs");
+    mqtt_client_.subscribe("transmitter/BE/event_logs");
     
     // Only subscribe to cell_data if not paused (subscription optimization)
     if (cell_data_state_ != PAUSED) {
@@ -231,7 +238,7 @@ void MqttClient::handleCellData(const char* json_payload, size_t length) {
     
     // Parse cell voltage and balancing data
     // 711-byte payload needs ~3000-3500 bytes for ArduinoJson deserialization
-    DynamicJsonDocument doc(4096);  // Buffer for 96-cell voltage array (711 bytes + overhead)
+    DynamicJsonDocument doc(6144);  // Buffer for 96-cell voltage array + metadata
     DeserializationError error = deserializeJson(doc, json_payload, length);
     
     if (error) {
@@ -253,10 +260,38 @@ void MqttClient::handleCellData(const char* json_payload, size_t length) {
         Serial.println();
     }
     
+    // Debug data_source field
+    if (doc.containsKey("data_source")) {
+        const char* source = doc["data_source"];
+        Serial.printf("[MQTT_DEBUG] Found data_source field: '%s'\n", source);
+    } else {
+        Serial.println("[MQTT_DEBUG] data_source field NOT FOUND in JSON!");
+        // Print all keys in the document
+        Serial.println("[MQTT_DEBUG] Available keys:");
+        for (JsonPair p : doc.as<JsonObject>()) {
+            Serial.printf("[MQTT_DEBUG]  - %s\n", p.key().c_str());
+        }
+    }
+    
     // Store cell data in TransmitterManager
     TransmitterManager::storeCellData(doc.as<JsonObject>());
     
     LOG_INFO("MQTT", "Stored cell data from transmitter/BE/cell_data");
+}
+
+void MqttClient::handleEventLogs(const char* json_payload, size_t length) {
+    LOG_DEBUG("MQTT", "Processing transmitter/BE/event_logs");
+
+    DynamicJsonDocument doc(6144);
+    DeserializationError error = deserializeJson(doc, json_payload, length);
+
+    if (error) {
+        LOG_ERROR("MQTT", "Failed to parse event_logs: %s", error.c_str());
+        return;
+    }
+
+    TransmitterManager::storeEventLogs(doc.as<JsonObject>());
+    LOG_INFO("MQTT", "Stored event logs from transmitter/BE/event_logs");
 }
 
 /**
@@ -370,6 +405,33 @@ const char* MqttClient::getCellDataSubscriptionState() {
         case ERROR:      return "ERROR";
         default:         return "UNKNOWN";
     }
+}
+
+void MqttClient::incrementEventLogSubscribers() {
+    bool was_zero = (event_log_subscribers_ == 0);
+    event_log_subscribers_++;
+    LOG_INFO("[MQTT]", "Event log subscriber count: %d", event_log_subscribers_);
+
+    // Notify transmitter to start publishing event logs (ESP-NOW) on first subscriber
+    if (was_zero) {
+        send_event_logs_control(true);
+    }
+}
+
+void MqttClient::decrementEventLogSubscribers() {
+    if (event_log_subscribers_ > 0) {
+        event_log_subscribers_--;
+        LOG_INFO("[MQTT]", "Event log subscriber count: %d", event_log_subscribers_);
+        
+        if (event_log_subscribers_ == 0) {
+            // Notify transmitter to stop publishing (ESP-NOW)
+            send_event_logs_control(false);
+        }
+    }
+}
+
+int MqttClient::getEventLogSubscriberCount() {
+    return event_log_subscribers_;
 }
 
 /**

@@ -80,7 +80,12 @@ void TransmissionTask::task_impl(void* parameter) {
         
         // Only transmit if receiver is connected
         if (!EspNowConnectionManager::instance().is_connected()) {
-            LOG_TRACE("TX_TASK", "Receiver not connected - skipping transmission");
+            static uint32_t last_not_connected_log_ms = 0;
+            uint32_t now = millis();
+            if (now - last_not_connected_log_ms > 5000) {
+                last_not_connected_log_ms = now;
+                LOG_WARN("TX_TASK", "Receiver not connected - skipping ESP-NOW transmission");
+            }
             continue;
         }
         
@@ -119,8 +124,8 @@ void TransmissionTask::transmit_next_transient() {
     if (result == ESP_OK) {
         // Mark as sent in cache
         EnhancedCache::instance().mark_transient_sent(entry.seq);
-        LOG_DEBUG("TX_TASK", "Transient sent (seq: %u, SOC: %d%%, Power: %dW)", 
-                  entry.seq, entry.data.soc, entry.data.power);
+        LOG_INFO("TX_TASK", "ESP-NOW TX: SOC=%d%%, Power=%dW (seq:%u)", 
+                 entry.data.soc, entry.data.power, entry.seq);
     } else {
         LOG_ERROR("TX_TASK", "Failed to send transient (seq: %u): %s", 
                   entry.seq, esp_err_to_name(result));

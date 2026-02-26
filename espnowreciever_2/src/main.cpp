@@ -120,6 +120,16 @@ void setup() {
     // Create FreeRTOS tasks
     LOG_DEBUG("MAIN", "Creating FreeRTOS tasks...");
     tft.fillScreen(Display::tft_background);
+
+    // Diagnostic: verify TFT can draw SOC/power once at startup
+    if (xSemaphoreTake(RTOS::tft_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        display_soc(55.0f);
+        display_power(500);
+        xSemaphoreGive(RTOS::tft_mutex);
+        LOG_INFO("MAIN", "TFT diagnostic draw: SOC=55%%, Power=500W");
+    } else {
+        LOG_WARN("MAIN", "TFT diagnostic draw skipped (mutex timeout)");
+    }
     
     // Task: ESP-NOW Worker (priority 2, core 1) - highest priority for message processing
     xTaskCreatePinnedToCore(

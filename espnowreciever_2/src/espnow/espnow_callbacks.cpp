@@ -27,6 +27,12 @@ void on_data_recv(const uint8_t *mac, const uint8_t *data, int len) {
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
     if (xQueueSendFromISR(ESPNow::queue, &queue_msg, &xHigherPriorityTaskWoken) != pdTRUE) {
         // Queue full - message dropped
+        static uint32_t last_drop_log_ms = 0;
+        uint32_t now = millis();
+        if (now - last_drop_log_ms > 2000) {
+            last_drop_log_ms = now;
+            Serial.println("[ESP-NOW] RX queue full - message dropped");
+        }
     }
     
     // Yield to higher priority task if woken

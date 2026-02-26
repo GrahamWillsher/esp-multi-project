@@ -1,5 +1,7 @@
 #include "display_core.h"
+#include "display_splash.h"
 #include "../helpers.h"
+#include "../hal/hardware_config.h"
 #include <TFT_eSPI.h>
 
 extern TFT_eSPI tft;
@@ -10,8 +12,8 @@ void init_display() {
     Serial.flush();
 
     // Turn on display power (CRITICAL for T-Display-S3!)
-    pinMode(Display::PIN_POWER_ON, OUTPUT);
-    digitalWrite(Display::PIN_POWER_ON, HIGH);
+    pinMode(HardwareConfig::GPIO_DISPLAY_POWER, OUTPUT);
+    digitalWrite(HardwareConfig::GPIO_DISPLAY_POWER, HIGH);
     Serial.println("[INIT] PIN_POWER_ON (GPIO15) set to HIGH");
     Serial.flush();
     
@@ -23,8 +25,8 @@ void init_display() {
     tft.setSwapBytes(true);  // Ensure correct byte order for TFT
     
     // Setup backlight pin - keep OFF initially to prevent flash
-    pinMode(Display::PIN_LCD_BL, OUTPUT);
-    digitalWrite(Display::PIN_LCD_BL, LOW);  // Keep backlight OFF initially
+    pinMode(HardwareConfig::GPIO_BACKLIGHT, OUTPUT);
+    digitalWrite(HardwareConfig::GPIO_BACKLIGHT, LOW);  // Keep backlight OFF initially
     
     Serial.println("[INIT] Display initialized");
     Serial.flush();
@@ -33,12 +35,12 @@ void init_display() {
     Serial.println("[INIT] Configuring backlight...");
     Serial.flush();
     #if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5,0,0)
-    ledcSetup(0, 2000, 8);
-    ledcAttachPin(Display::PIN_LCD_BL, 0);
-    ledcWrite(0, 0);  // Start with backlight OFF
+    ledcSetup(HardwareConfig::BACKLIGHT_PWM_CHANNEL, HardwareConfig::BACKLIGHT_FREQUENCY_HZ, HardwareConfig::BACKLIGHT_RESOLUTION_BITS);
+    ledcAttachPin(HardwareConfig::GPIO_BACKLIGHT, HardwareConfig::BACKLIGHT_PWM_CHANNEL);
+    ledcWrite(HardwareConfig::BACKLIGHT_PWM_CHANNEL, 0);  // Start with backlight OFF
     #else
-    ledcAttach(Display::PIN_LCD_BL, 200, 8);
-    ledcWrite(Display::PIN_LCD_BL, 0);  // Start with backlight OFF
+    ledcAttach(HardwareConfig::GPIO_BACKLIGHT, HardwareConfig::BACKLIGHT_FREQUENCY_HZ, HardwareConfig::BACKLIGHT_RESOLUTION_BITS);
+    ledcWrite(HardwareConfig::GPIO_BACKLIGHT, 0);  // Start with backlight OFF
     #endif
     Display::current_backlight_brightness = 0;  // Initialize tracking variable to OFF
     Serial.println("[INIT] Backlight configured (OFF - waiting for splash)");
@@ -60,16 +62,11 @@ void displayInitialScreen() {
     tft.setTextColor(TFT_YELLOW);
     tft.drawString("Test Mode: ON", Display::SCREEN_WIDTH / 2, 35);
     
-    // Now turn backlight on to full brightness (status messages are drawn)
-    LOG_DEBUG("DISPLAY", "Turning on backlight...");
+    // Fade in backlight gradually (prevent flash)
+    LOG_DEBUG("DISPLAY", "Fading in backlight...");
     Serial.flush();
-    #if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5,0,0)
-    ledcWrite(0, 255);
-    #else
-    ledcWrite(Display::PIN_LCD_BL, 255);
-    #endif
-    Display::current_backlight_brightness = 255;
-    LOG_DEBUG("DISPLAY", "Backlight enabled at full brightness");
+    fadeBacklight(255, 1000);  // Fade to full brightness over 1 second
+    LOG_DEBUG("DISPLAY", "Backlight fade-in complete");
     Serial.flush();
 }
 

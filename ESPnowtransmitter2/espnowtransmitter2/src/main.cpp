@@ -63,8 +63,8 @@
 // Data layer
 #include "datalayer/static_data.h"
 
-// Test mode (Phase 1)
-#include "test_mode/test_mode.h"
+// Test data configuration (Phase 2)
+#include "test_data/test_data_config.h"
 
 // Phase 4a: Battery Emulator integration
 #if CONFIG_CAN_ENABLED
@@ -299,14 +299,27 @@ void setup() {
     LOG_INFO("DISCOVERY", "(ESP-NOW connection will be established asynchronously)");
     // ═══════════════════════════════════════════════════════════════════════
     
+    // CRITICAL: Initialize battery configuration EARLY (required by test data generator)
+    // Must happen before test data initialization, regardless of Ethernet connection status
+    LOG_DEBUG("STATIC_DATA", "Initializing battery configuration...");
+    StaticData::init();
+    StaticData::update_battery_specs(SystemSettings::instance().get_battery_profile_type());
+    
+    // CRITICAL: Ensure datalayer has the correct cell count from battery profile
+    // StaticData::update_battery_specs() reads from datalayer BUT datalayer.battery.info.number_of_cells 
+    // may still be 0 if battery hasn't set it yet. Use battery_specs as authoritative source.
+    // This is set by BatteryManager::init_primary_battery() -> battery->setup(), but that happens later
+    // For test data initialization, we need to pre-populate it here
+    datalayer.battery.info.number_of_cells = StaticData::get_battery_specs().number_of_cells;
+    LOG_INFO("TEST_DATA", "Pre-initialized datalayer with %u cells from battery profile", 
+             datalayer.battery.info.number_of_cells);
+    
     // Continue with Ethernet initialization (works independently of ESP-NOW)
     if (EthernetManager::instance().is_connected()) {
         LOG_INFO("ETHERNET", "Ethernet connected: %s", EthernetManager::instance().get_local_ip().toString().c_str());
         
-        // Initialize static configuration data
-        LOG_DEBUG("STATIC_DATA", "Initializing static configuration...");
-        StaticData::init();
-        StaticData::update_battery_specs(SystemSettings::instance().get_battery_profile_type());
+        // Initialize remaining static configuration data
+        LOG_DEBUG("STATIC_DATA", "Initializing remaining configuration...");
         StaticData::update_inverter_specs(SystemSettings::instance().get_inverter_type());
         
         // Initialize OTA
@@ -336,6 +349,11 @@ void setup() {
     HeartbeatManager::instance().init();
     LOG_INFO("HEARTBEAT", "Heartbeat manager initialized (10s interval, ACK-based)");
     
+    // Phase 2: Initialize test data configuration system (NVS-backed, runtime control)
+    LOG_INFO("TEST_DATA_CONFIG", "Initializing test data configuration system...");
+    TestDataConfig::init();
+    LOG_INFO("TEST_DATA_CONFIG", "✓ Test data configuration initialized");
+
 #if CONFIG_CAN_ENABLED
     // Initialize transmitter data (set starting SOC value from datalayer)
     tx_data.soc = datalayer.battery.status.reported_soc / 100;  // Convert pptt to percentage
@@ -345,22 +363,21 @@ void setup() {
 #endif
     randomSeed(esp_random());
     
-    // Phase 1: Initialize test mode (disabled by default)
-    LOG_INFO("TEST_MODE", "Initializing test mode system...");
-    TestMode::initialize(96);  // Support 96 cells
-    TestMode::set_enabled(false);  // Start in live mode
-    LOG_INFO("TEST_MODE", "✓ Test mode initialized (disabled)");
-    
 #if CONFIG_CAN_ENABLED
     // Phase 4a: Initialize test data generator NOW (not lazily)
+    // CRITICAL FIX: Always initialize with battery's cell count, regardless of runtime enabled state
+    // This fixes the 108-cell fallback bug when battery has 96 cells (Nissan Leaf, etc.)
     // Must happen AFTER battery setup but BEFORE MQTT starts publishing
-    // This ensures cell_voltages_mV[] array is populated with correct cell count
-    if (TestDataGenerator::is_enabled()) {
-        LOG_INFO("TEST_DATA", "Explicitly initializing test data generator...");
-        TestDataGenerator::update();  // First call triggers init()
-        LOG_INFO("TEST_DATA", "✓ Test data generator initialized with %u cells", 
-                 datalayer.battery.info.number_of_cells);
-    }
+    LOG_INFO("TEST_DATA", "Initializing test data generator with battery configuration...");
+    TestDataGenerator::update();  // First call triggers init() with correct cell count
+    LOG_INFO("TEST_DATA", "✓ Test data generator initialized with %u cells", 
+             datalayer.battery.info.number_of_cells);
+    
+    // Phase 2: Apply test data configuration from NVS
+    LOG_INFO("TEST_DATA_CONFIG", "Applying saved test data configuration...");
+    TestDataConfig::apply_config();
+    LOG_INFO("TEST_DATA_CONFIG", "✓ Configuration applied, mode: %s",
+             TestDataConfig::mode_to_string(TestDataConfig::get_config().mode));
     
     // Phase 4a: Start real data sender (reads from datalayer)
     LOG_INFO("MAIN", "===== PHASE 4a: REAL BATTERY DATA =====");

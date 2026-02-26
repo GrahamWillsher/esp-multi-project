@@ -1,14 +1,14 @@
 #include "test_data_generator.h"
 #include "../datalayer/datalayer.h"
 #include "../config/logging_config.h"
+#include "../test_data/test_data_config.h"
 #include <Arduino.h>
-
-// Enable test data generator via compile flag (comment out for production)
-#define TEST_DATA_GENERATOR_ENABLED
 
 namespace TestDataGenerator {
 
 static bool initialized = false;
+static bool enabled = false;  // Runtime control (replaces compile-time flag)
+static bool cell_generation_enabled = true;  // Control cell voltage generation
 static uint32_t last_update_ms = 0;
 static const uint32_t UPDATE_INTERVAL_MS = 100;
 
@@ -19,7 +19,6 @@ static float power_cycle = 0.0;
 static uint32_t cycle_count = 0;
 
 void init() {
-#ifdef TEST_DATA_GENERATOR_ENABLED
     if (initialized) return;
     
     LOG_INFO("TEST_DATA", "========== INIT() CALLED ==========");
@@ -90,15 +89,18 @@ void init() {
     LOG_INFO("TEST_DATA", "✓ Test data initialized: %uWh, %uS, SOC=65%%",
              datalayer.battery.info.total_capacity_Wh,
              datalayer.battery.info.number_of_cells);
-#endif
 }
 
 void update() {
-#ifdef TEST_DATA_GENERATOR_ENABLED
+    // CRITICAL: Always initialize on first call, regardless of enabled state
+    // This ensures correct cell count is captured from battery configuration
     if (!initialized) {
         init();
-        return;
+        if (!enabled) return;  // If disabled after init, don't update
+        // If enabled and just initialized, fall through to update
     }
+    
+    if (!enabled) return;  // Don't update if disabled
     
     uint32_t now = millis();
     if (now - last_update_ms < UPDATE_INTERVAL_MS) {
@@ -181,15 +183,30 @@ void update() {
                  soc_target, voltage_v, current_a, power_w,
                  temp_min_c, temp_max_c);
     }
-#endif
 }
 
 bool is_enabled() {
-#ifdef TEST_DATA_GENERATOR_ENABLED
-    return true;
-#else
-    return false;
-#endif
+    return enabled;
+}
+
+void set_enabled(bool new_enabled) {
+    enabled = new_enabled;
+    LOG_INFO("TEST_DATA", "Test data generator %s", enabled ? "ENABLED" : "DISABLED");
+}
+
+bool is_cell_generation_enabled() {
+    return cell_generation_enabled;
+}
+
+void set_cell_generation_enabled(bool new_enabled) {
+    cell_generation_enabled = new_enabled;
+    LOG_INFO("TEST_DATA", "Cell generation %s", cell_generation_enabled ? "ENABLED" : "DISABLED");
+}
+
+void reinitialize() {
+    initialized = false;
+    init();
+    LOG_INFO("TEST_DATA", "Test data generator reinitialized");
 }
 
 } // namespace TestDataGenerator

@@ -140,6 +140,12 @@ size_t serialize_inverter_specs(char* buffer, size_t buffer_size);
 size_t serialize_charger_specs(char* buffer, size_t buffer_size);
 
 /**
+ * @brief Get the current battery specifications
+ * @return Reference to the battery_specs structure
+ */
+const BatterySpecs& get_battery_specs();
+
+/**
  * @brief Serialize system specs to JSON string
  * @param buffer Output buffer
  * @param buffer_size Size of output buffer

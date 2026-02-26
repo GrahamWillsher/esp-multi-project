@@ -67,8 +67,6 @@ private:
     bool first_data_received_ = false;  // Gate for initialization requests
 
     // Send initialization requests when connection state is confirmed
+    // Called by state machine callback when entering CONNECTED state
     void send_initialization_requests(const uint8_t* transmitter_mac);
-    
-    // Called after peer registered to check if we can send initialization
-    void schedule_initialization_on_connect(const uint8_t* transmitter_mac);
 };

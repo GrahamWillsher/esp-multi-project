@@ -3,8 +3,12 @@
 #include "../config/network_config.h"
 #include "../config/logging_config.h"
 #include "../datalayer/static_data.h"
+#include "../battery_emulator/devboard/utils/events.h"
 #include <Arduino.h>
 #include <HTTPUpdate.h>
+#include <ArduinoJson.h>
+#include <algorithm>
+#include <vector>
 
 MqttManager::MqttManager() : client_(eth_client_) {
 }
@@ -21,9 +25,8 @@ void MqttManager::init() {
     }
     
     LOG_INFO("MQTT", "Initializing MQTT client...");
-    // Set buffer size to accommodate 108+ cells (~1600 bytes) + MQTT overhead (~400 bytes)
-    // Total: 2048 bytes to ensure we can handle large battery packs
-    client_.setBufferSize(2048);
+    // Set buffer size to accommodate cells + event logs (cell_data can be ~6KB)
+    client_.setBufferSize(6144);
     client_.setServer(config::get_mqtt_config().server, config::get_mqtt_config().port);
     client_.setCallback(message_callback);
     client_.setKeepAlive(60);
@@ -91,6 +94,18 @@ bool MqttManager::publish_data(int soc, long power, const char* timestamp, bool 
     return success;
 }
 
+void MqttManager::disconnect() {
+    if (connected_) {
+        LOG_INFO("MQTT", "Disconnecting from broker...");
+        client_.publish(config::get_mqtt_config().topics.status, "offline", true);
+        client_.disconnect();
+        connected_ = false;
+        // Give time for disconnect to complete
+        delay(100);
+        LOG_INFO("MQTT", "Disconnected gracefully");
+    }
+}
+
 bool MqttManager::publish_status(const char* message, bool retained) {
     if (!is_connected()) return false;
     return client_.publish(config::get_mqtt_config().topics.status, message, retained);
@@ -149,39 +164,24 @@ bool MqttManager::publish_battery_specs() {
 }
 
 bool MqttManager::publish_cell_data() {
-    Serial.println("[MQTT_DEBUG] publish_cell_data() called");
-    
     if (!is_connected()) {
-        Serial.println("[MQTT_DEBUG] Not connected, skipping cell data publish");
         return false;
     }
     
-    Serial.println("[MQTT_DEBUG] Allocating PSRAM buffer for cell data");
-    // Allocate buffer in PSRAM (needs 2KB+ for 96 cells)
-    char* buffer = (char*)ps_malloc(2048);
+    // Allocate buffer in PSRAM (needs 6KB for 96 cells + balancing + metadata)
+    char* buffer = (char*)ps_malloc(6144);
     if (!buffer) {
         LOG_ERROR("MQTT", "Failed to allocate PSRAM for cell data");
-        Serial.println("[MQTT_DEBUG] PSRAM allocation FAILED");
         return false;
     }
     
-    Serial.println("[MQTT_DEBUG] Calling serialize_cell_data()");
-    size_t len = StaticData::serialize_cell_data(buffer, 2048);
-    Serial.printf("[MQTT_DEBUG] serialize_cell_data() returned %u bytes\n", len);
-    
-    if (len > 0) {
-        Serial.printf("[MQTT_DEBUG] First 200 chars of JSON: %.200s\n", buffer);
-    }
+    size_t len = StaticData::serialize_cell_data(buffer, 6144);
     
     bool success = false;
     if (len > 0) {
-        Serial.println("[MQTT_DEBUG] Publishing to transmitter/BE/cell_data...");
         success = client_.publish("transmitter/BE/cell_data", buffer, true); // Retained
         if (success) {
             LOG_DEBUG("MQTT", "Published cell data (%u bytes)", len);
-            Serial.println("[MQTT_DEBUG] ✓ Publish successful!");
-        } else {
-            Serial.println("[MQTT_DEBUG] ✗ Publish FAILED!");
         }
     } else {
         Serial.println("[MQTT_DEBUG] serialize returned 0 bytes, not publishing");
@@ -213,6 +213,105 @@ bool MqttManager::publish_inverter_specs() {
     
     free(buffer);
     return success;
+}
+
+static uint8_t map_event_level(EVENTS_LEVEL_TYPE level) {
+    switch (level) {
+        case EVENT_LEVEL_ERROR:   return 3;
+        case EVENT_LEVEL_WARNING: return 4;
+        case EVENT_LEVEL_INFO:    return 6;
+        case EVENT_LEVEL_DEBUG:   return 7;
+        case EVENT_LEVEL_UPDATE:  return 5;
+        default:                  return 6;
+    }
+}
+
+bool MqttManager::publish_event_logs() {
+    if (!is_connected()) return false;
+    
+    // Only publish if there are active subscribers
+    if (event_log_subscribers_ <= 0) {
+        LOG_DEBUG("MQTT", "No event log subscribers, skipping publish");
+        return true;
+    }
+
+    std::vector<EventData> ordered;
+    ordered.reserve(EVENT_NOF_EVENTS);
+
+    // Collect only events that have been set and NOT yet published (delta mode)
+    for (int i = 0; i < EVENT_NOF_EVENTS; i++) {
+        const EVENTS_STRUCT_TYPE* event_ptr = get_event_pointer((EVENTS_ENUM_TYPE)i);
+        if (event_ptr && event_ptr->occurences > 0 && !event_ptr->MQTTpublished) {
+            ordered.push_back({(EVENTS_ENUM_TYPE)i, event_ptr});
+        }
+    }
+
+    // If no unpublished events, skip publishing
+    if (ordered.empty()) {
+        LOG_DEBUG("MQTT", "No unpublished events, skipping publish");
+        return true;
+    }
+
+    std::sort(ordered.begin(), ordered.end(), compareEventsByTimestampDesc);
+
+    const size_t total_events = ordered.size();
+    const size_t max_events = (total_events > 100) ? 100 : total_events;
+
+    // Allocate JSON document in PSRAM
+    DynamicJsonDocument doc(6144);
+    doc["event_count"] = static_cast<uint32_t>(total_events);
+    JsonArray events = doc.createNestedArray("events");
+
+    for (size_t i = 0; i < max_events; i++) {
+        const auto& item = ordered[i];
+        const EVENTS_STRUCT_TYPE* evt = item.event_pointer;
+        JsonObject obj = events.createNestedObject();
+        obj["timestamp"] = static_cast<uint64_t>(evt->timestamp);
+        obj["level"] = map_event_level(evt->level);
+        obj["data"] = evt->data;
+        obj["message"] = get_event_message_string(item.event_handle);
+        obj["event"] = get_event_enum_string(item.event_handle);
+    }
+
+    // Allocate buffer in PSRAM for serialization
+    char* buffer = (char*)ps_malloc(6144);
+    if (!buffer) {
+        LOG_ERROR("MQTT", "Failed to allocate PSRAM for event logs");
+        return false;
+    }
+
+    size_t len = serializeJson(doc, buffer, 6144);
+    bool success = false;
+    if (len > 0) {
+        success = client_.publish("transmitter/BE/event_logs", buffer, true);
+        if (success) {
+            LOG_DEBUG("MQTT", "Published %u changed event(s) (%u bytes)", (unsigned)max_events, len);
+            
+            // Mark all published events as published
+            for (const auto& item : ordered) {
+                set_event_MQTTpublished(item.event_handle);
+            }
+        } else {
+            LOG_ERROR("MQTT", "Failed to publish event logs");
+        }
+    } else {
+        LOG_ERROR("MQTT", "Failed to serialize event logs");
+    }
+
+    free(buffer);
+    return success;
+}
+
+void MqttManager::increment_event_log_subscribers() {
+    event_log_subscribers_++;
+    LOG_INFO("MQTT", "Event log subscriber count: %d", event_log_subscribers_);
+}
+
+void MqttManager::decrement_event_log_subscribers() {
+    if (event_log_subscribers_ > 0) {
+        event_log_subscribers_--;
+        LOG_INFO("MQTT", "Event log subscriber count: %d", event_log_subscribers_);
+    }
 }
 
 void MqttManager::loop() {
@@ -269,7 +368,10 @@ void MqttManager::handle_ota_command(const char* url) {
         case HTTP_UPDATE_OK:
             LOG_INFO("OTA", "Update successful! Rebooting...");
             publish_status("ota_success", false);
-            delay(1000);
+            delay(500);
+            // Disconnect MQTT gracefully before reboot
+            disconnect();
+            delay(500);
             ESP.restart();
             break;
     }

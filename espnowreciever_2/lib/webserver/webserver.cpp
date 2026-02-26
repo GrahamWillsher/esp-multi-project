@@ -70,7 +70,7 @@ void init_webserver() {
     LOG_INFO("WEBSERVER", "WiFi connected - proceeding with initialization");
     
     // Count expected handlers (update this when adding/removing handlers)
-    const int EXPECTED_HANDLER_COUNT = 41;  // 15 pages + 26 API handlers (25 specific + 1 firmware + 1 catch-all 404)
+    const int EXPECTED_HANDLER_COUNT = 61;  // 17 pages + 44 API handlers (42 specific + 1 firmware + 1 catch-all 404)
     
     // Initialize SSE notification system
     SSENotifier::init();
@@ -94,7 +94,7 @@ void init_webserver() {
     config.task_priority = tskIDLE_PRIORITY + 2;
     config.stack_size = 8192;  // Increased from 6144 for battery emulator data handling
     config.max_open_sockets = 4;
-    config.max_uri_handlers = 50;  // Phase 3: Increased to 50 for granular settings pages + future expansion
+    config.max_uri_handlers = 80;  // Increased to accommodate 61 handlers with headroom
     config.uri_match_fn = httpd_uri_match_wildcard;
     config.server_port = 80;
     config.recv_wait_timeout = 10;  // Receive timeout for battery data uploads
@@ -129,6 +129,7 @@ void init_webserver() {
     // Register transmitter pages (now with /transmitter prefix)
     if (register_settings_page(server) == ESP_OK) registered_count++;
     if (register_battery_settings_page(server) == ESP_OK) registered_count++;
+    if (register_inverter_settings_page(server) == ESP_OK) registered_count++;
     if (register_monitor_page(server) == ESP_OK) registered_count++;
     if (register_monitor2_page(server) == ESP_OK) registered_count++;
     if (register_reboot_page(server) == ESP_OK) registered_count++;
@@ -147,6 +148,7 @@ void init_webserver() {
     // Register system tool pages
     if (register_ota_page(server) == ESP_OK) registered_count++;
     if (register_debug_page(server) == ESP_OK) registered_count++;
+    if (register_event_logs_page(server) == ESP_OK) registered_count++;
     
     // Register all API handlers (consolidated)
     int api_count = register_all_api_handlers(server);
@@ -177,6 +179,7 @@ void init_webserver() {
     LOG_DEBUG("WEBSERVER", "  - /system_settings.html (System Specs - BE/MQTT)");
     LOG_DEBUG("WEBSERVER", "  - /ota (OTA Updates)");
     LOG_DEBUG("WEBSERVER", "  - /debug (Debug Info)");
+    LOG_DEBUG("WEBSERVER", "  - /events (Event Logs)");
 }
 
 void stop_webserver() {

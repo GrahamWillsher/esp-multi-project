@@ -52,7 +52,6 @@ void handle_packet_unknown(const espnow_queue_msg_t* msg, uint8_t subtype);
 void handle_settings_update_ack(const espnow_queue_msg_t* msg);
 void handle_settings_changed(const espnow_queue_msg_t* msg);
 static void request_category_refresh(const uint8_t* mac, uint8_t category, const char* reason);
-static void request_initial_config_sections(const uint8_t* mac);
 
 // ═══════════════════════════════════════════════════════════════════════
 // MESSAGE HANDLER CONFIGURATIONS
@@ -95,32 +94,6 @@ static void request_config_section(const uint8_t* mac, config_section_t section,
     }
 }
 
-static void request_data_stream(const uint8_t* mac, uint8_t subtype, const char* label) {
-    if (!mac) return;
-
-    request_data_t request = { msg_request_data, subtype };
-    esp_err_t result = esp_now_send(mac, reinterpret_cast<const uint8_t*>(&request), sizeof(request));
-    if (result == ESP_OK) {
-        LOG_INFO(kLogTag, "[DATA_REQ] Sent %s request", label);
-    } else {
-        LOG_WARN(kLogTag, "[DATA_REQ] Failed %s request: %s", label, esp_err_to_name(result));
-    }
-}
-
-static void request_initial_config_sections(const uint8_t* mac) {
-    if (!TransmitterManager::isMqttConfigKnown()) {
-        request_config_section(mac, config_section_mqtt, 0, "MQTT");
-    }
-
-    if (!TransmitterManager::isIPKnown()) {
-        request_config_section(mac, config_section_network, 0, "Network");
-    }
-
-    if (!TransmitterManager::hasMetadata()) {
-        request_config_section(mac, config_section_metadata, 0, "Metadata");
-    }
-}
-
 void setup_message_routes() {
     auto& router = EspnowMessageRouter::instance();
     
@@ -149,11 +122,9 @@ void setup_message_routes() {
     probe_config.on_connection = [](const uint8_t* mac, bool connected) {
         ReceiverConnectionHandler::instance().on_peer_registered(mac);
         LOG_INFO(kLogTag, "Transmitter connected via PROBE");
-        // Initialization requests are now sent when connection state reaches CONNECTED
-        // This ensures transmitter has registered us as a peer before we try to send back
-        if (connected) {
-            request_data_stream(mac, subtype_battery_config, "battery config");
-        }
+        // Note: Initialization requests (including REQUEST_DATA) are sent automatically
+        // by the state machine callback when transitioning to CONNECTED state.
+        // See rx_connection_handler.cpp state callback for implementation.
     };
     
     // Setup ACK handler configuration (receiver sends ACKs, doesn't usually receive them)
@@ -170,7 +141,9 @@ void setup_message_routes() {
             TransmitterManager::registerMAC(mac);
             LOG_INFO(kLogTag, "Transmitter MAC registered: %02X:%02X:%02X:%02X:%02X:%02X",
                      mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-            request_data_stream(mac, subtype_battery_config, "battery config");
+            // Note: Initialization requests (including REQUEST_DATA) are sent automatically
+            // by the state machine callback when transitioning to CONNECTED state.
+            // See rx_connection_handler.cpp state callback for implementation.
         }
         LOG_INFO(kLogTag, "Transmitter connected via ACK");
     };
@@ -578,9 +551,9 @@ void task_espnow_worker(void *parameter) {
                 transmitter_state.is_connected = true;
                 ESPNow::transmitter_connected = true;
                 LOG_INFO(kLogTag, "Transmitter connection established");
-                // Force a version beacon request to get current MQTT/network/metadata status
-                // This ensures dashboard doesn't show stale values before beacon arrives
-                request_initial_config_sections(queue_msg.mac);
+                // Note: Initialization requests (config sections, REQUEST_DATA) are sent automatically
+                // by the state machine callback when transitioning to CONNECTED state.
+                // See rx_connection_handler.cpp state callback for implementation.
             }
 
             // Post DATA_RECEIVED event for actual data messages only
@@ -677,12 +650,14 @@ void handle_data_message(const espnow_queue_msg_t* msg) {
         uint16_t calc_checksum = payload->soc + (uint16_t)payload->power;
         
         if (calc_checksum == payload->checksum) {
+            const bool first_data = !ESPNow::data_received;
+
             // Update global variables with dirty flags
-            if (ESPNow::received_soc != payload->soc) {
+            if (first_data || ESPNow::received_soc != payload->soc) {
                 ESPNow::received_soc = payload->soc;
                 ESPNow::dirty_flags.soc_changed = true;
             }
-            if (ESPNow::received_power != payload->power) {
+            if (first_data || ESPNow::received_power != payload->power) {
                 ESPNow::received_power = payload->power;
                 ESPNow::dirty_flags.power_changed = true;
             }
@@ -693,10 +668,8 @@ void handle_data_message(const espnow_queue_msg_t* msg) {
             memcpy(ESPNow::transmitter_mac, msg->mac, 6);
             notify_sse_data_updated();
             
-            LOG_DEBUG(kLogTag, "Valid: SOC=%d%%, Power=%dW (MAC: %02X:%02X:%02X:%02X:%02X:%02X)", 
-                         payload->soc, payload->power,
-                         msg->mac[0], msg->mac[1], msg->mac[2],
-                         msg->mac[3], msg->mac[4], msg->mac[5]);
+            LOG_INFO(kLogTag, "ESP-NOW RX: SOC=%d%%, Power=%dW (first=%s)", 
+                     payload->soc, payload->power, first_data ? "YES" : "no");
             
             // Batch display updates in single mutex acquisition to reduce contention
             if (ESPNow::dirty_flags.soc_changed || ESPNow::dirty_flags.power_changed) {
@@ -704,12 +677,16 @@ void handle_data_message(const espnow_queue_msg_t* msg) {
                     if (ESPNow::dirty_flags.soc_changed) {
                         display_soc((float)payload->soc);
                         ESPNow::dirty_flags.soc_changed = false;
+                        LOG_INFO(kLogTag, "Display updated: SOC=%d%%", payload->soc);
                     }
                     if (ESPNow::dirty_flags.power_changed) {
                         display_power((int32_t)payload->power);
                         ESPNow::dirty_flags.power_changed = false;
+                        LOG_INFO(kLogTag, "Display updated: Power=%dW", payload->power);
                     }
                     xSemaphoreGive(RTOS::tft_mutex);
+                } else {
+                    LOG_WARN(kLogTag, "TFT mutex timeout - display update skipped");
                 }
             }
         } else {
@@ -717,6 +694,9 @@ void handle_data_message(const espnow_queue_msg_t* msg) {
             LOG_WARN(kLogTag, "CRC failed: expected 0x%04X, got 0x%04X", 
                          calc_checksum, payload->checksum);
         }
+    } else {
+        LOG_WARN(kLogTag, "DATA packet too short: %d bytes (expected %d)",
+                 msg->len, sizeof(espnow_payload_t));
     }
 }
 
@@ -749,20 +729,6 @@ void handle_packet_events(const espnow_queue_msg_t* msg) {
         memcpy(ESPNow::transmitter_mac, msg->mac, 6);
         notify_sse_data_updated();
         
-        if (ESPNow::dirty_flags.soc_changed || ESPNow::dirty_flags.power_changed) {
-            if (xSemaphoreTake(RTOS::tft_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-                if (ESPNow::dirty_flags.soc_changed) {
-                    display_soc((float)soc);
-                    ESPNow::dirty_flags.soc_changed = false;
-                }
-                if (ESPNow::dirty_flags.power_changed) {
-                    display_power(power);
-                    ESPNow::dirty_flags.power_changed = false;
-                }
-                xSemaphoreGive(RTOS::tft_mutex);
-            }
-        }
-
         LOG_TRACE(kLogTag, "EVENTS: SOC=%d%%, Power=%dW", soc, power);
         
         // Batch display updates in single mutex acquisition to reduce contention

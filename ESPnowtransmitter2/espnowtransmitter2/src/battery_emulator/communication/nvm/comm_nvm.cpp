@@ -31,9 +31,6 @@ void init_stored_settings() {
 
   esp32hal->set_default_configuration_values();
 
-  ssid = settings.getString("SSID").c_str();
-  password = settings.getString("PASSWORD").c_str();
-
   temp = settings.getUInt("BATTERY_WH_MAX", false);
   if (temp != 0) {
     datalayer.battery.info.total_capacity_Wh = temp;
@@ -160,18 +157,6 @@ void init_stored_settings() {
   //Some early integrations need manually set allowed charge/discharge power
   datalayer.battery.status.override_charge_power_W = settings.getUInt("CHGPOWER", 1000);
   datalayer.battery.status.override_discharge_power_W = settings.getUInt("DCHGPOWER", 1000);
-
-  // WIFI AP is enabled by default unless disabled in the settings
-  wifiap_enabled = settings.getBool("WIFIAPENABLED", true);
-  wifi_channel = settings.getUInt("WIFICHANNEL", 0);
-  ssidAP = settings.getString("APNAME", "BatteryEmulator").c_str();
-  passwordAP = settings.getString("APPASSWORD", "123456789").c_str();
-  // MQTT settings are handled by external MQTT manager, not Battery Emulator core
-  // mqtt_enabled = settings.getBool("MQTTENABLED", false);
-  // mqtt_timeout_ms = settings.getUInt("MQTTTIMEOUT", 2000);
-  // ha_autodiscovery_enabled = settings.getBool("HADISC", false);
-  // mqtt_transmit_all_cellvoltages = settings.getBool("MQTTCELLV", false);
-  custom_hostname = settings.getString("HOSTNAME").c_str();
 
   static_IP_enabled = settings.getBool("STATICIP", false);
   static_local_IP1 = settings.getUInt("LOCALIP1", 192);

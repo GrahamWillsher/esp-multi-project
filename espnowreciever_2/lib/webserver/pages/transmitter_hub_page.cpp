@@ -73,17 +73,28 @@ static esp_err_t transmitter_hub_handler(httpd_req_t *req) {
         </div>
     </div>
     
-    <!-- Data Source Status -->
-    <div class='info-box' style='margin: 20px 0; background: rgba(0,188,212,0.1); border-left: 5px solid #00BCD4;'>
-        <h3 style='margin: 0 0 10px 0; color: #00BCD4;'>📊 Data Mode</h3>
-        <div style='display: flex; align-items: center; gap: 15px;'>
+    <!-- Test Data Mode Control -->
+    <div class='info-box' style='margin: 20px 0; background: rgba(76,175,80,0.1); border-left: 5px solid #4CAF50;'>
+        <h3 style='margin: 0 0 15px 0; color: #4CAF50;'>🧪 Test Data Mode Control</h3>
+        <div style='display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px;'>
             <div>
-                <div style='color: #888; font-size: 13px;'>Current Mode</div>
-                <div id='txDataMode' style='font-size: 18px; font-weight: bold; color: #4CAF50; margin-top: 5px;'>Loading...</div>
+                <div style='color: #888; font-size: 13px; margin-bottom: 8px;'>Current Mode</div>
+                <div id='txTestDataMode' style='font-size: 16px; font-weight: bold; color: #2196F3; margin-bottom: 15px; min-height: 25px;'>Loading...</div>
+                <div style='color: #888; font-size: 12px;'>
+                    <strong>Available Modes:</strong><br>
+                    • <strong>OFF</strong> - Real CAN data only<br>
+                    • <strong>SOC_POWER_ONLY</strong> - Test SOC & power<br>
+                    • <strong>FULL_BATTERY_DATA</strong> - Test all battery data
+                </div>
             </div>
-            <div style='color: #888; font-size: 12px;'>
-                <strong>Note:</strong> Test mode toggle is controlled on the transmitter.<br>
-                To switch between test (dummy) and live (battery) data, see transmitter settings.
+            <div>
+                <div style='color: #888; font-size: 13px; margin-bottom: 8px;'>Set Mode</div>
+                <div style='display: flex; gap: 8px; flex-wrap: wrap;'>
+                    <button onclick='setTestDataMode(0)' style='flex: 1; min-width: 80px; padding: 8px; background: #f44336; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;' id='btnModeOff'>OFF</button>
+                    <button onclick='setTestDataMode(1)' style='flex: 1; min-width: 80px; padding: 8px; background: #FF9800; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;' id='btnModeSoc'>SOC_POWER</button>
+                    <button onclick='setTestDataMode(2)' style='flex: 1; min-width: 80px; padding: 8px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;' id='btnModeFull'>FULL</button>
+                </div>
+                <div id='modeStatus' style='color: #888; font-size: 12px; margin-top: 10px; min-height: 30px;'></div>
             </div>
         </div>
     </div>
@@ -111,6 +122,17 @@ static esp_err_t transmitter_hub_handler(httpd_req_t *req) {
                 <div style='font-size: 36px; margin: 10px 0;'>🔋</div>
                 <div style='font-weight: bold; color: #2196F3; font-size: 16px;'>Battery Settings</div>
                 <div style='font-size: 12px; color: #888; margin-top: 8px;'>Capacity, Limits, Chemistry</div>
+            </div>
+        </a>
+        
+        <!-- Inverter Settings -->
+        <a href='/transmitter/inverter' style='text-decoration: none;'>
+            <div class='info-box' style='cursor: pointer; text-align: center; transition: transform 0.2s, border-color 0.2s; border: 2px solid #2196F3;'
+                 onmouseover='this.style.transform="translateY(-3px)"; this.style.borderColor="#42A5F5"'
+                 onmouseout='this.style.transform="translateY(0)"; this.style.borderColor="#2196F3"'>
+                <div style='font-size: 36px; margin: 10px 0;'>⚡</div>
+                <div style='font-weight: bold; color: #2196F3; font-size: 16px;'>Inverter Settings</div>
+                <div style='font-size: 12px; color: #888; margin-top: 8px;'>Protocol Selection</div>
             </div>
         </a>
         
@@ -159,24 +181,68 @@ static esp_err_t transmitter_hub_handler(httpd_req_t *req) {
     </div>
 
     <script>
-        async function updateDataMode() {
+        // Update test data mode display
+        async function updateTestDataMode() {
             try {
-                const res = await fetch('/api/get_data_source');
+                const res = await fetch('/api/get_test_data_mode');
                 const data = await res.json();
-                const modeEl = document.getElementById('txDataMode');
-                if (data.mode === 'simulated') {
-                    modeEl.textContent = 'Test Mode (Simulated Data)';
-                    modeEl.style.color = '#FFD700';
-                } else {
-                    modeEl.textContent = 'Live Mode (Real Data)';
-                    modeEl.style.color = '#4CAF50';
+                const modeEl = document.getElementById('txTestDataMode');
+                let modeText = 'Unknown';
+                let modeColor = '#888';
+                
+                if (data.mode === 0 || data.mode === 'OFF') {
+                    modeText = 'OFF (Real CAN Data Only)';
+                    modeColor = '#f44336';
+                } else if (data.mode === 1 || data.mode === 'SOC_POWER_ONLY') {
+                    modeText = 'SOC_POWER_ONLY (Test SOC & Power)';
+                    modeColor = '#FF9800';
+                } else if (data.mode === 2 || data.mode === 'FULL_BATTERY_DATA') {
+                    modeText = 'FULL_BATTERY_DATA (All Test Data)';
+                    modeColor = '#4CAF50';
                 }
+                
+                modeEl.textContent = modeText;
+                modeEl.style.color = modeColor;
             } catch (e) {
-                document.getElementById('txDataMode').textContent = 'Unknown';
+                console.error('Error fetching test data mode:', e);
+                document.getElementById('txTestDataMode').textContent = 'Error fetching status';
             }
         }
-        updateDataMode();
-        setInterval(updateDataMode, 2000);  // Update every 2s
+        
+        // Set test data mode
+        async function setTestDataMode(mode) {
+            try {
+                const statusEl = document.getElementById('modeStatus');
+                statusEl.textContent = 'Sending...';
+                statusEl.style.color = '#888';
+                
+                const res = await fetch('/api/set_test_data_mode', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ mode: mode })
+                });
+                
+                if (res.ok) {
+                    statusEl.textContent = '✓ Mode changed successfully';
+                    statusEl.style.color = '#4CAF50';
+                    // Refresh the display after a short delay
+                    setTimeout(updateTestDataMode, 500);
+                } else {
+                    statusEl.textContent = '✗ Failed to set mode. Transmitter may be disconnected.';
+                    statusEl.style.color = '#f44336';
+                }
+            } catch (e) {
+                console.error('Error setting test data mode:', e);
+                document.getElementById('modeStatus').textContent = '✗ Error: ' + e.message;
+                document.getElementById('modeStatus').style.color = '#f44336';
+            }
+        }
+        
+        // Initial update and set interval
+        updateTestDataMode();
+        setInterval(updateTestDataMode, 3000);  // Update every 3s
     </script>
     )rawliteral";
     

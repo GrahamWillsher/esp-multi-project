@@ -89,11 +89,18 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
     <div class='settings-card'>
         <h3>Battery Type Selection</h3>
         <p style='color: #666; font-size: 14px;'>Select the battery profile to use. The transmitter will switch to the selected profile.</p>
-        <p style='color: #ff6b35; font-size: 14px; font-weight: bold;'>⚠️ Changing the battery or inverter type will reboot the transmitter to apply changes.</p>
+        <p style='color: #ff6b35; font-size: 14px; font-weight: bold;'>⚠️ Changing the battery type or interface will reboot the transmitter to apply changes.</p>
         
         <div class='settings-row'>
             <label for='batteryType'>Battery Type:</label>
             <select id='batteryType' onchange='updateBatteryType()'>
+                <option value=''>Loading...</option>
+            </select>
+        </div>
+
+        <div class='settings-row'>
+            <label for='batteryInterface'>Battery Interface:</label>
+            <select id='batteryInterface' onchange='updateBatteryInterface()'>
                 <option value=''>Loading...</option>
             </select>
         </div>
@@ -117,6 +124,8 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
             loadBatterySettings();
             // Phase 3.1: Load battery types for selector
             loadBatteryTypes();
+            // Battery interface selection
+            loadBatteryInterfaces();
         };
         
         // Map field names to BatterySettingsField enum values
@@ -158,6 +167,10 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
             if (typeSelect) {
                 initialValues['batteryType'] = typeSelect.value;
             }
+            const interfaceSelect = document.getElementById('batteryInterface');
+            if (interfaceSelect) {
+                initialValues['batteryInterface'] = interfaceSelect.value;
+            }
             console.log('Initial values stored:', initialValues);
         }
         
@@ -177,6 +190,12 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
                     updateButtonText(getChangedCount());
                 });
             }
+            const interfaceSelect = document.getElementById('batteryInterface');
+            if (interfaceSelect) {
+                interfaceSelect.addEventListener('change', () => {
+                    updateButtonText(getChangedCount());
+                });
+            }
         }
 
         function getChangedCount() {
@@ -187,6 +206,11 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
 
             const typeSelect = document.getElementById('batteryType');
             if (typeSelect && initialValues['batteryType'] !== typeSelect.value) {
+                changedCount++;
+            }
+
+            const interfaceSelect = document.getElementById('batteryInterface');
+            if (interfaceSelect && initialValues['batteryInterface'] !== interfaceSelect.value) {
                 changedCount++;
             }
 
@@ -285,19 +309,23 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
             });
             const typeSelect = document.getElementById('batteryType');
             const batteryTypeChanged = typeSelect && initialValues['batteryType'] !== typeSelect.value;
+            const interfaceSelect = document.getElementById('batteryInterface');
+            const batteryInterfaceChanged = interfaceSelect && initialValues['batteryInterface'] !== interfaceSelect.value;
             console.log('Total changed settings: ' + changedSettings.length + ', batteryTypeChanged=' + batteryTypeChanged);
             
-            if (changedSettings.length === 0 && !batteryTypeChanged) {
+            if (changedSettings.length === 0 && !batteryTypeChanged && !batteryInterfaceChanged) {
                 console.log('No changed settings to save');
                 return;
             }
             
             // Show confirmation if battery type changed (requires transmitter reboot)
-            if (batteryTypeChanged) {
+            if (batteryTypeChanged || batteryInterfaceChanged) {
                 const selectedName = typeSelect.options[typeSelect.selectedIndex].text;
+                const interfaceName = interfaceSelect.options[interfaceSelect.selectedIndex].text;
                 const confirmed = confirm(
                     '⚠️ TRANSMITTER REBOOT REQUIRED\\n\\n' +
-                    'Changing the battery type to "' + selectedName + '" will reboot the transmitter to apply changes.\\n\\n' +
+                    (batteryTypeChanged ? ('Changing the battery type to "' + selectedName + '" will reboot the transmitter to apply changes.\n\n') : '') +
+                    (batteryInterfaceChanged ? ('Changing the battery interface to "' + interfaceName + '" will reboot the transmitter to apply changes.\n\n') : '') +
                     'This will temporarily interrupt data transmission (approximately 30 seconds).\\n\\n' +
                     'Do you want to continue?'
                 );
@@ -323,6 +351,14 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
                     name: typeSelect.options[typeSelect.selectedIndex].text
                 });
             }
+            if (batteryInterfaceChanged) {
+                pendingSaves.push({
+                    kind: 'batteryInterface',
+                    id: 'batteryInterface',
+                    value: interfaceSelect.value,
+                    name: interfaceSelect.options[interfaceSelect.selectedIndex].text
+                });
+            }
             
             // Save each changed setting sequentially with a small delay
             function saveNext(index) {
@@ -334,6 +370,9 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
                         });
                         if (batteryTypeChanged) {
                             initialValues['batteryType'] = typeSelect.value;
+                        }
+                        if (batteryInterfaceChanged) {
+                            initialValues['batteryInterface'] = interfaceSelect.value;
                         }
                         saveButton.textContent = '✓ All Saved!';
                         saveButton.style.backgroundColor = '#28a745';
@@ -380,6 +419,41 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
                             failedCount++;
                             console.error('Error saving battery type:', error);
                             alert('ERROR saving battery type: ' + error.message + '\n\nPlease check transmitter connection and try again.');
+                            saveButton.textContent = '✗ Save Failed!';
+                            saveButton.style.backgroundColor = '#dc3545';
+                            setTimeout(() => {
+                                const remainingCount = pendingSaves.length - index;
+                                updateButtonText(remainingCount);
+                            }, 3000);
+                        });
+                    return;
+                }
+
+                if (setting.kind === 'batteryInterface') {
+                    const interfaceId = parseInt(setting.value);
+                    console.log('Sending to API: battery interface=' + interfaceId + ' (' + setting.name + ')');
+
+                    fetch('/api/set_battery_interface', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({interface: interfaceId})
+                    })
+                        .then(response => response.json())
+                        .then(data => {
+                            if (data.success) {
+                                savedCount++;
+                                console.log('Battery interface saved successfully');
+                            } else {
+                                failedCount++;
+                                console.error('Failed to save battery interface:', data.error);
+                                alert('ERROR saving battery interface: ' + data.error);
+                            }
+                            setTimeout(() => saveNext(index + 1), 100);
+                        })
+                        .catch(error => {
+                            failedCount++;
+                            console.error('Error saving battery interface:', error);
+                            alert('ERROR saving battery interface: ' + error.message + '\n\nPlease check transmitter connection and try again.');
                             saveButton.textContent = '✗ Save Failed!';
                             saveButton.style.backgroundColor = '#dc3545';
                             setTimeout(() => {
@@ -488,11 +562,54 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
                 })
                 .catch(error => console.error('Error loading current type:', error));
         }
+
+        function loadBatteryInterfaces() {
+            console.log('Loading battery interfaces...');
+
+            fetch('/api/get_battery_interfaces')
+                .then(response => response.json())
+                .then(data => {
+                    const interfaceSelect = document.getElementById('batteryInterface');
+                    interfaceSelect.innerHTML = '';
+
+                    data.types.forEach(type => {
+                        const option = document.createElement('option');
+                        option.value = type.id;
+                        option.textContent = type.name;
+                        interfaceSelect.appendChild(option);
+                    });
+
+                    // Load current selection
+                    loadCurrentBatteryInterface();
+                    console.log('Battery interfaces loaded');
+                })
+                .catch(error => console.error('Error loading battery interfaces:', error));
+        }
+
+        function loadCurrentBatteryInterface() {
+            fetch('/api/get_selected_interfaces')
+                .then(response => response.json())
+                .then(data => {
+                    const interfaceSelect = document.getElementById('batteryInterface');
+                    interfaceSelect.value = data.battery_interface;
+                    initialValues['batteryInterface'] = interfaceSelect.value;
+                    updateButtonText(getChangedCount());
+                    console.log('Current battery interface loaded:', data.battery_interface);
+                })
+                .catch(error => console.error('Error loading current interface:', error));
+        }
         
         function updateBatteryType() {
             const typeSelect = document.getElementById('batteryType');
             const selectedOption = typeSelect.options[typeSelect.selectedIndex];
             console.log(`Selected: ID=${typeSelect.value}, Name=${selectedOption.text}`);
+            updateButtonText(getChangedCount());
+        }
+
+        function updateBatteryInterface() {
+            const interfaceSelect = document.getElementById('batteryInterface');
+            const selectedOption = interfaceSelect.options[interfaceSelect.selectedIndex];
+            console.log(`Selected: ID=${interfaceSelect.value}, Name=${selectedOption.text}`);
             updateButtonText(getChangedCount());
         }
         

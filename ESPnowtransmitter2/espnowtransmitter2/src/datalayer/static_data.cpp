@@ -3,6 +3,7 @@
 #include "../battery_emulator/battery/Battery.h"
 #include "../battery_emulator/inverter/InverterProtocol.h"
 #include "../battery_emulator/datalayer/datalayer.h"
+#include "../test_data/test_data_config.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
 
@@ -106,6 +107,10 @@ void update_inverter_specs(uint8_t inverter_type) {
              inverter_specs.inverter_protocol);
 }
 
+const BatterySpecs& get_battery_specs() {
+    return battery_specs;
+}
+
 size_t serialize_battery_specs(char* buffer, size_t buffer_size) {
     // Use PSRAM for JSON document to avoid stack overflow
     DynamicJsonDocument doc(512);
@@ -129,8 +134,8 @@ size_t serialize_battery_specs(char* buffer, size_t buffer_size) {
 }
 
 size_t serialize_cell_data(char* buffer, size_t buffer_size) {
-    // Use PSRAM for JSON document (needs 2KB+ for 96 cells)
-    DynamicJsonDocument doc(2048);
+    // Use PSRAM for JSON document (needs 6KB for 96 cells + balancing + metadata)
+    DynamicJsonDocument doc(6144);
     
     // Get cell count from datalayer
     uint16_t cell_count = datalayer.battery.info.number_of_cells;
@@ -152,8 +157,15 @@ size_t serialize_cell_data(char* buffer, size_t buffer_size) {
     
     Serial.printf("[SERIALIZE_DEBUG] has_real_data: %s\n", has_real_data ? "true" : "false");
     
-    // If no real data, generate dummy data for testing
-    if (!has_real_data && cell_count > 0) {
+    // Check if test mode is enabled - this controls data path selection
+    bool test_mode_active = TestDataConfig::is_enabled();
+    
+    // ═══════════════════════════════════════════════════════════════════════
+    // PATH 1: TEST MODE - Always generate dummy data when test mode is ON
+    // ═══════════════════════════════════════════════════════════════════════
+    if (test_mode_active && cell_count > 0) {
+        const char* data_source = "dummy";
+        Serial.printf("[SERIALIZE_DEBUG] Test mode ACTIVE - generating dummy data\n");
         // Generate realistic dummy voltages (3750-3900 mV for ~3.85V average)
         static uint16_t dummy_voltages[MAX_AMOUNT_CELLS] = {0};
         static bool dummy_balancing[MAX_AMOUNT_CELLS] = {false};
@@ -207,11 +219,42 @@ size_t serialize_cell_data(char* buffer, size_t buffer_size) {
         doc["cell_min_voltage_mV"] = min_voltage;
         doc["cell_max_voltage_mV"] = max_voltage;
         doc["balancing_active"] = balancing_active;
+        doc["data_source"] = data_source;
         
         return serializeJson(doc, buffer, buffer_size);
     }
     
-    // Use real data from datalayer
+    // ═══════════════════════════════════════════════════════════════════════
+    // PATH 2: REAL DATA - Use actual datalayer values
+    // ═══════════════════════════════════════════════════════════════════════
+    
+    Serial.printf("[SERIALIZE_DEBUG] Test mode OFF - using real data\n");
+    
+    // Determine data source tag based on data availability and freshness
+    const char* data_source = "live";
+    
+    if (!has_real_data) {
+        // No valid cell data available
+        data_source = "live_simulated";
+        Serial.printf("[SERIALIZE_DEBUG] No real data available - tagged as live_simulated\n");
+    } else {
+        // Check CAN data freshness using CAN_battery_still_alive counter
+        // Counter starts at 60 and decrements every second when no CAN messages received
+        const uint8_t CAN_STALE_THRESHOLD = 55;  // Consider stale if < 55 (5+ seconds old)
+        
+        if (datalayer.battery.status.CAN_battery_still_alive < CAN_STALE_THRESHOLD) {
+            // CAN data is stale - this is simulated
+            data_source = "live_simulated";
+            Serial.printf("[SERIALIZE_DEBUG] CAN data stale (counter=%u) - tagged as live_simulated\n",
+                         datalayer.battery.status.CAN_battery_still_alive);
+        } else {
+            // Fresh CAN data
+            data_source = "live";
+            Serial.printf("[SERIALIZE_DEBUG] CAN data fresh (counter=%u) - tagged as live\n",
+                         datalayer.battery.status.CAN_battery_still_alive);
+        }
+    }
+
     doc["number_of_cells"] = cell_count;
     
     // Add cell voltages array (only include valid cells)
@@ -249,8 +292,27 @@ size_t serialize_cell_data(char* buffer, size_t buffer_size) {
         }
     }
     doc["balancing_active"] = balancing_active;
+    doc["data_source"] = data_source;
     
-    return serializeJson(doc, buffer, buffer_size);
+    // Debug: Log what we're serializing
+    Serial.printf("[SERIALIZE_DEBUG] About to serialize with data_source='%s'\n", data_source);
+    Serial.printf("[SERIALIZE_DEBUG] JSON document capacity: %u bytes, memory usage: %u bytes\n", 
+                 doc.capacity(), doc.memoryUsage());
+    
+    size_t result = serializeJson(doc, buffer, buffer_size);
+    
+    // Debug: Check for truncation
+    if (result >= buffer_size - 1) {
+        Serial.printf("[SERIALIZE_WARNING] JSON truncated! Result=%u, Buffer=%u\n", result, buffer_size);
+    }
+    
+    // Debug: Log the serialized JSON (first/last 200 chars)
+    Serial.printf("[SERIALIZE_DEBUG] Serialized %u bytes (first 200): %.200s\n", result, buffer);
+    if (result > 200) {
+        Serial.printf("[SERIALIZE_DEBUG] Last 100 chars: %s\n", buffer + result - 100);
+    }
+    
+    return result;
 }
 
 size_t serialize_inverter_specs(char* buffer, size_t buffer_size) {

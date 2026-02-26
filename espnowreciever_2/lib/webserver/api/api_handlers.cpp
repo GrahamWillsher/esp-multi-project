@@ -123,6 +123,26 @@ static TypeEntry inverter_types[] = {
     {21, "Sungrow SBRXXX emulation over CAN bus"}
 };
 
+// Battery interface types (matching Battery Emulator comm_interface enum)
+static TypeEntry battery_interfaces[] = {
+    {0, "Modbus"},
+    {1, "RS485"},
+    {2, "CAN (Native)"},
+    {3, "CAN-FD (Native)"},
+    {4, "CAN (MCP2515 add-on)"},
+    {5, "CAN-FD (MCP2518 add-on)"}
+};
+
+// Inverter interface types (matching Battery Emulator comm_interface enum)
+static TypeEntry inverter_interfaces[] = {
+    {0, "Modbus"},
+    {1, "RS485"},
+    {2, "CAN (Native)"},
+    {3, "CAN-FD (Native)"},
+    {4, "CAN (MCP2515 add-on)"},
+    {5, "CAN-FD (MCP2518 add-on)"}
+};
+
 // Helper function to generate sorted JSON response from type array
 static String generateSortedTypeJson(TypeEntry* types, size_t count) {
     // Create a copy of the array for sorting (don't modify the original)
@@ -273,7 +293,9 @@ static esp_err_t api_cell_data_handler(httpd_req_t *req) {
         json += String(max_voltage);
         json += ",\"balancing_active\":";
         json += balancing_active ? "true" : "false";
-        json += "}";
+        json += ",\"mode\":\"";
+        json += TransmitterManager::getCellDataSource();
+        json += "\"}";
         
         httpd_resp_set_type(req, "application/json");
         httpd_resp_send(req, json.c_str(), json.length());
@@ -326,7 +348,9 @@ static esp_err_t api_cell_data_sse_handler(httpd_req_t *req) {
             json += String(max_voltage);
             json += ",\"balancing_active\":";
             json += balancing_active ? "true" : "false";
-            json += ",\"mode\":\"live\"}";
+            json += ",\"mode\":\"";
+            json += TransmitterManager::getCellDataSource();
+            json += "\"}";
             
             String event = "data: " + json + "\n\n";
             return httpd_resp_send_chunk(req, event.c_str(), event.length()) == ESP_OK;
@@ -1920,6 +1944,343 @@ static esp_err_t api_set_inverter_type_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+// Get list of available battery interfaces (sorted alphabetically)
+static esp_err_t api_get_battery_interfaces_handler(httpd_req_t *req) {
+    // Generate sorted JSON from battery interfaces array
+    String json_response = generateSortedTypeJson(battery_interfaces, sizeof(battery_interfaces) / sizeof(TypeEntry));
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json_response.c_str(), json_response.length());
+    return ESP_OK;
+}
+
+// Get list of available inverter interfaces (sorted alphabetically)
+static esp_err_t api_get_inverter_interfaces_handler(httpd_req_t *req) {
+    // Generate sorted JSON from inverter interfaces array
+    String json_response = generateSortedTypeJson(inverter_interfaces, sizeof(inverter_interfaces) / sizeof(TypeEntry));
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json_response.c_str(), json_response.length());
+    return ESP_OK;
+}
+
+// Get currently selected battery and inverter interfaces
+static esp_err_t api_get_selected_interfaces_handler(httpd_req_t *req) {
+    char json[128];
+    uint8_t battery_interface = ReceiverNetworkConfig::getBatteryInterface();
+    uint8_t inverter_interface = ReceiverNetworkConfig::getInverterInterface();
+    
+    snprintf(json, sizeof(json),
+             "{\"battery_interface\":%d,\"inverter_interface\":%d}",
+             battery_interface, inverter_interface);
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json, strlen(json));
+    return ESP_OK;
+}
+
+// Set battery interface
+static esp_err_t api_set_battery_interface_handler(httpd_req_t *req) {
+    char content[100] = {0};
+    int ret = httpd_req_recv(req, content, sizeof(content) - 1);
+    
+    if (ret <= 0) {
+        const char* json = "{\"success\":false,\"error\":\"No data received\"}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, json, strlen(json));
+        return ESP_OK;
+    }
+    
+    // Parse JSON: {"interface":2}
+    StaticJsonDocument<128> doc;
+    DeserializationError error = deserializeJson(doc, content);
+    if (error) {
+        const char* json = "{\"success\":false,\"error\":\"JSON parse error\"}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, json, strlen(json));
+        return ESP_OK;
+    }
+    
+    if (!doc.containsKey("interface")) {
+        const char* json = "{\"success\":false,\"error\":\"Invalid JSON format\"}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, json, strlen(json));
+        return ESP_OK;
+    }
+    
+    int interface = doc["interface"];
+    
+    if (interface < 0 || interface > 5) {
+        const char* json = "{\"success\":false,\"error\":\"Interface must be 0-5\"}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, json, strlen(json));
+        return ESP_OK;
+    }
+    
+    // Save to NVS
+    ReceiverNetworkConfig::setBatteryInterface((uint8_t)interface);
+    
+    // Send ESP-NOW message to transmitter (attempt to notify, don't fail if transmitter not connected)
+    if (send_component_interface_selection(ReceiverNetworkConfig::getBatteryInterface(), ReceiverNetworkConfig::getInverterInterface())) {
+        Serial.printf("[API] Battery interface %d sent to transmitter via ESP-NOW\n", interface);
+    } else {
+        Serial.printf("[API] Warning: Could not send battery interface to transmitter (may be offline)\n");
+    }
+    
+    const char* json = "{\"success\":true,\"message\":\"Battery interface updated\"}";
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json, strlen(json));
+    return ESP_OK;
+}
+
+// Set inverter interface
+static esp_err_t api_set_inverter_interface_handler(httpd_req_t *req) {
+    char content[100] = {0};
+    int ret = httpd_req_recv(req, content, sizeof(content) - 1);
+    
+    if (ret <= 0) {
+        const char* json = "{\"success\":false,\"error\":\"No data received\"}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, json, strlen(json));
+        return ESP_OK;
+    }
+    
+    // Parse JSON: {"interface":2}
+    StaticJsonDocument<128> doc;
+    DeserializationError error = deserializeJson(doc, content);
+    if (error) {
+        const char* json = "{\"success\":false,\"error\":\"JSON parse error\"}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, json, strlen(json));
+        return ESP_OK;
+    }
+    
+    if (!doc.containsKey("interface")) {
+        const char* json = "{\"success\":false,\"error\":\"Invalid JSON format\"}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, json, strlen(json));
+        return ESP_OK;
+    }
+    
+    int interface = doc["interface"];
+    
+    if (interface < 0 || interface > 5) {
+        const char* json = "{\"success\":false,\"error\":\"Interface must be 0-5\"}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, json, strlen(json));
+        return ESP_OK;
+    }
+    
+    // Save to NVS
+    ReceiverNetworkConfig::setInverterInterface((uint8_t)interface);
+    
+    // Send ESP-NOW message to transmitter (attempt to notify, don't fail if transmitter not connected)
+    if (send_component_interface_selection(ReceiverNetworkConfig::getBatteryInterface(), (uint8_t)interface)) {
+        Serial.printf("[API] Inverter interface %d sent to transmitter via ESP-NOW\n", interface);
+    } else {
+        Serial.printf("[API] Warning: Could not send inverter interface to transmitter (may be offline)\n");
+    }
+    
+    const char* json = "{\"success\":true,\"message\":\"Inverter interface updated\"}";
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json, strlen(json));
+    return ESP_OK;
+}
+
+// Get event logs (cached from MQTT if available, else proxy transmitter HTTP)
+static esp_err_t api_get_event_logs_handler(httpd_req_t *req) {
+    char query[256] = {0};
+    int limit = 50;
+
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        char param[32];
+        if (httpd_query_key_value(query, "limit", param, sizeof(param)) == ESP_OK) {
+            limit = atoi(param);
+            if (limit < 1) limit = 1;
+            if (limit > 500) limit = 500;
+        }
+    }
+
+    if (TransmitterManager::hasEventLogs()) {
+        const auto& logs = TransmitterManager::getEventLogs();
+        DynamicJsonDocument doc(4096);
+        doc["success"] = true;
+        doc["event_count"] = TransmitterManager::getEventLogCount();
+        doc["source"] = "mqtt";
+        doc["last_update_ms"] = TransmitterManager::getEventLogsLastUpdateMs();
+        JsonArray events = doc.createNestedArray("events");
+
+        const int max_events = (limit < (int)logs.size()) ? limit : (int)logs.size();
+        for (int i = 0; i < max_events; i++) {
+            const auto& entry = logs[i];
+            JsonObject evt = events.createNestedObject();
+            evt["timestamp"] = entry.timestamp;
+            evt["level"] = entry.level;
+            evt["data"] = entry.data;
+            evt["message"] = entry.message;
+        }
+
+        String json;
+        serializeJson(doc, json);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, json.c_str(), json.length());
+        return ESP_OK;
+    }
+
+    if (!TransmitterManager::isIPKnown()) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"success\":false,\"error\":\"Transmitter not connected\"}");
+        return ESP_OK;
+    }
+
+    String transmitter_url = TransmitterManager::getURL() + "/api/get_event_logs?limit=" + String(limit);
+    HTTPClient http;
+    http.begin(transmitter_url);
+    http.setTimeout(5000);
+    int httpCode = http.GET();
+
+    if (httpCode == 200) {
+        String response = http.getString();
+        http.end();
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, response.c_str(), response.length());
+        return ESP_OK;
+    }
+
+    http.end();
+    char json_response[160];
+    if (httpCode == -1) {
+        snprintf(json_response, sizeof(json_response),
+                 "{\"success\":false,\"error\":\"Failed to connect to transmitter\"}");
+    } else {
+        snprintf(json_response, sizeof(json_response),
+                 "{\"success\":false,\"error\":\"Transmitter returned HTTP %d\"}", httpCode);
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json_response, strlen(json_response));
+    return ESP_OK;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// TEST DATA CONFIGURATION HANDLERS
+// ═══════════════════════════════════════════════════════════════════════
+
+static esp_err_t api_get_test_data_mode_handler(httpd_req_t *req) {
+    char json_response[256];
+    
+    // Get the last mode sent to transmitter (locally cached)
+    uint8_t mode = get_last_test_data_mode();
+    const char* mode_names[] = {"OFF", "SOC_POWER_ONLY", "FULL_BATTERY_DATA"};
+    
+    snprintf(json_response, sizeof(json_response), 
+             "{\"success\":true,\"mode\":%d,\"mode_name\":\"%s\",\"message\":\"Current test data mode\"}",
+             mode, mode_names[mode]);
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json_response, strlen(json_response));
+    return ESP_OK;
+}
+
+static esp_err_t api_set_test_data_mode_handler(httpd_req_t *req) {
+    char buffer[100];
+    int total_len = httpd_req_recv(req, buffer, sizeof(buffer) - 1);
+    
+    if (total_len <= 0) {
+        char error[128];
+        snprintf(error, sizeof(error), "{\"success\":false,\"error\":\"No data received\"}");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, error, strlen(error));
+        return ESP_OK;
+    }
+    
+    buffer[total_len] = '\0';
+    
+    // Parse JSON: {"mode": 0} or {"mode": "OFF"}
+    DynamicJsonDocument doc(256);
+    DeserializationError error = deserializeJson(doc, buffer);
+    
+    if (error) {
+        char response[256];
+        snprintf(response, sizeof(response), "{\"success\":false,\"error\":\"Invalid JSON\"}");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, response, strlen(response));
+        return ESP_OK;
+    }
+    
+    uint8_t mode = 0;
+    
+    if (doc["mode"].is<const char*>()) {
+        // Mode is a string: "OFF", "SOC_POWER_ONLY", or "FULL_BATTERY_DATA"
+        const char* mode_str = doc["mode"];
+        if (strcmp(mode_str, "OFF") == 0) mode = 0;
+        else if (strcmp(mode_str, "SOC_POWER_ONLY") == 0) mode = 1;
+        else if (strcmp(mode_str, "FULL_BATTERY_DATA") == 0) mode = 2;
+        else {
+            char response[256];
+            snprintf(response, sizeof(response), "{\"success\":false,\"error\":\"Invalid mode string\"}");
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_send(req, response, strlen(response));
+            return ESP_OK;
+        }
+    } else if (doc["mode"].is<int>()) {
+        // Mode is a number
+        mode = doc["mode"].as<int>();
+        if (mode > 2) {
+            char response[256];
+            snprintf(response, sizeof(response), "{\"success\":false,\"error\":\"Invalid mode number (0-2)\"}");
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_send(req, response, strlen(response));
+            return ESP_OK;
+        }
+    }
+    
+    // Send test data mode control to transmitter
+    if (send_test_data_mode_control(mode)) {
+        const char* mode_names[] = {"OFF", "SOC_POWER_ONLY", "FULL_BATTERY_DATA"};
+        char response[256];
+        snprintf(response, sizeof(response), 
+                 "{\"success\":true,\"mode\":\"%s\",\"message\":\"Test data mode changed\"}",
+                 mode_names[mode]);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, response, strlen(response));
+    } else {
+        char response[256];
+        snprintf(response, sizeof(response), 
+                 "{\"success\":false,\"error\":\"Failed to send command to transmitter\"}");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, response, strlen(response));
+    }
+    
+    return ESP_OK;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// EVENT LOGS SUBSCRIPTION MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════
+
+static esp_err_t api_event_logs_subscribe_handler(httpd_req_t *req) {
+    MqttClient::incrementEventLogSubscribers();
+    
+    char response[64];
+    snprintf(response, sizeof(response), "{\"success\":true}");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, response, strlen(response));
+    
+    return ESP_OK;
+}
+
+static esp_err_t api_event_logs_unsubscribe_handler(httpd_req_t *req) {
+    MqttClient::decrementEventLogSubscribers();
+    
+    char response[64];
+    snprintf(response, sizeof(response), "{\"success\":true}");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, response, strlen(response));
+    
+    return ESP_OK;
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // REGISTRATION FUNCTION
 // ═══════════════════════════════════════════════════════════════════════
@@ -1961,6 +2322,16 @@ int register_all_api_handlers(httpd_handle_t server) {
         {.uri = "/api/get_selected_types", .method = HTTP_GET, .handler = api_get_selected_types_handler, .user_ctx = NULL},
         {.uri = "/api/set_battery_type", .method = HTTP_POST, .handler = api_set_battery_type_handler, .user_ctx = NULL},
         {.uri = "/api/set_inverter_type", .method = HTTP_POST, .handler = api_set_inverter_type_handler, .user_ctx = NULL},
+        {.uri = "/api/get_battery_interfaces", .method = HTTP_GET, .handler = api_get_battery_interfaces_handler, .user_ctx = NULL},
+        {.uri = "/api/get_inverter_interfaces", .method = HTTP_GET, .handler = api_get_inverter_interfaces_handler, .user_ctx = NULL},
+        {.uri = "/api/get_selected_interfaces", .method = HTTP_GET, .handler = api_get_selected_interfaces_handler, .user_ctx = NULL},
+        {.uri = "/api/set_battery_interface", .method = HTTP_POST, .handler = api_set_battery_interface_handler, .user_ctx = NULL},
+        {.uri = "/api/set_inverter_interface", .method = HTTP_POST, .handler = api_set_inverter_interface_handler, .user_ctx = NULL},
+        {.uri = "/api/get_event_logs", .method = HTTP_GET, .handler = api_get_event_logs_handler, .user_ctx = NULL},
+        {.uri = "/api/event_logs/subscribe", .method = HTTP_POST, .handler = api_event_logs_subscribe_handler, .user_ctx = NULL},
+        {.uri = "/api/event_logs/unsubscribe", .method = HTTP_POST, .handler = api_event_logs_unsubscribe_handler, .user_ctx = NULL},
+        {.uri = "/api/get_test_data_mode", .method = HTTP_GET, .handler = api_get_test_data_mode_handler, .user_ctx = NULL},
+        {.uri = "/api/set_test_data_mode", .method = HTTP_POST, .handler = api_set_test_data_mode_handler, .user_ctx = NULL},
         {.uri = "/api/ota_upload", .method = HTTP_POST, .handler = api_ota_upload_handler, .user_ctx = NULL},
         {.uri = "/firmware.bin", .method = HTTP_GET, .handler = firmware_bin_handler, .user_ctx = NULL}
     };

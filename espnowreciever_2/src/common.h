@@ -59,12 +59,10 @@ namespace Config {
 }
 
 // Display Configuration and State
+// NOTE: Hardware GPIO pins moved to src/hal/hardware_config.h
 namespace Display {
-    // Pin definitions
-    constexpr uint8_t PIN_POWER_ON = 15;
-    constexpr uint8_t PIN_LCD_BL = 38;
-    
-    // Display dimensions
+    // Display dimensions (logical, after rotation)
+    // NOTE: For hardware dimensions, see HardwareConfig::DISPLAY_WIDTH/HEIGHT
     constexpr int SCREEN_WIDTH = 320;
     constexpr int SCREEN_HEIGHT = 170;
     

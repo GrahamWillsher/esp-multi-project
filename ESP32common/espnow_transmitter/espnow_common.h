@@ -90,7 +90,13 @@ enum msg_type : uint8_t {
     msg_heartbeat_ack,              // Heartbeat acknowledgment (confirms receipt)
     
     // Bidirectional config sync
-    msg_config_changed              // Configuration changed notification (versioned, timestamped)
+    msg_config_changed,             // Configuration changed notification (versioned, timestamped)
+
+    // Component interface selection (receiver → transmitter)
+    msg_component_interface,        // Component interface selections (battery/inverter comm)
+
+    // Event logs subscription control (receiver → transmitter)
+    msg_event_logs_control          // Subscribe/unsubscribe event logs publishing
 };
 
 // ESP-NOW packet subtypes (for fragmented messages)
@@ -135,6 +141,12 @@ typedef struct __attribute__((packed)) {
     uint8_t type;       // msg_request_data
     uint8_t subtype;    // msg_subtype (which data stream to start)
 } request_data_t;
+
+// Event logs subscription control
+typedef struct __attribute__((packed)) {
+    uint8_t type;        // msg_event_logs_control
+    uint8_t action;      // 0 = unsubscribe, 1 = subscribe
+} event_logs_control_t;
 
 typedef struct __attribute__((packed)) {
     uint8_t type;       // msg_abort_data
@@ -392,6 +404,14 @@ typedef struct __attribute__((packed)) {
     uint32_t config_version;         // Configuration version for change tracking
     uint16_t checksum;               // Message checksum
 } component_config_msg_t;  // Total: 16 bytes
+
+// Component interface selection message - receiver-selected comm interfaces
+typedef struct __attribute__((packed)) {
+    uint8_t type;                    // msg_component_interface
+    uint8_t battery_interface;       // comm_interface enum (0-5)
+    uint8_t inverter_interface;      // comm_interface enum (0-5)
+    uint16_t checksum;               // Message checksum
+} component_interface_msg_t;  // Total: 5 bytes
 
 // =============================================================================
 // PHASE 2: Settings Bidirectional Flow Message Structures

@@ -244,6 +244,7 @@ esp_err_t inverter_specs_page_handler(httpd_req_t *req) {
             <div class="spec-card">
                 <div class="spec-label">Protocol</div>
                 <div class="spec-value" style="font-size: 1.4em;">%s</div>
+                <div class="spec-unit">Interface: <span id="inverterInterfaceValue">Loading...</span></div>
             </div>
             <div class="spec-card">
                 <div class="spec-label">Input Voltage Range</div>
@@ -280,98 +281,41 @@ esp_err_t inverter_specs_page_handler(httpd_req_t *req) {
 )";
 
     const char* html_footer = R"(
-        <div class="spec-card" style="margin-top: 20px;">
-            <h3 style="margin-bottom: 15px; color: #333;">⚙️ Inverter Type Selection</h3>
-            <p style="color: #666; font-size: 14px; margin-bottom: 15px;">Select the inverter protocol to use. The transmitter will switch to the selected protocol.</p>
-            
-            <div style="display: flex; gap: 10px; margin-bottom: 10px;">
-                <select id='inverterType' style='flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;'>
-                    <option value=''>Loading inverter types...</option>
-                </select>
-                <button onclick='saveInverterType()' style='padding: 12px 40px; font-size: 16px; background-color: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;'>Save</button>
-            </div>
-            <div id='inverterTypeStatus' style='font-size: 14px; color: #666; height: 20px;'></div>
-        </div>
-        
         <div class="nav-buttons">
             <a href="/" class="btn btn-secondary">← Back to Dashboard</a>
             <a href="/battery_settings.html" class="btn btn-secondary">← Battery Specs</a>
             <a href="/charger_settings.html" class="btn btn-secondary">Charger Specs →</a>
         </div>
     </div>
-    
     <script>
-        window.onload = function() {
-            loadInverterTypes();
-        };
-        
-        function loadInverterTypes() {
-            console.log('Loading inverter types...');
-            
-            fetch('/api/get_inverter_types')
+        function loadSelectedInverterInterface() {
+            fetch('/api/get_selected_interfaces')
                 .then(response => response.json())
-                .then(data => {
-                    const typeSelect = document.getElementById('inverterType');
-                    typeSelect.innerHTML = '';
-                    
-                    data.types.forEach(type => {
-                        const option = document.createElement('option');
-                        option.value = type.id;
-                        option.textContent = type.name;
-                        typeSelect.appendChild(option);
-                    });
-                    
-                    // Load current selection
-                    loadCurrentInverterType();
-                    console.log('Inverter types loaded');
-                })
-                .catch(error => console.error('Error loading inverter types:', error));
-        }
-        
-        function loadCurrentInverterType() {
-            fetch('/api/get_selected_types')
-                .then(response => response.json())
-                .then(data => {
-                    const typeSelect = document.getElementById('inverterType');
-                    typeSelect.value = data.inverter_type;
-                    console.log('Current inverter type loaded:', data.inverter_type);
-                })
-                .catch(error => console.error('Error loading current type:', error));
-        }
-        
-        function saveInverterType() {
-            const typeSelect = document.getElementById('inverterType');
-            const typeId = parseInt(typeSelect.value);
-            const typeName = typeSelect.options[typeSelect.selectedIndex].text;
-            const statusDiv = document.getElementById('inverterTypeStatus');
-            
-            console.log(`Saving inverter type: ${typeId} (${typeName})`);
-            statusDiv.textContent = 'Saving...';
-            statusDiv.style.color = '#ff9800';
-            
-            fetch('/api/set_inverter_type', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({type: typeId})
-            })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        statusDiv.textContent = `✓ Saved ${typeName}. Transmitter is switching protocol...`;
-                        statusDiv.style.color = '#4CAF50';
-                        console.log('Inverter type saved successfully');
-                    } else {
-                        statusDiv.textContent = `✗ Error: ${data.error}`;
-                        statusDiv.style.color = '#dc3545';
-                        console.error('Failed to save inverter type:', data.error);
-                    }
+                .then(selected => {
+                    const interfaceId = selected.inverter_interface;
+                    return fetch('/api/get_inverter_interfaces')
+                        .then(response => response.json())
+                        .then(types => {
+                            const match = types.types.find(t => t.id === interfaceId);
+                            const label = match ? `${match.name}` : 'Unknown';
+                            const el = document.getElementById('inverterInterfaceValue');
+                            if (el) {
+                                el.textContent = label;
+                            }
+                        });
                 })
                 .catch(error => {
-                    statusDiv.textContent = `✗ Error: ${error.message}`;
-                    statusDiv.style.color = '#dc3545';
-                    console.error('Error saving inverter type:', error);
+                    const el = document.getElementById('inverterInterfaceValue');
+                    if (el) {
+                        el.textContent = 'Unavailable';
+                    }
+                    console.error('Failed to load selected inverter interface:', error);
                 });
         }
+
+        window.addEventListener('load', () => {
+            loadSelectedInverterInterface();
+        });
     </script>
 </body>
 </html>
@@ -381,7 +325,7 @@ esp_err_t inverter_specs_page_handler(httpd_req_t *req) {
     size_t html_header_len = strlen(html_header);
     size_t html_footer_len = strlen(html_footer);
     size_t specs_section_max = 2048;
-    size_t total_size = html_header_len + specs_section_max + html_footer_len + 256;
+    size_t total_size = html_header_len + specs_section_max + html_footer_len + 768;
     
     char* response = (char*)ps_malloc(total_size);
     if (!response) {
@@ -390,8 +334,14 @@ esp_err_t inverter_specs_page_handler(httpd_req_t *req) {
         return ESP_FAIL;
     }
 
-    // Build response safely
-    char specs_section[2048];
+    // Build response safely (use PSRAM for intermediate buffer too)
+    char* specs_section = (char*)ps_malloc(2048);
+    if (!specs_section) {
+        free(response);
+        LOG_ERROR("INVERTER_PAGE", "Failed to allocate specs buffer in PSRAM");
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Memory allocation failed");
+        return ESP_FAIL;
+    }
     snprintf(specs_section, sizeof(specs_section), html_specs_section,
              inverter_protocol.c_str(),
              min_input_voltage_dv / 10.0f,
@@ -416,6 +366,7 @@ esp_err_t inverter_specs_page_handler(httpd_req_t *req) {
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_send(req, response, strlen(response));
     
+    free(specs_section);
     free(response);
     LOG_INFO("INVERTER_PAGE", "Inverter specs page served (%d bytes)", offset);
     

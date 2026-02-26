@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <vector>
 
 // Battery settings structure (matches transmitter)
 struct BatterySettings {
@@ -146,6 +147,18 @@ private:
     static uint16_t cell_max_voltage_mV_;
     static bool balancing_active_;
     static bool cell_data_known_;
+    static char cell_data_source_[32];       // Data source tag (dummy/live/live_simulated)
+
+    struct EventLogEntry {
+        uint32_t timestamp;
+        uint8_t level;
+        int32_t data;
+        char message[96];
+    };
+
+    static std::vector<EventLogEntry> event_logs_;
+    static bool event_logs_known_;
+    static uint32_t event_logs_last_update_ms_;
     
 public:
     // Initialization (load cache from NVS)
@@ -287,6 +300,14 @@ public:
     static uint16_t getCellMinVoltage() { return cell_min_voltage_mV_; }
     static uint16_t getCellMaxVoltage() { return cell_max_voltage_mV_; }
     static bool isBalancingActive() { return balancing_active_; }
+    static const char* getCellDataSource() { return cell_data_source_; }
+
+    // Event logs (from transmitter via MQTT or HTTP proxy)
+    static void storeEventLogs(const JsonObject& logs);
+    static bool hasEventLogs();
+    static const std::vector<EventLogEntry>& getEventLogs();
+    static uint32_t getEventLogCount();
+    static uint32_t getEventLogsLastUpdateMs();
 };
 
 #endif

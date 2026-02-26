@@ -10,6 +10,7 @@
 #include "../config/logging_config.h"
 #include "../config/network_config.h"
 #include "../settings/settings_manager.h"
+#include "../test_data/test_data_config.h"
 #if CONFIG_CAN_ENABLED
 #include "../battery/battery_manager.h"
 #include "../battery_emulator/battery/Battery.h"
@@ -134,6 +135,27 @@ void EspnowMessageHandler::setup_message_routes() {
     router.register_route(msg_component_config,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             static_cast<EspnowMessageHandler*>(ctx)->handle_component_config(*msg);
+        },
+        0xFF, this);
+
+    // Component interface update handler (receiver → transmitter)
+    router.register_route(msg_component_interface,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            static_cast<EspnowMessageHandler*>(ctx)->handle_component_interface(*msg);
+        },
+        0xFF, this);
+
+    // Event logs subscription control (receiver → transmitter)
+    router.register_route(msg_event_logs_control,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            if (msg->len >= (int)sizeof(event_logs_control_t)) {
+                const event_logs_control_t* control = reinterpret_cast<const event_logs_control_t*>(msg->data);
+                if (control->action == 1) {
+                    MqttManager::instance().increment_event_log_subscribers();
+                } else {
+                    MqttManager::instance().decrement_event_log_subscribers();
+                }
+            }
         },
         0xFF, this);
     
@@ -294,10 +316,13 @@ void EspnowMessageHandler::rx_task_impl(void* parameter) {
 }
 
 void EspnowMessageHandler::handle_request_data(const espnow_queue_msg_t& msg) {
-    if (msg.len < (int)sizeof(request_data_t)) return;
+    if (msg.len < (int)sizeof(request_data_t)) {
+        LOG_WARN("DATA_REQUEST", "Packet too short: %d bytes", msg.len);
+        return;
+    }
     
     const request_data_t* req = reinterpret_cast<const request_data_t*>(msg.data);
-    LOG_DEBUG("DATA_REQUEST", "REQUEST_DATA (subtype=%d) from %02X:%02X:%02X:%02X:%02X:%02X",
+    LOG_INFO("DATA_REQUEST", "REQUEST_DATA received (subtype=%d) from %02X:%02X:%02X:%02X:%02X:%02X",
                  req->subtype, msg.mac[0], msg.mac[1], msg.mac[2], msg.mac[3], msg.mac[4], msg.mac[5]);
     
     // Check if receiver connection is in CONNECTED state before responding
@@ -314,7 +339,7 @@ void EspnowMessageHandler::handle_request_data(const espnow_queue_msg_t& msg) {
     switch (req->subtype) {
         case subtype_power_profile:
             transmission_active_ = true;
-            LOG_INFO("DATA_REQUEST", ">>> Power profile transmission STARTED");
+            LOG_INFO("DATA_REQUEST", ">>> Power profile transmission ACTIVATED <<<");
             break;
         
         case subtype_network_config: {
@@ -521,6 +546,10 @@ void EspnowMessageHandler::handle_reboot(const espnow_queue_msg_t& msg) {
                  msg.mac[0], msg.mac[1], msg.mac[2], msg.mac[3], msg.mac[4], msg.mac[5]);
     LOG_INFO("CMD", ">>> Rebooting in 1 second...");
     Serial.flush();
+    
+    // Disconnect MQTT gracefully to prevent socket errors on reboot
+    MqttManager::instance().disconnect();
+    
     delay(1000);
     ESP.restart();
 }
@@ -598,10 +627,17 @@ void EspnowMessageHandler::handle_debug_control(const espnow_queue_msg_t& msg) {
     
     const debug_control_t* pkt = reinterpret_cast<const debug_control_t*>(msg.data);
     
-    LOG_INFO("DEBUG_CTRL", "Received debug level change request: %u", pkt->level);
-    
     // Store receiver MAC for ACK
     memcpy(receiver_mac_, msg.mac, 6);
+    
+    // Check if this is test data mode control (flags & 0x80)
+    if (pkt->flags & 0x80) {
+        handle_test_data_mode_control(pkt);
+        return;
+    }
+    
+    // Otherwise, handle as debug level control
+    LOG_INFO("DEBUG_CTRL", "Received debug level change request: %u", pkt->level);
     
     // Validate level
     if (pkt->level > MQTT_LOG_DEBUG) {
@@ -625,6 +661,43 @@ void EspnowMessageHandler::handle_debug_control(const espnow_queue_msg_t& msg) {
     
     // Send acknowledgment
     send_debug_ack(pkt->level, (uint8_t)previous, 0);
+}
+
+void EspnowMessageHandler::handle_test_data_mode_control(const debug_control_t* pkt) {
+    const char* mode_names[] = {"OFF", "SOC_POWER_ONLY", "FULL_BATTERY_DATA"};
+    
+    LOG_INFO("TEST_DATA_CTRL", "Received test data mode change request: %u (%s)", 
+             pkt->level, pkt->level < 3 ? mode_names[pkt->level] : "INVALID");
+    
+    // Validate mode
+    if (pkt->level > 2) {
+        LOG_WARN("TEST_DATA_CTRL", "Invalid test data mode: %u (must be 0-2)", pkt->level);
+        return;
+    }
+    
+    // Get current configuration
+    TestDataConfig::Config config = TestDataConfig::get_config();
+    TestDataConfig::Mode previous_mode = config.mode;
+    
+    // Convert mode number to enum
+    TestDataConfig::Mode new_mode;
+    switch (pkt->level) {
+        case 0: new_mode = TestDataConfig::Mode::OFF; break;
+        case 1: new_mode = TestDataConfig::Mode::SOC_POWER_ONLY; break;
+        case 2: new_mode = TestDataConfig::Mode::FULL_BATTERY_DATA; break;
+        default: return;  // Should never happen after validation
+    }
+    
+    // Update configuration
+    config.mode = new_mode;
+    TestDataConfig::set_config(config);
+    TestDataConfig::apply_config();
+    
+    LOG_INFO("TEST_DATA_CTRL", "Test data mode changed: %s → %s", 
+             TestDataConfig::mode_to_string(previous_mode),
+             TestDataConfig::mode_to_string(new_mode));
+    
+    // TODO: Send acknowledgment back to receiver if needed
 }
 
 void EspnowMessageHandler::send_debug_ack(uint8_t applied, uint8_t previous, uint8_t status) {
@@ -742,9 +815,65 @@ void EspnowMessageHandler::handle_component_config(const espnow_queue_msg_t& msg
     if (battery_updated || inverter_updated) {
         LOG_WARN("COMP_CFG", ">>> Rebooting to apply component selection...");
         Serial.flush();
+        
+        // Disconnect MQTT gracefully to prevent socket errors on reboot
+        MqttManager::instance().disconnect();
+        
         delay(1000);
         ESP.restart();
     }
+}
+
+void EspnowMessageHandler::handle_component_interface(const espnow_queue_msg_t& msg) {
+    if (msg.len < (int)sizeof(component_interface_msg_t)) {
+        LOG_WARN("COMP_IF", "Invalid component interface packet size: %d", msg.len);
+        return;
+    }
+
+    const component_interface_msg_t* config = reinterpret_cast<const component_interface_msg_t*>(msg.data);
+
+    uint16_t calculated = 0;
+    const uint8_t* data = reinterpret_cast<const uint8_t*>(config);
+    for (size_t i = 0; i < sizeof(component_interface_msg_t) - sizeof(config->checksum); i++) {
+        calculated += data[i];
+    }
+
+    if (calculated != config->checksum) {
+        LOG_WARN("COMP_IF", "Checksum mismatch: calc=%u, recv=%u", calculated, config->checksum);
+        return;
+    }
+
+    if (config->battery_interface > 5) {
+        LOG_WARN("COMP_IF", "Invalid battery interface: %u", config->battery_interface);
+        return;
+    }
+
+    if (config->inverter_interface > 5) {
+        LOG_WARN("COMP_IF", "Invalid inverter interface: %u", config->inverter_interface);
+        return;
+    }
+
+    Preferences prefs;
+    if (!prefs.begin("batterySettings", false)) {
+        LOG_WARN("COMP_IF", "Failed to open NVS for interface save");
+        return;
+    }
+
+    prefs.putUInt("BATTCOMM", config->battery_interface);
+    prefs.putUInt("INVCOMM", config->inverter_interface);
+    prefs.end();
+
+    LOG_INFO("COMP_IF", "Applied component interface selection: battery_if=%u inverter_if=%u",
+             config->battery_interface, config->inverter_interface);
+
+    LOG_WARN("COMP_IF", ">>> Rebooting to apply component interface selection...");
+    Serial.flush();
+
+    // Disconnect MQTT gracefully to prevent socket errors on reboot
+    MqttManager::instance().disconnect();
+
+    delay(1000);
+    ESP.restart();
 }
 
 void EspnowMessageHandler::save_debug_level(uint8_t level) {

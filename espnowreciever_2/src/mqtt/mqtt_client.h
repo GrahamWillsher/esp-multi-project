@@ -131,6 +131,9 @@ private:
     static TaskHandle_t cell_data_pause_timer_;  // Timer handle for grace period
     static const uint32_t CELL_DATA_GRACE_PERIOD_MS = 5000;  // 5 second grace period
     
+    // Event log subscription management
+    static int event_log_subscribers_;  // Count of clients viewing /events page
+    
     /**
      * @brief Timer callback: Pause cell_data subscription after grace period
      */
@@ -165,6 +168,33 @@ private:
      * @brief Handle incoming cell_data message
      */
     static void handleCellData(const char* json_payload, size_t length);
+
+public:
+    /**
+     * @brief Increment event log subscriber count (called when /events page opened)
+     * 
+     * When first SSE client connects to /events, automatically enables event_logs subscription.
+     */
+    static void incrementEventLogSubscribers();
+    
+    /**
+     * @brief Decrement event log subscriber count (called when /events page closed)
+     * 
+     * When last SSE client disconnects from /events, unsubscribes from event_logs.
+     */
+    static void decrementEventLogSubscribers();
+    
+    /**
+     * @brief Get current event log subscriber count
+     * @return number of active SSE clients connected to /events
+     */
+    static int getEventLogSubscriberCount();
+
+private:
+    /**
+     * @brief Handle incoming event_logs message
+     */
+    static void handleEventLogs(const char* json_payload, size_t length);
 };
 
 #endif // MQTT_CLIENT_H

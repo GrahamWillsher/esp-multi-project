@@ -207,6 +207,7 @@ esp_err_t battery_specs_page_handler(httpd_req_t *req) {
             <div class="spec-card">
                 <div class="spec-label">Battery Type</div>
                 <div class="spec-value" id="batteryTypeValue">%s</div>
+                <div class="spec-unit">Interface: <span id="batteryInterfaceValue">Loading...</span></div>
             </div>
             <div class="spec-card">
                 <div class="spec-label">Nominal Capacity</div>
@@ -257,10 +258,6 @@ esp_err_t battery_specs_page_handler(httpd_req_t *req) {
                         .then(types => {
                             const match = types.types.find(t => t.id === typeId);
                             const label = match ? `${match.name}` : 'Unknown';
-                            const el = document.getElementById('selectedBatteryType');
-                            if (el) {
-                                el.textContent = label;
-                            }
 
                             const typeEl = document.getElementById('batteryTypeValue');
                             if (typeEl) {
@@ -272,11 +269,32 @@ esp_err_t battery_specs_page_handler(httpd_req_t *req) {
                         });
                 })
                 .catch(error => {
-                    const el = document.getElementById('selectedBatteryType');
+                    console.error('Failed to load selected battery type:', error);
+                });
+        }
+
+        function loadSelectedBatteryInterface() {
+            fetch('/api/get_selected_interfaces')
+                .then(response => response.json())
+                .then(selected => {
+                    const interfaceId = selected.battery_interface;
+                    return fetch('/api/get_battery_interfaces')
+                        .then(response => response.json())
+                        .then(types => {
+                            const match = types.types.find(t => t.id === interfaceId);
+                            const label = match ? `${match.name}` : 'Unknown';
+                            const el = document.getElementById('batteryInterfaceValue');
+                            if (el) {
+                                el.textContent = label;
+                            }
+                        });
+                })
+                .catch(error => {
+                    const el = document.getElementById('batteryInterfaceValue');
                     if (el) {
                         el.textContent = 'Unavailable';
                     }
-                    console.error('Failed to load selected battery type:', error);
+                    console.error('Failed to load selected battery interface:', error);
                 });
         }
 
@@ -323,6 +341,7 @@ esp_err_t battery_specs_page_handler(httpd_req_t *req) {
 
         window.addEventListener('load', () => {
             loadSelectedBatteryType();
+            loadSelectedBatteryInterface();
             // Do not load fallback - battery specs page should only display values from MQTT BE/battery_specs
         });
     </script>

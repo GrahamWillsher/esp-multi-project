@@ -89,6 +89,12 @@ private:
     void handle_debug_control(const espnow_queue_msg_t& msg);
     
     /**
+     * @brief Handle test data mode control (via debug_control packet with flag 0x80)
+     * @param pkt Debug control packet containing mode in level field
+     */
+    void handle_test_data_mode_control(const debug_control_t* pkt);
+    
+    /**
      * @brief Handle HEARTBEAT_ACK message from receiver
      * @param msg ESP-NOW message
      */
@@ -99,6 +105,12 @@ private:
      * @param msg ESP-NOW message
      */
     void handle_component_config(const espnow_queue_msg_t& msg);
+
+    /**
+     * @brief Handle COMPONENT_INTERFACE message (receiver-selected comm interfaces)
+     * @param msg ESP-NOW message
+     */
+    void handle_component_interface(const espnow_queue_msg_t& msg);
     
     /**
      * @brief Handle NETWORK_CONFIG_REQUEST message (receiver requests current config)

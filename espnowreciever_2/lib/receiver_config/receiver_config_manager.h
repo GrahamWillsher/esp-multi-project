@@ -47,6 +47,10 @@ private:
     // Battery and Inverter type selection
     static uint8_t battery_type_;      // BMS type (e.g., 29 = PYLON_BATTERY)
     static uint8_t inverter_type_;     // Inverter protocol type (e.g., 0 = NONE, 5 = SOLAX)
+    
+    // Battery and Inverter interface selection (comm_interface from Battery Emulator)
+    static uint8_t battery_interface_;   // Battery comm interface (0=Modbus, 1=RS485, 2=CanNative, etc.)
+    static uint8_t inverter_interface_;  // Inverter comm interface (0=Modbus, 1=RS485, 2=CanNative, etc.)
 
     // Simulation mode (dashboard data source)
     static bool simulation_mode_;
@@ -68,6 +72,8 @@ private:
     static constexpr const char* NVS_KEY_MQTT_PASSWORD = "mqtt_pass";
     static constexpr const char* NVS_KEY_BATTERY_TYPE = "batt_type";
     static constexpr const char* NVS_KEY_INVERTER_TYPE = "inv_type";
+    static constexpr const char* NVS_KEY_BATTERY_INTERFACE = "batt_if";
+    static constexpr const char* NVS_KEY_INVERTER_INTERFACE = "inv_if";
     static constexpr const char* NVS_KEY_SIMULATION_MODE = "sim_mode";
     
 public:
@@ -144,6 +150,10 @@ public:
     // Getters for Battery and Inverter types
     static uint8_t getBatteryType() { return battery_type_; }
     static uint8_t getInverterType() { return inverter_type_; }
+    
+    // Getters for Battery and Inverter interfaces
+    static uint8_t getBatteryInterface() { return battery_interface_; }
+    static uint8_t getInverterInterface() { return inverter_interface_; }
 
     // Simulation mode (data source)
     static bool isSimulationMode() { return simulation_mode_; }
@@ -151,6 +161,10 @@ public:
     // Setters for Battery and Inverter types
     static void setBatteryType(uint8_t type);
     static void setInverterType(uint8_t type);
+    
+    // Setters for Battery and Inverter interfaces
+    static void setBatteryInterface(uint8_t interface);
+    static void setInverterInterface(uint8_t interface);
 
     // Set simulation mode
     static void setSimulationMode(bool enabled);

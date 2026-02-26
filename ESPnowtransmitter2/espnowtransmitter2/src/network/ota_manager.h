@@ -51,6 +51,41 @@ private:
      */
     static esp_err_t root_handler(httpd_req_t *req);
     
+    /**
+     * @brief HTTP handler for event logs API
+     * @param req HTTP request object
+     * @return ESP_OK on success
+     */
+    static esp_err_t event_logs_handler(httpd_req_t *req);
+    
+    /**
+     * @brief HTTP handler for test data configuration GET
+     * @param req HTTP request object
+     * @return ESP_OK on success
+     */
+    static esp_err_t test_data_config_get_handler(httpd_req_t *req);
+    
+    /**
+     * @brief HTTP handler for test data configuration POST
+     * @param req HTTP request object
+     * @return ESP_OK on success
+     */
+    static esp_err_t test_data_config_post_handler(httpd_req_t *req);
+    
+    /**
+     * @brief HTTP handler for applying test data configuration
+     * @param req HTTP request object
+     * @return ESP_OK on success
+     */
+    static esp_err_t test_data_apply_handler(httpd_req_t *req);
+    
+    /**
+     * @brief HTTP handler for resetting test data configuration
+     * @param req HTTP request object
+     * @return ESP_OK on success
+     */
+    static esp_err_t test_data_reset_handler(httpd_req_t *req);
+    
     httpd_handle_t http_server_{nullptr};
     volatile bool ota_in_progress_{false};
 };
