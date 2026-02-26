@@ -1,10 +1,16 @@
 #include "display_core.h"
 #include "display_splash.h"
+#include "display_manager.h"
 #include "../helpers.h"
 #include "../hal/hardware_config.h"
 #include <TFT_eSPI.h>
 
 extern TFT_eSPI tft;
+
+// Helper function to get display driver safely
+static HAL::IDisplayDriver* get_display_driver() {
+    return Display::DisplayManager::get_driver();
+}
 
 // Initialize TFT display hardware and backlight
 void init_display() {
