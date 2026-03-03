@@ -35,14 +35,14 @@ void initlittlefs() {
         littlefs_ok = true;
     }
     
-    if (littlefs_ok) {
-        Serial.println("[INIT] Starting splash screen...");
+    if (!littlefs_ok) {
+        Serial.println("[INIT] Skipping splash screen (LittleFS not available)");
+        Serial.flush();
+    } else {
+        Serial.println("[INIT] LittleFS ready - starting splash screen...");
         Serial.flush();
         displaySplashWithFade();
         Serial.println("[INIT] Splash screen complete");
-        Serial.flush();
-    } else {
-        Serial.println("[INIT] Skipping splash screen (LittleFS not available)");
         Serial.flush();
     }
 }

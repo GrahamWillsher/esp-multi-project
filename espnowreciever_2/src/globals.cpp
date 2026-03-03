@@ -21,7 +21,7 @@ namespace Config {
 
 // Display State (definitions)
 namespace Display {
-    int16_t tft_background = STEELBLUE;
+    int16_t tft_background = TFT_BLACK;
     uint8_t current_backlight_brightness = 255;
     uint16_t soc_color_gradient[TOTAL_GRADIENT_STEPS + 1];
     bool soc_gradient_initialized = false;

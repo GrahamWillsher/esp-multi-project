@@ -3,7 +3,74 @@
  */
 
 #include "common.h"
+#include "state_machine.h"
 #include "display/display_led.h"
+#include "display/display_core.h"
+#include "espnow/rx_heartbeat_manager.h"
+
+SystemStateManager& SystemStateManager::instance() {
+    static SystemStateManager inst;
+    return inst;
+}
+
+void SystemStateManager::init() {
+    state_entry_time_ms_ = millis();
+}
+
+uint32_t SystemStateManager::get_state_duration_ms() const {
+    return millis() - state_entry_time_ms_;
+}
+
+void SystemStateManager::update() {
+    static SystemState last_seen_state = current_state;
+    if (last_seen_state != current_state) {
+        state_entry_time_ms_ = millis();
+        last_seen_state = current_state;
+    }
+
+    const uint32_t elapsed = get_state_duration_ms();
+
+    switch (current_state) {
+        case SystemState::BOOTING:
+            if (elapsed > BOOT_TIMEOUT_MS) {
+                LOG_WARN("STATE", "Boot timeout -> ERROR_STATE");
+                transition_to_state(SystemState::ERROR_STATE);
+            }
+            break;
+
+        case SystemState::WAITING_FOR_TRANSMITTER:
+            if (ESPNow::transmitter_connected) {
+                transition_to_state(SystemState::NORMAL_OPERATION);
+            } else if (elapsed > TX_WAIT_TIMEOUT_MS) {
+                transition_to_state(SystemState::NETWORK_ERROR);
+            }
+            break;
+
+        case SystemState::NORMAL_OPERATION:
+            if (!ESPNow::transmitter_connected) {
+                transition_to_state(SystemState::WAITING_FOR_TRANSMITTER);
+            } else if (RxHeartbeatManager::instance().get_time_since_last() > DATA_STALE_TIMEOUT_MS) {
+                transition_to_state(SystemState::DATA_STALE_ERROR);
+            }
+            break;
+
+        case SystemState::NETWORK_ERROR:
+        case SystemState::DATA_STALE_ERROR:
+        case SystemState::DEGRADED_MODE:
+            if (ESPNow::transmitter_connected) {
+                transition_to_state(SystemState::NORMAL_OPERATION);
+            } else if (elapsed > ERROR_RECOVERY_RETRY_MS) {
+                transition_to_state(SystemState::WAITING_FOR_TRANSMITTER);
+            }
+            break;
+
+        case SystemState::ERROR_STATE:
+            if (elapsed > ERROR_RECOVERY_RETRY_MS) {
+                transition_to_state(SystemState::BOOTING);
+            }
+            break;
+    }
+}
 
 // State transition function
 void transition_to_state(SystemState new_state) {
@@ -16,11 +83,11 @@ void transition_to_state(SystemState new_state) {
     switch (new_state) {
         case SystemState::NORMAL_OPERATION:
             LOG_INFO("STATE", "Entering NORMAL_OPERATION");
-            
             // Direct TFT access with mutex
             if (xSemaphoreTake(RTOS::tft_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
                 Display::tft_background = TFT_BLACK;  // Update background color variable
-                tft.fillScreen(TFT_BLACK);
+                // Don't clear screen here - data display will fill it as it arrives
+                // tft.fillScreen(TFT_BLACK);
                 init_led_gradients();
                 xSemaphoreGive(RTOS::tft_mutex);
             }
@@ -32,6 +99,18 @@ void transition_to_state(SystemState new_state) {
                 tft.fillScreen(TFT_RED);
                 xSemaphoreGive(RTOS::tft_mutex);
             }
+            break;
+
+        case SystemState::NETWORK_ERROR:
+            LOG_WARN("STATE", "Entering NETWORK_ERROR");
+            break;
+
+        case SystemState::DATA_STALE_ERROR:
+            LOG_WARN("STATE", "Entering DATA_STALE_ERROR");
+            break;
+
+        case SystemState::DEGRADED_MODE:
+            LOG_WARN("STATE", "Entering DEGRADED_MODE");
             break;
             
         case SystemState::BOOTING:
@@ -58,7 +137,7 @@ void handle_error(ErrorSeverity severity, const char* component, const char* mes
     
     if (severity == ErrorSeverity::FATAL) {
         transition_to_state(SystemState::ERROR_STATE);
-        
+
         if (xSemaphoreTake(RTOS::tft_mutex, pdMS_TO_TICKS(500)) == pdTRUE) {
             tft.fillScreen(TFT_RED);
             tft.setTextColor(TFT_WHITE, TFT_RED);
@@ -70,7 +149,7 @@ void handle_error(ErrorSeverity severity, const char* component, const char* mes
             tft.drawString(message, Display::SCREEN_WIDTH / 2, Display::SCREEN_HEIGHT / 2 + 15);
             xSemaphoreGive(RTOS::tft_mutex);
         }
-        
+
         // Flash LED directly (no queue)
         while (true) {
             flash_led(LED_RED, 500);

@@ -76,6 +76,8 @@ esp_err_t monitor2_handler(httpd_req_t *req) {
         let eventSource = null;
         let reconnectTimer = null;
         let lastUpdate = Date.now();
+        let reconnectDelayMs = 1000;
+        const reconnectDelayMaxMs = 30000;
         
         function connectSSE() {
             // Close existing connection if any
@@ -96,6 +98,7 @@ esp_err_t monitor2_handler(httpd_req_t *req) {
                 console.log('SSE connection opened');
                 document.getElementById('connection').textContent = '⚡ Connected (Real-time)';
                 document.getElementById('connection').className = 'connection-status';
+                reconnectDelayMs = 1000;
             };
             
             eventSource.onmessage = function(event) {
@@ -116,9 +119,11 @@ esp_err_t monitor2_handler(httpd_req_t *req) {
                 document.getElementById('connection').textContent = '❌ Disconnected (Reconnecting...)';
                 document.getElementById('connection').className = 'connection-status disconnected';
                 
-                // Close and reconnect after 3 seconds
+                // Close and reconnect with exponential backoff
                 eventSource.close();
-                reconnectTimer = setTimeout(connectSSE, 3000);
+                const waitMs = reconnectDelayMs;
+                reconnectTimer = setTimeout(connectSSE, waitMs);
+                reconnectDelayMs = Math.min(Math.floor(reconnectDelayMs * 1.5), reconnectDelayMaxMs);
             };
         }
         

@@ -107,7 +107,7 @@ void DisplayManager::set_backlight(uint8_t brightness) {
         return;
     }
     
-    ledcWrite(HardwareConfig::GPIO_BACKLIGHT, brightness);
+    ledcWrite(HardwareConfig::BACKLIGHT_PWM_CHANNEL, brightness);
     backlight_brightness_ = brightness;
 }
 

@@ -11,12 +11,14 @@
 #include "display/display_led.h"
 #include "display/display_core.h"
 #include "display/display_splash.h"
+
 #include "espnow/espnow_callbacks.h"
 #include "espnow/espnow_tasks.h"
 #include "espnow/rx_connection_handler.h"
 #include "espnow/rx_heartbeat_manager.h"
 #include "mqtt/mqtt_client.h"
 #include "mqtt/mqtt_task.h"
+#include "hal/hardware_config.h"
 #include <connection_manager.h>
 #include <connection_event_processor.h>
 #include <channel_manager.h>
@@ -40,6 +42,10 @@ static TFT_eSPI tft_hardware = TFT_eSPI();
 // ═══════════════════════════════════════════════════════════════════════
 
 void setup() {
+    // Force backlight OFF immediately at boot to prevent pre-splash white flash
+    pinMode(HardwareConfig::GPIO_BACKLIGHT, OUTPUT);
+    digitalWrite(HardwareConfig::GPIO_BACKLIGHT, LOW);
+
     Serial.begin(115200);
     smart_delay(1000);  // Give serial time to initialize
     LOG_INFO("MAIN", "\n========================================");
@@ -92,14 +98,14 @@ void setup() {
     LOG_INFO("MAIN", "ESP-NOW initialized on WiFi channel %d", WiFi.channel());
     LOG_DEBUG("MAIN", "ESP-NOW and WiFi STA coexist on same channel");
     
-    // Display ready screen and enable backlight
+    // Display initial ready screen (splash was already shown during LittleFS init)
     displayInitialScreen();
     
     LOG_INFO("MAIN", "===== Setup complete =====");
     smart_delay(1000);
     
-    // Clear and prepare for data display
-    tft.fillScreen(Display::tft_background);
+    // Don't clear screen here - let data display handle it when it starts
+    // tft.fillScreen(Display::tft_background);
     
     // Create mutex for TFT display access
     RTOS::tft_mutex = xSemaphoreCreateMutex();
@@ -123,18 +129,7 @@ void setup() {
     
     // Create FreeRTOS tasks
     LOG_DEBUG("MAIN", "Creating FreeRTOS tasks...");
-    tft.fillScreen(Display::tft_background);
 
-    // Diagnostic: verify TFT can draw SOC/power once at startup
-    if (xSemaphoreTake(RTOS::tft_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        display_soc(55.0f);
-        display_power(500);
-        xSemaphoreGive(RTOS::tft_mutex);
-        LOG_INFO("MAIN", "TFT diagnostic draw: SOC=55%%, Power=500W");
-    } else {
-        LOG_WARN("MAIN", "TFT diagnostic draw skipped (mutex timeout)");
-    }
-    
     // Task: ESP-NOW Worker (priority 2, core 1) - highest priority for message processing
     xTaskCreatePinnedToCore(
         task_espnow_worker,
@@ -196,6 +191,7 @@ void setup() {
     LOG_INFO("HEARTBEAT", "RX Heartbeat manager initialized (90s timeout)");
     
     // *** PHASE 2: Initialize system state machine ***
+    SystemStateManager::instance().init();
     transition_to_state(SystemState::WAITING_FOR_TRANSMITTER);
     
     // NOW register ESP-NOW callbacks (queue is ready)
@@ -215,6 +211,9 @@ void loop() {
     // Heartbeat periodic check
     RxHeartbeatManager::instance().tick();
 
-    // This loop just yields to the scheduler
-    smart_delay(1000);
+    // Receiver-side timeout/state transitions
+    SystemStateManager::instance().update();
+
+    // Yield to scheduler
+    smart_delay(10);
 }

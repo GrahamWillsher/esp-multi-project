@@ -1,3 +1,4 @@
+#include "state/receiver_state_manager.h"
 /*
  * Common definitions and global state
  * Shared across all modules
@@ -74,7 +75,7 @@ namespace Display {
     // SOC/Power range
     constexpr float MIN_SOC_PERCENT = 20.0f;
     constexpr float MAX_SOC_PERCENT = 80.0f;
-    constexpr int MAX_POWER = 4000;
+    constexpr int MAX_POWER = 5000;
     
     // State variables
     extern int16_t tft_background;
@@ -141,6 +142,9 @@ enum class SystemState {
     BOOTING,
     WAITING_FOR_TRANSMITTER,
     NORMAL_OPERATION,
+    DEGRADED_MODE,
+    NETWORK_ERROR,
+    DATA_STALE_ERROR,
     ERROR_STATE
 };
 

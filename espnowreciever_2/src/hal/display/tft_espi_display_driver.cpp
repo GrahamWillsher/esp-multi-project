@@ -5,6 +5,7 @@
 
 #include "tft_espi_display_driver.h"
 #include <logging.h>
+#include "../hardware_config.h"
 
 namespace HAL {
 
@@ -21,8 +22,18 @@ bool TftEspiDisplayDriver::init() {
     
     try {
         tft_.init();
+        
+        // CRITICAL: TFT_eSPI init() may turn on backlight, so force it OFF immediately
+        // to prevent white flash before splash screen
+        pinMode(HardwareConfig::GPIO_BACKLIGHT, OUTPUT);
+        digitalWrite(HardwareConfig::GPIO_BACKLIGHT, LOW);
+        
+        // CRITICAL: Set swap bytes for correct color rendering on T-Display-S3
+        // Must be called AFTER init() as init() may reset this setting
+        tft_.setSwapBytes(true);
+        
         initialized_ = true;
-        LOG_INFO("TFT_eSPI display initialized successfully");
+        LOG_INFO("TFT_eSPI display initialized successfully (swap_bytes=true, backlight OFF)");
         return true;
     } catch (...) {
         LOG_ERROR("Failed to initialize TFT_eSPI display");

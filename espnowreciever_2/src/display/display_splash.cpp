@@ -1,4 +1,5 @@
 #include "display_splash.h"
+#include "display_splash_lvgl.h"
 #include "../hal/hardware_config.h"
 #include <TFT_eSPI.h>
 #include <LittleFS.h>
@@ -20,7 +21,7 @@ void displaySplashJpeg2(const char* filename) {
     }
     
     size_t fileSize = f.size();
-    LOG_DEBUG("DISPLAY", "JPEG2 loading %s (%d bytes)", filename, fileSize);
+    LOG_INFO("DISPLAY", "JPEG2 loading %s (%d bytes)", filename, fileSize);
     
     uint8_t* buffer = (uint8_t*)malloc(fileSize);
     if (!buffer) {
@@ -36,6 +37,9 @@ void displaySplashJpeg2(const char* filename) {
         return;
     }
     f.close();
+    
+    // Set up JPEGDecoder with TFT output
+    JpegDec.setJpgScale(1);
     
     if (!JpegDec.decodeArray(buffer, fileSize)) {
         LOG_ERROR("DISPLAY", "JPEG2 decode failed");
@@ -71,22 +75,25 @@ void displaySplashJpeg2(const char* filename) {
     }
     
     free(buffer);
-    LOG_DEBUG("DISPLAY", "JPEG2 displayed %dx%d at (%d,%d)", JpegDec.width, JpegDec.height, xOffset, yOffset);
+    LOG_INFO("DISPLAY", "JPEG2 displayed %dx%d at (%d,%d)", JpegDec.width, JpegDec.height, xOffset, yOffset);
 }
 
 void displaySplashScreenContent() {
-    LOG_DEBUG("DISPLAY", "Displaying splash screen content...");
+    LOG_INFO("DISPLAY", "=== Displaying splash screen content ===");
     
     tft.fillScreen(TFT_BLACK);
-    LOG_DEBUG("DISPLAY", "Screen cleared");
+    LOG_INFO("DISPLAY", "Screen cleared (filled with black)");
 
     const char* splashFile = "/BatteryEmulator4_320x170.jpg";
+    LOG_INFO("DISPLAY", "Attempting to load splash image: %s", splashFile);
     displaySplashJpeg2(splashFile);
+    LOG_INFO("DISPLAY", "Splash image load attempt complete");
     
-    bool imageDisplayed = LittleFS.exists(splashFile);
+    // Check if the splash image file exists (for fallback decision)
+    bool imageFileExists = LittleFS.exists(splashFile);
     
-    if (!imageDisplayed) {
-        LOG_INFO("DISPLAY", "No splash image found, showing text splash");
+    if (!imageFileExists) {
+        LOG_INFO("DISPLAY", "No splash image file found, showing text fallback");
         
         tft.setTextColor(TFT_WHITE, TFT_BLACK);
         tft.setTextSize(2);
@@ -104,8 +111,11 @@ void displaySplashScreenContent() {
         y += 30;
         tft.setCursor(x, y);
         tft.println(text);
+        LOG_INFO("DISPLAY", "Text splash displayed");
+    } else {
+        LOG_INFO("DISPLAY", "Splash image file exists, should have been displayed above");
     }
-    LOG_DEBUG("DISPLAY", "Splash screen content displayed");
+    LOG_INFO("DISPLAY", "=== Splash screen content display complete ===");
 }
 
 void fadeBacklight(uint8_t targetBrightness, uint32_t durationMs) {
@@ -145,7 +155,10 @@ void fadeBacklight(uint8_t targetBrightness, uint32_t durationMs) {
 }
 
 void displaySplashWithFade() {
-    LOG_INFO("DISPLAY", "=== Starting Splash Screen Sequence ===");
+    LOG_INFO("DISPLAY", "");
+    LOG_INFO("DISPLAY", "╔════════════════════════════════════════════════════╗");
+    LOG_INFO("DISPLAY", "║  === SPLASH SCREEN SEQUENCE STARTING ===          ║");
+    LOG_INFO("DISPLAY", "╚════════════════════════════════════════════════════╝");
     
     #if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5,0,0)
     ledcWrite(HardwareConfig::BACKLIGHT_PWM_CHANNEL, 0);
@@ -153,23 +166,29 @@ void displaySplashWithFade() {
     ledcWrite(HardwareConfig::GPIO_BACKLIGHT, 0);
     #endif
     Display::current_backlight_brightness = 0;
+    LOG_INFO("DISPLAY", "[1/5] Backlight OFF - waiting for content to load");
     smart_delay(200);
     
-    LOG_DEBUG("DISPLAY", "Displaying content...");
+    LOG_INFO("DISPLAY", "[2/5] Loading splash screen content");
     displaySplashScreenContent();
-    LOG_DEBUG("DISPLAY", "Content displayed");
+    LOG_INFO("DISPLAY", "[2/5] ✓ Content loaded");
     
-    LOG_DEBUG("DISPLAY", "Fading in splash screen...");
+    LOG_INFO("DISPLAY", "[3/5] Fading in splash screen (0→255 over 2000ms)...");
     fadeBacklight(255, 2000);
-    LOG_DEBUG("DISPLAY", "Fade in complete");
+    LOG_INFO("DISPLAY", "[3/5] ✓ Fade in complete - splash visible");
     
+    LOG_INFO("DISPLAY", "[4/5] Displaying splash for 3 seconds");
     smart_delay(3000);
+    LOG_INFO("DISPLAY", "[4/5] ✓ Display time complete");
     
-    LOG_DEBUG("DISPLAY", "Fading out splash screen...");
+    LOG_INFO("DISPLAY", "[5/5] Fading out splash screen (255→0 over 2000ms)...");
     fadeBacklight(0, 2000);
-    LOG_DEBUG("DISPLAY", "Fade out complete");
+    LOG_INFO("DISPLAY", "[5/5] ✓ Fade out complete - backlight OFF");
     
     tft.fillScreen(TFT_BLACK);
-    LOG_DEBUG("DISPLAY", "Screen cleared, backlight remains OFF");
-    LOG_INFO("DISPLAY", "=== Splash Screen Sequence Complete ===");
+    LOG_INFO("DISPLAY", "");
+    LOG_INFO("DISPLAY", "╔════════════════════════════════════════════════════╗");
+    LOG_INFO("DISPLAY", "║  === SPLASH SCREEN SEQUENCE COMPLETE ===          ║");
+    LOG_INFO("DISPLAY", "╚════════════════════════════════════════════════════╝");
+    LOG_INFO("DISPLAY", "");
 }

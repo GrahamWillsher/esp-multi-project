@@ -4,10 +4,21 @@
 #include <TFT_eSPI.h>
 #include "../common.h"
 
-// Display core functions
+// ════════════════════════════════════════════════════════════════════════════
+// Display Hardware Abstraction Layer (HAL) Functions
+// ════════════════════════════════════════════════════════════════════════════
 
-// Initialize TFT display hardware and backlight
+// Initialize TFT display hardware via DisplayManager (HAL abstraction)
+// This replaces legacy init_display() and centralizes hardware setup
 void init_display();
+
+// Get reference to global TFT_eSPI instance (for TFT library-specific operations)
+// Generally prefer DisplayManager::get_driver() for portable code
+TFT_eSPI& get_tft_hardware();
+
+// ════════════════════════════════════════════════════════════════════════════
+// Display Content Functions
+// ════════════════════════════════════════════════════════════════════════════
 
 // Display initial ready screen with backlight fade-in
 void displayInitialScreen();
@@ -20,3 +31,6 @@ void display_soc(float newSoC);
 
 // Display power with directional bar graph
 void display_power(int32_t current_power_w);
+
+// Show the main status page (switches active LVGL screen)
+void show_status_page();

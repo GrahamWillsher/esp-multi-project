@@ -319,6 +319,12 @@ static esp_err_t api_cell_data_sse_handler(httpd_req_t *req) {
     httpd_resp_set_type(req, "text/event-stream");
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
     httpd_resp_set_hdr(req, "Connection", "keep-alive");
+
+    // Suggest client reconnect delay (ms) on stream interruption
+    const char* retry_hint = "retry: 5000\n\n";
+    if (httpd_resp_send_chunk(req, retry_hint, strlen(retry_hint)) != ESP_OK) {
+        return ESP_FAIL;
+    }
     
     // Lambda to send cell data as SSE event
     auto sendCellData = [req]() -> bool {
@@ -470,6 +476,12 @@ static esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
     httpd_resp_set_type(req, "text/event-stream");
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
     httpd_resp_set_hdr(req, "Connection", "keep-alive");
+
+    // Suggest client reconnect delay (ms) on stream interruption
+    const char* retry_hint = "retry: 5000\n\n";
+    if (httpd_resp_send_chunk(req, retry_hint, strlen(retry_hint)) != ESP_OK) {
+        return ESP_FAIL;
+    }
     
     msg_subtype data_subtype = get_subtype_for_uri("/monitor2");
     

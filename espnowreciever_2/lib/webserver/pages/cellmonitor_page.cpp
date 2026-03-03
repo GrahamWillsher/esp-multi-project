@@ -51,6 +51,9 @@ static esp_err_t cellmonitor_handler(httpd_req_t *req) {
         let selectedCellIdx = -1;
         let selectedBarIdx = -1;
         let eventSource = null;
+        let reconnectTimer = null;
+        let reconnectDelayMs = 1000;
+        const reconnectDelayMaxMs = 30000;
 
         function renderCells(cells, balancing, minV, maxV) {
             const grid = document.getElementById('cellGrid');
@@ -221,6 +224,11 @@ static esp_err_t cellmonitor_handler(httpd_req_t *req) {
             if (eventSource) {
                 eventSource.close();
             }
+
+            if (reconnectTimer) {
+                clearTimeout(reconnectTimer);
+                reconnectTimer = null;
+            }
             
             eventSource = new EventSource('/api/cell_stream');
             
@@ -235,6 +243,8 @@ static esp_err_t cellmonitor_handler(httpd_req_t *req) {
                         modeEl.textContent = data.mode || 'live';
                         modeEl.style.color = '#4CAF50';
                         statusEl.textContent = `Cells: ${data.cells.length} | Min: ${data.cell_min_voltage_mV}mV | Max: ${data.cell_max_voltage_mV}mV`;
+                        statusEl.style.color = '#ddd';
+                        reconnectDelayMs = 1000;
                         
                         renderCells(data.cells, data.balancing, data.cell_min_voltage_mV, data.cell_max_voltage_mV);
                     } else {
@@ -255,8 +265,9 @@ static esp_err_t cellmonitor_handler(httpd_req_t *req) {
             eventSource.onerror = function(event) {
                 console.error('SSE connection error:', event);
                 document.getElementById('cellStatus').textContent = 'Connection lost - reconnecting...';
-                // Reconnect after 3 seconds
-                setTimeout(connectSSE, 3000);
+                const waitMs = reconnectDelayMs;
+                reconnectTimer = setTimeout(connectSSE, waitMs);
+                reconnectDelayMs = Math.min(Math.floor(reconnectDelayMs * 1.5), reconnectDelayMaxMs);
             };
         }
         
@@ -267,6 +278,9 @@ static esp_err_t cellmonitor_handler(httpd_req_t *req) {
         window.addEventListener('beforeunload', function() {
             if (eventSource) {
                 eventSource.close();
+            }
+            if (reconnectTimer) {
+                clearTimeout(reconnectTimer);
             }
         });
     </script>
