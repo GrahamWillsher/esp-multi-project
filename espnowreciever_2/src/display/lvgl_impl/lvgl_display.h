@@ -13,6 +13,7 @@
 #ifdef USE_LVGL
 
 #include "../display_interface.h"
+#include "../pages/status_page_lvgl.h"
 #include <lvgl.h>
 #include <TFT_eSPI.h>
 
@@ -125,6 +126,7 @@ private:
     lv_color_t* buf2_;
     
     // Pages and widgets
+    Pages::StatusPageLvgl* status_page_lvgl_;
     lv_obj_t* status_page_;
     lv_obj_t* error_page_;
     

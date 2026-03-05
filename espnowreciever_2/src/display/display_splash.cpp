@@ -10,28 +10,28 @@ extern TFT_eSPI tft;
 // Optimized JPEG display function - fast rendering from LittleFS
 void displaySplashJpeg2(const char* filename) {
     if (!LittleFS.exists(filename)) {
-        LOG_ERROR("DISPLAY", "JPEG2 file not found: %s", filename);
+        LOG_WARN("DISPLAY", "JPEG file not found: %s", filename);
         return;
     }
     
     File f = LittleFS.open(filename, "r");
     if (!f) {
-        LOG_ERROR("DISPLAY", "JPEG2 failed to open: %s", filename);
+        LOG_ERROR("DISPLAY", "Failed to open JPEG file: %s", filename);
         return;
     }
     
     size_t fileSize = f.size();
-    LOG_INFO("DISPLAY", "JPEG2 loading %s (%d bytes)", filename, fileSize);
+    LOG_INFO("DISPLAY", "Loading JPEG: %s (%d bytes)", filename, fileSize);
     
     uint8_t* buffer = (uint8_t*)malloc(fileSize);
     if (!buffer) {
-        LOG_ERROR("DISPLAY", "JPEG2 memory allocation failed");
+        LOG_ERROR("DISPLAY", "JPEG memory allocation failed");
         f.close();
         return;
     }
     
     if (f.read(buffer, fileSize) != fileSize) {
-        LOG_ERROR("DISPLAY", "JPEG2 file read error");
+        LOG_ERROR("DISPLAY", "JPEG file read error");
         free(buffer);
         f.close();
         return;
@@ -42,7 +42,7 @@ void displaySplashJpeg2(const char* filename) {
     JpegDec.setJpgScale(1);
     
     if (!JpegDec.decodeArray(buffer, fileSize)) {
-        LOG_ERROR("DISPLAY", "JPEG2 decode failed");
+        LOG_ERROR("DISPLAY", "JPEG decode failed");
         free(buffer);
         return;
     }
@@ -75,21 +75,19 @@ void displaySplashJpeg2(const char* filename) {
     }
     
     free(buffer);
-    LOG_INFO("DISPLAY", "JPEG2 displayed %dx%d at (%d,%d)", JpegDec.width, JpegDec.height, xOffset, yOffset);
+    LOG_INFO("DISPLAY", "JPEG displayed: %dx%d at (%d,%d)", JpegDec.width, JpegDec.height, xOffset, yOffset);
 }
 
 void displaySplashScreenContent() {
     LOG_INFO("DISPLAY", "=== Displaying splash screen content ===");
     
     tft.fillScreen(TFT_BLACK);
-    LOG_INFO("DISPLAY", "Screen cleared (filled with black)");
+    LOG_DEBUG("DISPLAY", "Screen cleared");
 
     const char* splashFile = "/BatteryEmulator4_320x170.jpg";
-    LOG_INFO("DISPLAY", "Attempting to load splash image: %s", splashFile);
     displaySplashJpeg2(splashFile);
-    LOG_INFO("DISPLAY", "Splash image load attempt complete");
     
-    // Check if the splash image file exists (for fallback decision)
+    // Check if the splash image file exists
     bool imageFileExists = LittleFS.exists(splashFile);
     
     if (!imageFileExists) {
@@ -111,11 +109,9 @@ void displaySplashScreenContent() {
         y += 30;
         tft.setCursor(x, y);
         tft.println(text);
-        LOG_INFO("DISPLAY", "Text splash displayed");
-    } else {
-        LOG_INFO("DISPLAY", "Splash image file exists, should have been displayed above");
+        LOG_INFO("DISPLAY", "Text fallback displayed");
     }
-    LOG_INFO("DISPLAY", "=== Splash screen content display complete ===");
+    LOG_INFO("DISPLAY", "=== Splash content display complete ===");
 }
 
 void fadeBacklight(uint8_t targetBrightness, uint32_t durationMs) {
@@ -154,41 +150,44 @@ void fadeBacklight(uint8_t targetBrightness, uint32_t durationMs) {
     LOG_DEBUG("DISPLAY", "Backlight fade complete - final brightness: %d", targetBrightness);
 }
 
+/**
+ * DISPATCHER FUNCTION: Calls the correct splash implementation
+ * based on which display backend is active.
+ * 
+ * This unified interface allows code like littlefs_init.cpp to simply call
+ * displaySplashWithFade() without knowing whether it's using TFT or LVGL.
+ */
 void displaySplashWithFade() {
-    LOG_INFO("DISPLAY", "");
-    LOG_INFO("DISPLAY", "╔════════════════════════════════════════════════════╗");
-    LOG_INFO("DISPLAY", "║  === SPLASH SCREEN SEQUENCE STARTING ===          ║");
-    LOG_INFO("DISPLAY", "╚════════════════════════════════════════════════════╝");
-    
-    #if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5,0,0)
-    ledcWrite(HardwareConfig::BACKLIGHT_PWM_CHANNEL, 0);
+    #ifdef USE_LVGL
+        // LVGL backend: use LVGL-specific splash with opacity animations
+        LOG_INFO("SPLASH", "displaySplashWithFade() dispatcher: Routing to LVGL splash");
+        display_splash_lvgl();
     #else
-    ledcWrite(HardwareConfig::GPIO_BACKLIGHT, 0);
+        // TFT backend: use traditional TFT backlight fade
+        LOG_INFO("SPLASH", "displaySplashWithFade() dispatcher: Routing to TFT splash");
+        
+        LOG_INFO("DISPLAY", "");
+        LOG_INFO("DISPLAY", "╔════════════════════════════════════════════════════╗");
+        LOG_INFO("DISPLAY", "║  === SPLASH SCREEN SEQUENCE STARTING ===          ║");
+        LOG_INFO("DISPLAY", "╚════════════════════════════════════════════════════╝");
+        
+        LOG_INFO("DISPLAY", "[1/3] Loading splash screen content");
+        displaySplashScreenContent();
+        LOG_INFO("DISPLAY", "[1/3] ✓ Content loaded");
+        
+        LOG_INFO("DISPLAY", "[2/3] Displaying splash for 3 seconds");
+        smart_delay(3000);
+        LOG_INFO("DISPLAY", "[2/3] ✓ Display time complete");
+        
+        LOG_INFO("DISPLAY", "[3/3] Fading out splash screen (255→0 over 2000ms)...");
+        fadeBacklight(0, 2000);
+        LOG_INFO("DISPLAY", "[3/3] ✓ Fade out complete - backlight OFF");
+        
+        tft.fillScreen(TFT_BLACK);
+        LOG_INFO("DISPLAY", "");
+        LOG_INFO("DISPLAY", "╔════════════════════════════════════════════════════╗");
+        LOG_INFO("DISPLAY", "║  === SPLASH SCREEN SEQUENCE COMPLETE ===          ║");
+        LOG_INFO("DISPLAY", "╚════════════════════════════════════════════════════╝");
+        LOG_INFO("DISPLAY", "");
     #endif
-    Display::current_backlight_brightness = 0;
-    LOG_INFO("DISPLAY", "[1/5] Backlight OFF - waiting for content to load");
-    smart_delay(200);
-    
-    LOG_INFO("DISPLAY", "[2/5] Loading splash screen content");
-    displaySplashScreenContent();
-    LOG_INFO("DISPLAY", "[2/5] ✓ Content loaded");
-    
-    LOG_INFO("DISPLAY", "[3/5] Fading in splash screen (0→255 over 2000ms)...");
-    fadeBacklight(255, 2000);
-    LOG_INFO("DISPLAY", "[3/5] ✓ Fade in complete - splash visible");
-    
-    LOG_INFO("DISPLAY", "[4/5] Displaying splash for 3 seconds");
-    smart_delay(3000);
-    LOG_INFO("DISPLAY", "[4/5] ✓ Display time complete");
-    
-    LOG_INFO("DISPLAY", "[5/5] Fading out splash screen (255→0 over 2000ms)...");
-    fadeBacklight(0, 2000);
-    LOG_INFO("DISPLAY", "[5/5] ✓ Fade out complete - backlight OFF");
-    
-    tft.fillScreen(TFT_BLACK);
-    LOG_INFO("DISPLAY", "");
-    LOG_INFO("DISPLAY", "╔════════════════════════════════════════════════════╗");
-    LOG_INFO("DISPLAY", "║  === SPLASH SCREEN SEQUENCE COMPLETE ===          ║");
-    LOG_INFO("DISPLAY", "╚════════════════════════════════════════════════════╝");
-    LOG_INFO("DISPLAY", "");
 }

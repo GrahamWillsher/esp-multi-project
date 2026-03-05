@@ -97,9 +97,9 @@ extern void * lv_custom_mem_realloc(void * ptr, size_t new_size);
 #define LV_FONT_MONTSERRAT_18   0
 #define LV_FONT_MONTSERRAT_20   1       /* Medium text */
 #define LV_FONT_MONTSERRAT_22   0
-#define LV_FONT_MONTSERRAT_24   0
+#define LV_FONT_MONTSERRAT_24   1       /* SOC display - better anti-aliasing than 28pt */
 #define LV_FONT_MONTSERRAT_26   0
-#define LV_FONT_MONTSERRAT_28   1       /* SOC display */
+#define LV_FONT_MONTSERRAT_28   1       /* Large text */
 #define LV_FONT_MONTSERRAT_30   0
 #define LV_FONT_MONTSERRAT_32   0
 #define LV_FONT_MONTSERRAT_34   0
@@ -330,7 +330,7 @@ extern void lv_custom_log(const char * buf);
  * ============================================================================= */
 
 /* Enable SJPG (LVGL's simplified JPEG decoder) for file loading */
-#define LV_USE_SJPG             1       /* SJPG decoder for JPEG file loading */
+#define LV_USE_SJPG             0       /* Disabled: project uses JPEGDecoder directly */
 
 /* PNG support (optional) */
 #define LV_USE_PNG              0
@@ -338,12 +338,26 @@ extern void lv_custom_log(const char * buf);
 /* BMP support (optional) */
 #define LV_USE_BMP              0
 
+/* Other optional image/libs extras (keep disabled for embedded footprint) */
+#define LV_USE_GIF              0
+#define LV_USE_QRCODE           0
+#define LV_USE_RLOTTIE          0
+#define LV_USE_FREETYPE         0
+#define LV_USE_TINY_TTF         0
+#define LV_USE_FS_STDIO         0
+
 /* =============================================================================
  * GPU/Acceleration (ESP32-S3 specific)
  * ============================================================================= */
 
 /* Use ESP32-S3 DMA for faster pixel transfers */
 #define LV_USE_GPU_ESP32_DMA    0       /* TFT_eSPI already handles DMA */
+
+/* Disable non-ESP32 GPU backends */
+#define LV_USE_GPU_STM32_DMA2D      0
+#define LV_USE_GPU_NXP_PXP          0
+#define LV_USE_GPU_NXP_VG_LITE      0
+#define LV_USE_GPU_SWM341_DMA2D     0
 
 /* =============================================================================
  * API Settings

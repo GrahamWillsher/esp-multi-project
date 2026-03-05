@@ -1,94 +1,90 @@
 #include "display_core.h"
 #include "display_splash.h"
 #include "display_manager.h"
-#include "pages/status_page.h"
 #include "../helpers.h"
-#include "../hal/hardware_config.h"
-#include "../hal/display/tft_espi_display_driver.h"
 #include <TFT_eSPI.h>
 #include <logging_config.h>
 
 // ════════════════════════════════════════════════════════════════════════════
-// Global TFT Hardware Instance
+// Global TFT Hardware Instance (for initialization only)
+// Display rendering should use DisplayManager::get_driver() instead
 // ════════════════════════════════════════════════════════════════════════════
-// IMPORTANT: This is the single TFT_eSPI instance used throughout the codebase.
-// It is wrapped by the DisplayManager HAL for thread-safe access, but can be
-// accessed directly when HAL methods aren't sufficient (e.g., for advanced operations).
 extern TFT_eSPI tft;
 
-// ════════════════════════════════════════════════════════════════════════════
-// Helper Functions
-// ════════════════════════════════════════════════════════════════════════════
-
-// Get reference to global TFT_eSPI instance (for TFT library-specific operations)
-// Generally prefer DisplayManager::get_driver() for portable code
-TFT_eSPI& get_tft_hardware() {
-    return tft;
-}
-
-// Helper function to get display driver safely
-static HAL::IDisplayDriver* get_display_driver() {
-    return Display::DisplayManager::get_driver();
-}
-
-// Global status page instance
-static Display::Pages::StatusPage* g_status_page = nullptr;
-
-// Get or create status page
-static Display::Pages::StatusPage* get_status_page() {
-    if (!g_status_page) {
-        HAL::IDisplayDriver* driver = get_display_driver();
-        if (driver) {
-            g_status_page = new Display::Pages::StatusPage(driver);
-        }
-    }
-    return g_status_page;
-}
-
-// Initialize TFT display hardware and backlight via DisplayManager
+// Initialize TFT display hardware and backlight
 void init_display() {
-    LOG_INFO("DISPLAY", "Initializing display via DisplayManager+HAL...");
+    LOG_INFO("DISPLAY", "Initializing display...");
     
-    // Create and initialize DisplayManager with driver
-    // NOTE: The driver's init() will handle TFT initialization and setSwapBytes()
-    static HAL::TftEspiDisplayDriver tft_driver(tft);
+    // Enable display power (CRITICAL for T-Display-S3)
+    pinMode(Display::PIN_POWER_ON, OUTPUT);
+    digitalWrite(Display::PIN_POWER_ON, HIGH);
+    smart_delay(100);  // Wait for power to stabilize
     
-    if (!Display::DisplayManager::init(&tft_driver)) {
-        LOG_ERROR("DISPLAY", "Failed to initialize DisplayManager");
-        return;
+    // Initialize TFT hardware
+    tft.init();
+    tft.setRotation(1);  // Landscape mode (320x170)
+    tft.setSwapBytes(true);
+    LOG_DEBUG("DISPLAY", "TFT hardware initialized");
+    
+    // Setup backlight PWM control
+    #if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5,0,0)
+    ledcSetup(0, 10000, 8);  // channel 0, 10kHz frequency, 8-bit resolution
+    ledcAttachPin(Display::PIN_LCD_BL, 0);
+    #else
+    ledcAttach(Display::PIN_LCD_BL, 10000, 8);  // 10kHz, 8-bit
+    #endif
+    
+    // CRITICAL: Gradient fade-in (0→255) prevents white block artifact
+    // Based on LilyGo T-Display-S3 reference implementation
+    LOG_DEBUG("DISPLAY", "Fading in backlight (0→255 with 2ms steps)...");
+    for (uint8_t brightness = 0; brightness < 255; brightness++) {
+        #if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5,0,0)
+        ledcWrite(0, brightness);
+        #else
+        ledcWrite(Display::PIN_LCD_BL, brightness);
+        #endif
+        smart_delay(2);  // Allow panel to settle
     }
     
-    LOG_INFO("DISPLAY", "Display initialized successfully via HAL");
+    // Ensure full brightness is set
+    #if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5,0,0)
+    ledcWrite(0, 255);
+    #else
+    ledcWrite(Display::PIN_LCD_BL, 255);
+    #endif
+    Display::current_backlight_brightness = 255;
+    
+    // Clear screen with black
+    auto* driver = Display::DisplayManager::get_driver();
+    driver->fill_screen(TFT_BLACK);
+    
+    LOG_INFO("DISPLAY", "Display initialized and backlight faded in");
 }
 
-// Display initial ready screen with backlight fade-in
+// Display initial ready screen
 void displayInitialScreen() {
-    // TFT path: original text-based ready screen
-    // Use global tft object (can also be accessed via get_tft_hardware())
+    auto* driver = Display::DisplayManager::get_driver();
     
     // Clear screen and show ready message
-    tft.fillScreen(Display::tft_background);
+    driver->fill_screen(Display::tft_background);
 
-    tft.setTextColor(TFT_GREEN);
-    tft.setTextSize(2);
-    tft.setTextDatum(TC_DATUM);
-    tft.drawString("Ready", Display::SCREEN_WIDTH / 2, 10);
+    driver->set_text_color(TFT_GREEN);
+    driver->set_text_size(2);
+    driver->set_text_datum(TC_DATUM);
+    driver->draw_string("Ready", Display::SCREEN_WIDTH / 2, 10, 1);
     
     // Show test mode status
-    tft.setTextSize(1);
-    tft.setTextColor(TFT_YELLOW);
-    tft.drawString("Test Mode: ON", Display::SCREEN_WIDTH / 2, 35);
+    driver->set_text_size(1);
+    driver->set_text_color(TFT_YELLOW);
+    driver->draw_string("Test Mode: ON", Display::SCREEN_WIDTH / 2, 35, 1);
     
-    // Fade in backlight gradually (prevent flash)
-    LOG_DEBUG("DISPLAY", "Fading in backlight...");
-    fadeBacklight(255, 1000);  // Fade to full brightness over 1 second
-    LOG_DEBUG("DISPLAY", "Backlight fade-in complete");
+    LOG_DEBUG("DISPLAY", "Initial screen displayed");
 }
 
 // Display a number with proportional font, centering each digit in equal-width boxes
 // OPTIMIZED: Only redraws digits that have changed for smoother, more efficient display
 void display_centered_proportional_number(const GFXfont* font, float number, uint16_t color, int center_x, int center_y) {
-    // Use global tft object
+    auto* driver = Display::DisplayManager::get_driver();
     
     // One-time calculation of maximum digit width (using '8' as widest digit + 3px margin each side)
     static int maxDigitWidth = 0;
@@ -103,16 +99,16 @@ void display_centered_proportional_number(const GFXfont* font, float number, uin
     static int lastStartX = 0;
     
     // ALWAYS ensure we're using the correct font at the start
-    tft.setFreeFont(font);
-    tft.setTextSize(2);  // No scaling for proportional fonts
+    driver->set_free_font(font);
+    driver->set_text_size(2);  // No scaling for proportional fonts
     
     // Recalculate if font changed or first call
     if (maxDigitWidth == 0 || lastFont != font) {
-        maxDigitWidth = tft.textWidth("8") + 6;  // Width of '8' + 3px left + 3px right (total 6px margin)
-        maxDigitHeight = tft.fontHeight() + 6;   // Font height + 3px top + 3px bottom (total 6px margin)
+        maxDigitWidth = driver->text_width("8") + 6;  // Width of '8' + 3px left + 3px right (total 6px margin)
+        maxDigitHeight = driver->font_height() + 6;   // Font height + 3px top + 3px bottom (total 6px margin)
         
         // Calculate decimal point width separately (it's much narrower than digits)
-        decimalPointWidth = tft.textWidth(".") + 6;  // Width of '.' + 3px left + 3px right (total 6px margin)
+        decimalPointWidth = driver->text_width(".") + 6;  // Width of '.' + 3px left + 3px right (total 6px margin)
         
         lastFont = font;
         LOG_DEBUG("DISPLAY", "Proportional number: max digit width=%d (digit '8' + margins), decimal width=%d, height=%d",
@@ -142,8 +138,8 @@ void display_centered_proportional_number(const GFXfont* font, float number, uin
     int startX = center_x - (totalWidth / 2);
     
     // Set font and color for drawing
-    tft.setFreeFont(font);
-    tft.setTextColor(color);
+    driver->set_free_font(font);
+    driver->set_text_color(color);
     
     // OPTIMIZATION: Redraw all digits when number changes
     if (lastNumber != number) {
@@ -158,17 +154,18 @@ void display_centered_proportional_number(const GFXfont* font, float number, uin
                     oldTotalWidth += maxDigitWidth;
                 }
             }
-            tft.fillRect(lastStartX, clearY, oldTotalWidth, maxDigitHeight, Display::tft_background);
+            driver.fill_rect(lastStartX, clearY, oldTotalWidth, maxDigitHeight, Display::tft_background);
+                        driver->fill_rect(lastStartX, clearY, oldTotalWidth, maxDigitHeight, Display::tft_background);
             
             // Draw all digits since we cleared everything
             int currentX = startX;
             for (int i = 0; i < numDigits; i++) {
                 char digitStr[2] = {numStr[i], '\0'};
-                int dw = tft.textWidth(digitStr);
+                int dw = driver->text_width(digitStr);
                 int charWidth = (numStr[i] == '.') ? decimalPointWidth : maxDigitWidth;
                 int digitX = currentX + ((charWidth - dw) / 2);
-                tft.setCursor(digitX, baselineY);
-                tft.print(digitStr);
+                driver->set_cursor(digitX, baselineY);
+                driver->print(digitStr);
                 currentX += charWidth;
             }
         } else {
@@ -177,11 +174,11 @@ void display_centered_proportional_number(const GFXfont* font, float number, uin
             for (int i = 0; i < numDigits; i++) {
                 char digitStr[2] = {numStr[i], '\0'};
                 int charWidth = (numStr[i] == '.') ? decimalPointWidth : maxDigitWidth;
-                tft.fillRect(currentX, clearY, charWidth, maxDigitHeight, Display::tft_background);
-                int dw = tft.textWidth(digitStr);
+                driver->fill_rect(currentX, clearY, charWidth, maxDigitHeight, Display::tft_background);
+                int dw = driver->text_width(digitStr);
                 int digitX = currentX + ((charWidth - dw) / 2);
-                tft.setCursor(digitX, baselineY);
-                tft.print(digitStr);
+                driver->set_cursor(digitX, baselineY);
+                driver->print(digitStr);
                 currentX += charWidth;
             }
         }

@@ -247,7 +247,6 @@ void TftDisplay::show_fatal_error(const char* component, const char* message) {
 // ============================================================================
 
 void TftDisplay::set_backlight(uint8_t brightness) {
-    static int16_t last_logged = -1;
     current_backlight_ = brightness;
     
     #if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5,0,0)
@@ -256,7 +255,7 @@ void TftDisplay::set_backlight(uint8_t brightness) {
     ledcWrite(HardwareConfig::GPIO_BACKLIGHT, brightness);
     #endif
 
-    log_backlight_if_significant(brightness, last_logged);
+    log_backlight_if_significant(brightness, last_backlight_logged_);
 }
 
 void TftDisplay::log_backlight_if_significant(uint8_t brightness, int16_t& last_logged) {
@@ -472,11 +471,8 @@ static uint16_t* decode_jpg_to_rgb565(const char* path,
 }
 
 void TftDisplay::draw_soc(float soc_percent) {
-    static char soc_text_buffer[16] = "";  // Cached SOC text for change detection
-    static bool gradient_initialized = false;
-
     // Initialize SOC color gradient on first call
-    if (!gradient_initialized) {
+    if (!soc_gradient_initialized_) {
         if (!Display::soc_gradient_initialized) {
             pre_calculate_color_gradient(TFT_RED, Display::AMBER, 167, &Display::soc_color_gradient[0]);
             pre_calculate_color_gradient(Display::AMBER, Display::LIME, 167, &Display::soc_color_gradient[167]);
@@ -484,7 +480,7 @@ void TftDisplay::draw_soc(float soc_percent) {
             Display::soc_gradient_initialized = true;
             LOG_DEBUG("TFT", "SOC color gradient initialized (500 steps: RED→AMBER→LIME→GREEN)");
         }
-        gradient_initialized = true;
+        soc_gradient_initialized_ = true;
     }
 
     // SOC centered in top two-thirds of the screen
@@ -496,7 +492,7 @@ void TftDisplay::draw_soc(float soc_percent) {
     snprintf(socText, sizeof(socText), "%.1f%%", soc_percent);
 
     // Skip if unchanged
-    if (strcmp(soc_text_buffer, socText) == 0) {
+    if (strcmp(soc_text_buffer_, socText) == 0) {
         return;
     }
 
@@ -520,8 +516,8 @@ void TftDisplay::draw_soc(float soc_percent) {
     tft.setTextColor(socColor, TFT_BLACK);
     tft.drawString(socText, socCenterX, socCenterY);
 
-    strncpy(soc_text_buffer, socText, sizeof(soc_text_buffer) - 1);
-    soc_text_buffer[sizeof(soc_text_buffer) - 1] = '\0';
+    strncpy(soc_text_buffer_, socText, sizeof(soc_text_buffer_) - 1);
+    soc_text_buffer_[sizeof(soc_text_buffer_) - 1] = '\0';
 }
 
 void TftDisplay::init_power_bar_state(int& bar_char_width,
@@ -708,17 +704,14 @@ void TftDisplay::clear_rect(int x, int y, int w, int h, uint16_t color) {
 }
 
 void TftDisplay::draw_power(int32_t power_w) {
-    static bool initialized = false;
-    static int bar_char_width = 0;
-    static int max_bars_per_side = 0;
-    static uint16_t gradient_green[LayoutSpec::PowerBar::MAX_BARS_PER_SIDE];
-    static uint16_t gradient_red[LayoutSpec::PowerBar::MAX_BARS_PER_SIDE];
-    static int previous_signed_bars = 0;
-    static int32_t last_power_text = INT32_MAX;
-
-    if (!initialized) {
-        init_power_bar_state(bar_char_width, max_bars_per_side, gradient_green, gradient_red);
-        initialized = true;
+    if (!power_bar_initialized_) {
+        init_power_bar_state(
+            power_bar_char_width_,
+            power_bar_max_bars_per_side_,
+            power_bar_gradient_green_,
+            power_bar_gradient_red_
+        );
+        power_bar_initialized_ = true;
     }
 
     const int center_x = Display::SCREEN_WIDTH / 2;
@@ -729,47 +722,47 @@ void TftDisplay::draw_power(int32_t power_w) {
     int32_t clamped_power = power_w;
     if (clamped_power < -max_power) clamped_power = -max_power;
     if (clamped_power > max_power) clamped_power = max_power;
-    const int bars = calculate_power_bar_count(clamped_power, max_bars_per_side, max_power);
+    const int bars = calculate_power_bar_count(clamped_power, power_bar_max_bars_per_side_, max_power);
     const bool charging = (clamped_power < 0);
     const int signed_bars = charging ? -bars : bars;
 
     set_text_style_power_bar();
 
-    const bool pulse = (bars > 0) && should_pulse_animate(signed_bars, previous_signed_bars);
+    const bool pulse = (bars > 0) && should_pulse_animate(signed_bars, power_bar_previous_signed_bars_);
     if (pulse) {
         for (int ripple_pos = 0; ripple_pos <= bars; ripple_pos++) {
             draw_power_bars(bars,
                             charging,
                             center_x,
                             bar_y,
-                            bar_char_width,
-                            gradient_green,
-                            gradient_red,
+                            power_bar_char_width_,
+                            power_bar_gradient_green_,
+                            power_bar_gradient_red_,
                             (ripple_pos < bars) ? ripple_pos : -1);
             if (ripple_pos < bars) {
                 smart_delay(LayoutSpec::Timing::POWER_BAR_PULSE_DELAY_MS);
             }
         }
     } else if (bars == 0) {
-        draw_zero_power_marker(center_x, bar_y, max_bars_per_side, bar_char_width);
+        draw_zero_power_marker(center_x, bar_y, power_bar_max_bars_per_side_, power_bar_char_width_);
     } else {
         draw_power_bars(bars,
                         charging,
                         center_x,
                         bar_y,
-                        bar_char_width,
-                        gradient_green,
-                        gradient_red);
+                        power_bar_char_width_,
+                        power_bar_gradient_green_,
+                        power_bar_gradient_red_);
         clear_power_bar_residuals(bars,
                                   charging,
-                                  previous_signed_bars,
+                                  power_bar_previous_signed_bars_,
                                   center_x,
                                   bar_y,
-                                  bar_char_width);
+                                  power_bar_char_width_);
     }
 
-    previous_signed_bars = signed_bars;
-    draw_power_text_if_changed(power_w, center_x, text_y, last_power_text);
+    power_bar_previous_signed_bars_ = signed_bars;
+    draw_power_text_if_changed(power_w, center_x, text_y, power_bar_last_power_text_);
 }
 
 } // namespace Display

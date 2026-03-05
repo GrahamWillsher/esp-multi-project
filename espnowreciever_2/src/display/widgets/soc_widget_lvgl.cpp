@@ -36,8 +36,8 @@ SocWidgetLvgl::SocWidgetLvgl(lv_obj_t* parent, uint16_t center_x, uint16_t cente
     label_ = lv_label_create(container_);
     lv_label_set_text(label_, "0.0");
     
-    // Apply Montserrat 28pt font (equivalent to FreeSansBold18pt7b at size 2)
-    lv_obj_set_style_text_font(label_, &lv_font_montserrat_28, 0);
+    // Apply Montserrat 24pt font (better anti-aliasing, less pixelation than 28pt)
+    lv_obj_set_style_text_font(label_, &lv_font_montserrat_24, 0);
     
     // Align label in center of container
     lv_obj_center(label_);

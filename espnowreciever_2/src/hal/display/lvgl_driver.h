@@ -60,6 +60,11 @@ public:
      * Get LVGL display object (for loading screens)
      */
     static lv_disp_t* get_display();
+    
+    /**
+     * Get TFT_eSPI instance for low-level LCD commands
+     */
+    static TFT_eSPI* get_tft();
 
 private:
     static TFT_eSPI* tft_;

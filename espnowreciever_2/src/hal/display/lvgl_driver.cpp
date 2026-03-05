@@ -24,26 +24,36 @@ uint8_t LvglDriver::current_backlight_ = 0;
 
 bool LvglDriver::init(TFT_eSPI& tft) {
     LOG_INFO("LVGL", "Initializing LVGL display driver...");
+    LOG_INFO("LVGL", "Following LilyGo T-Display-S3 bring-up sequence:");
+    LOG_INFO("LVGL", "  1. Backlight OFF");
+    LOG_INFO("LVGL", "  2. Panel init");
+    LOG_INFO("LVGL", "  3. LVGL init");
+    LOG_INFO("LVGL", "  4. Register display + render black");
+    LOG_INFO("LVGL", "  5. Enable backlight with CRITICAL gradient fade");
     
     tft_ = &tft;
     
-    // Initialize hardware (GPIO, backlight PWM)
+    // STEP 1 & 2: Initialize TFT hardware (backlight OFF, panel init)
+    LOG_INFO("LVGL", "STEP 1-2: Hardware initialization (backlight OFF, panel ON)");
     init_hardware();
+    LOG_INFO("LVGL", "  Hardware ready, backlight at PWM 0");
     
-    // Initialize LVGL core
+    // STEP 3: Initialize LVGL core AFTER hardware is ready
+    LOG_INFO("LVGL", "STEP 3: Initializing LVGL core");
     lv_init();
-    LOG_INFO("LVGL", "LVGL core initialized");
+    LOG_INFO("LVGL", "  LVGL core initialized");
     
     // Allocate display buffers in PSRAM
     if (!allocate_buffers()) {
         LOG_ERROR("LVGL", "Failed to allocate display buffers");
         return false;
     }
+    LOG_INFO("LVGL", "  Display buffers allocated");
     
     // Initialize display buffer (double buffering)
     const uint32_t buf_size = ::Display::SCREEN_WIDTH * ::Display::SCREEN_HEIGHT / 10;  // 1/10 screen
     lv_disp_draw_buf_init(&disp_buf_, buf1_, buf2_, buf_size);
-    LOG_INFO("LVGL", "Display buffers initialized: %d pixels per buffer", buf_size);
+    LOG_INFO("LVGL", "  Display buffer init complete");
     
     // Initialize display driver
     lv_disp_drv_init(&disp_drv_);
@@ -52,7 +62,8 @@ bool LvglDriver::init(TFT_eSPI& tft) {
     disp_drv_.flush_cb = flush_cb;
     disp_drv_.draw_buf = &disp_buf_;
     
-    // Register display driver
+    // STEP 4: Register display driver with LVGL
+    LOG_INFO("LVGL", "STEP 4: Registering display with LVGL");
     disp_ = lv_disp_drv_register(&disp_drv_);
     if (!disp_) {
         LOG_ERROR("LVGL", "Failed to register display driver");
@@ -63,36 +74,68 @@ bool LvglDriver::init(TFT_eSPI& tft) {
         buf2_ = nullptr;
         return false;
     }
-    
-    LOG_INFO("LVGL", "Display driver registered successfully (disp=0x%08X)", (uint32_t)disp_);
-    
-    // Initialize TFT_eSPI (same as TFT version)
-    LOG_DEBUG("LVGL", "Initializing TFT_eSPI hardware...");
-    tft_->init();
-    tft_->setRotation(1);  // Landscape
-    tft_->fillScreen(TFT_BLACK);
-    tft_->setSwapBytes(true);
+    LOG_INFO("LVGL", "  Display registered (disp=0x%08X)", (uint32_t)disp_);
+
+    // Set display background to black globally
+    lv_disp_set_bg_color(disp_, lv_color_black());
+    lv_disp_set_bg_opa(disp_, LV_OPA_COVER);
+    LOG_INFO("LVGL", "  Display background set to black");
     
     LOG_INFO("LVGL", "TFT_eSPI hardware initialized (resolution: %dx%d)", 
              disp_drv_.hor_res, disp_drv_.ver_res);
+
+    // Create black bootstrap screen using LVGL (not direct TFT writes!)
+    LOG_INFO("LVGL", "  Creating black bootstrap screen with LVGL");
+    lv_obj_t* boot_scr = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(boot_scr, lv_color_black(), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(boot_scr, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(boot_scr, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(boot_scr, 0, LV_PART_MAIN);
+    lv_scr_load(boot_scr);
     
-    // Set backlight to 0 initially
-    set_backlight(0);
+    // Let LVGL render the black bootstrap to the display (backlight still OFF)
+    LOG_INFO("LVGL", "  Rendering black bootstrap screen via LVGL");
+    lv_timer_handler();
+    lv_refr_now(disp_);  // Force immediate full refresh
+    LOG_INFO("LVGL", "  Bootstrap rendered - display RAM has black pixels");
+    
+    // STEP 5: Turn backlight ON now (LilyGo reference sequence)
+    // Per official lv_demos.ino: backlight fades in AFTER lv_init() but BEFORE splash
+    // This prevents white block because LVGL has already rendered black frame to GRAM
+    LOG_INFO("LVGL", "STEP 5: Fading in backlight gradually (LilyGo sequence)");
+    for (uint8_t i = 0; i < 255; i++) {
+        #if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5,0,0)
+        ledcWrite(HardwareConfig::BACKLIGHT_PWM_CHANNEL, i);
+        #else
+        ledcWrite(HardwareConfig::GPIO_BACKLIGHT, i);
+        #endif
+        smart_delay(2);
+    }
+    current_backlight_ = 255;
+
+    LOG_INFO("LVGL", "Backlight ON at full brightness - display ready");
+    LOG_DEBUG("LVGL", "Display ready (backlight ON, black frame visible)");
     
     return true;
 }
 
 void LvglDriver::init_hardware() {
-    LOG_DEBUG("LVGL", "Initializing display hardware...");
-    
-    // Initialize display power GPIO
-    pinMode(HardwareConfig::GPIO_DISPLAY_POWER, OUTPUT);
-    digitalWrite(HardwareConfig::GPIO_DISPLAY_POWER, HIGH);  // Power ON
-    LOG_DEBUG("LVGL", "Display power enabled (GPIO %d)", HardwareConfig::GPIO_DISPLAY_POWER);
-    
-    // Initialize backlight PWM
+    LOG_DEBUG("LVGL", "Initializing hardware (TFT-compatible sequence)...");
+
+    // Keep backlight hard OFF before panel init (same as TFT path)
     pinMode(HardwareConfig::GPIO_BACKLIGHT, OUTPUT);
-    
+    digitalWrite(HardwareConfig::GPIO_BACKLIGHT, LOW);
+    smart_delay(5);
+    LOG_WARN("LVGL", "DEBUG: Backlight set to LOW");
+
+    // Enable panel power first (same as TFT path)
+    pinMode(HardwareConfig::GPIO_DISPLAY_POWER, OUTPUT);
+    digitalWrite(HardwareConfig::GPIO_DISPLAY_POWER, HIGH);
+    smart_delay(100);
+    LOG_WARN("LVGL", "DEBUG: Display power enabled, waiting 100ms");
+    LOG_DEBUG("LVGL", "Display power enabled (GPIO %d)", HardwareConfig::GPIO_DISPLAY_POWER);
+
+    // Configure backlight PWM at 0
     #if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5,0,0)
     ledcSetup(HardwareConfig::BACKLIGHT_PWM_CHANNEL, 
               HardwareConfig::BACKLIGHT_FREQUENCY_HZ, 
@@ -105,11 +148,25 @@ void LvglDriver::init_hardware() {
                HardwareConfig::BACKLIGHT_RESOLUTION_BITS);
     ledcWrite(HardwareConfig::GPIO_BACKLIGHT, 0);  // Start at 0
     #endif
+    LOG_WARN("LVGL", "DEBUG: Backlight PWM configured at 0");
+
+    // Initialize TFT (this sends DISPON from tft->init())
+    LOG_WARN("LVGL", "DEBUG: Calling tft->init()");
+    tft_->init();
+    LOG_WARN("LVGL", "DEBUG: tft->init() complete");
     
-    LOG_DEBUG("LVGL", "Backlight PWM initialized (GPIO %d, %d Hz, %d-bit)",
-              HardwareConfig::GPIO_BACKLIGHT,
-              HardwareConfig::BACKLIGHT_FREQUENCY_HZ,
-              HardwareConfig::BACKLIGHT_RESOLUTION_BITS);
+    // CRITICAL FIX: Send DISPOFF immediately after tft->init()
+    // This prevents the panel from showing garbage GRAM content
+    // while we initialize LVGL rendering
+    LOG_WARN("LVGL", "DEBUG: Sending DISPOFF command to LCD panel");
+    tft_->writecommand(0x28);  // ST7789 DISPOFF command
+    smart_delay(10);
+    LOG_WARN("LVGL", "DEBUG: Panel display OFF - no garbage visible during LVGL init");
+    
+    tft_->setRotation(1);  // Landscape
+    tft_->setSwapBytes(true);
+
+    LOG_DEBUG("LVGL", "Backlight PWM initialized at 0 (GPIO %d)", HardwareConfig::GPIO_BACKLIGHT);
 }
 
 bool LvglDriver::allocate_buffers() {
@@ -130,6 +187,10 @@ bool LvglDriver::allocate_buffers() {
     }
     LOG_DEBUG("LVGL", "Buffer 1 allocated at 0x%08X", (uint32_t)buf1_);
     
+    // CRITICAL: Pre-fill buffer 1 with black (0x0000 for RGB565) to prevent random data flash
+    LOG_WARN("LVGL", "DEBUG: Pre-filling buffer 1 with black");
+    memset(buf1_, 0x00, buf_bytes);
+    
     // Allocate buffer 2 in PSRAM (double buffering), fallback to internal RAM
     buf2_ = (lv_color_t*)heap_caps_malloc(buf_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!buf2_) {
@@ -143,6 +204,10 @@ bool LvglDriver::allocate_buffers() {
         return false;
     }
     LOG_DEBUG("LVGL", "Buffer 2 allocated at 0x%08X", (uint32_t)buf2_);
+    
+    // CRITICAL: Pre-fill buffer 2 with black (0x0000 for RGB565) to prevent random data flash
+    LOG_WARN("LVGL", "DEBUG: Pre-filling buffer 2 with black");
+    memset(buf2_, 0x00, buf_bytes);
     
     LOG_INFO("LVGL", "Display buffers allocated successfully");
     return true;
@@ -231,6 +296,10 @@ uint8_t LvglDriver::get_backlight() {
 
 lv_disp_t* LvglDriver::get_display() {
     return disp_;
+}
+
+TFT_eSPI* LvglDriver::get_tft() {
+    return tft_;
 }
 
 } // namespace Display

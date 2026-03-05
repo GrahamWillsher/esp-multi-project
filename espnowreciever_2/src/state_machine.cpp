@@ -4,6 +4,7 @@
 
 #include "common.h"
 #include "state_machine.h"
+#include "state/connection_state_manager.h"
 #include "display/display_led.h"
 #include "display/display_core.h"
 #include "espnow/rx_heartbeat_manager.h"
@@ -39,7 +40,7 @@ void SystemStateManager::update() {
             break;
 
         case SystemState::WAITING_FOR_TRANSMITTER:
-            if (ESPNow::transmitter_connected) {
+            if (ConnectionStateManager::is_transmitter_connected()) {
                 transition_to_state(SystemState::NORMAL_OPERATION);
             } else if (elapsed > TX_WAIT_TIMEOUT_MS) {
                 transition_to_state(SystemState::NETWORK_ERROR);
@@ -47,9 +48,10 @@ void SystemStateManager::update() {
             break;
 
         case SystemState::NORMAL_OPERATION:
-            if (!ESPNow::transmitter_connected) {
+            if (!ConnectionStateManager::is_transmitter_connected()) {
                 transition_to_state(SystemState::WAITING_FOR_TRANSMITTER);
-            } else if (RxHeartbeatManager::instance().get_time_since_last() > DATA_STALE_TIMEOUT_MS) {
+            } else if (RxHeartbeatManager::instance().get_time_since_last() > DATA_STALE_TIMEOUT_MS ||
+                       ConnectionStateManager::is_data_stale(DATA_STALE_TIMEOUT_MS)) {
                 transition_to_state(SystemState::DATA_STALE_ERROR);
             }
             break;
@@ -57,7 +59,7 @@ void SystemStateManager::update() {
         case SystemState::NETWORK_ERROR:
         case SystemState::DATA_STALE_ERROR:
         case SystemState::DEGRADED_MODE:
-            if (ESPNow::transmitter_connected) {
+            if (ConnectionStateManager::is_transmitter_connected()) {
                 transition_to_state(SystemState::NORMAL_OPERATION);
             } else if (elapsed > ERROR_RECOVERY_RETRY_MS) {
                 transition_to_state(SystemState::WAITING_FOR_TRANSMITTER);

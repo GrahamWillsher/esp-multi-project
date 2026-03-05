@@ -4,6 +4,7 @@
 #include <connection_manager.h>
 #include "battery_handlers.h"  // Phase 1: Battery Emulator data handlers
 #include "battery_settings_cache.h"  // Phase 2: Settings version tracking
+#include "../state/connection_state_manager.h"
 #include "../common.h"
 #include "../display/display_core.h"
 #include "../display/display_led.h"
@@ -114,7 +115,7 @@ void setup_message_routes() {
         LOG_DEBUG(kLogTag, "PROBE received (seq=%u)", seq);
         
         // Always store transmitter MAC
-        memcpy(ESPNow::transmitter_mac, mac, 6);
+        ConnectionStateManager::set_transmitter_mac(mac);
         TransmitterManager::registerMAC(mac);
     };
     
@@ -137,7 +138,7 @@ void setup_message_routes() {
     ack_config.on_connection = [](const uint8_t* mac, bool connected) {
         // Store transmitter MAC for sending control messages
         if (connected) {
-            memcpy(ESPNow::transmitter_mac, mac, 6);
+            ConnectionStateManager::set_transmitter_mac(mac);
             TransmitterManager::registerMAC(mac);
             LOG_INFO(kLogTag, "Transmitter MAC registered: %02X:%02X:%02X:%02X:%02X:%02X",
                      mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
@@ -549,7 +550,7 @@ void task_espnow_worker(void *parameter) {
 
             if (!transmitter_state.is_connected && EspNowConnectionManager::instance().is_connected()) {
                 transmitter_state.is_connected = true;
-                ESPNow::transmitter_connected = true;
+                ConnectionStateManager::set_transmitter_connected(true);
                 LOG_INFO(kLogTag, "Transmitter connection established");
                 // Note: Initialization requests (config sections, REQUEST_DATA) are sent automatically
                 // by the state machine callback when transitioning to CONNECTED state.
@@ -650,22 +651,26 @@ void handle_data_message(const espnow_queue_msg_t* msg) {
         uint16_t calc_checksum = payload->soc + (uint16_t)payload->power;
         
         if (calc_checksum == payload->checksum) {
-            const bool first_data = !ESPNow::data_received;
+            const bool first_data = !ConnectionStateManager::has_data_received();
 
-            // Update global variables with dirty flags
-            if (first_data || ESPNow::received_soc != payload->soc) {
-                ESPNow::received_soc = payload->soc;
+            bool soc_changed = false;
+            bool power_changed = false;
+            ConnectionStateManager::update_received_data(
+                payload->soc,
+                payload->power,
+                estimate_voltage_mv(payload->soc),
+                &soc_changed,
+                &power_changed
+            );
+            if (first_data || soc_changed) {
                 ESPNow::dirty_flags.soc_changed = true;
             }
-            if (first_data || ESPNow::received_power != payload->power) {
-                ESPNow::received_power = payload->power;
+            if (first_data || power_changed) {
                 ESPNow::dirty_flags.power_changed = true;
             }
-            ESPNow::received_voltage_mv = estimate_voltage_mv(payload->soc);
-            ESPNow::data_received = true;
             
             // Store transmitter MAC for sending control messages
-            memcpy(ESPNow::transmitter_mac, msg->mac, 6);
+            ConnectionStateManager::set_transmitter_mac(msg->mac);
             notify_sse_data_updated();
             
             LOG_INFO(kLogTag, "ESP-NOW RX: SOC=%d%%, Power=%dW (first=%s)", 
@@ -713,20 +718,25 @@ void handle_packet_events(const espnow_queue_msg_t* msg) {
         uint8_t soc = info.payload[0];
         int32_t power;
         memcpy(&power, &info.payload[1], sizeof(int32_t));
-        
-        if (ESPNow::received_soc != soc) {
-            ESPNow::received_soc = soc;
+
+        bool soc_changed = false;
+        bool power_changed = false;
+        ConnectionStateManager::update_received_data(
+            soc,
+            power,
+            estimate_voltage_mv(soc),
+            &soc_changed,
+            &power_changed
+        );
+        if (soc_changed) {
             ESPNow::dirty_flags.soc_changed = true;
         }
-        if (ESPNow::received_power != power) {
-            ESPNow::received_power = power;
+        if (power_changed) {
             ESPNow::dirty_flags.power_changed = true;
         }
-        ESPNow::received_voltage_mv = estimate_voltage_mv(soc);
-        ESPNow::data_received = true;
         
         // Store transmitter MAC for sending control messages
-        memcpy(ESPNow::transmitter_mac, msg->mac, 6);
+        ConnectionStateManager::set_transmitter_mac(msg->mac);
         notify_sse_data_updated();
         
         LOG_TRACE(kLogTag, "EVENTS: SOC=%d%%, Power=%dW", soc, power);

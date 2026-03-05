@@ -3,6 +3,7 @@
  * Using official TFT_eSPI library as used in LilyGo examples
  * 
  * *** PHASE 2: File split into modular structure ***
+ * *** PHASE 3: Display HAL abstraction for testability ***
  */
 
 #include "common.h"
@@ -11,14 +12,20 @@
 #include "display/display_led.h"
 #include "display/display_core.h"
 #include "display/display_splash.h"
+#include "display/display_manager.h"
+#include "hal/display/tft_espi_display_driver.h"
 
 #include "espnow/espnow_callbacks.h"
 #include "espnow/espnow_tasks.h"
 #include "espnow/rx_connection_handler.h"
 #include "espnow/rx_heartbeat_manager.h"
+#include "state/connection_state_manager.h"
 #include "mqtt/mqtt_client.h"
 #include "mqtt/mqtt_task.h"
 #include "hal/hardware_config.h"
+#ifdef USE_LVGL
+#include "hal/display/lvgl_driver.h"
+#endif
 #include <connection_manager.h>
 #include <connection_event_processor.h>
 #include <channel_manager.h>
@@ -38,6 +45,81 @@
 
 // Hardware display instance (lives for entire application lifetime)
 static TFT_eSPI tft_hardware = TFT_eSPI();
+
+// Display driver (wraps TFT_eSPI with HAL interface)
+static HAL::TftEspiDisplayDriver tft_driver(tft_hardware);
+
+// DEBUG SWITCH: keep disabled for normal boot; this probe uses direct TFT test frames.
+static constexpr bool PRE_LITTLEFS_DEBUG_HALT = false;
+
+static void run_pre_littlefs_debug_and_halt() {
+    LOG_WARN("PREBOOT", "============================================");
+    LOG_WARN("PREBOOT", "PRE-LITTLEFS DEBUG MODE ENABLED (HALTING)");
+    LOG_WARN("PREBOOT", "This runs BEFORE initlittlefs() by request.");
+    LOG_WARN("PREBOOT", "============================================");
+
+    // CRITICAL: Initialize TFT hardware first (tft is just declared, not initialized yet)
+    LOG_WARN("PREBOOT", "Initializing TFT hardware for debug probe...");
+    
+    // Enable panel power first
+    pinMode(HardwareConfig::GPIO_DISPLAY_POWER, OUTPUT);
+    digitalWrite(HardwareConfig::GPIO_DISPLAY_POWER, HIGH);
+    smart_delay(100);
+    
+    // Force backlight OFF before TFT init
+    pinMode(HardwareConfig::GPIO_BACKLIGHT, OUTPUT);
+    digitalWrite(HardwareConfig::GPIO_BACKLIGHT, LOW);
+    
+    // Configure backlight PWM at 0
+    #if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5,0,0)
+    ledcSetup(HardwareConfig::BACKLIGHT_PWM_CHANNEL, 
+              HardwareConfig::BACKLIGHT_FREQUENCY_HZ, 
+              HardwareConfig::BACKLIGHT_RESOLUTION_BITS);
+    ledcAttachPin(HardwareConfig::GPIO_BACKLIGHT, HardwareConfig::BACKLIGHT_PWM_CHANNEL);
+    ledcWrite(HardwareConfig::BACKLIGHT_PWM_CHANNEL, 0);
+    #else
+    ledcAttach(HardwareConfig::GPIO_BACKLIGHT, 
+               HardwareConfig::BACKLIGHT_FREQUENCY_HZ, 
+               HardwareConfig::BACKLIGHT_RESOLUTION_BITS);
+    ledcWrite(HardwareConfig::GPIO_BACKLIGHT, 0);
+    #endif
+
+    // Initialize TFT
+    tft_hardware.init();
+    tft_hardware.setRotation(1);  // Landscape
+    tft_hardware.setSwapBytes(true);
+    LOG_WARN("PREBOOT", "TFT hardware initialized");
+
+    LOG_WARN("PREBOOT", "Step 1: Backlight forced OFF for 2s");
+    tft_hardware.fillScreen(TFT_BLACK);
+    smart_delay(2000);
+
+    // Turn backlight ON while keeping black frame, to catch unexpected white frame
+    LOG_WARN("PREBOOT", "Step 2: Backlight ON, screen should remain BLACK for 3s");
+    #if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5,0,0)
+    ledcWrite(HardwareConfig::BACKLIGHT_PWM_CHANNEL, 255);
+    #else
+    ledcWrite(HardwareConfig::GPIO_BACKLIGHT, 255);
+    #endif
+    tft_hardware.fillScreen(TFT_BLACK);
+    smart_delay(3000);
+
+    // Visual checkpoints so we know direct panel writes are stable pre-LittleFS
+    LOG_WARN("PREBOOT", "Step 3: Showing RED/GREEN/BLUE test frames");
+    tft_hardware.fillScreen(TFT_RED);
+    smart_delay(1000);
+    tft_hardware.fillScreen(TFT_GREEN);
+    smart_delay(1000);
+    tft_hardware.fillScreen(TFT_BLUE);
+    smart_delay(1000);
+    tft_hardware.fillScreen(TFT_BLACK);
+
+    LOG_WARN("PREBOOT", "HALT: Program stopped BEFORE initlittlefs().");
+    LOG_WARN("PREBOOT", "Observe display + serial logs now.");
+    while (true) {
+        smart_delay(50);
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -64,10 +146,19 @@ void setup() {
     LOG_INFO("MAIN", "========================================");
     Serial.flush();
 
+    // Initialize Display Manager with TFT driver (provides HAL abstraction)
+    Display::DisplayManager::init(&tft_driver);
+    LOG_INFO("MAIN", "Display HAL initialized");
+
     // Initialize TFT display and backlight (legacy function - uses global tft object)
     // TODO: Refactor to use Display::DisplayManager for HAL abstraction
     init_display();
     
+    // Pre-LittleFS debug probe (requested): stop here to inspect startup behavior
+    if (PRE_LITTLEFS_DEBUG_HALT) {
+        run_pre_littlefs_debug_and_halt();
+    }
+
     // Initialize LittleFS filesystem
     initlittlefs();
 
@@ -120,6 +211,9 @@ void setup() {
         handle_error(ErrorSeverity::FATAL, "RTOS", "Failed to create ESP-NOW queue");
     }
     LOG_DEBUG("MAIN", "ESP-NOW queue created (size=%d)", ESPNow::QUEUE_SIZE);
+
+    // Initialize centralized receiver connection/data state manager
+    ConnectionStateManager::init();
     
     // CRITICAL: Setup message routes BEFORE starting worker task
     // This prevents race condition where PROBE messages arrive before handlers are registered
@@ -146,7 +240,7 @@ void setup() {
     LOG_DEBUG("MAIN", "Starting periodic announcement task...");
     EspnowDiscovery::instance().start(
         []() -> bool {
-            return ESPNow::transmitter_connected;
+            return ConnectionStateManager::is_transmitter_connected();
         },
         5000,  // 5 second interval
         1,     // Low priority

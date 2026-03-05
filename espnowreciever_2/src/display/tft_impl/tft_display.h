@@ -13,6 +13,7 @@
 #ifdef USE_TFT
 
 #include "../display_interface.h"
+#include "../layout/display_layout_spec.h"
 #include <TFT_eSPI.h>
 
 namespace Display {
@@ -101,6 +102,19 @@ public:
     
 private:
     uint8_t current_backlight_ = 0;  // Track current brightness state
+
+    // Stateful rendering cache (previously hidden function-local statics)
+    int16_t last_backlight_logged_ = -1;
+    char soc_text_buffer_[16] = "";
+    bool soc_gradient_initialized_ = false;
+
+    bool power_bar_initialized_ = false;
+    int power_bar_char_width_ = 0;
+    int power_bar_max_bars_per_side_ = 0;
+    uint16_t power_bar_gradient_green_[LayoutSpec::PowerBar::MAX_BARS_PER_SIDE] = {0};
+    uint16_t power_bar_gradient_red_[LayoutSpec::PowerBar::MAX_BARS_PER_SIDE] = {0};
+    int power_bar_previous_signed_bars_ = 0;
+    int32_t power_bar_last_power_text_ = 2147483647;
     
     // NOTE: We use the global tft object from globals.cpp (extern)
     // TFT_eSPI is designed as a singleton and doesn't work as a member variable

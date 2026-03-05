@@ -1,13 +1,14 @@
 #pragma once
 
 #include "common.h"
+#include "../config/display_config.h"
 
-// LED position constants
-#define LED_X_POSITION (Display::SCREEN_WIDTH - 2 - 8)
-#define LED_Y_POSITION (Display::SCREEN_HEIGHT / 2)
-#define LED_RADIUS 8
+// LED position constants (from DisplayConfig)
+#define LED_X_POSITION (DisplayConfig::DISPLAY_WIDTH - 2 - DisplayConfig::STATUS_INDICATOR_SIZE)
+#define LED_Y_POSITION (DisplayConfig::DISPLAY_HEIGHT / 2)
+#define LED_RADIUS DisplayConfig::STATUS_INDICATOR_SIZE
 
-// LED configuration
+// LED configuration (fade steps for smooth animation)
 #define LED_FADE_STEPS 50
 
 // Initialize LED gradients

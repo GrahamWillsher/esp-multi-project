@@ -44,17 +44,17 @@ PowerWidgetLvgl::PowerWidgetLvgl(lv_obj_t* parent, uint16_t center_x, uint16_t c
     lv_obj_set_style_pad_all(container_, 0, 0);
     lv_obj_align(container_, LV_ALIGN_CENTER, 0, center_y - (::Display::SCREEN_HEIGHT / 2) - 30);
     
-    // Create left bar container (charging)
+    // Create left bar container (charging) - full width for edge-to-edge bars
     left_bar_container_ = lv_obj_create(container_);
-    lv_obj_set_size(left_bar_container_, center_x, BAR_HEIGHT + 10);
+    lv_obj_set_size(left_bar_container_, ::Display::SCREEN_WIDTH, BAR_HEIGHT + 10);
     lv_obj_set_style_bg_opa(left_bar_container_, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(left_bar_container_, 0, 0);
     lv_obj_set_style_pad_all(left_bar_container_, 0, 0);
     lv_obj_align(left_bar_container_, LV_ALIGN_LEFT_MID, 0, 0);
     
-    // Create right bar container (discharging)
+    // Create right bar container (discharging) - full width for edge-to-edge bars
     right_bar_container_ = lv_obj_create(container_);
-    lv_obj_set_size(right_bar_container_, ::Display::SCREEN_WIDTH - center_x, BAR_HEIGHT + 10);
+    lv_obj_set_size(right_bar_container_, ::Display::SCREEN_WIDTH, BAR_HEIGHT + 10);
     lv_obj_set_style_bg_opa(right_bar_container_, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(right_bar_container_, 0, 0);
     lv_obj_set_style_pad_all(right_bar_container_, 0, 0);
