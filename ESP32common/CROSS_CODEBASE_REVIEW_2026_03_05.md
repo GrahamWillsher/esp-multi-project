@@ -452,7 +452,466 @@ Test Scenario 5: Metrics accuracy
 
 ### 2. 🔴 Dynamic Battery & Inverter Type Discovery via ESP-NOW
 
-**Status**: **VALID - ELEVATED PRIORITY**
+**Status**: **VALID - ELEVATED PRIORITY** | **Investigation Complete** ✅
+
+**Discovery Results** (Actual Counts from Battery Emulator 9.2.4):
+
+Battery Types: **47 total** (ID 0-46)
+```
+None, BmwI3, BmwIX, BoltAmpera, BydAtto3, CellPowerBms, Chademo, CmfaEv, 
+Foxess, GeelyGeometryC, OrionBms, Sono, StellantisEcmp, ImievCZeroIon, 
+JaguarIpace, KiaEGmp, KiaHyundai64, KiaHyundaiHybrid, Meb, Mg5, NissanLeaf, 
+Pylon, DalyBms, RjxzsBms, RangeRoverPhev, RenaultKangoo, RenaultTwizy, 
+RenaultZoe1, RenaultZoe2, SantaFePhev, SimpBms, TeslaModel3Y, TeslaModelSX, 
+TestFake, VolvoSpa, VolvoSpaHybrid, MgHsPhev, SamsungSdiLv, HyundaiIoniq28, 
+Kia64FD, RelionBattery, RivianBattery, BmwPhev, FordMachE, CmpSmartCar, MaxusEV80
+```
+
+Inverter Types: **21 total** (ID 0-21)
+```
+None, AforeCan, BydCan, BydModbus, FerroampCan, Foxess, GrowattHv, GrowattLv, 
+GrowattWit, Kostal, Pylon, PylonLv, Schneider, SmaBydH, SmaBydHvs, SmaLv, 
+SmaTripower, Sofar, Solax, Solxpow, SolArkLv, Sungrow
+```
+
+**Message Size Analysis**:
+
+ESP-NOW Maximum Payload: **250 bytes**
+
+```
+Battery Types Payload Calculation:
+- Count: 47 types
+- Per entry: 1 byte (ID) + string name
+- Average name length: "StellantisEcmp" = 14 chars
+- Estimated total: 47 × (1 + 14) = 705 bytes
+- Actual worst case (longest names): ~800 bytes
+
+Inverter Types Payload Calculation:
+- Count: 21 types
+- Per entry: 1 byte (ID) + string name
+- Average name length: "GrowattHv" = 9 chars
+- Estimated total: 21 × (1 + 9) = 210 bytes
+- Actual worst case: ~280 bytes
+
+Total Combined: ~1080 bytes
+```
+
+**Conclusion**: ❌ **ESP-NOW is TOO SMALL** - Single message would need 3-5 fragments
+
+**Why Fragmentation is Problematic**:
+- ESP-NOW has 250-byte limit per message
+- Need to split into 4-6 messages minimum
+- Race conditions if device resets mid-discovery
+- Complex reassembly logic with timeout handling
+- Higher failure rate due to multiple retries needed
+
+---
+
+**Recommended Solution: MQTT-Based Type Discovery** ✅
+
+Since fragmentation adds unnecessary complexity, use **MQTT as primary distribution channel**:
+
+#### Phase 1: MQTT Topic Structure
+
+```cpp
+// Transmitter publishes type lists to MQTT topics
+// Topics:
+// - /esp32/transmitter/types/battery/list
+// - /esp32/transmitter/types/inverter/list
+
+// JSON Payload Format (Concise for efficiency):
+
+// Battery Types Response
+{
+  "device_type": "transmitter",
+  "device_id": "ESP32-001234",
+  "types": "battery",
+  "count": 47,
+  "format": "compact",
+  "data": [
+    [0, "None"],
+    [2, "BMW i3"],
+    [3, "BMW iX"],
+    [4, "Bolt/Ampera"],
+    // ... 43 more entries
+    [46, "Maxus EV80"]
+  ]
+}
+
+// Inverter Types Response
+{
+  "device_type": "transmitter",
+  "device_id": "ESP32-001234",
+  "types": "inverter",
+  "count": 21,
+  "format": "compact",
+  "data": [
+    [0, "None"],
+    [1, "Afore battery over CAN"],
+    [2, "BYD Battery-Box Premium HVS over CAN Bus"],
+    // ... 18 more entries
+    [21, "Sungrow SBRXXX emulation over CAN bus"]
+  ]
+}
+```
+
+#### Phase 2: Transmitter Implementation
+
+```cpp
+// src/mqtt/type_publishers.cpp
+class TypePublisher {
+private:
+    MqttManager& mqtt_;
+    static constexpr const char* BATTERY_TYPES_TOPIC = "esp32/transmitter/types/battery/list";
+    static constexpr const char* INVERTER_TYPES_TOPIC = "esp32/transmitter/types/inverter/list";
+    
+    // Publishing schedule
+    uint32_t last_publish_time_ = 0;
+    static constexpr uint32_t PUBLISH_INTERVAL_MS = 3600000; // Hourly
+    bool published_on_startup_ = false;
+    
+public:
+    TypePublisher(MqttManager& mqtt) : mqtt_(mqtt) {}
+    
+    void publish_battery_types_on_startup() {
+        if (published_on_startup_) return;
+        
+        String json = build_battery_types_json();
+        
+        if (mqtt_.publish(BATTERY_TYPES_TOPIC, 
+                         (const uint8_t*)json.c_str(), 
+                         json.length(), 
+                         true)) {  // retain = true
+            LOG_INFO("[TYPES] Published %d battery types to MQTT", 47);
+            published_on_startup_ = true;
+        } else {
+            LOG_WARN("[TYPES] Failed to publish battery types");
+        }
+    }
+    
+    void publish_inverter_types_on_startup() {
+        if (published_on_startup_) return;
+        
+        String json = build_inverter_types_json();
+        
+        if (mqtt_.publish(INVERTER_TYPES_TOPIC,
+                         (const uint8_t*)json.c_str(),
+                         json.length(),
+                         true)) {  // retain = true
+            LOG_INFO("[TYPES] Published %d inverter types to MQTT", 21);
+            published_on_startup_ = true;
+        } else {
+            LOG_WARN("[TYPES] Failed to publish inverter types");
+        }
+    }
+    
+    void update() {
+        // Republish periodically in case receiver subscribed late
+        if (millis() - last_publish_time_ > PUBLISH_INTERVAL_MS) {
+            publish_battery_types_on_startup();
+            publish_inverter_types_on_startup();
+            last_publish_time_ = millis();
+        }
+    }
+    
+private:
+    String build_battery_types_json() {
+        // Format: [[id, name], [id, name], ...]
+        StaticJsonDocument<2048> doc;
+        
+        doc["device_type"] = "transmitter";
+        doc["device_id"] = get_device_id();
+        doc["types"] = "battery";
+        doc["count"] = 47;
+        doc["format"] = "compact";
+        
+        JsonArray data = doc.createNestedArray("data");
+        
+        for (int i = 0; i < (int)BatteryType::Highest; i++) {
+            const char* name = name_for_battery_type((BatteryType)i);
+            if (name) {
+                JsonArray entry = data.createNestedArray();
+                entry.add(i);
+                entry.add(name);
+            }
+        }
+        
+        String output;
+        serializeJson(doc, output);
+        return output;
+    }
+    
+    String build_inverter_types_json() {
+        StaticJsonDocument<1024> doc;
+        
+        doc["device_type"] = "transmitter";
+        doc["device_id"] = get_device_id();
+        doc["types"] = "inverter";
+        doc["count"] = 21;
+        doc["format"] = "compact";
+        
+        JsonArray data = doc.createNestedArray("data");
+        
+        for (int i = 0; i < (int)InverterProtocolType::Highest; i++) {
+            const char* name = name_for_inverter_type((InverterProtocolType)i);
+            if (name) {
+                JsonArray entry = data.createNestedArray();
+                entry.add(i);
+                entry.add(name);
+            }
+        }
+        
+        String output;
+        serializeJson(doc, output);
+        return output;
+    }
+};
+
+// In mqtt_task.cpp - call on startup
+void setup_mqtt() {
+    auto& type_pub = TypePublisher::instance();
+    type_pub.publish_battery_types_on_startup();
+    type_pub.publish_inverter_types_on_startup();
+}
+```
+
+#### Phase 3: Receiver Implementation
+
+```cpp
+// src/mqtt/type_subscriber.h
+class TypeSubscriber {
+private:
+    std::vector<TypeEntry> battery_types_cache_;
+    std::vector<TypeEntry> inverter_types_cache_;
+    bool battery_types_received_ = false;
+    bool inverter_types_received_ = false;
+    uint32_t discovery_timeout_time_ = 0;
+    static constexpr uint32_t DISCOVERY_TIMEOUT_MS = 10000;
+    
+public:
+    static TypeSubscriber& instance();
+    
+    void subscribe_to_types() {
+        // Subscribe to type lists from transmitter
+        MqttClient::instance().subscribe("esp32/transmitter/types/battery/list",
+                                        [this](const char* payload) {
+                                            on_battery_types_received(payload);
+                                        });
+        
+        MqttClient::instance().subscribe("esp32/transmitter/types/inverter/list",
+                                        [this](const char* payload) {
+                                            on_inverter_types_received(payload);
+                                        });
+        
+        discovery_timeout_time_ = millis();
+        LOG_INFO("[TYPES] Subscribed to type list topics");
+    }
+    
+    void on_battery_types_received(const char* json_payload) {
+        StaticJsonDocument<2048> doc;
+        DeserializationError error = deserializeJson(doc, json_payload);
+        
+        if (error) {
+            LOG_ERROR("[TYPES] JSON parse error: %s", error.c_str());
+            return;
+        }
+        
+        JsonArray data = doc["data"];
+        battery_types_cache_.clear();
+        
+        for (JsonArray entry : data) {
+            uint8_t id = entry[0];
+            const char* name = entry[1];
+            battery_types_cache_.push_back({id, name});
+        }
+        
+        battery_types_received_ = true;
+        LOG_INFO("[TYPES] Received %d battery types from MQTT", 
+                battery_types_cache_.size());
+    }
+    
+    void on_inverter_types_received(const char* json_payload) {
+        StaticJsonDocument<1024> doc;
+        DeserializationError error = deserializeJson(doc, json_payload);
+        
+        if (error) {
+            LOG_ERROR("[TYPES] JSON parse error: %s", error.c_str());
+            return;
+        }
+        
+        JsonArray data = doc["data"];
+        inverter_types_cache_.clear();
+        
+        for (JsonArray entry : data) {
+            uint8_t id = entry[0];
+            const char* name = entry[1];
+            inverter_types_cache_.push_back({id, name});
+        }
+        
+        inverter_types_received_ = true;
+        LOG_INFO("[TYPES] Received %d inverter types from MQTT",
+                inverter_types_cache_.size());
+    }
+    
+    bool is_discovery_complete() const {
+        return battery_types_received_ && inverter_types_received_;
+    }
+    
+    bool is_discovery_timeout() const {
+        if (is_discovery_complete()) return false;
+        return millis() - discovery_timeout_time_ > DISCOVERY_TIMEOUT_MS;
+    }
+    
+    const std::vector<TypeEntry>& get_battery_types() const {
+        return battery_types_cache_;
+    }
+    
+    const std::vector<TypeEntry>& get_inverter_types() const {
+        return inverter_types_cache_;
+    }
+};
+
+// src/mqtt/type_subscriber.cpp
+void setup_type_discovery() {
+    // Called during boot sequence
+    TypeSubscriber::instance().subscribe_to_types();
+    LOG_INFO("[TYPES] Waiting for type lists from transmitter...");
+}
+
+// In main loop
+void loop() {
+    // ... other stuff ...
+    
+    if (!TypeSubscriber::instance().is_discovery_complete()) {
+        if (TypeSubscriber::instance().is_discovery_timeout()) {
+            LOG_WARN("[TYPES] Discovery timeout - using fallback arrays");
+            // Use static fallback arrays (same as today, but with deprecation)
+        }
+    }
+}
+```
+
+#### Phase 4: Web API Integration
+
+```cpp
+// lib/webserver/api/api_type_selection_handlers.cpp
+static esp_err_t api_get_battery_types_handler(httpd_req_t *req) {
+    const auto& cached_types = TypeSubscriber::instance().get_battery_types();
+    
+    if (cached_types.empty()) {
+        // Try to fetch fresh data if empty
+        if (TypeSubscriber::instance().is_discovery_complete()) {
+            // Types exist but somehow empty
+            const char* json = "{\"error\":\"No battery types available\"}";
+            httpd_resp_send(req, json, strlen(json));
+        } else {
+            // Discovery still in progress
+            const char* json = "{\"status\":\"discovery_in_progress\",\"message\":\"Type list loading...\"}";
+            httpd_resp_send(req, json, strlen(json));
+        }
+        return ESP_OK;
+    }
+    
+    // Build response from cached types
+    String json = "{\"types\":[";
+    
+    for (size_t i = 0; i < cached_types.size(); i++) {
+        if (i > 0) json += ",";
+        json += "{\"id\":" + String(cached_types[i].id) + 
+               ",\"name\":\"" + String(cached_types[i].name) + "\"}";
+    }
+    
+    json += "]}";
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json.c_str(), json.length());
+    return ESP_OK;
+}
+```
+
+#### Phase 5: Fallback Strategy
+
+```cpp
+// src/config/type_fallback.h
+// Keep static fallback arrays for reliability, but mark deprecated
+
+static const TypeEntry FALLBACK_BATTERY_TYPES[] = {
+    {0, "None"}, {2, "BMW i3"}, {3, "BMW iX"}, {4, "Bolt/Ampera"},
+    // ... rest of array ...
+};
+
+static const TypeEntry FALLBACK_INVERTER_TYPES[] = {
+    {0, "None"}, {1, "Afore battery over CAN"}, {2, "BYD Battery-Box..."},
+    // ... rest of array ...
+};
+
+class TypeProvider {
+public:
+    // Primary: MQTT discovered types
+    // Fallback: Static arrays
+    const std::vector<TypeEntry>& get_battery_types() {
+        auto& mqtt_types = TypeSubscriber::instance().get_battery_types();
+        
+        if (!mqtt_types.empty()) {
+            return mqtt_types;  // Use MQTT-discovered types
+        }
+        
+        // Fallback to static array
+        LOG_WARN("[TYPES] Using fallback battery types (consider upgrading to MQTT)");
+        return get_fallback_battery_types();
+    }
+    
+private:
+    static const std::vector<TypeEntry>& get_fallback_battery_types() {
+        static std::vector<TypeEntry> fallback;
+        if (fallback.empty()) {
+            for (const auto& entry : FALLBACK_BATTERY_TYPES) {
+                fallback.push_back(entry);
+            }
+        }
+        return fallback;
+    }
+};
+```
+
+#### Phase 6: Advantages Over ESP-NOW Fragmentation
+
+✅ **MQTT Approach**:
+- ✅ Reliable delivery (MQTT QoS 1)
+- ✅ Retained messages (new receiver gets types immediately)
+- ✅ No fragmentation complexity
+- ✅ Works with existing MQTT connection
+- ✅ Bandwidth efficient (JSON compress well)
+- ✅ Easy to republish on interval
+- ✅ Automatic reconnection via MQTT
+- ✅ Scales to any number of types
+- ✅ Debugging visible via MQTT tools
+- ✅ Can add metadata (version, timestamp)
+
+❌ **ESP-NOW Fragmentation** (not recommended):
+- ❌ Manual reassembly logic needed
+- ❌ Race conditions on device reset
+- ❌ Higher failure rate (4-6 messages to send)
+- ❌ No guaranteed delivery
+- ❌ Complex timeout handling
+- ❌ Uses dedicated message types
+- ❌ Scales poorly with more types
+
+**Implementation Priority**:
+1. **Week 1**: Implement transmitter MQTT publishers (4 hours)
+2. **Week 2**: Implement receiver MQTT subscriber (4 hours)
+3. **Week 2**: Web API integration (2 hours)
+4. **Week 2**: Testing and validation (4 hours)
+
+**Expected Benefits**:
+- ✅ **Automatic sync** - Types always match transmitter
+- ✅ **Scalable** - Works with unlimited types
+- ✅ **Maintainable** - Single source of truth in Battery Emulator
+- ✅ **Reliable** - MQTT guarantees
+- ✅ **Future-proof** - Can add metadata, versioning, descriptions
+- ✅ **Zero receiver code changes** - Survives Battery Emulator updates
+
+---
 
 **Why This Moved Up**:
 1. **Transmitter now has robust queue infrastructure** (Item #5 complete)
@@ -460,41 +919,13 @@ Test Scenario 5: Metrics accuracy
 3. **Timing is centralized** (Item #6 complete)
 4. **Foundation is ready** for implementing type discovery
 
-**Current Problem** (Still Valid):
-- Receiver has **46+ hardcoded battery types** in static array
-- Receiver has **22+ hardcoded inverter types** in static array
-- **Must be manually updated** whenever Battery Emulator changes
-- **No automatic synchronization** with transmitter
-
-**Why It Matters Now**:
-- Battery Emulator integration is core value proposition
-- Every Battery Emulator version bump requires receiver code updates
-- This is maintenance burden that grows over time
-- Solution is now achievable with solid message infrastructure
-
 **Recommendation**:
-- ✅ **Move to Phase 2 (Next session)** as HIGH priority
-- Investigate message size constraints first (1-2 hours)
-- Implementation if fits in ESP-NOW payload: 1-2 days
-- Fallback to MQTT if needed: +1 day
+- ✅ **Move to Phase 2 (Next session after reconnection)** as HIGH priority
+- Use **MQTT-based solution** (not ESP-NOW)
+- Implementation: 1-2 days total
 - **This will pay dividends** long-term in reduced maintenance
 
-**Implementation Path**:
-1. **Discovery Phase** (1 hour):
-   - Count actual battery/inverter types in Battery Emulator
-   - Calculate ESP-NOW message size needed
-   - Determine if fragmentation required
 
-2. **Phase 2A - If ESP-NOW fits** (1-2 days):
-   - Add message types to ESP-NOW protocol
-   - Implement transmitter discovery handlers
-   - Implement receiver caching
-   - Remove hardcoded arrays
-
-3. **Phase 2B - If requires MQTT fallback** (+1 day):
-   - Transmitter publishes type lists to MQTT
-   - Receiver subscribes and caches
-   - Same result, more reliable
 
 ---
 
