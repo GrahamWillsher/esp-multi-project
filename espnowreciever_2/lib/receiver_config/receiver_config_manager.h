@@ -77,6 +77,19 @@ private:
     static constexpr const char* NVS_KEY_SIMULATION_MODE = "sim_mode";
     
 public:
+    struct ValidationResult {
+        bool valid;
+        const char* error_message;
+    };
+
+    // Validation helpers
+    static ValidationResult validateIPAddress(const uint8_t ip[4]);
+    static ValidationResult validatePort(uint16_t port);
+    static ValidationResult validateSSID(const char* ssid);
+    static ValidationResult validatePassword(const char* password);
+    static ValidationResult validateHostname(const char* hostname);
+    static ValidationResult validateInterface(uint8_t interface);
+
     /**
      * @brief Load receiver network configuration from NVS
      * @return true if config loaded successfully, false if not found (requires AP setup)

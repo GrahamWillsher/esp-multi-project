@@ -1,5 +1,6 @@
 #include "api_type_selection_handlers.h"
 
+#include <logging_config.h>
 #include "../../receiver_config/receiver_config_manager.h"
 #include "../../src/espnow/espnow_send.h"
 #include <Arduino.h>
@@ -189,9 +190,9 @@ static esp_err_t api_set_battery_type_handler(httpd_req_t *req) {
     ReceiverNetworkConfig::setBatteryType((uint8_t)type);
 
     if (send_component_type_selection((uint8_t)type, ReceiverNetworkConfig::getInverterType())) {
-        Serial.printf("[API] Battery type %d sent to transmitter via ESP-NOW\n", type);
+        LOG_INFO("API", "Battery type %d sent to transmitter via ESP-NOW", type);
     } else {
-        Serial.printf("[API] Warning: Could not send battery type to transmitter (may be offline)\n");
+        LOG_WARN("API", "Could not send battery type to transmitter (may be offline)");
     }
 
     const char* json = "{\"success\":true,\"message\":\"Battery type updated\"}";
@@ -231,9 +232,9 @@ static esp_err_t api_set_inverter_type_handler(httpd_req_t *req) {
     ReceiverNetworkConfig::setInverterType((uint8_t)type);
 
     if (send_component_type_selection(ReceiverNetworkConfig::getBatteryType(), (uint8_t)type)) {
-        Serial.printf("[API] Inverter type %d sent to transmitter via ESP-NOW\n", type);
+        LOG_INFO("API", "Inverter type %d sent to transmitter via ESP-NOW", type);
     } else {
-        Serial.printf("[API] Warning: Could not send inverter type to transmitter (may be offline)\n");
+        LOG_WARN("API", "Could not send inverter type to transmitter (may be offline)");
     }
 
     const char* json = "{\"success\":true,\"message\":\"Inverter type updated\"}";
@@ -301,9 +302,9 @@ static esp_err_t api_set_battery_interface_handler(httpd_req_t *req) {
     ReceiverNetworkConfig::setBatteryInterface((uint8_t)interface);
 
     if (send_component_interface_selection(ReceiverNetworkConfig::getBatteryInterface(), ReceiverNetworkConfig::getInverterInterface())) {
-        Serial.printf("[API] Battery interface %d sent to transmitter via ESP-NOW\n", interface);
+        LOG_INFO("API", "Battery interface %d sent to transmitter via ESP-NOW", interface);
     } else {
-        Serial.printf("[API] Warning: Could not send battery interface to transmitter (may be offline)\n");
+        LOG_WARN("API", "Could not send battery interface to transmitter (may be offline)");
     }
 
     const char* json = "{\"success\":true,\"message\":\"Battery interface updated\"}";
@@ -343,9 +344,9 @@ static esp_err_t api_set_inverter_interface_handler(httpd_req_t *req) {
     ReceiverNetworkConfig::setInverterInterface((uint8_t)interface);
 
     if (send_component_interface_selection(ReceiverNetworkConfig::getBatteryInterface(), (uint8_t)interface)) {
-        Serial.printf("[API] Inverter interface %d sent to transmitter via ESP-NOW\n", interface);
+        LOG_INFO("API", "Inverter interface %d sent to transmitter via ESP-NOW", interface);
     } else {
-        Serial.printf("[API] Warning: Could not send inverter interface to transmitter (may be offline)\n");
+        LOG_WARN("API", "Could not send inverter interface to transmitter (may be offline)");
     }
 
     const char* json = "{\"success\":true,\"message\":\"Inverter interface updated\"}";

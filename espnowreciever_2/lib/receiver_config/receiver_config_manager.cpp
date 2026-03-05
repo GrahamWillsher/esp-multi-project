@@ -22,6 +22,80 @@ uint8_t ReceiverNetworkConfig::battery_interface_ = 2;  // Default to CAN (Nativ
 uint8_t ReceiverNetworkConfig::inverter_interface_ = 2; // Default to CAN (Native)
 bool ReceiverNetworkConfig::simulation_mode_ = true;    // Default to simulated data
 
+ReceiverNetworkConfig::ValidationResult ReceiverNetworkConfig::validateIPAddress(const uint8_t ip[4]) {
+    if (!ip) {
+        return {false, "IP pointer is null"};
+    }
+
+    const bool all_zero = (ip[0] == 0 && ip[1] == 0 && ip[2] == 0 && ip[3] == 0);
+    const bool all_broadcast = (ip[0] == 255 && ip[1] == 255 && ip[2] == 255 && ip[3] == 255);
+
+    if (all_zero) {
+        return {false, "IP cannot be 0.0.0.0"};
+    }
+
+    if (all_broadcast) {
+        return {false, "IP cannot be 255.255.255.255"};
+    }
+
+    return {true, ""};
+}
+
+ReceiverNetworkConfig::ValidationResult ReceiverNetworkConfig::validatePort(uint16_t port) {
+    if (port == 0) {
+        return {false, "Port must be between 1 and 65535"};
+    }
+    return {true, ""};
+}
+
+ReceiverNetworkConfig::ValidationResult ReceiverNetworkConfig::validateSSID(const char* ssid) {
+    if (!ssid || ssid[0] == '\0') {
+        return {false, "SSID is required"};
+    }
+
+    if (strlen(ssid) >= sizeof(ssid_)) {
+        return {false, "SSID too long"};
+    }
+
+    return {true, ""};
+}
+
+ReceiverNetworkConfig::ValidationResult ReceiverNetworkConfig::validatePassword(const char* password) {
+    if (!password || password[0] == '\0') {
+        return {true, ""};
+    }
+
+    const size_t len = strlen(password);
+    if (len < 8) {
+        return {false, "Password must be at least 8 characters for WPA2"};
+    }
+
+    if (len >= sizeof(password_)) {
+        return {false, "Password too long"};
+    }
+
+    return {true, ""};
+}
+
+ReceiverNetworkConfig::ValidationResult ReceiverNetworkConfig::validateHostname(const char* hostname) {
+    if (!hostname || hostname[0] == '\0') {
+        return {true, ""};
+    }
+
+    if (strlen(hostname) >= sizeof(hostname_)) {
+        return {false, "Hostname too long"};
+    }
+
+    return {true, ""};
+}
+
+ReceiverNetworkConfig::ValidationResult ReceiverNetworkConfig::validateInterface(uint8_t interface) {
+    if (interface > 5) {
+        return {false, "Interface must be in range 0-5"};
+    }
+    return {true, ""};
+}
+
 bool ReceiverNetworkConfig::loadConfig() {
     Preferences prefs;
     if (!prefs.begin(NVS_NAMESPACE, true)) {  // true = read-only
@@ -117,29 +191,61 @@ bool ReceiverNetworkConfig::saveConfig(
     const char* mqtt_password
 ) {
     // Validation
-    if (!ssid || ssid[0] == '\0') {
-        Serial.println("[ReceiverConfig] SSID is required");
+    auto ssid_validation = validateSSID(ssid);
+    if (!ssid_validation.valid) {
+        Serial.printf("[ReceiverConfig] %s\n", ssid_validation.error_message);
         return false;
     }
-    
-    if (strlen(ssid) >= sizeof(ssid_)) {
-        Serial.println("[ReceiverConfig] SSID too long");
+
+    auto hostname_validation = validateHostname(hostname);
+    if (!hostname_validation.valid) {
+        Serial.printf("[ReceiverConfig] %s\n", hostname_validation.error_message);
         return false;
     }
-    
-    if (password && strlen(password) > 0 && strlen(password) < 8) {
-        Serial.println("[ReceiverConfig] Password must be at least 8 characters for WPA2");
+
+    auto password_validation = validatePassword(password);
+    if (!password_validation.valid) {
+        Serial.printf("[ReceiverConfig] %s\n", password_validation.error_message);
         return false;
     }
-    
-    if (password && strlen(password) >= sizeof(password_)) {
-        Serial.println("[ReceiverConfig] Password too long");
+
+    auto mqtt_port_validation = validatePort(mqtt_port);
+    if (!mqtt_port_validation.valid) {
+        Serial.printf("[ReceiverConfig] MQTT %s\n", mqtt_port_validation.error_message);
         return false;
     }
-    
+
     if (use_static_ip && (!static_ip || !gateway || !subnet)) {
         Serial.println("[ReceiverConfig] Static IP mode requires IP, gateway, and subnet");
         return false;
+    }
+
+    if (use_static_ip) {
+        auto ip_validation = validateIPAddress(static_ip);
+        if (!ip_validation.valid) {
+            Serial.printf("[ReceiverConfig] Static IP invalid: %s\n", ip_validation.error_message);
+            return false;
+        }
+
+        auto gateway_validation = validateIPAddress(gateway);
+        if (!gateway_validation.valid) {
+            Serial.printf("[ReceiverConfig] Gateway invalid: %s\n", gateway_validation.error_message);
+            return false;
+        }
+
+        auto subnet_validation = validateIPAddress(subnet);
+        if (!subnet_validation.valid) {
+            Serial.printf("[ReceiverConfig] Subnet invalid: %s\n", subnet_validation.error_message);
+            return false;
+        }
+    }
+
+    if (mqtt_enabled && mqtt_server) {
+        auto mqtt_server_validation = validateIPAddress(mqtt_server);
+        if (!mqtt_server_validation.valid) {
+            Serial.printf("[ReceiverConfig] MQTT server invalid: %s\n", mqtt_server_validation.error_message);
+            return false;
+        }
     }
     
     Preferences prefs;
@@ -308,6 +414,12 @@ void ReceiverNetworkConfig::setInverterType(uint8_t type) {
 }
 
 void ReceiverNetworkConfig::setBatteryInterface(uint8_t interface) {
+    auto validation = validateInterface(interface);
+    if (!validation.valid) {
+        Serial.printf("[ReceiverConfig] Invalid battery interface (%d): %s\n", interface, validation.error_message);
+        return;
+    }
+
     battery_interface_ = interface;
     
     Preferences prefs;
@@ -321,6 +433,12 @@ void ReceiverNetworkConfig::setBatteryInterface(uint8_t interface) {
 }
 
 void ReceiverNetworkConfig::setInverterInterface(uint8_t interface) {
+    auto validation = validateInterface(interface);
+    if (!validation.valid) {
+        Serial.printf("[ReceiverConfig] Invalid inverter interface (%d): %s\n", interface, validation.error_message);
+        return;
+    }
+
     inverter_interface_ = interface;
     
     Preferences prefs;

@@ -72,6 +72,17 @@ public:
      */
     static void fade_backlight(uint8_t target_brightness, uint32_t duration_ms);
     
+    /**
+     * @brief Fill entire screen with specified color
+     * @param color Color value (format depends on display driver)
+     */
+    static void fill_screen(uint16_t color);
+    
+    /**
+     * @brief Clear screen to default background color
+     */
+    static void clear_screen();
+    
 private:
     DisplayManager() = delete;  // Static class - no instances
     

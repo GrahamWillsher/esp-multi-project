@@ -148,4 +148,24 @@ void DisplayManager::fade_backlight(uint8_t target_brightness, uint32_t duration
     LOG_DEBUG("Backlight fade complete (final brightness: %d)", target_brightness);
 }
 
+void DisplayManager::fill_screen(uint16_t color) {
+    if (!is_available()) {
+        LOG_WARN("Cannot fill screen - display not available");
+        return;
+    }
+    
+    if (!lock(pdMS_TO_TICKS(100))) {
+        LOG_WARN("Cannot fill screen - failed to acquire display lock");
+        return;
+    }
+    
+    driver_->fill_screen(color);
+    unlock();
+}
+
+void DisplayManager::clear_screen() {
+    // Default to HAL-defined background color
+    fill_screen(0x0000);  // Black
+}
+
 } // namespace Display

@@ -38,15 +38,46 @@ uint16_t calculate_checksum(const espnow_payload_t *payload) {
     return sum;
 }
 
-// Task-aware delay function
+/**
+ * @brief Task-aware delay implementation
+ * 
+ * Smart delay that automatically uses FreeRTOS's vTaskDelay() when available,
+ * falling back to Arduino's delay() during early initialization when the
+ * scheduler hasn't started yet.
+ * 
+ * **Algorithm**:
+ * 1. Check if running in a valid FreeRTOS task context
+ * 2. Check if FreeRTOS scheduler is running
+ * 3. If both true: Use vTaskDelay() (task yields, others can run)
+ * 4. If either false: Use Arduino delay() (blocks, but needed at startup)
+ * 
+ * **Key Logic Points**:
+ * - xTaskGetCurrentTaskHandle() returns NULL if not in task context
+ * - xTaskGetSchedulerState() returns taskSCHEDULER_RUNNING when ready
+ * - pdMS_TO_TICKS() converts milliseconds to scheduler ticks
+ * - Ensures minimum 1-tick delay for sub-tick ms values
+ * 
+ * **Performance Note**:
+ * This function is called 30+ times throughout initialization and core loops.
+ * The overhead check is negligible (< 1µs) compared to typical delay durations.
+ * 
+ * @see smart_delay() in common.h for user documentation
+ */
 void smart_delay(uint32_t ms) {
+    // Check if we're in a valid FreeRTOS context with scheduler running
     if (xTaskGetCurrentTaskHandle() != NULL && xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
+        // We're in FreeRTOS task context - yield to scheduler
         TickType_t ticks = pdMS_TO_TICKS(ms);
+        
+        // Ensure minimum 1 tick even for very small ms values
+        // (prevents zero-delay busy loops)
         if (ticks == 0 && ms > 0) {
             ticks = 1;
         }
+        
         vTaskDelay(ticks);
     } else {
+        // Early initialization - scheduler not running yet, use blocking delay
         delay(ms);
     }
 }

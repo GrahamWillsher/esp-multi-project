@@ -14,35 +14,9 @@
 #include <LittleFS.h>
 #include <JPEGDecoder.h>
 #include <espnow_common.h>
+#include "config/led_config.h"
 #include "config/logging_config.h"
-
-// LED color enumeration (used by display_led.h and ESPNow state)
-// Wire format: 0=red, 1=green, 2=orange (matches enum values)
-enum LEDColor {
-    LED_RED    = 0,  // Explicitly match wire format
-    LED_GREEN  = 1,
-    LED_ORANGE = 2
-};
-
-// LED effect modes for simulated/status indicator
-enum LEDEffect {
-    LED_EFFECT_SOLID = 0,
-    LED_EFFECT_FLASH = 1,
-    LED_EFFECT_HEARTBEAT = 2
-};
-
-// Connection state tracking for timeout detection
-struct ConnectionState {
-    bool is_connected;
-    uint32_t last_rx_time_ms;
-};
-
-// Actual TFT RGB565 color values for LED display
-namespace LEDColors {
-    constexpr uint16_t RED    = TFT_RED;     // 0xF800
-    constexpr uint16_t GREEN  = TFT_GREEN;   // 0x07E0  
-    constexpr uint16_t ORANGE = TFT_ORANGE;  // 0xFD20
-}
+#include "state/connection_state.h"
 
 // ═══════════════════════════════════════════════════════════════════════
 // Global Namespaces
@@ -159,7 +133,72 @@ enum class ErrorSeverity { WARNING, ERROR, FATAL };
 void handle_error(ErrorSeverity severity, const char* component, const char* message);
 
 // ═══════════════════════════════════════════════════════════════════════
-// Helper function declaration
+// FreeRTOS-Aware Task Helper
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * @brief FreeRTOS-friendly delay with automatic task yielding
+ * 
+ * This function provides a task-safe alternative to Arduino's delay().
+ * Unlike Arduino's delay() which blocks the entire system, smart_delay()
+ * intelligently yields to other FreeRTOS tasks during the wait period.
+ * 
+ * **Key Differences from delay()**:
+ * - Uses vTaskDelay() when running in FreeRTOS context (allows other tasks to run)
+ * - Falls back to delay() if FreeRTOS scheduler not running (startup/early init)
+ * - Prevents watchdog timeouts by keeping scheduler active
+ * - Improves overall system responsiveness and concurrency
+ * 
+ * **When to use**:
+ * - ✅ Anywhere in FreeRTOS task code (default choice)
+ * - ✅ Hardware initialization delays (power stabilization, settling time)
+ * - ✅ Splash screen pauses during display initialization
+ * - ✅ Debounce delays in button handlers
+ * - ❌ NOT in ISRs (use ISR-safe alternatives instead)
+ * - ❌ NOT in critical sections (use explicit timing instead)
+ * 
+ * **Implementation Details**:
+ * - Checks if FreeRTOS scheduler is running via xTaskGetSchedulerState()
+ * - Converts milliseconds to FreeRTOS ticks using pdMS_TO_TICKS()
+ * - Ensures minimum 1 tick delay even for very small ms values
+ * - Falls back to Arduino delay() if scheduler not running
+ * 
+ * **Timing Notes**:
+ * - Minimum effective delay: 1 FreeRTOS tick (typically 10ms on ESP32)
+ * - Requested delays < 1 tick will be rounded up to 1 tick
+ * - Example: smart_delay(5) will delay ~10ms, not exactly 5ms
+ * - For sub-tick precision, use vTaskDelay(pdMS_TO_TICKS(x)) directly
+ * 
+ * **Usage Examples**:
+ * @code
+ *   // Wait 100ms, allowing other tasks to run
+ *   smart_delay(100);
+ *   
+ *   // Use named constant for clarity
+ *   constexpr uint32_t HARDWARE_STABILIZATION_MS = 100;
+ *   smart_delay(HARDWARE_STABILIZATION_MS);
+ *   
+ *   // Typical display initialization
+ *   digitalWrite(DISPLAY_POWER, HIGH);
+ *   smart_delay(50);  // Let power stabilize
+ *   digitalWrite(DISPLAY_RESET, LOW);
+ *   smart_delay(10);  // Hold reset
+ *   digitalWrite(DISPLAY_RESET, HIGH);
+ *   smart_delay(100); // Let reset complete
+ * @endcode
+ * 
+ * **Performance Impact**:
+ * - No overhead in FreeRTOS context (uses efficient task scheduler)
+ * - Improves system responsiveness during long waits
+ * - Allows other priority-1 and higher tasks to execute
+ * - Prevents "busy waiting" and associated power waste
+ * 
+ * @param ms Duration to delay in milliseconds
+ * 
+ * @see vTaskDelay() - FreeRTOS equivalent (uses ticks, not milliseconds)
+ * @see delay() - Arduino blocking delay (blocks all tasks)
+ * @see pdMS_TO_TICKS() - Convert milliseconds to FreeRTOS ticks
+ */
 void smart_delay(uint32_t ms);
 
 // ═══════════════════════════════════════════════════════════════════════

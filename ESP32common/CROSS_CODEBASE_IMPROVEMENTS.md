@@ -149,7 +149,301 @@ namespace TimingConfig {
 
 ---
 
-## 2. Hardware Abstraction Layer (HAL) Pattern
+## 2. Dynamic Battery & Inverter Type Discovery via ESP-NOW
+
+### Priority: 🔴 **HIGH - CRITICAL MAINTENANCE**
+**Effort**: 2-3 days combined (transmitter + receiver changes)  
+**Blocking**: No - Independent of other improvements  
+**Complexity**: Medium - New ESP-NOW message types + protocol handling
+
+### Problem Statement
+
+**Current State**:
+- Receiver maintains **hardcoded static arrays** of 46+ battery types and 22+ inverter types in `api_type_selection_handlers.cpp`
+- Transmitter defines authoritative type mappings in `BATTERIES.cpp` and inverter protocol definitions
+- **No synchronization mechanism** - Arrays must be manually updated whenever Battery Emulator adds/removes types
+- **No build-time validation** - Out-of-sync arrays cause silent failures (mismatched dropdown menus)
+- **Already maintenance burden** - Every Battery Emulator version update requires manual receiver code changes
+
+**Why This is Critical**:
+1. Battery Emulator is constantly evolving - new batteries/inverters added regularly
+2. Receiver web UI dropdown menus source from these hardcoded arrays
+3. User selects battery type that doesn't match transmitter's type enum → configuration error
+4. Debugging becomes nightmare (type mismatch not obvious)
+5. Receiver codebase becomes out-of-date after every Battery Emulator release
+
+**Current Arrays** (must be manually kept in sync):
+```cpp
+// lib/webserver/api/api_type_selection_handlers.cpp
+
+static TypeEntry battery_types[] = {
+    {0, "None"}, {2, "BMW i3"}, {3, "BMW iX"}, {4, "Bolt/Ampera"}, {5, "BYD Atto 3"},
+    {6, "Cellpower BMS"}, {7, "CHAdeMO"}, {8, "CMFA EV"}, {9, "Foxess"},
+    // ... 37 more manually duplicated entries ...
+    {46, "Maxus EV80"}
+};
+
+static TypeEntry inverter_types[] = {
+    {0, "None"}, {1, "Afore battery over CAN"}, {2, "BYD Battery-Box Premium HVS over CAN Bus"},
+    // ... 19 more manually duplicated entries ...
+    {21, "Sungrow SBRXXX emulation over CAN bus"}
+};
+```
+
+### Recommended Solution: Option A - ESP-NOW Dynamic Discovery
+
+**Architecture**:
+Transmitter queries Battery Emulator and responds with live type lists. Receiver caches results and uses them for web UI dropdowns.
+
+```
+┌─────────────────┐                    ┌──────────────────┐
+│    Receiver     │                    │   Transmitter    │
+│                 │                    │                  │
+│ On startup:     │  REQUEST TYPES     │ BATTERIES.cpp    │
+│ Request types ──┼───────────────────>│ (authoritative)  │
+│                 │                    │                  │
+│ Receive &       │<──────────────────┤ Return:          │
+│ cache types     │  RESPONSE TYPES    │ [{id, name}, ..] │
+│                 │                    │                  │
+│ Web UI uses     │                    │                  │
+│ cached data     │                    │                  │
+└─────────────────┘                    └──────────────────┘
+```
+
+**Transmitter-Side Changes** (`ESPnowtransmitter2`):
+
+```cpp
+// src/espnow/espnow_handlers.cpp
+
+#include "../battery_emulator/battery/BATTERIES.h"
+
+void handle_type_request(const uint8_t *mac_addr, const uint8_t *data, int len) {
+    if (len < 1) return;
+    
+    uint8_t request_type = data[0];
+    
+    if (request_type == MSG_REQUEST_BATTERY_TYPES) {
+        send_battery_types_response(mac_addr);
+    } 
+    else if (request_type == MSG_REQUEST_INVERTER_TYPES) {
+        send_inverter_types_response(mac_addr);
+    }
+}
+
+void send_battery_types_response(const uint8_t *mac_addr) {
+    // Iterate through BATTERIES.h includes and BATTERIES.cpp mappings
+    // Build response with all available battery types
+    
+    for (int id = 0; id < MAX_BATTERY_TYPE; id++) {
+        const char* name = name_for_battery_type((BatteryType)id);
+        if (name && strcmp(name, "Unknown") != 0) {
+            // Queue type entry for transmission
+            send_type_entry(mac_addr, id, name);
+        }
+    }
+}
+
+void send_inverter_types_response(const uint8_t *mac_addr) {
+    // Build response with all supported inverter types
+    for (uint8_t id = 0; id < NUM_INVERTER_PROTOCOLS; id++) {
+        const char* name = get_inverter_protocol_name(id);
+        if (name) {
+            send_type_entry(mac_addr, id, name);
+        }
+    }
+}
+```
+
+**Receiver-Side Changes** (`espnowreciever_2`):
+
+```cpp
+// src/espnow/type_discovery.h
+#pragma once
+
+#include <vector>
+#include "../common.h"
+
+struct TypeEntry {
+    uint8_t id;
+    const char* name;
+};
+
+namespace TypeDiscovery {
+    // Request type lists from transmitter
+    void request_battery_types();
+    void request_inverter_types();
+    
+    // Cache management
+    const std::vector<TypeEntry>& get_battery_types();
+    const std::vector<TypeEntry>& get_inverter_types();
+    
+    // Called when response received
+    void handle_battery_types_response(const TypeEntry* types, uint8_t count);
+    void handle_inverter_types_response(const TypeEntry* types, uint8_t count);
+    
+    // Check if discovery complete
+    bool is_discovery_complete();
+}
+
+// src/espnow/type_discovery.cpp
+#include "type_discovery.h"
+
+static std::vector<TypeEntry> g_battery_types_cache;
+static std::vector<TypeEntry> g_inverter_types_cache;
+static bool g_discovery_complete = false;
+
+void TypeDiscovery::request_battery_types() {
+    uint8_t request[] = {MSG_REQUEST_BATTERY_TYPES};
+    send_espnow_request(request, sizeof(request));
+    LOG_INFO("[TypeDiscovery] Requesting battery types from transmitter");
+}
+
+void TypeDiscovery::request_inverter_types() {
+    uint8_t request[] = {MSG_REQUEST_INVERTER_TYPES};
+    send_espnow_request(request, sizeof(request));
+    LOG_INFO("[TypeDiscovery] Requesting inverter types from transmitter");
+}
+
+void TypeDiscovery::handle_battery_types_response(const TypeEntry* types, uint8_t count) {
+    g_battery_types_cache.assign(types, types + count);
+    LOG_INFO("[TypeDiscovery] Received %d battery types from transmitter", count);
+}
+
+const std::vector<TypeEntry>& TypeDiscovery::get_battery_types() {
+    return g_battery_types_cache;
+}
+
+// Similar for inverter types...
+
+// src/main.cpp - Boot sequence
+void setup() {
+    // ... other initialization ...
+    
+    // Request type lists from transmitter
+    TypeDiscovery::request_battery_types();
+    TypeDiscovery::request_inverter_types();
+    
+    // Web server starts after discovery (or with timeout)
+    // ...
+}
+
+// lib/webserver/api/api_type_selection_handlers.cpp - Use dynamic cache
+static esp_err_t api_get_battery_types_handler(httpd_req_t *req) {
+    const auto& cached_types = TypeDiscovery::get_battery_types();
+    
+    if (cached_types.empty()) {
+        // Fallback if discovery not complete (shouldn't happen)
+        const char* json = "{\"error\":\"Type discovery in progress, try again\"}";
+        httpd_resp_send(req, json, strlen(json));
+        return ESP_OK;
+    }
+    
+    // Use cached_types instead of static battery_types array
+    String json = generate_sorted_type_json(
+        const_cast<TypeEntry*>(cached_types.data()),
+        cached_types.size()
+    );
+    httpd_resp_send(req, json.c_str(), json.length());
+    return ESP_OK;
+}
+```
+
+**Benefits**:
+- ✅ **Zero maintenance** - Receiver always in sync with Battery Emulator
+- ✅ **Single source of truth** - Transmitter owns all type definitions
+- ✅ **Automatic updates** - New battery types appear without receiver code changes
+- ✅ **Runtime flexibility** - Works with custom Battery Emulator forks
+- ✅ **Runtime discovery** - Detects what battery system transmitter supports
+
+**Potential Concern - Message Size**:
+- **Battery types array**: ~46 entries × ~30 bytes (id + name) = ~1.4 KB
+- **Inverter types array**: ~22 entries × ~30 bytes = ~660 bytes  
+- **ESP-NOW MTU**: 250 bytes per message
+- **Solution**: Requires **multi-message fragmentation** (split across multiple ESP-NOW packets)
+
+**If ESP-NOW payload is too large**: Fall back to MQTT for type discovery
+- Transmitter publishes type lists to MQTT topic
+- Receiver subscribes to type lists topic
+- More reliable but requires MQTT connection
+
+**Message Type Additions** (in `espnow_common/espnow_common.h`):
+```cpp
+enum ESPNowMessageType {
+    // ... existing types ...
+    MSG_REQUEST_BATTERY_TYPES = 0x50,
+    MSG_RESPONSE_BATTERY_TYPES_PARTIAL = 0x51,  // Multi-message support
+    MSG_REQUEST_INVERTER_TYPES = 0x52,
+    MSG_RESPONSE_INVERTER_TYPES_PARTIAL = 0x53,
+    // ... etc ...
+};
+
+// Fragmentation support for large responses
+struct TypeListFragment {
+    uint8_t msg_type;          // MSG_RESPONSE_BATTERY_TYPES_PARTIAL
+    uint8_t fragment_num;      // 0, 1, 2, ...
+    uint8_t total_fragments;   // Total expected
+    uint8_t entries_in_fragment;
+    // Followed by TypeEntry[] data
+};
+```
+
+**Implementation Plan**:
+1. Add type request/response message types to ESP-NOW protocol
+2. Implement request handling in transmitter (`send_battery_types_response`, etc.)
+3. Implement caching in receiver (`TypeDiscovery` namespace)
+4. Integrate type discovery into boot sequence
+5. Update web API handlers to use cached types
+6. **Remove hardcoded type arrays from receiver**
+7. Add fallback for discovery timeout (use empty dropdown with "Loading..." message)
+
+### Investigation Required
+
+Before implementation, **validate message size constraints**:
+
+1. **Measure actual payload**:
+   - Count all battery types in BATTERIES.cpp
+   - Count all inverter types
+   - Calculate bytes needed (id=1 byte + name=variable)
+   - Compare against ESP-NOW 250-byte limit
+
+2. **If payload fits in 1 message**:
+   - ✅ Use simple ESP-NOW discovery (2-3 messages total)
+   - Implementation straightforward
+
+3. **If payload > 250 bytes**:
+   - Fragment across multiple messages (add fragment_num, total_fragments)
+   - More complex but still manageable
+   - Similar to how OTA updates handle large payloads
+
+4. **If fragmentation adds too much complexity**:
+   - Use **MQTT fallback** for type discovery
+   - Transmitter publishes `/types/batteries` and `/types/inverters` on MQTT
+   - Receiver subscribes after MQTT connection
+   - Adds MQTT dependency for type discovery
+
+**Recommendation**: Implement with **dual support**:
+- Try ESP-NOW first (faster)
+- Fall back to MQTT if available
+- Have static fallback as last resort (same as today, but with deprecation notice)
+
+### Timeline
+
+**Phase 1** (This session): Investigation
+- Measure actual message sizes
+- Determine if fragmentation needed
+- Decide on MQTT fallback approach
+
+**Phase 2** (Next session): Implementation
+- Add ESP-NOW message types to protocol
+- Implement transmitter discovery handlers
+- Implement receiver type discovery + caching
+- Update web API handlers
+- Remove hardcoded arrays
+- Add fallback handling for timeouts
+
+---
+
+## 3. Hardware Abstraction Layer (HAL) Pattern
 
 ### Priority: 🟡 **MEDIUM**
 **Effort**: 2 days combined  
@@ -1058,4 +1352,14 @@ After implementing these changes:
 - New developers can understand patterns across both devices
 - Testing is possible without hardware
 - System is more resilient and maintainable
+
+---
+
+## Version History
+
+| Date | Author | Change |
+|------|--------|--------|
+| Feb 26, 2026 | Original | Initial document creation |
+| March 5, 2026 | AI Assistant | Added Item #2 (Dynamic Type Discovery via ESP-NOW) with investigation notes, fallback to MQTT option, and implementation plan |
+
 

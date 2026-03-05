@@ -8,6 +8,7 @@
 
 #include "common.h"
 #include "helpers.h"
+#include "config/task_config.h"
 #include "state_machine.h"
 #include "display/display_led.h"
 #include "display/display_core.h"
@@ -228,11 +229,11 @@ void setup() {
     xTaskCreatePinnedToCore(
         task_espnow_worker,
         "ESPNowWorker",
-        4096,
+        TaskConfig::ESPNOW_WORKER_STACK,
         NULL,
-        2,                   // Higher priority than display tasks
+        TaskConfig::ESPNOW_WORKER_PRIORITY,
         &RTOS::task_espnow_worker,
-        1
+        TaskConfig::WORKER_CORE
     );
     
     // Start periodic announcement using common discovery component
@@ -242,20 +243,20 @@ void setup() {
         []() -> bool {
             return ConnectionStateManager::is_transmitter_connected();
         },
-        5000,  // 5 second interval
-        1,     // Low priority
-        4096   // Stack size (increased for MqttLogger usage)
+        TaskConfig::ANNOUNCEMENT_INTERVAL_MS,
+        TaskConfig::ANNOUNCEMENT_PRIORITY,
+        TaskConfig::ANNOUNCEMENT_TASK_STACK
     );
     
     // Task: MQTT Client (priority 0, core 1) - low priority, receives spec data
     xTaskCreatePinnedToCore(
         task_mqtt_client,
         "MqttClient",
-        4096,
+        TaskConfig::MQTT_CLIENT_STACK,
         NULL,
-        0,
+        TaskConfig::MQTT_CLIENT_PRIORITY,
         NULL,
-        1
+        TaskConfig::WORKER_CORE
     );
     
     LOG_DEBUG("MAIN", "All tasks created successfully");
