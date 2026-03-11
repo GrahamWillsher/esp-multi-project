@@ -1,5 +1,6 @@
 #include "espnow_send.h"
 #include "../common.h"
+#include "../espnow/rx_state_machine.h"
 #include <esp_now.h>
 #include <espnow_common.h>
 #include <espnow_packet_utils.h>
@@ -26,7 +27,7 @@ bool send_debug_level_control(uint8_t level) {
     }
     
     // Check if transmitter is connected (more reliable than checking MAC)
-    if (!ESPNow::transmitter_connected) {
+    if (RxStateMachine::instance().message_state() != RxStateMachine::MessageState::VALID) {
         LOG_WARN("ESP-NOW", "Transmitter not connected - cannot send debug control");
         return false;
     }
@@ -87,7 +88,7 @@ bool send_component_type_selection(uint8_t battery_type, uint8_t inverter_type) 
     }
     
     // Check if transmitter is connected
-    if (!ESPNow::transmitter_connected) {
+    if (RxStateMachine::instance().message_state() != RxStateMachine::MessageState::VALID) {
         LOG_WARN("ESP-NOW", "Transmitter not connected - cannot send component type selection");
         return false;
     }
@@ -153,7 +154,7 @@ bool send_component_interface_selection(uint8_t battery_interface, uint8_t inver
     }
     
     // Check if transmitter is connected
-    if (!ESPNow::transmitter_connected) {
+    if (RxStateMachine::instance().message_state() != RxStateMachine::MessageState::VALID) {
         LOG_WARN("ESP-NOW", "Transmitter not connected - cannot send component interface selection");
         return false;
     }
@@ -208,7 +209,7 @@ bool send_test_data_mode_control(uint8_t mode) {
     }
     
     // Check if transmitter is connected
-    if (!ESPNow::transmitter_connected) {
+    if (RxStateMachine::instance().message_state() != RxStateMachine::MessageState::VALID) {
         LOG_WARN("ESP-NOW", "Transmitter not connected - cannot send test data mode control");
         return false;
     }
@@ -260,7 +261,7 @@ bool send_test_data_mode_control(uint8_t mode) {
 
 bool send_event_logs_control(bool subscribe) {
     // Check if transmitter is connected
-    if (!ESPNow::transmitter_connected) {
+    if (RxStateMachine::instance().message_state() != RxStateMachine::MessageState::VALID) {
         LOG_WARN("ESP-NOW", "Transmitter not connected - cannot send event logs control");
         return false;
     }

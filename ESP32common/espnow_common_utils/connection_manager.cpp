@@ -27,7 +27,12 @@ EspNowConnectionManager::EspNowConnectionManager()
       state_enter_time_(0),
       event_queue_(nullptr),
       auto_reconnect_enabled_(false),
-      connecting_timeout_ms_(0) {
+      connecting_timeout_ms_(0),
+            heartbeat_timeout_enabled_(false),
+            heartbeat_timeout_ms_(5000),
+            heartbeat_timeout_reported_(false),
+      heartbeat_monitor_(5000),  // 5-second timeout
+      backoff_manager_() {
     memset(peer_mac_, 0, 6);
 }
 
@@ -47,6 +52,9 @@ bool EspNowConnectionManager::init() {
     state_enter_time_ = millis();
     auto_reconnect_enabled_ = false;
     connecting_timeout_ms_ = 0;
+    heartbeat_timeout_enabled_ = false;
+    heartbeat_timeout_ms_ = 5000;
+    heartbeat_timeout_reported_ = false;
     
     Serial.printf("[CONN_MGR] ✓ Connection Manager initialized\n");
     Serial.printf("[CONN_MGR]   State: IDLE\n");
@@ -70,6 +78,19 @@ void EspNowConnectionManager::set_connecting_timeout_ms(uint32_t timeout_ms) {
     Serial.printf("[CONN_MGR] CONNECTING timeout: %ldms\n", timeout_ms);
 }
 
+void EspNowConnectionManager::set_heartbeat_timeout_enabled(bool enable) {
+    heartbeat_timeout_enabled_ = enable;
+    heartbeat_timeout_reported_ = false;
+    Serial.printf("[CONN_MGR] Heartbeat timeout ownership: %s\n", enable ? "ENABLED" : "DISABLED");
+}
+
+void EspNowConnectionManager::set_heartbeat_timeout_ms(uint32_t timeout_ms) {
+    heartbeat_timeout_ms_ = timeout_ms;
+    heartbeat_monitor_ = EspNowHeartbeatMonitor(timeout_ms);
+    heartbeat_timeout_reported_ = false;
+    Serial.printf("[CONN_MGR] Heartbeat timeout threshold: %ldms\n", timeout_ms);
+}
+
 bool EspNowConnectionManager::post_event(EspNowEvent event, const uint8_t* mac) {
     if (event_queue_ == nullptr) {
         return false;  // Not initialized
@@ -89,7 +110,7 @@ void EspNowConnectionManager::process_events() {
     while (xQueueReceive(event_queue_, &event, 0) == pdTRUE) {
         Serial.printf("[CONN_MGR-DEBUG] Processing event: %s (state: %s)\n",
                  event_to_string(event.event),
-                 state_to_string(current_state_));
+                 espnow_state_to_string(current_state_));
         
         handle_event(event);
     }
@@ -100,6 +121,18 @@ void EspNowConnectionManager::process_events() {
         get_state_time_ms() > connecting_timeout_ms_) {
         Serial.printf("[CONN_MGR] CONNECTING timeout (%ldms) exceeded → IDLE\n", connecting_timeout_ms_);
         transition_to_state(EspNowConnectionState::IDLE);
+    }
+    
+    // Common heartbeat/activity timeout ownership (configurable per device)
+    if (heartbeat_timeout_enabled_ &&
+        current_state_ == EspNowConnectionState::CONNECTED &&
+        heartbeat_monitor_.connection_lost() &&
+        !heartbeat_timeout_reported_) {
+        Serial.printf("[CONN_MGR] Heartbeat/activity timeout (%ldms since last) → CONNECTION_LOST\n",
+                     heartbeat_monitor_.ms_since_last_heartbeat());
+        heartbeat_timeouts_++;
+        heartbeat_timeout_reported_ = true;
+        post_event(EspNowEvent::CONNECTION_LOST);
     }
 }
 
@@ -206,17 +239,24 @@ void EspNowConnectionManager::transition_to_state(EspNowConnectionState new_stat
     
     Serial.printf("[CONN_MGR] ═══ STATE TRANSITION ═══\n");
     Serial.printf("[CONN_MGR]   %s → %s (duration: %ldms)\n",
-             state_to_string(current_state_),
-             state_to_string(new_state),
+             espnow_state_to_string(current_state_),
+             espnow_state_to_string(new_state),
              state_duration);
     
     current_state_ = new_state;
     state_enter_time_ = millis();
     
+    // PHASE 0: Update metrics on state transitions
+    if (old_state == EspNowConnectionState::CONNECTED) {
+        total_connected_time_ms_ += state_duration;
+        disconnections_++;
+    }
+    
     // Additional logging for specific transitions
     if (new_state == EspNowConnectionState::IDLE) {
         memset(peer_mac_, 0, 6);
         Serial.printf("[CONN_MGR]   Peer MAC cleared\n");
+        heartbeat_timeout_reported_ = false;
         
         // Auto-reconnect if enabled
         if (auto_reconnect_enabled_ && old_state == EspNowConnectionState::CONNECTED) {
@@ -227,6 +267,12 @@ void EspNowConnectionManager::transition_to_state(EspNowConnectionState new_stat
         Serial.printf("[CONN_MGR]   Peer: %02X:%02X:%02X:%02X:%02X:%02X\n",
                  peer_mac_[0], peer_mac_[1], peer_mac_[2],
                  peer_mac_[3], peer_mac_[4], peer_mac_[5]);
+        
+        // PHASE 0: Initialize heartbeat monitoring
+        heartbeat_monitor_.on_connection_success();
+        heartbeat_timeout_reported_ = false;
+        backoff_manager_.on_connection_success();
+        successful_connections_++;
     }
     
     // Invoke registered callbacks
@@ -244,4 +290,46 @@ uint32_t EspNowConnectionManager::get_connected_time_ms() const {
 
 uint32_t EspNowConnectionManager::get_state_time_ms() const {
     return millis() - state_enter_time_;
+}
+
+// ===== PHASE 0: HEARTBEAT & RECONNECTION METHODS =====
+
+void EspNowConnectionManager::on_heartbeat_received() {
+    heartbeat_monitor_.on_heartbeat_received();
+    heartbeat_timeout_reported_ = false;
+    heartbeats_received_++;
+}
+
+bool EspNowConnectionManager::is_heartbeat_timeout() const {
+    return heartbeat_monitor_.connection_lost();
+}
+
+uint32_t EspNowConnectionManager::ms_since_last_heartbeat() const {
+    return heartbeat_monitor_.ms_since_last_heartbeat();
+}
+
+bool EspNowConnectionManager::should_attempt_reconnect() const {
+    return backoff_manager_.should_attempt_now();
+}
+
+void EspNowConnectionManager::on_reconnect_attempt() {
+    backoff_manager_.on_retry_attempt();
+    reconnect_attempts_++;
+}
+
+EspNowConnectionMetrics EspNowConnectionManager::get_metrics() const {
+    EspNowConnectionMetrics metrics;
+    metrics.successful_connections = successful_connections_;
+    metrics.disconnections = disconnections_;
+    metrics.reconnect_attempts = reconnect_attempts_;
+    metrics.heartbeats_received = heartbeats_received_;
+    metrics.heartbeat_timeouts = heartbeat_timeouts_;
+    metrics.total_connected_time_ms = total_connected_time_ms_;
+    
+    // Add current connection duration if connected
+    if (current_state_ == EspNowConnectionState::CONNECTED) {
+        metrics.total_connected_time_ms += get_connected_time_ms();
+    }
+    
+    return metrics;
 }

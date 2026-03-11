@@ -3,6 +3,7 @@
 #include <freertos/queue.h>
 #include <espnow_common.h>
 #include <espnow_standard_handlers.h>
+#include "tx_state_machine.h"
 
 /**
  * @brief Handles incoming ESP-NOW messages and routes them appropriately
@@ -24,6 +25,12 @@ public:
     void start_rx_task(QueueHandle_t queue);
     
     /**
+     * @brief Initialize message handler - registers state change callback
+     * Should be called after connection manager is initialized
+     */
+    void init();
+    
+    /**
      * @brief Check if receiver is currently connected
      * @return true if receiver peer is registered and active
      */
@@ -31,7 +38,7 @@ public:
      * @brief Check if data transmission is currently active
      * @return true if receiver requested data transmission
      */
-    bool is_transmission_active() const { return transmission_active_; }
+    bool is_transmission_active() const { return TxStateMachine::instance().is_transmission_active(); }
     
     /**
      * @brief Load saved debug level from NVS
@@ -173,8 +180,7 @@ private:
     // Handler configurations for standard messages
     EspnowStandardHandlers::ProbeHandlerConfig probe_config_;
     EspnowStandardHandlers::AckHandlerConfig ack_config_;
-    
-    volatile bool transmission_active_{false};
+
     uint8_t receiver_mac_[6]{0};  // Store receiver MAC for sending ACKs
     
     // Network configuration task management

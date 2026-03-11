@@ -32,11 +32,17 @@ void handle_probe(const espnow_queue_msg_t* msg, void* context) {
         MQTT_LOG_DEBUG("PROBE", "Registered peer %s on channel %d", mac_str, current_channel);
     }
     
-    // Update connection flag if provided
-    bool was_connected = config && config->connection_flag ? *config->connection_flag : false;
-    if (config && config->connection_flag && !*config->connection_flag) {
-        *config->connection_flag = true;
-        MQTT_LOG_INFO("PROBE", "Peer %s connected!", mac_str);
+    // Connection callback semantics are edge-triggered only.
+    // If no connection_flag is provided, we cannot reliably detect a new
+    // connection transition and therefore must not synthesize one.
+    bool fire_connection_callback = false;
+    if (config && config->connection_flag) {
+        const bool was_connected = *config->connection_flag;
+        if (!was_connected) {
+            *config->connection_flag = true;
+            MQTT_LOG_INFO("PROBE", "Peer %s connected!", mac_str);
+            fire_connection_callback = true;
+        }
     }
     
     // Store peer MAC if provided
@@ -54,8 +60,8 @@ void handle_probe(const espnow_queue_msg_t* msg, void* context) {
         config->on_probe_received(msg->mac, p->seq);
     }
     
-    // Call connection callback if provided and this is a new connection
-    if (config && config->on_connection && !was_connected) {
+    // Call connection callback only on explicit false->true transition.
+    if (config && config->on_connection && fire_connection_callback) {
         config->on_connection(msg->mac, true);
     }
 }
@@ -110,11 +116,17 @@ void handle_ack(const espnow_queue_msg_t* msg, void* context) {
         MQTT_LOG_DEBUG("ACK", "ACK received flag set");
     }
     
-    // Update connection flag if provided
-    bool was_connected = config && config->connection_flag ? *config->connection_flag : false;
-    if (config && config->connection_flag && !*config->connection_flag) {
-        *config->connection_flag = true;
-        MQTT_LOG_INFO("ACK", "Peer %s connected!", mac_str);
+    // Connection callback semantics are edge-triggered only.
+    // If no connection_flag is provided, we cannot reliably detect a new
+    // connection transition and therefore must not synthesize one.
+    bool fire_connection_callback = false;
+    if (config && config->connection_flag) {
+        const bool was_connected = *config->connection_flag;
+        if (!was_connected) {
+            *config->connection_flag = true;
+            MQTT_LOG_INFO("ACK", "Peer %s connected!", mac_str);
+            fire_connection_callback = true;
+        }
     }
     
     // Store peer MAC if provided
@@ -122,8 +134,8 @@ void handle_ack(const espnow_queue_msg_t* msg, void* context) {
         memcpy(config->peer_mac_storage, msg->mac, 6);
     }
     
-    // Call connection callback if provided and this is a new connection
-    if (config && config->on_connection && !was_connected) {
+    // Call connection callback only on explicit false->true transition.
+    if (config && config->on_connection && fire_connection_callback) {
         config->on_connection(msg->mac, true);
     }
 }

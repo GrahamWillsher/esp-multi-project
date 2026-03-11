@@ -267,13 +267,13 @@ main (production)
 ## Documentation References
 
 ### Detailed Reports
-1. **[REPORT_TEST_LIVE_TOGGLE_MIGRATION.md](REPORT_TEST_LIVE_TOGGLE_MIGRATION.md)** - 915 lines
+1. **REPORT_TEST_LIVE_TOGGLE_MIGRATION.md** - 915 lines (report not present in this repo snapshot)
    - Complete architecture analysis
    - 5 implementation phases with code examples
    - Test scenarios, debugging guide
    - Rollback procedures
 
-2. **[REPORT_CELL_MONITOR_ENHANCEMENTS.md](REPORT_CELL_MONITOR_ENHANCEMENTS.md)** - 1000+ lines
+2. **REPORT_CELL_MONITOR_ENHANCEMENTS.md** - 1000+ lines (report not present in this repo snapshot)
    - Reference implementation analysis
    - 4 implementation phases with code examples
    - Performance profiling, browser compatibility

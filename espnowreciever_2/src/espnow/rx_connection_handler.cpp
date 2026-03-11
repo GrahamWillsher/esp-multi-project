@@ -1,12 +1,15 @@
 #include "rx_connection_handler.h"
 #include "rx_heartbeat_manager.h"
+#include "rx_state_machine.h"
 #include "../config/logging_config.h"
 #include "../../lib/webserver/utils/transmitter_manager.h"
 #include <connection_manager.h>
 #include <connection_event.h>
 #include <channel_manager.h>
 #include <espnow_peer_manager.h>
+#include <espnow_transmitter.h>
 #include <firmware_version.h>
+#include <esp_now.h>
 #include <Arduino.h>
 #include <cstring>
 
@@ -15,35 +18,71 @@ ReceiverConnectionHandler& ReceiverConnectionHandler::instance() {
     return instance;
 }
 
+static bool has_valid_mac(const uint8_t* mac) {
+    if (!mac) {
+        return false;
+    }
+    for (int index = 0; index < 6; ++index) {
+        if (mac[index] != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 ReceiverConnectionHandler::ReceiverConnectionHandler()
-    : last_rx_time_ms_(0) {
+    : last_rx_time_ms_(0),
+      power_data_confirmed_(false),
+      connected_at_ms_(0),
+      last_retry_ms_(0) {
     memset(transmitter_mac_, 0, sizeof(transmitter_mac_));
+        memset(deferred_peer_mac_, 0, sizeof(deferred_peer_mac_));
 }
 
 void ReceiverConnectionHandler::init() {
     last_rx_time_ms_ = millis();
+
+    // Make common connection manager the single owner of connection timeout.
+    // Receiver treats any ESP-NOW traffic as keep-alive and uses 90s threshold.
+    EspNowConnectionManager::instance().set_heartbeat_timeout_ms(90000);
+    EspNowConnectionManager::instance().set_heartbeat_timeout_enabled(true);
     
     // Register state change callback
     EspNowConnectionManager::instance().register_state_callback(
         [](EspNowConnectionState old_state, EspNowConnectionState new_state) {
             LOG_INFO("RX_CONN", "State change: %s → %s",
-                     state_to_string(old_state),
-                     state_to_string(new_state));
+                     espnow_state_to_string(old_state),
+                     espnow_state_to_string(new_state));
             
             if (new_state == EspNowConnectionState::CONNECTED) {
+                RxStateMachine::instance().on_connection_established();
+                ReceiverConnectionHandler::instance().peer_registered_event_posted_ = false;
+                ReceiverConnectionHandler::instance().peer_registered_deferred_ = false;
                 // Lock channel when connected (receiver doesn't hop but should lock)
                 uint8_t current_channel = ChannelManager::instance().get_channel();
                 ChannelManager::instance().lock_channel(current_channel, "RX_CONN");
                 LOG_INFO("RX_CONN", "✓ Connected - channel locked at %d", current_channel);
                 
+                // PHASE 0: Reset heartbeat monitor on connection
+                RxHeartbeatManager::instance().on_connection_established();
+                
+                // Arm the REQUEST_DATA retry timer
+                ReceiverConnectionHandler::instance().connected_at_ms_ = millis();
+                ReceiverConnectionHandler::instance().last_retry_ms_    = millis();
+                ReceiverConnectionHandler::instance().power_data_confirmed_ = false;
+
                 // Send initialization requests now that connection is fully established
                 ReceiverConnectionHandler::instance().send_initialization_requests(
                     EspNowConnectionManager::instance().get_peer_mac());
                 
             } else if (old_state == EspNowConnectionState::CONNECTED && 
                        new_state == EspNowConnectionState::IDLE) {
+                RxStateMachine::instance().on_connection_lost();
+                ReceiverConnectionHandler::instance().on_connection_lost();
+                ReceiverConnectionHandler::instance().peer_registered_event_posted_ = false;
+                ReceiverConnectionHandler::instance().peer_registered_deferred_ = false;
                 // Clean up peer when connection lost
-                const uint8_t* peer_mac = EspNowConnectionManager::instance().get_peer_mac();
+                const uint8_t* peer_mac = ReceiverConnectionHandler::instance().get_transmitter_mac();
                 if (peer_mac) {
                     // Check if it's not broadcast address before removing
                     bool is_broadcast = true;
@@ -66,6 +105,9 @@ void ReceiverConnectionHandler::init() {
                 // Unlock channel when connection lost
                 ChannelManager::instance().unlock_channel("RX_CONN");
                 LOG_INFO("RX_CONN", "✓ Connection lost - peer cleaned up, channel unlocked");
+            } else if (new_state == EspNowConnectionState::CONNECTING) {
+                ReceiverConnectionHandler::instance().peer_registered_event_posted_ = false;
+                ReceiverConnectionHandler::instance().flush_deferred_peer_registered();
             }
         }
     );
@@ -85,6 +127,9 @@ void ReceiverConnectionHandler::on_probe_received(const uint8_t* transmitter_mac
 
     // Post PEER_FOUND event (common manager)
     post_connection_event(EspNowEvent::PEER_FOUND, transmitter_mac_);
+
+    // If we latched a registration event while not CONNECTING, attempt to flush now.
+    flush_deferred_peer_registered();
 }
 
 void ReceiverConnectionHandler::on_peer_registered(const uint8_t* transmitter_mac) {
@@ -97,14 +142,35 @@ void ReceiverConnectionHandler::on_peer_registered(const uint8_t* transmitter_ma
     // Notify heartbeat manager to reset its timeout
     RxHeartbeatManager::instance().on_connection_established();
 
-    // Only post PEER_REGISTERED event if we're in CONNECTING state
-    // This prevents posting in IDLE state when discovery is racing with state transitions
+    // Post PEER_REGISTERED only once while CONNECTING.
+    // If we are not CONNECTING, latch a real deferred event with TTL.
     EspNowConnectionManager& conn_mgr = EspNowConnectionManager::instance();
-    if (conn_mgr.get_state() == EspNowConnectionState::CONNECTING) {
+    const auto state = conn_mgr.get_state();
+
+    if (state == EspNowConnectionState::CONNECTING) {
+        if (peer_registered_event_posted_) {
+            LOG_DEBUG("RX_CONN", "Duplicate on_peer_registered() while CONNECTING - ignoring");
+            return;
+        }
         post_connection_event(EspNowEvent::PEER_REGISTERED, transmitter_mac_);
+        peer_registered_event_posted_ = true;
+        peer_registered_deferred_ = false;
+        deferred_peer_registered_ms_ = 0;
+        memset(deferred_peer_mac_, 0, sizeof(deferred_peer_mac_));
+    } else if (state == EspNowConnectionState::CONNECTED) {
+        // Expected on reboot/discovery noise while already connected; do not warn.
+        LOG_DEBUG("RX_CONN", "on_peer_registered() received while CONNECTED - ignoring duplicate");
     } else {
-        LOG_WARN("RX_CONN", "on_peer_registered() called in state %d (expected CONNECTING), deferring event",
-                 static_cast<int>(conn_mgr.get_state()));
+        peer_registered_deferred_ = has_valid_mac(transmitter_mac_);
+        if (peer_registered_deferred_) {
+            memcpy(deferred_peer_mac_, transmitter_mac_, sizeof(deferred_peer_mac_));
+            deferred_peer_registered_ms_ = millis();
+            LOG_INFO("RX_CONN", "on_peer_registered() in state %d - deferred until CONNECTING",
+                     static_cast<int>(state));
+        } else {
+            LOG_WARN("RX_CONN", "on_peer_registered() in state %d but MAC invalid - dropping",
+                     static_cast<int>(state));
+        }
     }
 }
 
@@ -113,9 +179,57 @@ void ReceiverConnectionHandler::on_data_received(const uint8_t* transmitter_mac)
         memcpy(transmitter_mac_, transmitter_mac, sizeof(transmitter_mac_));
     }
     last_rx_time_ms_ = millis();
+    
+    // PHASE 0: Notify connection manager of heartbeat
+    EspNowConnectionManager::instance().on_heartbeat_received();
 
     // Post DATA_RECEIVED event (common manager)
     post_connection_event(EspNowEvent::DATA_RECEIVED, transmitter_mac_);
+}
+
+void ReceiverConnectionHandler::on_link_activity(const uint8_t* transmitter_mac) {
+    if (transmitter_mac) {
+        memcpy(transmitter_mac_, transmitter_mac, sizeof(transmitter_mac_));
+    }
+    last_rx_time_ms_ = millis();
+
+    if (connected_at_ms_ == 0 && has_valid_mac(transmitter_mac_)) {
+        connected_at_ms_ = millis();
+        last_retry_ms_ = millis();
+    }
+
+    flush_deferred_peer_registered();
+}
+
+void ReceiverConnectionHandler::flush_deferred_peer_registered() {
+    if (!peer_registered_deferred_) {
+        return;
+    }
+
+    const uint32_t now = millis();
+    if (deferred_peer_registered_ms_ > 0 && (now - deferred_peer_registered_ms_) > DEFERRED_PEER_TTL_MS) {
+        LOG_WARN("RX_CONN", "Dropping stale deferred PEER_REGISTERED (%lu ms old)",
+                 now - deferred_peer_registered_ms_);
+        peer_registered_deferred_ = false;
+        deferred_peer_registered_ms_ = 0;
+        memset(deferred_peer_mac_, 0, sizeof(deferred_peer_mac_));
+        return;
+    }
+
+    if (EspNowConnectionManager::instance().get_state() != EspNowConnectionState::CONNECTING) {
+        return;
+    }
+
+    if (peer_registered_event_posted_) {
+        return;
+    }
+
+    post_connection_event(EspNowEvent::PEER_REGISTERED, deferred_peer_mac_);
+    peer_registered_event_posted_ = true;
+    peer_registered_deferred_ = false;
+    deferred_peer_registered_ms_ = 0;
+    memset(deferred_peer_mac_, 0, sizeof(deferred_peer_mac_));
+    LOG_INFO("RX_CONN", "Flushed deferred PEER_REGISTERED in CONNECTING state");
 }
 
 void ReceiverConnectionHandler::send_initialization_requests(const uint8_t* transmitter_mac) {
@@ -195,6 +309,68 @@ void ReceiverConnectionHandler::send_initialization_requests(const uint8_t* tran
     LOG_INFO("CONN_HANDLER", "[INIT] Initialization requests sent (will retry any that failed)");
 }
 
+void ReceiverConnectionHandler::on_power_data_received() {
+    if (!power_data_confirmed_) {
+        power_data_confirmed_ = true;
+        LOG_INFO("CONN_HANDLER", "[RETRY] Power-profile data confirmed — stopping REQUEST_DATA retries");
+    }
+}
+
+void ReceiverConnectionHandler::tick() {
+    flush_deferred_peer_registered();
+
+    const auto rx_state = RxStateMachine::instance().connection_state();
+    const auto rx_stats = RxStateMachine::instance().stats();
+    const uint32_t now = millis();
+    const bool recent_power_data =
+        (rx_stats.last_message_ms > 0) && ((now - rx_stats.last_message_ms) <= POWER_DATA_FRESHNESS_MS);
+
+    // Do not rely on ACTIVE state alone here: ACTIVE may lag stale transition by up to the
+    // configured stale timeout window. Freshness-based gating allows faster REQUEST_DATA retries.
+    const bool data_stream_active = (rx_state == EspNowDeviceState::ACTIVE) && recent_power_data;
+    power_data_confirmed_ = data_stream_active;
+
+    if (data_stream_active) {
+        return;
+    }
+
+    if (connected_at_ms_ == 0 || !has_valid_mac(transmitter_mac_)) {
+        return;
+    }
+
+    const bool recent_link_activity = EspNowConnectionManager::instance().ms_since_last_heartbeat() < 20000;
+    if (!recent_link_activity) {
+        return;
+    }
+
+    // Wait RETRY_REQUEST_TIMEOUT_MS after connecting before first retry
+    if ((now - connected_at_ms_) < RETRY_REQUEST_TIMEOUT_MS) return;
+
+    // Throttle retries to RETRY_INTERVAL_MS
+    if ((now - last_retry_ms_) < RETRY_INTERVAL_MS) return;
+
+    last_retry_ms_ = now;
+    LOG_WARN("CONN_HANDLER", "[RETRY] No power-profile data yet — re-sending REQUEST_DATA (connected %lu ms ago)",
+             now - connected_at_ms_);
+
+    request_data_t req = { msg_request_data, subtype_power_profile };
+    esp_err_t result = esp_now_send(transmitter_mac_, (const uint8_t*)&req, sizeof(req));
+    if (result != ESP_OK) {
+        LOG_WARN("CONN_HANDLER", "[RETRY] esp_now_send failed: %s", esp_err_to_name(result));
+    }
+}
+
+void ReceiverConnectionHandler::on_transmitter_reboot_detected() {
+    // TX reboot usually resets TX state to CONNECTED and stops stream until REQUEST_DATA is
+    // received again. Re-arm retry engine immediately so recovery happens in seconds, not after
+    // stale timeout.
+    power_data_confirmed_ = false;
+    connected_at_ms_ = millis();
+    last_retry_ms_ = 0;  // allow near-immediate retry after RETRY_REQUEST_TIMEOUT_MS
+
+    LOG_WARN("CONN_HANDLER", "[RETRY] TX reboot detected - re-arming REQUEST_DATA retry window");
+}
+
 void ReceiverConnectionHandler::on_connection_lost() {
     // Reset first_data_received flag to allow re-initialization on reconnect
     // This ensures that if connection is lost and then re-established,
@@ -204,6 +380,24 @@ void ReceiverConnectionHandler::on_connection_lost() {
         first_data_received_ = false;
     }
     
+    // Reset REQUEST_DATA retry state
+    power_data_confirmed_ = false;
+    connected_at_ms_      = 0;
+    last_retry_ms_        = 0;
+    peer_registered_event_posted_ = false;
+    peer_registered_deferred_ = false;
+    deferred_peer_registered_ms_ = 0;
+    memset(deferred_peer_mac_, 0, sizeof(deferred_peer_mac_));
+
     // Log connection loss event
     LOG_WARN("CONN_HANDLER", "[CONN_LOST] Connection lost - ready for reconnection");
 }
+
+void ReceiverConnectionHandler::on_config_update_sent() {
+    // Notify state machine that a config update was sent
+    // This extends the stale detection grace window to prevent false timeouts
+    // during rare config synchronization events (ethernet/MQTT changes)
+    RxStateMachine::instance().on_config_update_sent();
+    LOG_DEBUG("CONN_HANDLER", "Config update sent - stale detection grace window started");
+}
+

@@ -2,6 +2,7 @@
 #include "discovery_task.h"
 #include "version_beacon_manager.h"
 #include "heartbeat_manager.h"
+#include "tx_state_machine.h"
 #include "../network/ethernet_manager.h"
 #include "../network/mqtt_manager.h"
 #include "../system_settings.h"
@@ -25,6 +26,7 @@
 #include <espnow_standard_handlers.h>
 #include <espnow_packet_utils.h>
 #include <connection_manager.h>
+#include <channel_manager.h>
 #include <mqtt_logger.h>
 #include <mqtt_manager.h>
 #include <Preferences.h>
@@ -40,14 +42,18 @@ EspnowMessageHandler& EspnowMessageHandler::instance() {
 }
 
 EspnowMessageHandler::EspnowMessageHandler() {
+    TxStateMachine::instance().init();
     setup_message_routes();
 }
 
 void EspnowMessageHandler::setup_message_routes() {
     auto& router = EspnowMessageRouter::instance();
+    probe_config_ = {};
+    ack_config_ = {};
     
     // Setup PROBE handler configuration
     probe_config_.send_ack_response = true;
+    probe_config_.connection_flag = nullptr;
     probe_config_.peer_mac_storage = receiver_mac_;
     probe_config_.on_connection = [](const uint8_t* mac, bool connected) {
         LOG_INFO("MSG_HANDLER", "Receiver connected via PROBE");
@@ -55,6 +61,7 @@ void EspnowMessageHandler::setup_message_routes() {
     
     // Setup ACK handler configuration
     ack_config_.peer_mac_storage = receiver_mac_;
+    ack_config_.connection_flag = nullptr;
     ack_config_.expected_seq = &g_ack_seq;
     ack_config_.lock_channel = &g_lock_channel;
     ack_config_.ack_received_flag = &g_ack_received;  // For channel hopping discovery
@@ -291,6 +298,13 @@ void EspnowMessageHandler::start_rx_task(QueueHandle_t queue) {
     }
 }
 
+void EspnowMessageHandler::init() {
+    // Tx connection/device state transitions are owned by TransmitterConnectionHandler.
+    // Keep init() for symmetry and future extension, but avoid registering a duplicate
+    // callback here because it causes duplicate CONNECTED/IDLE transitions in TxStateMachine.
+    LOG_DEBUG("MSG_HANDLER", "Tx state transitions owned by tx_connection_handler");
+}
+
 void EspnowMessageHandler::rx_task_impl(void* parameter) {
     QueueHandle_t queue = (QueueHandle_t)parameter;
     auto& handler = instance();
@@ -325,7 +339,19 @@ void EspnowMessageHandler::handle_request_data(const espnow_queue_msg_t& msg) {
     LOG_INFO("DATA_REQUEST", "REQUEST_DATA received (subtype=%d) from %02X:%02X:%02X:%02X:%02X:%02X",
                  req->subtype, msg.mac[0], msg.mac[1], msg.mac[2], msg.mac[3], msg.mac[4], msg.mac[5]);
     
-    // Check if receiver connection is in CONNECTED state before responding
+    // subtype_power_profile only activates local TxStateMachine state — no network response needed.
+    // Bypass the connection-state guard here to avoid a timing race: REQUEST_DATA arrives from the
+    // receiver in <10 ms, but the common connection manager's event queue takes up to 100 ms to
+    // process the PEER_REGISTERED event and transition to CONNECTED.  Receiving a valid
+    // REQUEST_DATA message is itself proof of connectivity, so no guard is required.
+    if (req->subtype == subtype_power_profile) {
+        TxStateMachine::instance().on_transmission_started();
+        LOG_INFO("DATA_REQUEST", ">>> Power profile transmission ACTIVATED <<<");
+        return;
+    }
+
+    // For subtypes that send a response back over ESP-NOW, ensure the connection
+    // state machine has fully transitioned to CONNECTED before responding.
     auto& conn_mgr = EspNowConnectionManager::instance();
     auto state = conn_mgr.get_state();
     
@@ -338,8 +364,7 @@ void EspnowMessageHandler::handle_request_data(const espnow_queue_msg_t& msg) {
     // Handle based on subtype
     switch (req->subtype) {
         case subtype_power_profile:
-            transmission_active_ = true;
-            LOG_INFO("DATA_REQUEST", ">>> Power profile transmission ACTIVATED <<<");
+            // Already handled above (unreachable, kept for switch completeness)
             break;
         
         case subtype_network_config: {
@@ -524,7 +549,7 @@ void EspnowMessageHandler::handle_abort_data(const espnow_queue_msg_t& msg) {
     // Handle based on subtype
     switch (abort->subtype) {
         case subtype_power_profile:
-            transmission_active_ = false;
+            TxStateMachine::instance().on_transmission_stopped();
             LOG_INFO("DATA_ABORT", ">>> Power profile transmission STOPPED");
             break;
         

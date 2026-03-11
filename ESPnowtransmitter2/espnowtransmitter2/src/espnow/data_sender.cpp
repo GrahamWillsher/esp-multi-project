@@ -1,5 +1,6 @@
 #include "data_sender.h"
 #include "message_handler.h"
+#include "tx_state_machine.h"
 #include "enhanced_cache.h"  // Section 11: Dual storage cache (replaces data_cache)
 #include "../config/task_config.h"
 #include "../config/logging_config.h"
@@ -55,7 +56,7 @@ void DataSender::task_impl(void* parameter) {
             TestDataGenerator::update();
         }
         
-        if (EspnowMessageHandler::instance().is_transmission_active()) {
+        if (TxStateMachine::instance().is_transmission_active()) {
             const char* mode_str = TestDataGenerator::is_enabled() ? "TEST" : "LIVE";
             LOG_TRACE("DATA_SENDER", "Sending data (transmission active, mode: %s)", mode_str);
             send_test_data_with_led_control();

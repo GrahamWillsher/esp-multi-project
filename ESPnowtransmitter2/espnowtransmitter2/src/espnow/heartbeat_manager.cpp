@@ -1,4 +1,5 @@
 #include "heartbeat_manager.h"
+#include "tx_state_machine.h"
 #include <espnow_transmitter.h>
 #include <connection_manager.h>
 #include <connection_event.h>
@@ -39,13 +40,6 @@ void HeartbeatManager::tick() {
     if (now - m_last_send_time >= HEARTBEAT_INTERVAL_MS) {
         send_heartbeat();
         m_last_send_time = now;
-        
-        // Check for unacked heartbeats
-        uint32_t unacked = m_heartbeat_seq - m_last_ack_seq;
-        if (unacked > MAX_UNACKED_HEARTBEATS) {
-            LOG_ERROR("HEARTBEAT", "Connection lost: %u consecutive unacked heartbeats", unacked);
-            EspNowConnectionManager::instance().post_event(EspNowEvent::CONNECTION_LOST);
-        }
     }
 }
 
@@ -78,7 +72,7 @@ void HeartbeatManager::send_heartbeat() {
     hb.uptime_ms = millis();
     hb.unix_time = TimeManager::instance().get_unix_time();
     hb.time_source = static_cast<uint8_t>(TimeManager::instance().get_time_source());
-    hb.state = static_cast<uint8_t>(EspNowConnectionManager::instance().get_state());
+    hb.state = static_cast<uint8_t>(TxStateMachine::instance().state());
     hb.rssi = 0;  // TODO: Get last RSSI if available
     hb.flags = 0;
     
@@ -88,8 +82,8 @@ void HeartbeatManager::send_heartbeat() {
     esp_err_t result = esp_now_send(peer_mac, (uint8_t*)&hb, sizeof(hb));
     
     if (result == ESP_OK) {
-        LOG_DEBUG("HEARTBEAT", "Sent heartbeat seq=%u, uptime=%u ms to %02X:%02X:%02X:%02X:%02X:%02X", 
-                  hb.seq, hb.uptime_ms,
+        LOG_DEBUG("HEARTBEAT", "Sent heartbeat seq=%u, uptime=%llu ms to %02X:%02X:%02X:%02X:%02X:%02X", 
+                  hb.seq, (unsigned long long)hb.uptime_ms,
                   peer_mac[0], peer_mac[1], peer_mac[2], peer_mac[3], peer_mac[4], peer_mac[5]);
     } else {
         LOG_ERROR("HEARTBEAT", "Failed to send heartbeat seq=%u: %s", hb.seq, esp_err_to_name(result));
@@ -109,6 +103,8 @@ void HeartbeatManager::on_heartbeat_ack(const heartbeat_ack_t* ack) {
     if (ack->ack_seq > m_last_ack_seq) {
         uint32_t prev_ack = m_last_ack_seq;
         m_last_ack_seq = ack->ack_seq;
+        TxStateMachine::instance().on_heartbeat_ack();
+        EspNowConnectionManager::instance().on_heartbeat_received();
         
         LOG_DEBUG("HEARTBEAT", "Received ACK seq=%u (prev=%u), RX uptime=%u ms, RX state=%u",
                   ack->ack_seq, prev_ack, ack->uptime_ms, ack->state);

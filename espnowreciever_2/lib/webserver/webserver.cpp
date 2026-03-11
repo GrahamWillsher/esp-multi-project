@@ -19,8 +19,6 @@
 extern bool& test_mode_enabled;
 extern volatile int& g_test_soc;
 extern volatile int32_t& g_test_power;
-extern volatile uint8_t& g_received_soc;
-extern volatile int32_t& g_received_power;
 
 // ═══════════════════════════════════════════════════════════════════════
 // NOTE: PAGE_DEFINITIONS moved to page_definitions.h/cpp

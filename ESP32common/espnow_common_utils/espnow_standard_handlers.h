@@ -32,7 +32,7 @@ namespace EspnowStandardHandlers {
      * @brief Configuration for standard PROBE handler
      */
     struct ProbeHandlerConfig {
-        ConnectionCallback on_connection;  ///< Called when peer connects (state change)
+        ConnectionCallback on_connection;  ///< Called on false->true edge when connection_flag is provided
         ProbeReceivedCallback on_probe_received;  ///< Called every time a PROBE is received
         bool send_ack_response;           ///< true to automatically send ACK response
         volatile bool* connection_flag;   ///< Optional: pointer to connection status flag to update
@@ -43,7 +43,7 @@ namespace EspnowStandardHandlers {
      * @brief Configuration for standard ACK handler
      */
     struct AckHandlerConfig {
-        ConnectionCallback on_connection;  ///< Called when peer connects
+        ConnectionCallback on_connection;  ///< Called on false->true edge when connection_flag is provided
         volatile bool* connection_flag;   ///< Optional: pointer to connection status flag to update
         uint8_t* peer_mac_storage;        ///< Optional: pointer to 6-byte array to store peer MAC
         volatile uint32_t* expected_seq;  ///< Optional: pointer to expected sequence number

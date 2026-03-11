@@ -1,0 +1,13 @@
+{
+  "name": "espnow_phase0",
+  "version": "1.0.0",
+  "description": "ESP-NOW Phase 0 - Heartbeat monitoring and reconnection backoff",
+  "keywords": "esp32, espnow, heartbeat, backoff, reconnection",
+  "authors": [
+    {
+      "name": "Graham Willsher"
+    }
+  ],
+  "frameworks": "arduino",
+  "platforms": "espressif32"
+}

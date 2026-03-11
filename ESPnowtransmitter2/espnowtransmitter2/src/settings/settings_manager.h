@@ -17,6 +17,11 @@
 class SettingsManager {
 public:
     static SettingsManager& instance();
+
+    struct ValidationResult {
+        bool is_valid{true};
+        String error_message;
+    };
     
     /**
      * @brief Initialize settings manager and load from NVS
@@ -102,6 +107,8 @@ public:
     
     // Initialization status
     bool is_initialized() const { return initialized_; }
+
+    ValidationResult get_last_validation() const { return last_validation_; }
     
 private:
     SettingsManager();
@@ -165,6 +172,17 @@ private:
     void increment_inverter_version();
     void increment_can_version();
     void increment_contactor_version();
+
+    // Validation helpers
+    ValidationResult validate_battery_settings() const;
+    ValidationResult validate_power_settings() const;
+    ValidationResult validate_inverter_settings() const;
+    ValidationResult validate_can_settings() const;
+    ValidationResult validate_contactor_settings() const;
+    ValidationResult validate_all_settings() const;
+
+    // CRC helper
+    static uint32_t calculate_crc32(const void* data, size_t length);
     
     // Battery settings storage
     uint32_t battery_capacity_wh_{30000};              // 30kWh default
@@ -214,6 +232,8 @@ private:
     uint32_t inverter_settings_version_{0};
     uint32_t can_settings_version_{0};
     uint32_t contactor_settings_version_{0};
+
+    ValidationResult last_validation_;
     
     bool initialized_{false};
 };

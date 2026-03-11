@@ -190,7 +190,7 @@ Warnings: Terminal encoding only (not code-related)
 - To switch modes: Edit [src/main.cpp](../../ESPnowtransmitter2/espnowtransmitter2/src/main.cpp#L333) line 333
 - Change: `TestMode::set_enabled(false)` to `TestMode::set_enabled(true)`
 - Rebuild and flash transmitter
-- See: [HOW_TO_SWITCH_TEST_LIVE_MODE.md](../../ESPnowtransmitter2/HOW_TO_SWITCH_TEST_LIVE_MODE.md)
+- See: [HOW_TO_SWITCH_TEST_LIVE_MODE.md](../ESPnowtransmitter2/HOW_TO_SWITCH_TEST_LIVE_MODE.md)
 
 ---
 
@@ -203,9 +203,9 @@ Warnings: Terminal encoding only (not code-related)
 - ✅ [lib/webserver/api/api_handlers.cpp](lib/webserver/api/api_handlers.cpp) - Cleaned SSE handler
 
 ### Documentation Created
-- ✅ [INVESTIGATION_REPORT_UI_ISSUES.md](INVESTIGATION_REPORT_UI_ISSUES.md) - Initial analysis
-- ✅ [ANALYSIS_TOGGLE_SSE_LEGACY.md](ANALYSIS_TOGGLE_SSE_LEGACY.md) - Detailed findings
-- ✅ [HOW_TO_SWITCH_TEST_LIVE_MODE.md](../../ESPnowtransmitter2/HOW_TO_SWITCH_TEST_LIVE_MODE.md) - User guide
+- ✅ INVESTIGATION_REPORT_UI_ISSUES.md - Initial analysis (not present in this repo snapshot)
+- ✅ ANALYSIS_TOGGLE_SSE_LEGACY.md - Detailed findings (not present in this repo snapshot)
+- ✅ [HOW_TO_SWITCH_TEST_LIVE_MODE.md](../ESPnowtransmitter2/HOW_TO_SWITCH_TEST_LIVE_MODE.md) - User guide
 - ✅ [PHASE5_UI_IMPROVEMENTS_COMPLETE.md](PHASE5_UI_IMPROVEMENTS_COMPLETE.md) - This file
 
 ---

@@ -11,6 +11,8 @@
 #include <vector>
 
 MqttManager::MqttManager() : client_(eth_client_) {
+    initialization_time_ = millis();
+    state_enter_time_ = millis();
 }
 
 MqttManager& MqttManager::instance() {
@@ -32,6 +34,159 @@ void MqttManager::init() {
     client_.setKeepAlive(60);
     client_.setSocketTimeout(10);
     LOG_INFO("MQTT", "MQTT client configured (will connect when Ethernet ready)");
+}
+
+void MqttManager::update() {
+    if (!config::features::MQTT_ENABLED) return;
+    
+    uint32_t now = millis();
+    
+    // Check if Ethernet connectivity changed
+    bool ethernet_connected = EthernetManager::instance().is_fully_ready();
+    
+    switch (state_) {
+        case MqttState::DISCONNECTED:
+            if (ethernet_connected) {
+                // Ethernet is ready, try to connect
+                attempt_connection();
+            }
+            break;
+            
+        case MqttState::CONNECTING: {
+            uint32_t elapsed = now - last_connection_attempt_;
+            if (elapsed > CONNECTION_TIMEOUT_MS) {
+                // Connection attempt timed out
+                LOG_WARN("MQTT", "Connection timeout after %lu ms", elapsed);
+                on_connection_failed();
+            }
+            break;
+        }
+            
+        case MqttState::CONNECTED:
+            if (client_.connected()) {
+                // Process subscriptions while connected
+                client_.loop();
+            } else {
+                // Connection dropped
+                LOG_WARN("MQTT", "Connection lost");
+                transition_to(MqttState::DISCONNECTED);
+            }
+            break;
+            
+        case MqttState::CONNECTION_FAILED: {
+            uint32_t elapsed = now - last_connection_attempt_;
+            if (elapsed >= current_retry_delay_) {
+                // Time to retry
+                if (ethernet_connected) {
+                    LOG_INFO("MQTT", "Attempting reconnection (previous delay: %lu ms)",
+                            current_retry_delay_);
+                    attempt_connection();
+                } else {
+                    LOG_DEBUG("MQTT", "Waiting for Ethernet to reconnect");
+                    transition_to(MqttState::NETWORK_ERROR);
+                }
+            }
+            break;
+        }
+            
+        case MqttState::NETWORK_ERROR:
+            if (ethernet_connected) {
+                // Ethernet is back, try MQTT again
+                LOG_INFO("MQTT", "Ethernet recovered, attempting connection");
+                attempt_connection();
+            }
+            break;
+    }
+}
+
+void MqttManager::attempt_connection() {
+    LOG_INFO("MQTT", "Attempting connection to %s:%d...", 
+             config::get_mqtt_config().server, config::get_mqtt_config().port);
+    
+    transition_to(MqttState::CONNECTING);
+    last_connection_attempt_ = millis();
+    
+    // Attempt actual connection
+    bool success = false;
+    if (strlen(config::get_mqtt_config().username) > 0) {
+        success = client_.connect(config::get_mqtt_config().client_id, 
+                                 config::get_mqtt_config().username, 
+                                 config::get_mqtt_config().password);
+    } else {
+        success = client_.connect(config::get_mqtt_config().client_id);
+    }
+    
+    if (success) {
+        on_connection_success();
+    } else {
+        LOG_ERROR("MQTT", "Connection failed, rc=%d", client_.state());
+        on_connection_failed();
+    }
+}
+
+void MqttManager::on_connection_success() {
+    LOG_INFO("MQTT", "Connected successfully");
+    
+    transition_to(MqttState::CONNECTED);
+    connected_ = true;  // Legacy flag
+    total_connections_++;
+    
+    // Reset retry delay on success
+    current_retry_delay_ = INITIAL_RETRY_DELAY_MS;
+    
+    // Publish connection status
+    client_.publish(config::get_mqtt_config().topics.status, "online", true);
+    
+    // Subscribe to OTA topic
+    if (client_.subscribe(config::get_mqtt_config().topics.ota)) {
+        LOG_INFO("MQTT", "Subscribed to OTA topic: %s", config::get_mqtt_config().topics.ota);
+    } else {
+        LOG_ERROR("MQTT", "Failed to subscribe to OTA topic");
+    }
+}
+
+void MqttManager::on_connection_failed() {
+    LOG_WARN("MQTT", "Connection failed");
+    
+    transition_to(MqttState::CONNECTION_FAILED);
+    connected_ = false;  // Legacy flag
+    failed_connections_++;
+    
+    // Exponential backoff
+    uint32_t old_delay = current_retry_delay_;
+    current_retry_delay_ = (uint32_t)(current_retry_delay_ * RETRY_BACKOFF_MULTIPLIER);
+    
+    if (current_retry_delay_ > MAX_RETRY_DELAY_MS) {
+        current_retry_delay_ = MAX_RETRY_DELAY_MS;
+    }
+    
+    LOG_WARN("MQTT", "Next retry in %lu seconds (previous delay: %lu ms)",
+            current_retry_delay_ / 1000, old_delay);
+}
+
+void MqttManager::on_network_error() {
+    LOG_WARN("MQTT", "Network unavailable");
+    transition_to(MqttState::NETWORK_ERROR);
+    connected_ = false;  // Legacy flag
+}
+
+void MqttManager::transition_to(MqttState new_state) {
+    if (new_state != state_) {
+        state_ = new_state;
+        state_enter_time_ = millis();
+    }
+}
+
+MqttStatistics MqttManager::get_statistics() const {
+    MqttStatistics stats;
+    stats.total_connections = total_connections_;
+    stats.failed_connections = failed_connections_;
+    stats.total_messages_published = total_messages_published_;
+    stats.current_retry_delay_ms = current_retry_delay_;
+    stats.uptime_ms = millis() - initialization_time_;
+    stats.time_in_current_state_ms = millis() - state_enter_time_;
+    stats.current_state = state_;
+    return stats;
 }
 
 bool MqttManager::connect() {
@@ -87,6 +242,7 @@ bool MqttManager::publish_data(int soc, long power, const char* timestamp, bool 
     
     if (success) {
         LOG_DEBUG("MQTT", "Published: %s", payload_buffer_);
+        total_messages_published_++;
     } else {
         LOG_ERROR("MQTT", "Publish failed");
     }

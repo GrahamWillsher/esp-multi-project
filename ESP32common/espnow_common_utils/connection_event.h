@@ -2,7 +2,7 @@
  * @file connection_event.h
  * @brief ESP-NOW Connection Event Types (Common - Used by Both TX and RX)
  * 
- * This file defines the generic event types and state machine used by both
+ * This file defines the generic event types and 3-state machine used by both
  * transmitter and receiver. No device-specific code here.
  * 
  * Architecture: Event-driven state machine
@@ -15,6 +15,42 @@
 
 #include <cstdint>
 #include <cstring>
+
+/**
+ * @enum EspNowConnectionState
+ * @brief 3-state machine - Simple, deterministic, reliable
+ * 
+ * IDLE (0)
+ *   ↓ [CONNECTION_START or PEER_FOUND]
+ * CONNECTING (1) - Waiting for peer registration
+ *   ↓ [PEER_REGISTERED]
+ * CONNECTED (2) - Ready to send/receive
+ *   ↓ [CONNECTION_LOST or RESET_CONNECTION]
+ * IDLE (back to start)
+ */
+enum class EspNowConnectionState : uint8_t {
+    IDLE = 0,        // Not connected
+    CONNECTING = 1,  // Discovery in progress or peer being registered
+    CONNECTED = 2    // Peer registered, ready for data
+};
+
+/**
+ * @brief Convert state enum to human-readable string
+ * @param state The state to convert
+ * @return Pointer to static string (do not free)
+ */
+inline const char* espnow_state_to_string(EspNowConnectionState state) {
+    switch (state) {
+        case EspNowConnectionState::IDLE:
+            return "IDLE";
+        case EspNowConnectionState::CONNECTING:
+            return "CONNECTING";
+        case EspNowConnectionState::CONNECTED:
+            return "CONNECTED";
+        default:
+            return "UNKNOWN";
+    }
+}
 
 /**
  * @enum EspNowEvent
@@ -35,24 +71,6 @@ enum class EspNowEvent : uint8_t {
     DATA_RECEIVED = 3,      // Data from peer
     CONNECTION_LOST = 4,    // Timeout detected
     RESET_CONNECTION = 5    // Manual reset
-};
-
-/**
- * @enum EspNowConnectionState
- * @brief 3-state machine - Simple, deterministic, reliable
- * 
- * IDLE (0)
- *   ↓ [CONNECTION_START or PEER_FOUND]
- * CONNECTING (1) - Waiting for peer registration
- *   ↓ [PEER_REGISTERED]
- * CONNECTED (2) - Ready to send/receive
- *   ↓ [CONNECTION_LOST or RESET_CONNECTION]
- * IDLE (back to start)
- */
-enum class EspNowConnectionState : uint8_t {
-    IDLE = 0,        // Not connected
-    CONNECTING = 1,  // Discovery in progress or peer being registered
-    CONNECTED = 2    // Peer registered, ready for data
 };
 
 /**
@@ -81,24 +99,6 @@ struct EspNowStateChange {
         }
     }
 };
-
-/**
- * @brief Convert state enum to human-readable string
- * @param state The state to convert
- * @return Pointer to static string (do not free)
- */
-inline const char* state_to_string(EspNowConnectionState state) {
-    switch (state) {
-        case EspNowConnectionState::IDLE:
-            return "IDLE";
-        case EspNowConnectionState::CONNECTING:
-            return "CONNECTING";
-        case EspNowConnectionState::CONNECTED:
-            return "CONNECTED";
-        default:
-            return "UNKNOWN";
-    }
-}
 
 /**
  * @brief Convert event enum to human-readable string

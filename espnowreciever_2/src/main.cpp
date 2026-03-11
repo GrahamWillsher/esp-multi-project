@@ -20,7 +20,7 @@
 #include "espnow/espnow_tasks.h"
 #include "espnow/rx_connection_handler.h"
 #include "espnow/rx_heartbeat_manager.h"
-#include "state/connection_state_manager.h"
+#include "espnow/rx_state_machine.h"
 #include "mqtt/mqtt_client.h"
 #include "mqtt/mqtt_task.h"
 #include "hal/hardware_config.h"
@@ -213,9 +213,6 @@ void setup() {
     }
     LOG_DEBUG("MAIN", "ESP-NOW queue created (size=%d)", ESPNow::QUEUE_SIZE);
 
-    // Initialize centralized receiver connection/data state manager
-    ConnectionStateManager::init();
-    
     // CRITICAL: Setup message routes BEFORE starting worker task
     // This prevents race condition where PROBE messages arrive before handlers are registered
     LOG_DEBUG("MAIN", "Setting up ESP-NOW message routes...");
@@ -241,7 +238,10 @@ void setup() {
     LOG_DEBUG("MAIN", "Starting periodic announcement task...");
     EspnowDiscovery::instance().start(
         []() -> bool {
-            return ConnectionStateManager::is_transmitter_connected();
+            const auto state = RxStateMachine::instance().connection_state();
+            return state == RxStateMachine::ConnectionState::CONNECTED ||
+                   state == RxStateMachine::ConnectionState::ACTIVE ||
+                   state == RxStateMachine::ConnectionState::STALE;
         },
         TaskConfig::ANNOUNCEMENT_INTERVAL_MS,
         TaskConfig::ANNOUNCEMENT_PRIORITY,
@@ -305,6 +305,9 @@ void loop() {
     // All functionality is now handled by FreeRTOS tasks
     // Heartbeat periodic check
     RxHeartbeatManager::instance().tick();
+
+    // Retry REQUEST_DATA if power-profile stream hasn't started yet
+    ReceiverConnectionHandler::instance().tick();
 
     // Receiver-side timeout/state transitions
     SystemStateManager::instance().update();

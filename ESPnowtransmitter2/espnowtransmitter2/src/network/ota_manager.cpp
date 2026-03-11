@@ -1,5 +1,6 @@
 #include "ota_manager.h"
 #include "../config/logging_config.h"
+#include "../config/timing_config.h"
 #include "../test_data/test_data_config.h"
 #include <Arduino.h>
 #include <Update.h>

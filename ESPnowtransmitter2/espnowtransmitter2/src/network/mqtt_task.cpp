@@ -38,131 +38,120 @@ void task_mqtt_loop(void* parameter) {
     
     LOG_INFO("MQTT", "MQTT task active");
     
-    unsigned long last_reconnect_attempt = 0;
     unsigned long last_publish = 0;
     unsigned long last_cell_publish = 0;
     unsigned long last_event_publish = 0;
+    unsigned long last_stats_log = 0;
     bool logger_initialized = false;
     bool was_connected = false;  // Track previous MQTT connection state
     
     while (true) {
         unsigned long now = millis();
         
+        // Update MQTT state machine (handles connection/reconnection)
+        MqttManager::instance().update();
+        
         // Check if MQTT connection state changed
         bool is_connected_now = MqttManager::instance().is_connected();
         if (is_connected_now != was_connected) {
             // MQTT state changed - notify version beacon manager
             VersionBeaconManager::instance().notify_mqtt_connected(is_connected_now);
+            
+            if (is_connected_now) {
+                // Just connected - initialize logger if needed
+                if (!logger_initialized) {
+                    uint8_t saved_level = EspnowMessageHandler::instance().load_debug_level();
+                    MqttLogger::instance().init(MqttManager::instance().get_client(), "espnow/transmitter");
+                    MqttLogger::instance().set_level((MqttLogLevel)saved_level);
+                    logger_initialized = true;
+                    
+                    LOG_INFO("MQTT", "MQTT logger initialized, level: %s", 
+                             MqttLogger::instance().level_to_string((MqttLogLevel)saved_level));
+                }
+                
+                MQTT_LOG_NOTICE("MQTT", "MQTT broker connected successfully");
+                MQTT_LOG_INFO("SYSTEM", "ESP-NOW Transmitter online, uptime: %lu ms", millis());
+                MQTT_LOG_INFO("ETH", "IP: %s, Gateway: %s", 
+                              EthernetManager::instance().get_local_ip().toString().c_str(),
+                              EthernetManager::instance().get_gateway_ip().toString().c_str());
+                
+                // Update battery specs from datalayer (refresh number_of_cells after battery setup)
+                LOG_INFO("MQTT", "Refreshing battery specs from datalayer...");
+                StaticData::update_battery_specs(SystemSettings::instance().get_battery_profile_type());
+                
+                // Publish static configuration data (once on connect)
+                LOG_INFO("MQTT", "Publishing static configuration...");
+                if (MqttManager::instance().publish_static_specs()) {
+                    LOG_INFO("MQTT", "✓ Static specs published to transmitter/BE/spec_data (SMART routing)");
+                }
+                if (MqttManager::instance().publish_inverter_specs()) {
+                    LOG_INFO("MQTT", "✓ Inverter specs published to transmitter/BE/spec_data_2 (SMART routing)");
+                }
+                if (MqttManager::instance().publish_battery_specs()) {
+                    LOG_INFO("MQTT", "✓ Battery specs published to transmitter/BE/battery_specs (SMART routing)");
+                }
+            }
+            
             was_connected = is_connected_now;
         }
         
-        // Handle MQTT connection
-        if (!is_connected_now) {
-            if (config::features::MQTT_ENABLED && 
-                EthernetManager::instance().is_connected() && 
-                (now - last_reconnect_attempt > timing::MQTT_RECONNECT_INTERVAL_MS)) {
-                last_reconnect_attempt = now;
-                if (MqttManager::instance().connect()) {
-                    // Initialize MQTT logger on first successful connection
-                    if (!logger_initialized) {
-                        uint8_t saved_level = EspnowMessageHandler::instance().load_debug_level();
-                        MqttLogger::instance().init(MqttManager::instance().get_client(), "espnow/transmitter");
-                        MqttLogger::instance().set_level((MqttLogLevel)saved_level);
-                        logger_initialized = true;
-                        
-                        LOG_INFO("MQTT", "MQTT logger initialized, level: %s", 
-                                 MqttLogger::instance().level_to_string((MqttLogLevel)saved_level));
-                    }
-                    
-                    MQTT_LOG_NOTICE("MQTT", "MQTT broker connected successfully");
-                    MQTT_LOG_INFO("SYSTEM", "ESP-NOW Transmitter online, uptime: %lu ms", millis());
-                    MQTT_LOG_INFO("ETH", "IP: %s, Gateway: %s", 
-                                  EthernetManager::instance().get_local_ip().toString().c_str(),
-                                  EthernetManager::instance().get_gateway_ip().toString().c_str());
-                    
-                    // Update battery specs from datalayer (refresh number_of_cells after battery setup)
-                    // This ensures battery_specs.number_of_cells matches datalayer.battery.info.number_of_cells
-                    // which is set by the battery's setup() function (e.g., Nissan Leaf sets it to 96)
-                    LOG_INFO("MQTT", "Refreshing battery specs from datalayer...");
-                    StaticData::update_battery_specs(SystemSettings::instance().get_battery_profile_type());
-                    
-                    // Publish static configuration data (once on connect)
-                    LOG_INFO("MQTT", "Publishing static configuration...");
-                    if (MqttManager::instance().publish_static_specs()) {
-                        LOG_INFO("MQTT", "✓ Static specs published to transmitter/BE/spec_data (SMART routing)");
-                    }
-                    if (MqttManager::instance().publish_inverter_specs()) {
-                        LOG_INFO("MQTT", "✓ Inverter specs published to transmitter/BE/spec_data_2 (SMART routing)");
-                    }
-                    if (MqttManager::instance().publish_battery_specs()) {
-                        LOG_INFO("MQTT", "✓ Battery specs published to transmitter/BE/battery_specs (SMART routing)");
-                    }
-                    
-                    // Flush any buffered messages (if reconnecting)
-                    MqttLogger::instance().flush_buffer();
-                }
-            }
-        } else {
-            // Process MQTT messages
-            MqttManager::instance().loop();
-            
-            // Publish data periodically
-            if (config::features::MQTT_ENABLED && 
-                (now - last_publish > timing::MQTT_PUBLISH_INTERVAL_MS)) {
-                last_publish = now;
-                
-                // Get formatted timestamp
-                char timestamp_str[64];
-                get_formatted_time(timestamp_str, sizeof(timestamp_str));
-                
-                // Publish current data
-                MqttManager::instance().publish_data(
-                    tx_data.soc,
-                    tx_data.power,
-                    timestamp_str,
-                    EthernetManager::instance().is_connected()
-                );
-                
-                // Test MQTT logger with periodic message
-                MQTT_LOG_INFO("TELEMETRY", "Data published: SOC=%d%%, Power=%ldW", tx_data.soc, tx_data.power);
-            }
-            
-            // Publish cell data periodically (less frequent - every 1 second)
-            if (config::features::MQTT_ENABLED && 
-                (now - last_cell_publish > 1000)) {
-                last_cell_publish = now;
-                
-                Serial.println("[MQTT_TASK_DEBUG] Calling publish_cell_data()...");
-                // Publish cell voltages and balancing status (routes via transmission selector)
-                if (MqttManager::instance().publish_cell_data()) {
-                    auto result = TransmissionSelector::get_last_result();
-                    LOG_DEBUG("MQTT", "✓ Cell data published to transmitter/BE/cell_data via %s (%u bytes)", 
-                              result.method, result.payload_size);
-                    Serial.println("[MQTT_TASK_DEBUG] ✓ publish_cell_data() returned true");
-                } else {
-                    Serial.println("[MQTT_TASK_DEBUG] ✗ publish_cell_data() returned false");
-                }
-            }
-
-            // Publish event logs periodically (every 5 seconds, only when subscribed)
-            if (config::features::MQTT_ENABLED && 
-                MqttManager::instance().get_event_log_subscribers() > 0 &&
-                (now - last_event_publish > 5000)) {
-                last_event_publish = now;
-                MqttManager::instance().publish_event_logs();
-            }
-            else {
-                // Debug why it's not being called
-                static unsigned long last_debug = 0;
-                if (now - last_debug > 5000) {
-                    last_debug = now;
-                    Serial.printf("[MQTT_TASK_DEBUG] NOT calling publish_event_logs: MQTT_ENABLED=%d, time_since_last=%lu\n",
-                                  config::features::MQTT_ENABLED, now - last_event_publish);
-                }
-            }
+        // Log statistics periodically
+        if (now - last_stats_log > 30000) {
+            auto stats = MqttManager::instance().get_statistics();
+            LOG_INFO("MQTT_STATS", "Connections: %lu, Failed: %lu, Published: %lu, Uptime: %lu s, State: %d",
+                    stats.total_connections,
+                    stats.failed_connections,
+                    stats.total_messages_published,
+                    stats.uptime_ms / 1000,
+                    (int)stats.current_state);
+            last_stats_log = now;
         }
         
-        // Low priority task - run infrequently
-        vTaskDelay(pdMS_TO_TICKS(100));
+        // Publish data periodically when connected
+        if (is_connected_now && (now - last_publish > timing::MQTT_PUBLISH_INTERVAL_MS)) {
+            last_publish = now;
+            
+            // Get formatted timestamp
+            char timestamp_str[64];
+            get_formatted_time(timestamp_str, sizeof(timestamp_str));
+            
+            // Publish current data
+            MqttManager::instance().publish_data(
+                tx_data.soc,
+                tx_data.power,
+                timestamp_str,
+                EthernetManager::instance().is_connected()
+            );
+            
+            // Test MQTT logger with periodic message
+            MQTT_LOG_INFO("TELEMETRY", "Data published: SOC=%d%%, Power=%ldW", tx_data.soc, tx_data.power);
+        }
+        
+        // Publish cell data periodically (less frequent - every 1 second) when connected
+        if (is_connected_now && (now - last_cell_publish > 1000)) {
+            last_cell_publish = now;
+            
+            Serial.println("[MQTT_TASK_DEBUG] Calling publish_cell_data()...");
+            // Publish cell voltages and balancing status (routes via transmission selector)
+            if (MqttManager::instance().publish_cell_data()) {
+                auto result = TransmissionSelector::get_last_result();
+                LOG_DEBUG("MQTT", "✓ Cell data published to transmitter/BE/cell_data via %s (%u bytes)", 
+                          result.method, result.payload_size);
+                Serial.println("[MQTT_TASK_DEBUG] ✓ publish_cell_data() returned true");
+            } else {
+                Serial.println("[MQTT_TASK_DEBUG] ✗ publish_cell_data() returned false");
+            }
+        }
+
+        // Publish event logs periodically (every 5 seconds, only when subscribed) when connected
+        if (is_connected_now && 
+            MqttManager::instance().get_event_log_subscribers() > 0 &&
+            (now - last_event_publish > 5000)) {
+            last_event_publish = now;
+            MqttManager::instance().publish_event_logs();
+        }
+        
+        // Update task every second (state machine runs inside update())
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }

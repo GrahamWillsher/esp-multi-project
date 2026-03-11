@@ -30,17 +30,14 @@ namespace Display {
 
 // ESP-NOW State (definitions)
 namespace ESPNow {
-    volatile uint8_t received_soc = 50;
-    volatile int32_t received_power = 0;
-    volatile uint32_t received_voltage_mv = 0;
-    volatile bool data_received = false;
+    uint8_t received_soc = 50;
+    int32_t received_power = 0;
+    uint32_t received_voltage_mv = 0;
     
     LEDColor current_led_color = LED_ORANGE;  // Start with orange (medium)
     LEDEffect current_led_effect = LED_EFFECT_FLASH;
-    
-    DirtyFlags dirty_flags;
-    volatile int wifi_channel = 1;
-    volatile bool transmitter_connected = false;
+
+    int wifi_channel = 1;
     uint8_t transmitter_mac[6] = {0};  // Will be filled when transmitter connects
     QueueHandle_t queue = NULL;
 }
@@ -59,8 +56,3 @@ TFT_eSPI tft = TFT_eSPI();
 
 // State Machine
 SystemState current_state = SystemState::BOOTING;
-
-// Reference aliases to namespace variables for backward compatibility
-volatile uint8_t& g_received_soc = ESPNow::received_soc;
-volatile int32_t& g_received_power = ESPNow::received_power;
-volatile uint32_t& g_received_voltage_mv = ESPNow::received_voltage_mv;

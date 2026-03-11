@@ -1355,11 +1355,28 @@ After implementing these changes:
 
 ---
 
+## ⚠️ Phase 0 Implementation Status
+
+**Important**: See [ESPNOW_STATE_MACHINE_PHASE0_FINDINGS.md](./ESPNOW_STATE_MACHINE_PHASE0_FINDINGS.md) for critical findings about the Phase 0 implementation.
+
+Phase 0 (Robust Reconnection with heartbeat monitoring and exponential backoff) has exposed **fundamental architectural issues** in the connection state machine that require a more comprehensive redesign. While the individual components work, the integrated system does not gracefully handle disconnections, timeouts, and reconnections.
+
+**Key Issues**:
+- Multiple independent timeout checkers causing race conditions
+- State-dependent behavior scattered across multiple handler classes
+- Message routing filtering causing data staleness detection failures
+- transmission_active_ flag not properly managed by state machine
+
+See the linked document for detailed analysis and recommendations for Phase 1 redesign.
+
+---
+
 ## Version History
 
 | Date | Author | Change |
 |------|--------|--------|
 | Feb 26, 2026 | Original | Initial document creation |
 | March 5, 2026 | AI Assistant | Added Item #2 (Dynamic Type Discovery via ESP-NOW) with investigation notes, fallback to MQTT option, and implementation plan |
+| March 5, 2026 | AI Assistant | Added Phase 0 findings reference and link to detailed analysis document |
 
 

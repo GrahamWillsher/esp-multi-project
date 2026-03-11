@@ -1,5 +1,6 @@
 #include "discovery_task.h"
 #include "message_handler.h"
+#include "tx_state_machine.h"
 #include "data_cache.h"  // For cache flush on connection
 #include "version_beacon_manager.h"  // For sending initial beacon on connection
 #include "tx_connection_handler.h"
@@ -7,15 +8,14 @@
 #include <channel_manager.h>
 #include "../config/task_config.h"
 #include "../config/logging_config.h"
+#include "../config/timing_config.h"
+#include "../queue/espnow_queue_manager.h"
 #include <Arduino.h>
 #include <espnow_discovery.h>
 #include <espnow_transmitter.h>  // For g_lock_channel and set_channel
 #include <espnow_peer_manager.h>
 #include <esp_wifi.h>
 #include <WiFi.h>
-
-extern QueueHandle_t espnow_message_queue;    // From main.cpp - application messages
-extern QueueHandle_t espnow_discovery_queue;  // From main.cpp - discovery PROBE/ACK messages
 
 DiscoveryTask& DiscoveryTask::instance() {
     static DiscoveryTask instance;
@@ -39,6 +39,7 @@ void DiscoveryTask::start() {
 }
 
 void DiscoveryTask::restart() {
+    TxStateMachine::instance().set_state(TxStateMachine::ConnectionState::RECONNECTING, "discovery restart");
     LOG_INFO("DISCOVERY", "═══ RESTART INITIATED (Attempt %d/%d) ═══", 
              restart_failure_count_ + 1, MAX_RESTART_FAILURES);
     
@@ -64,13 +65,14 @@ void DiscoveryTask::restart() {
         if (restart_failure_count_ >= MAX_RESTART_FAILURES) {
             LOG_ERROR("DISCOVERY", "✗ Maximum restart failures reached (%d) - system needs attention", 
                      MAX_RESTART_FAILURES);
+            TxStateMachine::instance().set_state(TxStateMachine::ConnectionState::FAILED, "max discovery restart failures");
             transition_to(RecoveryState::PERSISTENT_FAILURE);
             restart_failure_count_ = 0;  // Reset for next cycle
             return;
         }
         
-        // Exponential backoff before retry
-        uint32_t backoff_ms = 500 * (1 << restart_failure_count_);  // 500, 1000, 2000ms
+        // Exponential backoff before retry (centralized in TX state machine)
+        uint32_t backoff_ms = TxStateMachine::instance().next_backoff_ms();
         LOG_WARN("DISCOVERY", "Restart failed, retrying in %dms", backoff_ms);
         delay(backoff_ms);
         
@@ -83,7 +85,7 @@ void DiscoveryTask::restart() {
     task_handle_ = EspnowDiscovery::instance().get_task_handle();
     
     // Give new task time to stabilize
-    delay(100);
+    delay(TimingConfig::RESTART_STABILIZATION_DELAY_MS);
     
     // STEP 4: Final verification
     uint8_t verify_ch = 0;
@@ -99,6 +101,7 @@ void DiscoveryTask::restart() {
     // Success!
     restart_failure_count_ = 0;
     consecutive_failures_ = 0;
+    TxStateMachine::instance().reset_backoff();
     metrics_.successful_restarts++;
     metrics_.last_restart_timestamp = millis();
     
@@ -155,8 +158,8 @@ bool DiscoveryTask::force_and_verify_channel(uint8_t target_channel) {
     
     LOG_DEBUG("DISCOVERY", "  - Channel set command executed");
     
-    // Adequate delay for WiFi driver stabilization (industrial: 150ms)
-    delay(150);
+    // Adequate delay for WiFi driver stabilization (industrial-grade)
+    delay(TimingConfig::CHANNEL_STABILIZATION_MS);
     
     // Verify channel was actually set
     uint8_t actual_ch = 0;
@@ -270,7 +273,7 @@ void DiscoveryTask::update_recovery() {
     
     switch (recovery_state_) {
         case RecoveryState::RESTART_FAILED:
-            if (time_in_state > 5000) {  // Wait 5s before retry
+            if (time_in_state > TimingConfig::RECOVERY_RETRY_DELAY_MS) {  // Wait 5s before retry
                 if (consecutive_failures_ < 5) {
                     LOG_INFO("RECOVERY", "Retrying restart (attempt %d/5)", consecutive_failures_ + 1);
                     consecutive_failures_++;
@@ -285,7 +288,7 @@ void DiscoveryTask::update_recovery() {
         case RecoveryState::PERSISTENT_FAILURE:
             LOG_ERROR("RECOVERY", "Persistent failure state - requires manual intervention");
             // In production, could trigger system reset after timeout
-            if (time_in_state > 60000) {  // 60 seconds
+            if (time_in_state > TimingConfig::RECOVERY_TIMEOUT_MS) {  // 60 seconds
                 LOG_ERROR("RECOVERY", "Triggering system restart due to persistent failure");
                 esp_restart();
             }
@@ -402,8 +405,12 @@ void DiscoveryTask::send_probe_on_channel(uint8_t channel) {
 bool DiscoveryTask::active_channel_hop_scan(uint8_t* discovered_channel) {
     LOG_INFO("DISCOVERY", "═══ ACTIVE CHANNEL HOP SCAN (Broadcasting PROBE) ═══");
     
-    // Get saved channel from ChannelManager (last locked channel)
-    uint8_t saved_ch = ChannelManager::instance().get_channel();
+    // Start from last known successful channel whenever possible
+    uint8_t saved_ch = TxStateMachine::instance().last_known_channel();
+    if (saved_ch < 1 || saved_ch > 13) {
+        // Fallback to persisted channel from channel manager/NVS
+        saved_ch = ChannelManager::instance().get_channel();
+    }
     
     // Channels to scan (regulatory domain dependent)
     const uint8_t channels[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13};
@@ -421,8 +428,8 @@ bool DiscoveryTask::active_channel_hop_scan(uint8_t* discovered_channel) {
     // Transmit duration per channel (ms)
     // Section 11: 1s per channel (vs 6s in Section 10 passive)
     // Total scan time: 13s max (vs 78s in Section 10)
-    const uint32_t TRANSMIT_DURATION_MS = 1000;
-    const uint32_t PROBE_INTERVAL_MS = 100;  // Send PROBE every 100ms on each channel
+    const uint32_t TRANSMIT_DURATION_MS = TimingConfig::TRANSMIT_DURATION_PER_CHANNEL_MS;
+    const uint32_t PROBE_INTERVAL_MS = TimingConfig::PROBE_INTERVAL_MS;
     
     volatile bool ack_received = false;
     volatile uint8_t ack_channel = 0;
@@ -458,8 +465,7 @@ bool DiscoveryTask::active_channel_hop_scan(uint8_t* discovered_channel) {
         uint32_t last_probe_time = 0;
         
         // Flush any stale messages from discovery queue
-        espnow_queue_msg_t flush_msg;
-        while (xQueueReceive(espnow_discovery_queue, &flush_msg, 0) == pdTRUE) {}
+        EspnowQueueManager::instance().flush_discovery_queue();
         
         while (millis() - start_time < TRANSMIT_DURATION_MS) {
             // Send PROBE broadcast at intervals
@@ -471,7 +477,7 @@ bool DiscoveryTask::active_channel_hop_scan(uint8_t* discovered_channel) {
             // Check discovery queue for ACK response
             // This queue is separate from the main RX queue, so RX task won't consume it
             espnow_queue_msg_t msg;
-            if (xQueueReceive(espnow_discovery_queue, &msg, pdMS_TO_TICKS(10)) == pdTRUE) {
+            if (EspnowQueueManager::instance().receive_from_discovery_queue(msg, 10)) {
                 // Check if this is an ACK message
                 if (msg.len >= (int)sizeof(ack_t)) {
                     const ack_t* a = reinterpret_cast<const ack_t*>(msg.data);
@@ -517,11 +523,11 @@ bool DiscoveryTask::active_channel_hop_scan(uint8_t* discovered_channel) {
             
             LOG_INFO("DISCOVERY", "✓ Receiver registered as peer");
             TransmitterConnectionHandler::instance().on_peer_registered(ack_mac);
-            delay(100);  // PEER_REGISTRATION delay (from timing config)
+            delay(TimingConfig::PEER_REGISTRATION_DELAY_MS);
             
             // CRITICAL: Allow peer registration to stabilize before attempting sends
             // ESP-NOW peer table needs time to propagate through WiFi driver
-            delay(300);  // CHANNEL_STABILIZING delay (from timing config)
+            delay(TimingConfig::CHANNEL_SWITCHING_DELAY_MS);
             LOG_DEBUG("DISCOVERY", "Peer registration stabilized");
             
             *discovered_channel = ack_channel;
@@ -580,7 +586,7 @@ void DiscoveryTask::active_channel_hopping_task(void* parameter) {
         
         // No receiver found this cycle - wait before retrying
         LOG_INFO("DISCOVERY", "Waiting 5s before next scan cycle...");
-        vTaskDelay(pdMS_TO_TICKS(5000));  // 5s retry (vs 10s in passive mode)
+        vTaskDelay(pdMS_TO_TICKS(TimingConfig::DISCOVERY_RETRY_INTERVAL_MS));  // 5s retry in active mode
     }
     
     LOG_INFO("DISCOVERY", "✓ Active channel hopping complete - receiver connected");

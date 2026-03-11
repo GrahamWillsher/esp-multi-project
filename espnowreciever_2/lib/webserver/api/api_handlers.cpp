@@ -24,10 +24,13 @@ extern bool& test_mode_enabled;
 extern volatile int& g_test_soc;
 extern volatile int32_t& g_test_power;
 extern volatile uint32_t& g_test_voltage_mv;
-extern volatile uint8_t& g_received_soc;
-extern volatile int32_t& g_received_power;
-extern volatile uint32_t& g_received_voltage_mv;
 extern void notify_sse_data_updated();
+
+namespace ESPNow {
+extern uint8_t received_soc;
+extern int32_t received_power;
+extern uint32_t received_voltage_mv;
+}
 
 // OTA firmware storage
 static const char* OTA_FIRMWARE_FILE = "/firmware.bin";
@@ -81,9 +84,9 @@ static esp_err_t api_get_receiver_info_handler(httpd_req_t *req) {
 static esp_err_t api_monitor_handler(httpd_req_t *req) {
     char json[512];  // Increased from 256 for future battery data fields
     const char* mode = test_mode_enabled ? "simulated" : "live";
-    uint8_t soc = test_mode_enabled ? g_test_soc : g_received_soc;
-    int32_t power = test_mode_enabled ? g_test_power : g_received_power;
-    uint32_t voltage_mv = test_mode_enabled ? g_test_voltage_mv : g_received_voltage_mv;
+    uint8_t soc = test_mode_enabled ? g_test_soc : ESPNow::received_soc;
+    int32_t power = test_mode_enabled ? g_test_power : ESPNow::received_power;
+    uint32_t voltage_mv = test_mode_enabled ? g_test_voltage_mv : ESPNow::received_voltage_mv;
     
     snprintf(json, sizeof(json), 
              "{\"mode\":\"%s\",\"soc\":%d,\"power\":%ld,\"voltage_mv\":%u,\"voltage_v\":%.1f}",
@@ -364,9 +367,9 @@ static esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
     
     // Send initial data (using live data from TransmitterManager only)
     char event_data[512];
-    uint8_t current_soc = g_received_soc;
-    int32_t current_power = g_received_power;
-    uint32_t current_voltage = g_received_voltage_mv;
+    uint8_t current_soc = ESPNow::received_soc;
+    int32_t current_power = ESPNow::received_power;
+    uint32_t current_voltage = ESPNow::received_voltage_mv;
     
     
     snprintf(event_data, sizeof(event_data),
@@ -395,9 +398,9 @@ static esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
         );
         
         if (bits & (1 << 0)) {
-            current_soc = g_received_soc;
-            current_power = g_received_power;
-            current_voltage = g_received_voltage_mv;
+            current_soc = ESPNow::received_soc;
+            current_power = ESPNow::received_power;
+            current_voltage = ESPNow::received_voltage_mv;
             
             if (current_soc != last_soc || current_power != last_power || current_voltage != last_voltage) {
                 snprintf(event_data, sizeof(event_data),

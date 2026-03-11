@@ -1,14 +1,15 @@
 #include "espnow_tasks.h"
 #include "rx_connection_handler.h"
 #include "rx_heartbeat_manager.h"
+#include "rx_state_machine.h"
 #include <connection_manager.h>
 #include "battery_handlers.h"  // Phase 1: Battery Emulator data handlers
 #include "battery_settings_cache.h"  // Phase 2: Settings version tracking
-#include "../state/connection_state_manager.h"
 #include "../common.h"
 #include "../display/display_core.h"
 #include "../display/display_led.h"
 #include "../../lib/webserver/utils/transmitter_manager.h"
+#include <cstring>
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
@@ -23,6 +24,42 @@
 extern void notify_sse_data_updated();
 
 static constexpr const char* kLogTag = "ESPNOW";
+static uint32_t g_rx_message_seq = 0;
+static bool g_received_data_initialized = false;
+
+static void store_transmitter_mac(const uint8_t* mac) {
+    if (!mac) {
+        return;
+    }
+    memcpy(ESPNow::transmitter_mac, mac, 6);
+}
+
+static void update_received_data_cache(
+    uint8_t soc,
+    int32_t power,
+    uint32_t voltage_mv,
+    bool* out_first_data,
+    bool* out_soc_changed,
+    bool* out_power_changed) {
+    const bool first_data = !g_received_data_initialized;
+    const bool soc_changed = first_data || (ESPNow::received_soc != soc);
+    const bool power_changed = first_data || (ESPNow::received_power != power);
+
+    ESPNow::received_soc = soc;
+    ESPNow::received_power = power;
+    ESPNow::received_voltage_mv = voltage_mv;
+    g_received_data_initialized = true;
+
+    if (out_first_data) {
+        *out_first_data = first_data;
+    }
+    if (out_soc_changed) {
+        *out_soc_changed = soc_changed;
+    }
+    if (out_power_changed) {
+        *out_power_changed = power_changed;
+    }
+}
 
 static uint32_t estimate_voltage_mv(uint8_t soc) {
     uint32_t min_mv = 30000;
@@ -38,6 +75,24 @@ static uint32_t estimate_voltage_mv(uint8_t soc) {
 
     uint32_t clamped_soc = (soc > 100) ? 100 : soc;
     return min_mv + ((max_mv - min_mv) * clamped_soc) / 100;
+}
+
+static void update_display_if_changed(uint8_t soc, int32_t power, bool soc_changed, bool power_changed) {
+    if (!soc_changed && !power_changed) {
+        return;
+    }
+
+    if (xSemaphoreTake(RTOS::tft_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        if (soc_changed) {
+            display_soc((float)soc);
+        }
+        if (power_changed) {
+            display_power(power);
+        }
+        xSemaphoreGive(RTOS::tft_mutex);
+    } else {
+        LOG_WARN(kLogTag, "TFT mutex timeout - display update skipped");
+    }
 }
 
 // Forward declarations for handler functions
@@ -59,25 +114,14 @@ static void request_category_refresh(const uint8_t* mac, uint8_t category, const
 // ═══════════════════════════════════════════════════════════════════════
 
 // Configuration for standard PROBE handler
-EspnowStandardHandlers::ProbeHandlerConfig probe_config;
+EspnowStandardHandlers::ProbeHandlerConfig probe_config{};
 
 // Configuration for standard ACK handler  
-EspnowStandardHandlers::AckHandlerConfig ack_config;
+EspnowStandardHandlers::AckHandlerConfig ack_config{};
 
 // ═══════════════════════════════════════════════════════════════════════
 // MESSAGE ROUTER SETUP
 // ═══════════════════════════════════════════════════════════════════════
-
-// Static initialization flag (shared between setup_message_routes and reset function)
-static bool* g_initialization_sent_ptr = nullptr;
-
-// Helper function to reset initialization flag when connection is lost
-void reset_initialization_flag() {
-    if (g_initialization_sent_ptr) {
-        *g_initialization_sent_ptr = false;
-        LOG_DEBUG(kLogTag, "[INIT] Initialization flag reset for reconnection");
-    }
-}
 
 static void request_config_section(const uint8_t* mac, config_section_t section, uint32_t requested_version, const char* label) {
     if (!mac) return;
@@ -97,14 +141,12 @@ static void request_config_section(const uint8_t* mac, config_section_t section,
 
 void setup_message_routes() {
     auto& router = EspnowMessageRouter::instance();
-    
-    // Track if initialization messages have been sent to avoid redundant requests
-    static bool initialization_sent = false;
-    g_initialization_sent_ptr = &initialization_sent;  // Store pointer for reset function
+    probe_config = {};
+    ack_config = {};
     
     // Setup PROBE handler configuration
     probe_config.send_ack_response = true;
-    probe_config.connection_flag = &ESPNow::transmitter_connected;
+    probe_config.connection_flag = nullptr;  // Using RxStateMachine for state management
     probe_config.peer_mac_storage = nullptr;  // We use register_transmitter_mac instead
     
     // Called every time a PROBE is received (transmitter announcing itself)
@@ -115,39 +157,21 @@ void setup_message_routes() {
         LOG_DEBUG(kLogTag, "PROBE received (seq=%u)", seq);
         
         // Always store transmitter MAC
-        ConnectionStateManager::set_transmitter_mac(mac);
+        store_transmitter_mac(mac);
         TransmitterManager::registerMAC(mac);
     };
     
-    // Called only when connection state changes (first connection)
-    probe_config.on_connection = [](const uint8_t* mac, bool connected) {
-        ReceiverConnectionHandler::instance().on_peer_registered(mac);
-        LOG_INFO(kLogTag, "Transmitter connected via PROBE");
-        // Note: Initialization requests (including REQUEST_DATA) are sent automatically
-        // by the state machine callback when transitioning to CONNECTED state.
-        // See rx_connection_handler.cpp state callback for implementation.
-    };
+    // Connection ownership is managed by the worker/connection handler path.
+    probe_config.on_connection = nullptr;
     
     // Setup ACK handler configuration (receiver sends ACKs, doesn't usually receive them)
-    ack_config.connection_flag = &ESPNow::transmitter_connected;
+    ack_config.connection_flag = nullptr;  // Using RxStateMachine for state management
     ack_config.peer_mac_storage = nullptr;
     ack_config.expected_seq = nullptr;      // Receiver doesn't validate ACK sequences
     ack_config.lock_channel = nullptr;      // Receiver doesn't change channels
     ack_config.ack_received_flag = nullptr;
     ack_config.set_wifi_channel = false;    // Receiver stays on its configured channel
-    ack_config.on_connection = [](const uint8_t* mac, bool connected) {
-        // Store transmitter MAC for sending control messages
-        if (connected) {
-            ConnectionStateManager::set_transmitter_mac(mac);
-            TransmitterManager::registerMAC(mac);
-            LOG_INFO(kLogTag, "Transmitter MAC registered: %02X:%02X:%02X:%02X:%02X:%02X",
-                     mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-            // Note: Initialization requests (including REQUEST_DATA) are sent automatically
-            // by the state machine callback when transitioning to CONNECTED state.
-            // See rx_connection_handler.cpp state callback for implementation.
-        }
-        LOG_INFO(kLogTag, "Transmitter connected via ACK");
-    };
+    ack_config.on_connection = nullptr;
     
     // Register standard message handlers
     router.register_route(msg_probe, 
@@ -165,6 +189,7 @@ void setup_message_routes() {
     // Register custom DATA handler
     router.register_route(msg_data,
         [](const espnow_queue_msg_t* msg, void* ctx) {
+            ReceiverConnectionHandler::instance().on_power_data_received();
             handle_data_message(msg);
         },
         0xFF, nullptr);
@@ -199,6 +224,8 @@ void setup_message_routes() {
     
     router.register_route(msg_battery_status,
         [](const espnow_queue_msg_t* msg, void* ctx) {
+            // Signal to the retry timer that the data stream is active
+            ReceiverConnectionHandler::instance().on_power_data_received();
             handle_battery_status(msg);
         },
         0xFF, nullptr);
@@ -496,6 +523,10 @@ void setup_message_routes() {
 
 void task_espnow_worker(void *parameter) {
     LOG_DEBUG(kLogTag, "ESP-NOW Worker task started");
+
+    if (!RxStateMachine::instance().init()) {
+        LOG_ERROR(kLogTag, "Failed to initialize RX state machine");
+    }
     
     // Initialize battery settings cache (Phase 2: Version tracking)
     BatterySettingsCache::instance().init();
@@ -518,9 +549,16 @@ void task_espnow_worker(void *parameter) {
         // Check for messages with short timeout to allow periodic connection check
         if (xQueueReceive(ESPNow::queue, &queue_msg, pdMS_TO_TICKS(1000)) == pdTRUE) {
             if (queue_msg.len < 1) continue;
+
+            const uint8_t msg_type = queue_msg.data[0];
+            ReceiverConnectionHandler::instance().on_link_activity(queue_msg.mac);
+            RxStateMachine::instance().on_message_processing(msg_type, ++g_rx_message_seq);
             
             // Update connection watchdog on any received message
             transmitter_state.last_rx_time_ms = millis();
+
+            // Centralized connection timeout ownership: any ESP-NOW traffic indicates liveness.
+            EspNowConnectionManager::instance().on_heartbeat_received();
 
             // Keep dashboard connection status fresh on any ESP-NOW traffic
             if (TransmitterManager::isMACKnown()) {
@@ -550,7 +588,6 @@ void task_espnow_worker(void *parameter) {
 
             if (!transmitter_state.is_connected && EspNowConnectionManager::instance().is_connected()) {
                 transmitter_state.is_connected = true;
-                ConnectionStateManager::set_transmitter_connected(true);
                 LOG_INFO(kLogTag, "Transmitter connection established");
                 // Note: Initialization requests (config sections, REQUEST_DATA) are sent automatically
                 // by the state machine callback when transitioning to CONNECTED state.
@@ -561,7 +598,6 @@ void task_espnow_worker(void *parameter) {
             // Exclude periodic keep-alive/status messages (heartbeat, version beacon)
             // These are tracked separately and don't represent "new data" for connection purposes
             if (EspNowConnectionManager::instance().is_connected()) {
-                uint8_t msg_type = queue_msg.data[0];
                 bool is_keepalive_msg = (msg_type == msg_heartbeat || 
                                          msg_type == msg_heartbeat_ack ||
                                          msg_type == msg_version_beacon);
@@ -573,6 +609,7 @@ void task_espnow_worker(void *parameter) {
             
             // Route message using common router
             if (!router.route_message(queue_msg)) {
+                RxStateMachine::instance().on_message_error();
                 // Message not handled - check if it's an unknown packet subtype
                 uint8_t type = queue_msg.data[0];
                 if (type == msg_packet) {
@@ -583,8 +620,12 @@ void task_espnow_worker(void *parameter) {
                 } else {
                     LOG_WARN(kLogTag, "Unknown message type: %u, len=%d", type, queue_msg.len);
                 }
+            } else {
+                RxStateMachine::instance().on_message_valid();
             }
         }
+
+        RxStateMachine::instance().check_stale(90000, 5000);  // 90s timeout + 5s grace window for config updates
         
         // NOTE: Connection timeout check REMOVED - now handled by RxHeartbeatManager::tick()
         // The heartbeat manager provides proper 90-second timeout with grace period
@@ -651,48 +692,33 @@ void handle_data_message(const espnow_queue_msg_t* msg) {
         uint16_t calc_checksum = payload->soc + (uint16_t)payload->power;
         
         if (calc_checksum == payload->checksum) {
-            const bool first_data = !ConnectionStateManager::has_data_received();
-
+            // Mark RxStateMachine as active when actual data arrives (not just keep-alive)
+            RxStateMachine::instance().on_activity();
+            
+            bool first_data = false;
             bool soc_changed = false;
             bool power_changed = false;
-            ConnectionStateManager::update_received_data(
+            update_received_data_cache(
                 payload->soc,
                 payload->power,
                 estimate_voltage_mv(payload->soc),
+                &first_data,
                 &soc_changed,
                 &power_changed
             );
-            if (first_data || soc_changed) {
-                ESPNow::dirty_flags.soc_changed = true;
-            }
-            if (first_data || power_changed) {
-                ESPNow::dirty_flags.power_changed = true;
-            }
+            const bool display_soc_changed = first_data || soc_changed;
+            const bool display_power_changed = first_data || power_changed;
             
             // Store transmitter MAC for sending control messages
-            ConnectionStateManager::set_transmitter_mac(msg->mac);
+            store_transmitter_mac(msg->mac);
             notify_sse_data_updated();
             
             LOG_INFO(kLogTag, "ESP-NOW RX: SOC=%d%%, Power=%dW (first=%s)", 
                      payload->soc, payload->power, first_data ? "YES" : "no");
             
-            // Batch display updates in single mutex acquisition to reduce contention
-            if (ESPNow::dirty_flags.soc_changed || ESPNow::dirty_flags.power_changed) {
-                if (xSemaphoreTake(RTOS::tft_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-                    if (ESPNow::dirty_flags.soc_changed) {
-                        display_soc((float)payload->soc);
-                        ESPNow::dirty_flags.soc_changed = false;
-                        LOG_INFO(kLogTag, "Display updated: SOC=%d%%", payload->soc);
-                    }
-                    if (ESPNow::dirty_flags.power_changed) {
-                        display_power((int32_t)payload->power);
-                        ESPNow::dirty_flags.power_changed = false;
-                        LOG_INFO(kLogTag, "Display updated: Power=%dW", payload->power);
-                    }
-                    xSemaphoreGive(RTOS::tft_mutex);
-                } else {
-                    LOG_WARN(kLogTag, "TFT mutex timeout - display update skipped");
-                }
+            update_display_if_changed(payload->soc, payload->power, display_soc_changed, display_power_changed);
+            if (display_soc_changed || display_power_changed) {
+                LOG_INFO(kLogTag, "Display updated: SOC=%d%% Power=%dW", payload->soc, payload->power);
             }
         } else {
             // CRC mismatch
@@ -721,40 +747,22 @@ void handle_packet_events(const espnow_queue_msg_t* msg) {
 
         bool soc_changed = false;
         bool power_changed = false;
-        ConnectionStateManager::update_received_data(
+        update_received_data_cache(
             soc,
             power,
             estimate_voltage_mv(soc),
+            nullptr,
             &soc_changed,
             &power_changed
         );
-        if (soc_changed) {
-            ESPNow::dirty_flags.soc_changed = true;
-        }
-        if (power_changed) {
-            ESPNow::dirty_flags.power_changed = true;
-        }
         
         // Store transmitter MAC for sending control messages
-        ConnectionStateManager::set_transmitter_mac(msg->mac);
+        store_transmitter_mac(msg->mac);
         notify_sse_data_updated();
         
         LOG_TRACE(kLogTag, "EVENTS: SOC=%d%%, Power=%dW", soc, power);
         
-        // Batch display updates in single mutex acquisition to reduce contention
-        if (ESPNow::dirty_flags.soc_changed || ESPNow::dirty_flags.power_changed) {
-            if (xSemaphoreTake(RTOS::tft_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-                if (ESPNow::dirty_flags.soc_changed) {
-                    display_soc((float)soc);
-                    ESPNow::dirty_flags.soc_changed = false;
-                }
-                if (ESPNow::dirty_flags.power_changed) {
-                    display_power(power);
-                    ESPNow::dirty_flags.power_changed = false;
-                }
-                xSemaphoreGive(RTOS::tft_mutex);
-            }
-        }
+        update_display_if_changed(soc, power, soc_changed, power_changed);
     }
 }
 

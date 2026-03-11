@@ -30,9 +30,13 @@
 #include "config/network_config.h"
 #include "config/task_config.h"
 #include "config/logging_config.h"
+#include "config/timing_config.h"
 
 // Network managers
 #include "network/ethernet_manager.h"
+
+// Queue management
+#include "queue/espnow_queue_manager.h"
 #include "network/mqtt_manager.h"
 #include "network/ota_manager.h"
 #include "network/mqtt_task.h"
@@ -51,6 +55,7 @@
 #include "espnow/transmission_task.h"        // Section 11: Background transmission
 #include "espnow/heartbeat_manager.h"        // Heartbeat with sequence tracking and ACK
 #include "espnow/tx_connection_handler.h"
+#include "espnow/tx_state_machine.h"
 #include <channel_manager.h>                 // Centralized channel management
 #include "espnow/heartbeat_manager.h"         // Section 11: Heartbeat protocol
 #include <connection_manager.h>
@@ -78,19 +83,15 @@
 // MQTT Logger
 #include <mqtt_logger.h>
 
-// Global queue for ESP-NOW messages
+// Queue handles (exported for espnow_transmitter library ISR callback)
+// These reference the queues managed by EspnowQueueManager
 QueueHandle_t espnow_message_queue = nullptr;
-
-// Discovery queue for PROBE/ACK messages during active hopping
-// Separate from main queue to prevent RX task from consuming discovery messages
 QueueHandle_t espnow_discovery_queue = nullptr;
-
-// Required by espnow_transmitter library
 QueueHandle_t espnow_rx_queue = nullptr;
 void setup() {
     // Initialize serial
     Serial.begin(115200);
-    delay(1000);
+    delay(TimingConfig::SERIAL_INIT_DELAY_MS);
     LOG_INFO("MAIN", "\n=== ESP-NOW Transmitter (Modular) ===");
     
     // Initialize hardware abstraction layer (GPIO configuration for Waveshare HAT)
@@ -123,7 +124,7 @@ void setup() {
     WiFi.disconnect();
     // CRITICAL: Explicitly clear WiFi IP to force routing via Ethernet
     WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
-    delay(100);  // Let WiFi radio stabilize
+    delay(TimingConfig::WIFI_RADIO_STABILIZATION_MS);  // Let WiFi radio stabilize
     // SECTION 11 ARCHITECTURE: Transmitter-active channel hopping
     // No need to force channel - active hopping will discover receiver's channel
     // 1s per channel (13s max) vs 6s per channel (78s max) in Section 10
@@ -182,27 +183,20 @@ void setup() {
     // Initialize ESP-NOW library
     LOG_INFO("ESPNOW", "Initializing ESP-NOW...");
     
-    // Create main application queue (for RX task)
-    espnow_message_queue = xQueueCreate(
-        task_config::ESPNOW_MESSAGE_QUEUE_SIZE, 
-        sizeof(espnow_queue_msg_t)
-    );
-    if (espnow_message_queue == nullptr) {
-        LOG_ERROR("ESPNOW", "Failed to create ESP-NOW message queue!");
+    // Initialize queue manager (encapsulates all ESP-NOW queues)
+    if (!EspnowQueueManager::instance().init(
+        task_config::ESPNOW_MESSAGE_QUEUE_SIZE,  // Message queue: 10
+        20,                                       // Discovery queue: 20
+        30                                        // RX queue: 30
+    )) {
+        LOG_ERROR("ESPNOW", "Failed to initialize queue manager!");
         return;
     }
     
-    // Create separate discovery queue (for active hopping PROBE/ACK)
-    // Prevents RX task from consuming discovery messages
-    espnow_discovery_queue = xQueueCreate(
-        20,  // Smaller queue - only for discovery messages
-        sizeof(espnow_queue_msg_t)
-    );
-    if (espnow_discovery_queue == nullptr) {
-        LOG_ERROR("ESPNOW", "Failed to create ESP-NOW discovery queue!");
-        return;
-    }
-    LOG_DEBUG("ESPNOW", "Created separate discovery queue for active hopping");
+    // Export queue handles for espnow_transmitter library ISR callback
+    espnow_message_queue = EspnowQueueManager::instance().get_message_queue();
+    espnow_discovery_queue = EspnowQueueManager::instance().get_discovery_queue();
+    espnow_rx_queue = EspnowQueueManager::instance().get_rx_queue();
     
     // Initialize ESP-NOW (uses library function)
     init_espnow(espnow_message_queue);
@@ -211,7 +205,7 @@ void setup() {
     // Start message handler (highest priority - processes incoming messages)
     // MUST start BEFORE passive scanning so it can process PROBE messages from receiver!
     EspnowMessageHandler::instance().start_rx_task(espnow_message_queue);
-    delay(100);  // Let RX task initialize
+    delay(TimingConfig::COMPONENT_INIT_DELAY_MS);  // Let RX task initialize
     
     // PHASE B: Initialize channel manager (BEFORE connection manager)
     LOG_INFO("CHANNEL", "Initializing channel manager...");
@@ -232,6 +226,13 @@ void setup() {
     
     // Initialize transmitter connection handler (registers state callbacks)
     TransmitterConnectionHandler::instance().init();
+
+    // Initialize transmitter runtime state machine
+    TxStateMachine::instance().init();
+    
+    // Initialize message handler to register connection state callback
+    // This manages TxStateMachine transmission state automatically
+    EspnowMessageHandler::instance().init();
     
     create_connection_event_processor(3, 0);
     
@@ -406,7 +407,7 @@ void setup() {
     }
     
     // Delay before starting network time utilities
-    delay(1000);
+    delay(TimingConfig::POST_INIT_DELAY_MS);
     
     // Initialize and start network time utilities (NTP sync + connectivity monitoring)
     if (init_ethernet_utilities()) {
@@ -487,6 +488,9 @@ void loop() {
     
     // Recovery state machine update - Phase 2
     DiscoveryTask::instance().update_recovery();
+
+    // Progress deferred/backoff-aware discovery starts while CONNECTING
+    TransmitterConnectionHandler::instance().tick();
     
     // Handle deferred logging from timer callbacks
     EspnowSendUtils::handle_deferred_logging();
@@ -511,5 +515,5 @@ void loop() {
     }
     #endif
     
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    vTaskDelay(pdMS_TO_TICKS(TimingConfig::MAIN_LOOP_DELAY_MS));
 }

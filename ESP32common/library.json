@@ -1,0 +1,31 @@
+{
+  "name": "esp32common",
+  "version": "1.0.0",
+  "description": "Common ESP32 utilities for ESP-NOW projects",
+  "keywords": "esp32, espnow, connection, heartbeat, backoff",
+  "authors": [
+    {
+      "name": "Graham Willsher"
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/GrahamWillsher/esp-multi-project.git"
+  },
+  "frameworks": "arduino",
+  "platforms": "espressif32",
+  "build": {
+    "srcFilter": [
+      "+<src/espnow/>",
+      "+<espnow_common_utils/>",
+      "+<espnow_transmitter/>",
+      "+<firmware_metadata/>",
+      "+<hal/>",
+      "+<logging_utilities/>",
+      "+<webserver/>",
+      "+<config_sync/>"
+    ],
+    "includeDir": "include",
+    "flags": "-I include"
+  }
+}

@@ -1,5 +1,6 @@
 #include "rx_heartbeat_manager.h"
 #include "rx_connection_handler.h"
+#include "rx_state_machine.h"
 #include "../config/logging_config.h"
 #include <espnow_transmitter.h>
 #include <connection_event.h>
@@ -37,21 +38,8 @@ void RxHeartbeatManager::tick() {
         m_last_rx_time_ms = last_activity;
     }
     
-    uint32_t now = millis();
-    uint32_t time_since_last = now - m_last_rx_time_ms;
-    
-    // Check for heartbeat timeout
-    // Only trigger if we've received at least one heartbeat (m_heartbeats_received > 0)
-    // This prevents false timeout on initial connection before first heartbeat arrives
-    if (m_heartbeats_received > 0 && time_since_last > HEARTBEAT_TIMEOUT_MS) {
-        LOG_ERROR("HEARTBEAT", "Connection lost: No heartbeat for %u ms (timeout: %u ms, total received: %u)",
-                  time_since_last, HEARTBEAT_TIMEOUT_MS, m_heartbeats_received);
-        
-        // Reset connection handler's first_data_received flag for reconnection
-        ReceiverConnectionHandler::instance().on_connection_lost();
-        
-        EspNowConnectionManager::instance().post_event(EspNowEvent::CONNECTION_LOST);
-    }
+    // Timeout-triggered CONNECTION_LOST is owned by EspNowConnectionManager.
+    // This manager keeps local timing/stats and handles heartbeat ACK exchange only.
 }
 
 void RxHeartbeatManager::on_heartbeat(const heartbeat_t* hb, const uint8_t* mac) {
@@ -69,14 +57,15 @@ void RxHeartbeatManager::on_heartbeat(const heartbeat_t* hb, const uint8_t* mac)
     // Detect sequence regression (TX reboot)
     if (hb->seq < m_last_heartbeat_seq) {
         LOG_WARN("HEARTBEAT", "TX reboot detected (seq %u -> %u)", m_last_heartbeat_seq, hb->seq);
+        ReceiverConnectionHandler::instance().on_transmitter_reboot_detected();
     }
     
     m_last_heartbeat_seq = hb->seq;
     m_last_rx_time_ms = millis();
     m_heartbeats_received++;
     
-    LOG_INFO("HEARTBEAT", "Received heartbeat seq=%u (total: %u), TX uptime=%u ms, TX state=%u",
-             hb->seq, m_heartbeats_received, hb->uptime_ms, hb->state);
+    LOG_INFO("HEARTBEAT", "Received heartbeat seq=%u (total: %u), TX uptime=%llu ms, TX state=%u",
+             hb->seq, m_heartbeats_received, (unsigned long long)hb->uptime_ms, hb->state);
     
     // Update TransmitterManager with time data from heartbeat
     TransmitterManager::updateTimeData(hb->uptime_ms, hb->unix_time, hb->time_source);
@@ -90,7 +79,7 @@ void RxHeartbeatManager::send_ack(uint32_t ack_seq, const uint8_t* mac) {
     ack.type = msg_heartbeat_ack;
     ack.ack_seq = ack_seq;
     ack.uptime_ms = millis();
-    ack.state = static_cast<uint8_t>(EspNowConnectionManager::instance().get_state());
+    ack.state = static_cast<uint8_t>(RxStateMachine::instance().connection_state());
     
     // Calculate CRC16 over all fields except checksum
     ack.checksum = calculate_crc16(&ack, sizeof(ack) - sizeof(ack.checksum));

@@ -67,29 +67,18 @@ namespace Display {
 
 // ESP-NOW State
 namespace ESPNow {
-    // Received data
-    extern volatile uint8_t received_soc;
-    extern volatile int32_t received_power;
-    extern volatile uint32_t received_voltage_mv;
-    extern volatile bool data_received;
-    
-    // Dirty flags for display optimization
-    struct DirtyFlags {
-        volatile bool soc_changed = false;
-        volatile bool power_changed = false;
-        volatile bool led_changed = false;
-        volatile bool background_changed = false;
-    };
-    extern DirtyFlags dirty_flags;
+    // Received data (accessed via RxStateMachine, not volatile)
+    extern uint8_t received_soc;            // Cached by RxStateMachine
+    extern int32_t received_power;          // Cached by RxStateMachine
+    extern uint32_t received_voltage_mv;    // Cached by RxStateMachine
     
     // LED indicator state
     extern LEDColor current_led_color;
     extern LEDEffect current_led_effect;
     
-    // Connection state
-    extern volatile int wifi_channel;
-    extern volatile bool transmitter_connected;
-    extern uint8_t transmitter_mac[6];  // Transmitter MAC address for sending commands
+    // Connection state (managed by RxStateMachine, not volatile flags)
+    extern int wifi_channel;                // Managed by ChannelManager
+    extern uint8_t transmitter_mac[6];      // Transmitter MAC address for sending commands
     
     // Message queue
     constexpr int QUEUE_SIZE = 10;
@@ -201,12 +190,3 @@ void handle_error(ErrorSeverity severity, const char* component, const char* mes
  */
 void smart_delay(uint32_t ms);
 
-// ═══════════════════════════════════════════════════════════════════════
-// Backward Compatibility: Global aliases for namespaced variables
-// (Required by webserver and other legacy code)
-// ═══════════════════════════════════════════════════════════════════════
-
-// Received data aliases (references to ESPNow namespace)
-extern volatile uint8_t& g_received_soc;
-extern volatile int32_t& g_received_power;
-extern volatile uint32_t& g_received_voltage_mv;

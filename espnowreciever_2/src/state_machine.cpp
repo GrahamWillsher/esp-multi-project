@@ -8,6 +8,16 @@
 #include "display/display_led.h"
 #include "display/display_core.h"
 #include "espnow/rx_heartbeat_manager.h"
+#include "espnow/rx_state_machine.h"
+#include <connection_manager.h>
+
+static bool rx_has_live_data_flow() {
+    return RxStateMachine::instance().connection_state() == EspNowDeviceState::ACTIVE;
+}
+
+static bool rx_link_traffic_is_recent() {
+    return EspNowConnectionManager::instance().ms_since_last_heartbeat() < 20000;
+}
 
 SystemStateManager& SystemStateManager::instance() {
     static SystemStateManager inst;
@@ -40,26 +50,32 @@ void SystemStateManager::update() {
             break;
 
         case SystemState::WAITING_FOR_TRANSMITTER:
-            if (ConnectionStateManager::is_transmitter_connected()) {
+            // Only enter normal operation once real data flow is active.
+            // CONNECTED means link established but no payload stream yet, and STALE must not
+            // be treated as healthy just because its enum value is above CONNECTED.
+            if (rx_has_live_data_flow()) {
                 transition_to_state(SystemState::NORMAL_OPERATION);
-            } else if (elapsed > TX_WAIT_TIMEOUT_MS) {
+            } else if (elapsed > TX_WAIT_TIMEOUT_MS && !rx_link_traffic_is_recent()) {
                 transition_to_state(SystemState::NETWORK_ERROR);
             }
             break;
 
-        case SystemState::NORMAL_OPERATION:
-            if (!ConnectionStateManager::is_transmitter_connected()) {
+        case SystemState::NORMAL_OPERATION: {
+            // RxStateMachine is the authoritative source for ESP-NOW link/data freshness.
+            const auto rx_state = RxStateMachine::instance().connection_state();
+            if (rx_state < EspNowDeviceState::CONNECTED) {
                 transition_to_state(SystemState::WAITING_FOR_TRANSMITTER);
-            } else if (RxHeartbeatManager::instance().get_time_since_last() > DATA_STALE_TIMEOUT_MS ||
-                       ConnectionStateManager::is_data_stale(DATA_STALE_TIMEOUT_MS)) {
+            } else if (rx_state == EspNowDeviceState::STALE) {
                 transition_to_state(SystemState::DATA_STALE_ERROR);
             }
             break;
+        }
 
         case SystemState::NETWORK_ERROR:
         case SystemState::DATA_STALE_ERROR:
         case SystemState::DEGRADED_MODE:
-            if (ConnectionStateManager::is_transmitter_connected()) {
+            // Recovery: only return to normal when the live data stream is active again.
+            if (rx_has_live_data_flow()) {
                 transition_to_state(SystemState::NORMAL_OPERATION);
             } else if (elapsed > ERROR_RECOVERY_RETRY_MS) {
                 transition_to_state(SystemState::WAITING_FOR_TRANSMITTER);
