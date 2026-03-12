@@ -31,6 +31,11 @@ void handle_battery_info(const espnow_queue_msg_t* msg) {
 
     TransmitterManager::storeBatterySettings(settings);
 
+    // Keep battery-emulator settings cache in sync for settings page placeholders
+    BatteryEmulatorSettings emu = TransmitterManager::getBatteryEmulatorSettings();
+    emu.led_mode = data->led_mode;
+    TransmitterManager::storeBatteryEmulatorSettings(emu);
+
     BatteryData::total_capacity_Wh = data->capacity_wh;
     BatteryData::max_design_voltage_V = data->max_voltage_mv / 1000;
     BatteryData::min_design_voltage_V = data->min_voltage_mv / 1000;
@@ -39,9 +44,9 @@ void handle_battery_info(const espnow_queue_msg_t* msg) {
     BatteryData::info_received = true;
 
     const char* chemistry_str[] = {"NCA", "NMC", "LFP", "LTO"};
-    LOG_INFO("BATTERY", "Battery Settings: %dWh, %d-%dmV, %.1f/%.1fA, SOC:%d-%d%%, %dS %s",
+    LOG_INFO("BATTERY", "Battery Settings: %dWh, %d-%dmV, %.1f/%.1fA, SOC:%d-%d%%, %dS %s, LED mode:%u",
              settings.capacity_wh, settings.min_voltage_mv, settings.max_voltage_mv,
              settings.max_charge_current_a, settings.max_discharge_current_a,
              settings.soc_low_limit, settings.soc_high_limit,
-             settings.cell_count, chemistry_str[data->chemistry]);
+             settings.cell_count, chemistry_str[data->chemistry], data->led_mode);
 }

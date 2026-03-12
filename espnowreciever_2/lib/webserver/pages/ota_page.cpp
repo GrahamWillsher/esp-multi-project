@@ -278,11 +278,11 @@ static esp_err_t ota_handler(httpd_req_t *req) {
                                     progressBar.style.backgroundColor = '#4CAF50';
                                     // Don't redirect - receiver is rebooting
                                 } else {
-                                    statusDiv.innerHTML = '✅ Firmware uploaded! ESP-NOW command sent to transmitter.<br><br>Redirecting in <span id=\"countdown' + device + '\">10</span> seconds...';
+                                    statusDiv.innerHTML = '✅ Firmware uploaded to transmitter!<br><br>OTA Update in progress... Rebooting in <span id=\"countdown' + device + '\">15</span> seconds...';
                                     progressBar.style.backgroundColor = '#4CAF50';
                                     
-                                    // Countdown and redirect
-                                    let seconds = 10;
+                                    // Countdown and redirect (matches 15s server-side delay)
+                                    let seconds = 15;
                                     const countdownInterval = setInterval(function() {
                                         seconds--;
                                         const countdownEl = document.getElementById('countdown' + device);
@@ -291,6 +291,7 @@ static esp_err_t ota_handler(httpd_req_t *req) {
                                         }
                                         if (seconds <= 0) {
                                             clearInterval(countdownInterval);
+                                            statusDiv.innerHTML = '✅ Transmitter should be back online now.<br><br>Redirecting...';
                                             window.location.href = '/';
                                         }
                                     }, 1000);

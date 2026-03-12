@@ -68,7 +68,7 @@ void init_webserver() {
     LOG_INFO("WEBSERVER", "WiFi connected - proceeding with initialization");
     
     // Count expected handlers (update this when adding/removing handlers)
-    const int EXPECTED_HANDLER_COUNT = 61;  // 17 pages + 44 API handlers (42 specific + 1 firmware + 1 catch-all 404)
+    const int EXPECTED_HANDLER_COUNT = 64;  // 18 pages + 46 API handlers (44 specific + 1 firmware + 1 catch-all 404)
     
     // Initialize SSE notification system
     SSENotifier::init();
@@ -126,6 +126,7 @@ void init_webserver() {
     
     // Register transmitter pages (now with /transmitter prefix)
     if (register_settings_page(server) == ESP_OK) registered_count++;
+    if (register_hardware_config_page(server) == ESP_OK) registered_count++;
     if (register_battery_settings_page(server) == ESP_OK) registered_count++;
     if (register_inverter_settings_page(server) == ESP_OK) registered_count++;
     if (register_monitor_page(server) == ESP_OK) registered_count++;
@@ -168,6 +169,7 @@ void init_webserver() {
     LOG_DEBUG("WEBSERVER", "  - / (Dashboard)");
     LOG_DEBUG("WEBSERVER", "  - /transmitter (Transmitter Hub)");
     LOG_DEBUG("WEBSERVER", "  - /transmitter/config (Settings)");
+    LOG_DEBUG("WEBSERVER", "  - /transmitter/hardware (Hardware Config)");
     LOG_DEBUG("WEBSERVER", "  - /transmitter/battery (Battery Settings)");
     LOG_DEBUG("WEBSERVER", "  - /transmitter/monitor (Monitor Page)");
     LOG_DEBUG("WEBSERVER", "  - /receiver/config (Receiver Info)");

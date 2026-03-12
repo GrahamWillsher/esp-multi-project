@@ -9,6 +9,7 @@
 
 // Transmitter pages (renamed/moved)
 #include "settings_page.h"           // Now at /transmitter/config
+#include "hardware_config_page.h"    // Now at /transmitter/hardware
 #include "battery_settings_page.h"   // Now at /transmitter/battery
 #include "inverter_settings_page.h"  // Now at /transmitter/inverter
 #include "monitor_page.h"            // Now at /transmitter/monitor

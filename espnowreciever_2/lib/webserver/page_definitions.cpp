@@ -9,6 +9,7 @@ const PageInfo PAGE_DEFINITIONS[] = {
     // Transmitter section
     { "/transmitter",               "Transmitter Hub",             subtype_none,          false },  // Hub page with navigation
     { "/transmitter/config",        "Configuration",               subtype_none,          false },  // Moved from /
+    { "/transmitter/hardware",      "Hardware Config",             subtype_none,          false },
     
     // Receiver section
     { "/receiver/config",           "Configuration",               subtype_systeminfo,    false },  // Renamed from /systeminfo

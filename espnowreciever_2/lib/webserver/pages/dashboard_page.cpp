@@ -291,8 +291,8 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
                     <span id='txTimeSource' style='font-size: 12px;'>Unsynced</span>
                 </div>
                 <div style='display: flex; justify-content: space-between; align-items: center; margin: 8px 0;'>
-                    <span style='color: #999; font-size: 11px;'>Updated:</span>
-                    <span id='txLastUpdate' style='color: #999; font-size: 11px;'>Waiting...</span>
+                    <span style='color: #FFD700; font-weight: bold;'>Updated:</span>
+                    <span id='txLastUpdate' style='color: #fff; font-size: 12px;'>Waiting...</span>
                 </div>
             </div>
         </div>
@@ -336,6 +336,7 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
         // Track last update time for "X seconds ago" display
         let lastUpdateTime = Date.now();
         let lastSeenUptimeMs = 0;  // Track previous uptime value to detect actual updates
+        let hasHealthSample = false;
         
         // Time formatting functions
         function formatTimeWithTimezone(unixTime, timeZone = 'GMT') {
@@ -401,6 +402,10 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
         }
         
         function updateTimerDisplay() {
+            if (!hasHealthSample) {
+                return;
+            }
+
             const msSinceUpdate = Date.now() - lastUpdateTime;
             const secondsSinceUpdate = Math.floor(msSinceUpdate / 1000);
             const lastUpdateStr = formatLastUpdate(msSinceUpdate);
@@ -502,6 +507,7 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
                         if (timeData.uptime_ms !== lastSeenUptimeMs) {
                             lastSeenUptimeMs = timeData.uptime_ms;
                             lastUpdateTime = Date.now();
+                            hasHealthSample = true;
                             updateTimerDisplay();
                         }
                     }
@@ -599,6 +605,9 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
         window.addEventListener('load', function() {
             loadEventLogs();
         });
+
+        // Keep "Updated" counter moving every second between transmitter samples.
+        setInterval(updateTimerDisplay, 1000);
         
 
         setTimeout(async function() {
@@ -614,6 +623,7 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
                     sourceEl.style.color = getTimeSourceColor(timeData.time_source);
                     lastSeenUptimeMs = timeData.uptime_ms;
                     lastUpdateTime = Date.now();
+                    hasHealthSample = true;
                     updateTimerDisplay();
                 }
             } catch (e) {

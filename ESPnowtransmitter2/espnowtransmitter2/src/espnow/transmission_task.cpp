@@ -1,6 +1,7 @@
 #include "transmission_task.h"
 #include "enhanced_cache.h"
 #include "message_handler.h"
+#include "tx_send_guard.h"
 #include "../config/logging_config.h"
 #include <Arduino.h>
 #include <connection_manager.h>
@@ -117,9 +118,12 @@ void TransmissionTask::transmit_next_transient() {
     
     // Send via ESP-NOW
     const uint8_t* peer_mac = EspNowConnectionManager::instance().get_peer_mac();
-    esp_err_t result = esp_now_send(peer_mac, 
-                                     (const uint8_t*)&entry.data, 
-                                     sizeof(espnow_payload_t));
+    esp_err_t result = TxSendGuard::send_to_receiver_guarded(
+        peer_mac,
+        (const uint8_t*)&entry.data,
+        sizeof(espnow_payload_t),
+        "transient"
+    );
     
     if (result == ESP_OK) {
         // Mark as sent in cache
@@ -183,9 +187,12 @@ void TransmissionTask::transmit_next_state() {
         
         // Send via ESP-NOW
         const uint8_t* peer_mac = EspNowConnectionManager::instance().get_peer_mac();
-        esp_err_t result = esp_now_send(peer_mac, 
-                                         (const uint8_t*)&msg, 
-                                         sizeof(config_changed_t));
+        esp_err_t result = TxSendGuard::send_to_receiver_guarded(
+            peer_mac,
+            (const uint8_t*)&msg,
+            sizeof(config_changed_t),
+            "state_config"
+        );
         
         if (result == ESP_OK) {
             // Mark as sent in cache

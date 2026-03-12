@@ -20,12 +20,10 @@ public:
     PowerBarWidget(HAL::IDisplayDriver* driver, uint16_t center_x, uint16_t y)
         : BaseWidget(driver, center_x, y, 0, 0),
           current_power_(0),
-          last_rendered_power_(INT32_MAX),
           max_power_(4000),
           max_bars_per_side_(-1),
-          bar_char_width_(0),
           previous_signed_bars_(0),
-          last_was_zero_(false) {
+                    pulse_phase_(-1) {
         // Gradients initialized on first update
     }
     
@@ -50,26 +48,41 @@ public:
     
 private:
     int32_t current_power_;
-    int32_t last_rendered_power_;
     int32_t max_power_;
     
     int max_bars_per_side_;
-    int bar_char_width_;
+    int bar_widths_[30];
+    int bar_prefix_[31];
     uint16_t gradient_green_[30];
     uint16_t gradient_red_[30];
     
     int previous_signed_bars_;
-    bool last_was_zero_;
+    int pulse_phase_;
     int32_t last_displayed_power_text_ = INT32_MAX;
-    
-    // Initialize gradients if needed
-    void init_gradients();
     
     // Render the power bar
     void render_bar();
 
     // Render numeric power text below the bar
     void render_power_text();
+
+    // Draw the permanent center marker
+    void draw_center_marker();
+
+    // Compute rectangle geometry + gradients
+    void compute_geometry_and_gradients();
+
+    // Get one bar rectangle by index on one side
+    void get_bar_rect(int bar_index, bool negative, int& left, int& width) const;
+
+    // Draw one dynamic bar
+    void draw_dynamic_bar(int bar_index, bool negative, uint16_t color);
+
+    // Clear one dynamic bar by index on one side
+    void clear_dynamic_bar(int bar_index, bool negative);
+
+    // Advance pulse animation with minimal redraws
+    void animate_pulse(bool negative, int num_bars);
     
     // Get TFT_eSPI reference
     TFT_eSPI& get_tft();

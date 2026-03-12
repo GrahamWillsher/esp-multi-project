@@ -164,9 +164,26 @@ typedef struct __attribute__((packed)) {
 
 typedef struct __attribute__((packed)) {
     uint8_t type;       // msg_flash_led
-    uint8_t color;      // LED color code: 0=RED, 1=GREEN, 2=ORANGE
-                        // (semantic values, receiver maps to display colors)
+    uint8_t color;      // LED color code (LedColorWire)
+    uint8_t effect;     // LED effect code (LedEffectWire)
 } flash_led_t;
+
+// ============================================================================
+// Shared LED wire enums (single source of truth for TX/RX)
+// ============================================================================
+
+enum LedColorWire : uint8_t {
+    LED_WIRE_RED = 0,
+    LED_WIRE_GREEN = 1,
+    LED_WIRE_ORANGE = 2,
+    LED_WIRE_BLUE = 3
+};
+
+enum LedEffectWire : uint8_t {
+    LED_WIRE_CONTINUOUS = 0,
+    LED_WIRE_FLASH = 1,
+    LED_WIRE_HEARTBEAT = 2
+};
 
 typedef struct __attribute__((packed)) {
     uint8_t type;       // msg_debug_control
@@ -353,8 +370,9 @@ typedef struct __attribute__((packed)) {
     uint8_t soc_low_limit;               // SOC low limit (0-50%)
     uint8_t cell_count;                  // Number of cells in series
     uint8_t chemistry;                   // Battery chemistry (0=NCA, 1=NMC, 2=LFP, 3=LTO)
+    uint8_t led_mode;                    // LED policy mode (0=Classic, 1=Energy Flow, 2=Heartbeat)
     uint16_t checksum;                   // Message checksum
-} battery_settings_full_msg_t;  // Total: 28 bytes
+} battery_settings_full_msg_t;  // Total: 29 bytes
 
 // Charger status message - Real-time data (200ms updates)
 typedef struct __attribute__((packed)) {
@@ -446,7 +464,8 @@ enum BatterySettingsField : uint8_t {
     BATTERY_PACK_MIN_VOLTAGE_DV = 11,
     BATTERY_CELL_MAX_VOLTAGE_MV = 12,
     BATTERY_CELL_MIN_VOLTAGE_MV = 13,
-    BATTERY_SOC_ESTIMATED = 14
+    BATTERY_SOC_ESTIMATED = 14,
+    BATTERY_LED_MODE = 15
 };
 
 // Power settings field IDs

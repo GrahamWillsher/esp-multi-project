@@ -53,6 +53,97 @@ static HAL::TftEspiDisplayDriver tft_driver(tft_hardware);
 // DEBUG SWITCH: keep disabled for normal boot; this probe uses direct TFT test frames.
 static constexpr bool PRE_LITTLEFS_DEBUG_HALT = false;
 
+// Dedicated LED renderer task (always-on, effect-driven)
+static constexpr uint32_t LED_RENDER_TASK_STACK = 3072;
+static constexpr UBaseType_t LED_RENDER_TASK_PRIORITY = 1;
+
+static void task_led_renderer(void* parameter) {
+    (void)parameter;
+
+    // Initialize gradients once display/mutex are ready
+    if (xSemaphoreTake(RTOS::tft_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        init_led_gradients();
+        xSemaphoreGive(RTOS::tft_mutex);
+    }
+
+    bool first_frame = true;
+    bool led_is_on = false;
+    uint32_t next_toggle_ms = 0;
+    LEDColor last_color = LED_ORANGE;
+    LEDEffect last_effect = LED_EFFECT_FLASH;
+
+    for (;;) {
+        const uint32_t now_ms = millis();
+        const LEDColor color = ESPNow::current_led_color;
+        const LEDEffect effect = ESPNow::current_led_effect;
+
+        // Reset animation state on mode/color change
+        if (first_frame || color != last_color || effect != last_effect) {
+            led_is_on = false;
+            next_toggle_ms = now_ms;
+        }
+
+        switch (effect) {
+            case LED_EFFECT_CONTINUOUS: {
+                // Solid ON, redraw only on change
+                if (!led_is_on || first_frame || color != last_color || effect != last_effect) {
+                    if (xSemaphoreTake(RTOS::tft_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+                        set_led(color);
+                        xSemaphoreGive(RTOS::tft_mutex);
+                        led_is_on = true;
+                    }
+                }
+                break;
+            }
+
+            case LED_EFFECT_HEARTBEAT: {
+                // Brief pulse (on ~180ms, off ~1020ms), non-blocking
+                if (now_ms >= next_toggle_ms) {
+                    if (xSemaphoreTake(RTOS::tft_mutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+                        if (led_is_on) {
+                            clear_led();
+                            led_is_on = false;
+                            next_toggle_ms = now_ms + 1020;
+                        } else {
+                            set_led(color);
+                            led_is_on = true;
+                            next_toggle_ms = now_ms + 180;
+                        }
+                        xSemaphoreGive(RTOS::tft_mutex);
+                    }
+                }
+                break;
+            }
+
+            case LED_EFFECT_FLASH:
+            default: {
+                // Symmetric blink (on 500ms, off 500ms), non-blocking
+                if (now_ms >= next_toggle_ms) {
+                    if (xSemaphoreTake(RTOS::tft_mutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+                        if (led_is_on) {
+                            clear_led();
+                            led_is_on = false;
+                        } else {
+                            set_led(color);
+                            led_is_on = true;
+                        }
+                        next_toggle_ms = now_ms + 500;
+                        xSemaphoreGive(RTOS::tft_mutex);
+                    }
+                }
+                break;
+            }
+        }
+
+        first_frame = false;
+        last_color = color;
+        last_effect = effect;
+
+        // Keep task responsive and low-contention
+        smart_delay(20);
+    }
+}
+
 static void run_pre_littlefs_debug_and_halt() {
     LOG_WARN("PREBOOT", "============================================");
     LOG_WARN("PREBOOT", "PRE-LITTLEFS DEBUG MODE ENABLED (HALTING)");
@@ -256,6 +347,17 @@ void setup() {
         NULL,
         TaskConfig::MQTT_CLIENT_PRIORITY,
         NULL,
+        TaskConfig::WORKER_CORE
+    );
+
+    // Task: LED Renderer (priority 1, core 1) - always-on effect loop
+    xTaskCreatePinnedToCore(
+        task_led_renderer,
+        "LedRenderer",
+        LED_RENDER_TASK_STACK,
+        NULL,
+        LED_RENDER_TASK_PRIORITY,
+        &RTOS::task_indicator,
         TaskConfig::WORKER_CORE
     );
     

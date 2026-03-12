@@ -83,7 +83,28 @@ String settings_processor(const String& var) {
     if (var == "PRECHGMS") return TransmitterManager::hasPowerSettings() ? String(TransmitterManager::getPowerSettings().precharge_duration_ms) : "0";
     if (var == "CANFREQ") return TransmitterManager::hasCanSettings() ? String(TransmitterManager::getCanSettings().frequency_khz) : "0";
     if (var == "CANFDFREQ") return TransmitterManager::hasCanSettings() ? String(TransmitterManager::getCanSettings().fd_frequency_mhz) : "0";
-    if (var == "LEDMODE") return "<option value='0'>Default</option>";
+    if (var == "LEDMODE") {
+        uint8_t selected = 0;
+        if (TransmitterManager::hasBatteryEmulatorSettings()) {
+            selected = TransmitterManager::getBatteryEmulatorSettings().led_mode;
+            if (selected > 2) selected = 0;
+        }
+
+        String options;
+        options += "<option value='0'";
+        if (selected == 0) options += " selected";
+        options += ">Classic</option>";
+
+        options += "<option value='1'";
+        if (selected == 1) options += " selected";
+        options += ">Energy Flow</option>";
+
+        options += "<option value='2'";
+        if (selected == 2) options += " selected";
+        options += ">Heartbeat</option>";
+
+        return options;
+    }
     
     // Tesla-specific
     if (var == "GTWCOUNTRY") return "<option value='0'>Not Set</option>";

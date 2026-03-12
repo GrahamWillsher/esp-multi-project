@@ -26,6 +26,7 @@ struct BatteryEmulatorSettings {
     uint16_t cell_max_voltage_mV;
     uint16_t cell_min_voltage_mV;
     bool soc_estimated;
+    uint8_t led_mode;  // 0=Classic, 1=Energy Flow, 2=Heartbeat
 };
 
 struct PowerSettings {

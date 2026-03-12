@@ -31,10 +31,10 @@ private:
     static void task_impl(void* parameter);
     
     /**
-     * @brief Send test data with SOC band-based LED flash control
-     * 
-     * Sends battery data and triggers LED flash on receiver when SOC band changes.
-     * LED color corresponds to SOC level: red (low), orange (medium), green (high).
+     * @brief Send battery telemetry data
+     *
+     * Sends battery telemetry through the cache/transmission selector path.
+     * LED publishing is owned by the event/status pipeline.
      */
-    static void send_test_data_with_led_control();
+    static void send_battery_data();
 };

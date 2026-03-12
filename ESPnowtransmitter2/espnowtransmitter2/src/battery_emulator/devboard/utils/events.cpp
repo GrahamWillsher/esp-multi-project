@@ -1,4 +1,5 @@
 #include "events.h"
+#include "led_handler.h"
 #include <Arduino.h>
 #include "../../datalayer/datalayer.h"
 #include "../../devboard/hal/hal.h"
@@ -149,6 +150,7 @@ void clear_event(EVENTS_ENUM_TYPE event) {
     events.entries[event].state = EVENT_STATE_INACTIVE;
     update_event_level();
     update_bms_status();
+    led_publish_current_state(false, nullptr);
   }
 }
 
@@ -162,6 +164,7 @@ void reset_all_events() {
   }
   events.level = EVENT_LEVEL_INFO;
   update_bms_status();
+  led_publish_current_state(false, nullptr);
 }
 
 void set_event_MQTTpublished(EVENTS_ENUM_TYPE event) {
@@ -464,6 +467,7 @@ static void set_event(EVENTS_ENUM_TYPE event, uint8_t data, bool latched) {
   events.level = (EVENTS_LEVEL_TYPE)max(events.level, events.entries[event].level);
 
   update_bms_status();
+  led_publish_current_state(false, nullptr);
 }
 
 static void update_bms_status(void) {

@@ -16,6 +16,7 @@
 static uint16_t led_red_gradient[LED_FADE_STEPS + 1];
 static uint16_t led_green_gradient[LED_FADE_STEPS + 1];
 static uint16_t led_orange_gradient[LED_FADE_STEPS + 1];
+static uint16_t led_blue_gradient[LED_FADE_STEPS + 1];
 static bool led_gradients_initialized = false;
 static uint16_t led_last_background_color = 0;
 
@@ -67,6 +68,7 @@ void init_led_gradients() {
     pre_calculate_color_gradient(LEDColors::RED, Display::tft_background, LED_FADE_STEPS, led_red_gradient);
     pre_calculate_color_gradient(LEDColors::GREEN, Display::tft_background, LED_FADE_STEPS, led_green_gradient);
     pre_calculate_color_gradient(LEDColors::ORANGE, Display::tft_background, LED_FADE_STEPS, led_orange_gradient);
+    pre_calculate_color_gradient(LEDColors::BLUE, Display::tft_background, LED_FADE_STEPS, led_blue_gradient);
 
     led_last_background_color = Display::tft_background;
     led_gradients_initialized = true;
@@ -86,6 +88,7 @@ void flash_led(LEDColor color, uint32_t cycle_duration_ms) {
         case LED_RED:    gradient = led_red_gradient; break;
         case LED_GREEN:  gradient = led_green_gradient; break;
         case LED_ORANGE: gradient = led_orange_gradient; break;
+        case LED_BLUE:   gradient = led_blue_gradient; break;
         default: return;
     }
 
@@ -159,10 +162,11 @@ void set_led(LEDColor color) {
     static constexpr uint16_t led_colors[] = {
         LEDColors::RED,    // LED_RED = 0
         LEDColors::GREEN,  // LED_GREEN = 1
-        LEDColors::ORANGE  // LED_ORANGE = 2
+        LEDColors::ORANGE, // LED_ORANGE = 2
+        LEDColors::BLUE    // LED_BLUE = 3
     };
 
-    if (color <= LED_ORANGE) {
+    if (color <= LED_BLUE) {
 #ifdef USE_LVGL
         apply_led_color_rgb565(led_colors[color]);
 #else

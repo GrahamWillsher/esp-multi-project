@@ -1,4 +1,5 @@
 #include "version_beacon_manager.h"
+#include "tx_send_guard.h"
 #include <esp_now.h>
 #include <espnow_transmitter.h>
 #include <connection_manager.h>
@@ -8,6 +9,7 @@
 #include "../network/mqtt_task.h"
 #include "../network/ethernet_manager.h"
 #include "message_handler.h"
+#include "../battery_emulator/devboard/utils/led_handler.h"
 #include <firmware_version.h>
 #include <firmware_metadata.h>
 
@@ -138,10 +140,11 @@ void VersionBeaconManager::send_version_beacon(bool force) {
         // Get receiver MAC from connection manager
         const uint8_t* peer_mac = EspNowConnectionManager::instance().get_peer_mac();
         
-        esp_err_t result = esp_now_send(
+        esp_err_t result = TxSendGuard::send_to_receiver_guarded(
             peer_mac,
             (const uint8_t*)&beacon,
-            sizeof(beacon)
+            sizeof(beacon),
+            "version_beacon"
         );
         
         if (result == ESP_OK) {
@@ -204,7 +207,15 @@ void VersionBeaconManager::send_config_section(config_section_t section, const u
             
             mqtt_msg.checksum = 0;  // TODO: Calculate checksum if needed
             
-            esp_now_send(receiver_mac, (const uint8_t*)&mqtt_msg, sizeof(mqtt_msg));
+            esp_err_t send_result = TxSendGuard::send_to_receiver_guarded(
+                receiver_mac,
+                (const uint8_t*)&mqtt_msg,
+                sizeof(mqtt_msg),
+                "mqtt_config_ack"
+            );
+            if (send_result != ESP_OK) {
+                LOG_WARN("VERSION_BEACON", "Failed to send MQTT config response: %s", esp_err_to_name(send_result));
+            }
             break;
         }
         
@@ -272,15 +283,57 @@ void VersionBeaconManager::send_config_section(config_section_t section, const u
             strncpy(net_msg.message, "Config sent in response to version mismatch", sizeof(net_msg.message) - 1);
             net_msg.message[sizeof(net_msg.message) - 1] = '\0';
             
-            esp_now_send(receiver_mac, (const uint8_t*)&net_msg, sizeof(net_msg));
-            LOG_INFO("VERSION_BEACON", "Sent network config (v%u) in response to request", net_msg.config_version);
+            esp_err_t send_result = TxSendGuard::send_to_receiver_guarded(
+                receiver_mac,
+                (const uint8_t*)&net_msg,
+                sizeof(net_msg),
+                "network_config_ack"
+            );
+            if (send_result == ESP_OK) {
+                LOG_INFO("VERSION_BEACON", "Sent network config (v%u) in response to request", net_msg.config_version);
+            } else {
+                LOG_WARN("VERSION_BEACON", "Failed to send network config response: %s", esp_err_to_name(send_result));
+            }
             break;
         }
         
         case config_section_battery: {
-            // Battery settings would be sent here
-            // For now, log that this needs to be implemented  
-            LOG_WARN("VERSION_BEACON", "Battery config section send not yet implemented");
+            battery_settings_full_msg_t settings_msg;
+            settings_msg.type = msg_battery_info;
+            settings_msg.capacity_wh = SettingsManager::instance().get_battery_capacity_wh();
+            settings_msg.max_voltage_mv = SettingsManager::instance().get_battery_max_voltage_mv();
+            settings_msg.min_voltage_mv = SettingsManager::instance().get_battery_min_voltage_mv();
+            settings_msg.max_charge_current_a = SettingsManager::instance().get_battery_max_charge_current_a();
+            settings_msg.max_discharge_current_a = SettingsManager::instance().get_battery_max_discharge_current_a();
+            settings_msg.soc_high_limit = SettingsManager::instance().get_battery_soc_high_limit();
+            settings_msg.soc_low_limit = SettingsManager::instance().get_battery_soc_low_limit();
+            settings_msg.cell_count = SettingsManager::instance().get_battery_cell_count();
+            settings_msg.chemistry = SettingsManager::instance().get_battery_chemistry();
+            settings_msg.led_mode = SettingsManager::instance().get_battery_led_mode();
+
+            uint16_t sum = 0;
+            const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&settings_msg);
+            for (size_t i = 0; i < sizeof(settings_msg) - 2; i++) {
+                sum += bytes[i];
+            }
+            settings_msg.checksum = sum;
+
+            esp_err_t send_result = TxSendGuard::send_to_receiver_guarded(
+                receiver_mac,
+                reinterpret_cast<const uint8_t*>(&settings_msg),
+                sizeof(settings_msg),
+                "battery_settings_section"
+            );
+
+            if (send_result == ESP_OK) {
+                LOG_INFO("VERSION_BEACON", "Sent battery config section (v%u)", SettingsManager::instance().get_battery_settings_version());
+                esp_err_t led_replay_result = led_publish_current_state(true, receiver_mac);
+                if (led_replay_result != ESP_OK) {
+                    LOG_WARN("VERSION_BEACON", "Battery section sent but LED replay failed: %s", esp_err_to_name(led_replay_result));
+                }
+            } else {
+                LOG_WARN("VERSION_BEACON", "Failed to send battery config section: %s", esp_err_to_name(send_result));
+            }
             break;
         }
         

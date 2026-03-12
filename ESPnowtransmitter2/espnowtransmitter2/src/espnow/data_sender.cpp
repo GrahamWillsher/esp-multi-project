@@ -9,18 +9,7 @@
 #include "../test_data/test_data_config.h"  // Phase 2: Runtime test data configuration
 #include "../network/transmission_selector.h"  // Phase 2: Smart transmission routing
 #include <Arduino.h>
-#include <connection_manager.h>
 #include <espnow_transmitter.h>
-
-// SOC band tracking for LED flash control
-// SOC range is 20-80%, divided into thirds for visual feedback
-enum class SOCBand : uint8_t {
-    LOW_SOC,      // 20-39 SOC (0-33% normalized) -> Red
-    MEDIUM_SOC,   // 40-59 SOC (34-66% normalized) -> Orange
-    HIGH_SOC      // 60-80 SOC (67-100% normalized) -> Green
-};
-
-static SOCBand last_soc_band = SOCBand::MEDIUM_SOC;  // Track previous band to detect changes
 
 DataSender& DataSender::instance() {
     static DataSender instance;
@@ -59,7 +48,7 @@ void DataSender::task_impl(void* parameter) {
         if (TxStateMachine::instance().is_transmission_active()) {
             const char* mode_str = TestDataGenerator::is_enabled() ? "TEST" : "LIVE";
             LOG_TRACE("DATA_SENDER", "Sending data (transmission active, mode: %s)", mode_str);
-            send_test_data_with_led_control();
+            send_battery_data();
         } else {
             static uint32_t last_inactive_log_ms = 0;
             uint32_t now = millis();
@@ -72,7 +61,7 @@ void DataSender::task_impl(void* parameter) {
 }
 
 /**
- * @brief Send battery data (test or live) with SOC-based LED flash control
+ * @brief Send battery data (test or live)
  * 
  * Phase 1: Determines data source (live vs test) based on test mode flag
  * Phase 4a: Uses real datalayer from CAN bus when in live mode
@@ -82,16 +71,9 @@ void DataSender::task_impl(void* parameter) {
  * - Background transmission task handles sending from cache
  * - Non-blocking: < 100µs cache write (doesn't block Battery Emulator)
  * 
- * Sends battery data and triggers LED flash on receiver when SOC band changes.
- * 
- * SOC range is 20-80%, mapped to thirds:
- * - Low (20-39 SOC = 0-33% normalized): Red LED
- * - Medium (40-59 SOC = 34-66% normalized): Orange LED  
- * - High (60-80 SOC = 67-100% normalized): Green LED
- * 
- * LED flash command is only sent once when transitioning between bands.
+ * LED updates are published separately by the event/status pipeline.
  */
-void DataSender::send_test_data_with_led_control() {
+void DataSender::send_battery_data() {
     // Phase 2: Read battery data from datalayer (live or test depending on configuration)
     // Convert from datalayer format (pptt = percent * 100) to simple percentage
     uint16_t soc_pptt = datalayer.battery.status.reported_soc;  // e.g., 8000 = 80.00%
@@ -129,53 +111,5 @@ void DataSender::send_test_data_with_led_control() {
         // Data dropped - doesn't block control code
         LOG_WARN("DATA_SENDER", "Cache write failed (timeout/overflow) - data dropped");
         return;
-    }
-    
-    // Determine current SOC band (20-80 range mapped to thirds)
-    SOCBand current_band;
-    if (tx_data.soc < 40) {
-        current_band = SOCBand::LOW_SOC;      // 20-39: Lower third (RED)
-    } else if (tx_data.soc < 60) {
-        current_band = SOCBand::MEDIUM_SOC;   // 40-59: Middle third (ORANGE)
-    } else {
-        current_band = SOCBand::HIGH_SOC;     // 60-80: Upper third (GREEN)
-    }
-    
-    // Send flash LED command only when band changes
-    if (current_band != last_soc_band) {
-        // Check ESP-NOW health before sending LED command
-        if (!is_espnow_healthy()) {
-            LOG_DEBUG("DATA_SENDER", "Skipping LED flash - ESP-NOW experiencing delivery failures");
-            return;
-        }
-        
-        flash_led_t flash_msg;
-        flash_msg.type = msg_flash_led;
-        
-        // Map band to LED color: 0=red, 1=green, 2=orange
-        switch (current_band) {
-            case SOCBand::LOW_SOC:
-                flash_msg.color = 0;  // Red
-                LOG_INFO("DATA_SENDER", "SOC band changed to LOW (20-39%%) - Flash RED (SOC: %d)", tx_data.soc);
-                break;
-            case SOCBand::MEDIUM_SOC:
-                flash_msg.color = 2;  // Orange
-                LOG_INFO("DATA_SENDER", "SOC band changed to MEDIUM (40-59%%) - Flash ORANGE (SOC: %d)", tx_data.soc);
-                break;
-            case SOCBand::HIGH_SOC:
-                flash_msg.color = 1;  // Green
-                LOG_INFO("DATA_SENDER", "SOC band changed to HIGH (60-80%%) - Flash GREEN (SOC: %d)", tx_data.soc);
-                break;
-        }
-        
-        // Send flash LED command to receiver
-        const uint8_t* peer_mac = EspNowConnectionManager::instance().get_peer_mac();
-        esp_err_t result = esp_now_send(peer_mac, (const uint8_t*)&flash_msg, sizeof(flash_msg));
-        if (result == ESP_OK) {
-            LOG_DEBUG("DATA_SENDER", "Flash LED command sent: color=%d", flash_msg.color);
-            last_soc_band = current_band;  // Update tracked band
-        } else {
-            LOG_ERROR("DATA_SENDER", "Failed to send flash LED: %s", esp_err_to_name(result));
-        }
     }
 }

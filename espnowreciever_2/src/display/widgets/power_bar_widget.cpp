@@ -5,43 +5,57 @@
 #include "power_bar_widget.h"
 #include "../../common.h"
 #include "../../helpers.h"
+#include <algorithm>
 #include <cmath>
 
 // Forward declarations (from TFT_eSPI library)
 extern const GFXfont FreeSansBold9pt7b;
-extern const GFXfont FreeSansBold12pt7b;
 extern TFT_eSPI tft;
 
 namespace Display {
 namespace Widgets {
 
+namespace {
+constexpr int BAR_DRAW_HEIGHT = 10;
+constexpr int BAR_CLEAR_HEIGHT = 40;
+constexpr int CENTER_MARKER_WIDTH = 1;
+constexpr int ZERO_THRESHOLD_W = 10;
+constexpr int PULSE_DELAY_MS = 30;
+constexpr int TARGET_BAR_PIXEL_WIDTH = 8;
+}
+
 TFT_eSPI& PowerBarWidget::get_tft() {
     return ::tft;
 }
 
-void PowerBarWidget::init_gradients() {
-    if (bar_char_width_ > 0) {
+void PowerBarWidget::compute_geometry_and_gradients() {
+    if (max_bars_per_side_ > 0) {
         return;  // Already initialized
     }
-    
-    TFT_eSPI& tft = get_tft();
-    
-    // Calculate bar character width once (using text size 2 for thicker bars)
-    tft.setFreeFont(&FreeSansBold12pt7b);
-    tft.setTextSize(2);
-    bar_char_width_ = tft.textWidth("-");
-    
-    // Calculate max bars per side (fit within half the screen)
-    max_bars_per_side_ = (Display::SCREEN_WIDTH / 2) / bar_char_width_;
-    if (max_bars_per_side_ > 30) max_bars_per_side_ = 30;
-    
-    // Generate blue→green gradient (charging, left side)
-    // This goes from BLUE (neutral) to GREEN (charging)
-    pre_calculate_color_gradient(TFT_BLUE, TFT_GREEN, max_bars_per_side_ - 1, gradient_green_);
-    
-    // Generate blue→red gradient (discharging, right side)
-    // This goes from BLUE (neutral) to RED (discharging)
-    pre_calculate_color_gradient(TFT_BLUE, TFT_RED, max_bars_per_side_ - 1, gradient_red_);
+
+    // Reserve the center marker column so dynamic bars never overlap it.
+    const int side_pixels = std::min<int>(x_, Display::SCREEN_WIDTH - (x_ + CENTER_MARKER_WIDTH));
+    int bars = side_pixels / TARGET_BAR_PIXEL_WIDTH;
+    if (bars < 1) bars = 1;
+    if (bars > 30) bars = 30;
+    max_bars_per_side_ = bars;
+
+    const int base = side_pixels / max_bars_per_side_;
+    const int rem = side_pixels % max_bars_per_side_;
+
+    bar_prefix_[0] = 0;
+    for (int i = 0; i < max_bars_per_side_; ++i) {
+        bar_widths_[i] = base + ((i < rem) ? 1 : 0);
+        bar_prefix_[i + 1] = bar_prefix_[i] + bar_widths_[i];
+    }
+
+    if (max_bars_per_side_ > 1) {
+        pre_calculate_color_gradient(TFT_BLUE, TFT_GREEN, max_bars_per_side_ - 1, gradient_green_);
+        pre_calculate_color_gradient(TFT_BLUE, TFT_RED, max_bars_per_side_ - 1, gradient_red_);
+    } else {
+        gradient_green_[0] = TFT_GREEN;
+        gradient_red_[0] = TFT_RED;
+    }
 }
 
 void PowerBarWidget::render_power_text() {
@@ -66,15 +80,77 @@ void PowerBarWidget::render_power_text() {
     last_displayed_power_text_ = current_power_;
 }
 
-void PowerBarWidget::render_bar() {
+void PowerBarWidget::draw_center_marker() {
     TFT_eSPI& tft = get_tft();
-    
-    // Initialize gradients if needed
-    init_gradients();
-    
-    tft.setFreeFont(&FreeSansBold12pt7b);
-    tft.setTextSize(2);  // Increased from 1 to 2 for thicker bars
-    tft.setTextDatum(MC_DATUM);
+    tft.drawFastVLine(x_, y_ - (BAR_CLEAR_HEIGHT / 2), BAR_CLEAR_HEIGHT, TFT_BLUE);
+}
+
+void PowerBarWidget::get_bar_rect(int bar_index, bool negative, int& left, int& width) const {
+    const int start = bar_prefix_[bar_index];
+    const int end = bar_prefix_[bar_index + 1];
+    width = end - start;
+
+    if (negative) {
+        // Left side: fill [x_ - end, x_ - start - 1]
+        left = x_ - end;
+    } else {
+        // Right side: fill [x_ + CENTER_MARKER_WIDTH + start, x_ + CENTER_MARKER_WIDTH + end - 1]
+        // This keeps the center marker as a dedicated, non-overlapping column.
+        left = x_ + CENTER_MARKER_WIDTH + start;
+    }
+}
+
+void PowerBarWidget::draw_dynamic_bar(int bar_index, bool negative, uint16_t color) {
+    TFT_eSPI& tft = get_tft();
+    int left = 0;
+    int width = 0;
+    get_bar_rect(bar_index, negative, left, width);
+
+    tft.fillRect(left,
+                 y_ - (BAR_DRAW_HEIGHT / 2),
+                 width,
+                 BAR_DRAW_HEIGHT,
+                 color);
+}
+
+void PowerBarWidget::clear_dynamic_bar(int bar_index, bool negative) {
+    TFT_eSPI& tft = get_tft();
+    int left = 0;
+    int width = 0;
+    get_bar_rect(bar_index, negative, left, width);
+
+    tft.fillRect(left,
+                 y_ - (BAR_DRAW_HEIGHT / 2),
+                 width,
+                 BAR_DRAW_HEIGHT,
+                 Display::tft_background);
+}
+
+void PowerBarWidget::animate_pulse(bool negative, int num_bars) {
+    if (num_bars <= 0) {
+        pulse_phase_ = -1;
+        return;
+    }
+
+    const int previous_phase = pulse_phase_;
+    pulse_phase_ = (pulse_phase_ + 1) % (num_bars + 1);
+
+    if (previous_phase >= 0 && previous_phase < num_bars) {
+        const uint16_t base_color = negative ? gradient_green_[previous_phase] : gradient_red_[previous_phase];
+        draw_dynamic_bar(previous_phase, negative, base_color);
+    }
+
+    if (pulse_phase_ >= 0 && pulse_phase_ < num_bars) {
+        const uint16_t base_color = negative ? gradient_green_[pulse_phase_] : gradient_red_[pulse_phase_];
+        const uint16_t dimmed_color = (base_color >> 1) & 0x7BEF;
+        draw_dynamic_bar(pulse_phase_, negative, dimmed_color);
+        smart_delay(PULSE_DELAY_MS);
+    }
+}
+
+void PowerBarWidget::render_bar() {
+    // Initialize geometry + gradients once
+    compute_geometry_and_gradients();
     
     // Clamp power to valid range
     int32_t clamped_power = current_power_;
@@ -91,36 +167,24 @@ void PowerBarWidget::render_bar() {
     
     bool is_charging = (clamped_power < 0);
     int target_signed_bars = is_charging ? -bars : bars;
-    bool is_zero = (clamped_power == 0 || abs(clamped_power) < 10);
-
-    auto drawBar = [&](int barIndex, bool negative, uint16_t color) {
-        int bar_x = negative ? (x_ - (barIndex + 1) * bar_char_width_) : (x_ + barIndex * bar_char_width_);
-        tft.setTextColor(color, Display::tft_background);
-        tft.drawString("-", bar_x, y_);
-    };
+    bool is_zero = (clamped_power == 0 || abs(clamped_power) < ZERO_THRESHOLD_W);
+    const int previous_abs = abs(previous_signed_bars_);
+    const bool previous_negative = previous_signed_bars_ < 0;
     
     // Handle zero/near-zero special case
     if (is_zero) {
-        if (!last_was_zero_) {
-            // Clear entire bar area (increased height for size 2 text)
-            tft.fillRect(x_ - (max_bars_per_side_ * bar_char_width_), 
-                        y_ - 20,
-                        max_bars_per_side_ * 2 * bar_char_width_, 
-                        40,
-                        Display::tft_background);
-            previous_signed_bars_ = 0;
-            last_was_zero_ = true;
-
-            // Draw neutral center marker so power area never appears blank
-            tft.setTextColor(TFT_BLUE, Display::tft_background);
-            tft.drawString("-", x_, y_);
+        if (previous_abs > 0) {
+            for (int i = 0; i < previous_abs; ++i) {
+                clear_dynamic_bar(i, previous_negative);
+            }
         }
+
+        draw_center_marker();
+        previous_signed_bars_ = 0;
+        pulse_phase_ = -1;
         render_power_text();
-        last_rendered_power_ = current_power_;
         return;
     }
-    
-    last_was_zero_ = false;
 
     // Pulse/ripple effect when bar count and direction are unchanged
     bool same_direction = (previous_signed_bars_ < 0 && target_signed_bars < 0) ||
@@ -128,87 +192,46 @@ void PowerBarWidget::render_bar() {
     bool should_pulse = same_direction && (abs(previous_signed_bars_) == abs(target_signed_bars)) && (bars > 0);
 
     if (should_pulse) {
-        bool negative = (target_signed_bars < 0);
-        const int numBars = abs(target_signed_bars);
-        const int DELAY_PER_BAR_MS = 30;
-
-        for (int ripplePos = 0; ripplePos <= numBars; ripplePos++) {
-            for (int i = 0; i < numBars; i++) {
-                uint16_t barColor = negative ? gradient_green_[i] : gradient_red_[i];
-                uint16_t displayColor = (i == ripplePos && ripplePos < numBars)
-                    ? ((barColor >> 1) & 0x7BEF)  // Dimmed for ripple
-                    : barColor;
-                drawBar(i, negative, displayColor);
-            }
-
-            if (ripplePos < numBars) {
-                smart_delay(DELAY_PER_BAR_MS);
-            }
-        }
-
+        animate_pulse(target_signed_bars < 0, bars);
+        draw_center_marker();
         previous_signed_bars_ = target_signed_bars;
-        last_rendered_power_ = current_power_;
         render_power_text();
         return;
     }
+
+    pulse_phase_ = -1;
     
-    // Draw bars
+    // Clear prior side if direction changed
+    if (previous_abs > 0 && previous_negative != is_charging) {
+        for (int i = 0; i < previous_abs; ++i) {
+            clear_dynamic_bar(i, previous_negative);
+        }
+    }
+
+    // Clear only bars that are no longer needed when magnitude shrinks on same side.
+    if (previous_negative == is_charging && bars < previous_abs) {
+        for (int i = bars; i < previous_abs; ++i) {
+            clear_dynamic_bar(i, is_charging);
+        }
+    }
+
+    // Draw only bars newly required on the active side.
+    const int draw_start = (previous_negative == is_charging && bars > previous_abs) ? previous_abs : 0;
     if (is_charging) {
         // Charging: draw bars on left side (blue→green gradient)
-        for (int i = 0; i < bars; i++) {
-            drawBar(i, true, gradient_green_[i]);
-        }
-
-        int previous_abs = abs(previous_signed_bars_);
-        bool previous_negative = previous_signed_bars_ < 0;
-        
-        // Clear right side if previously discharging
-        if (previous_abs > 0 && !previous_negative) {
-            tft.fillRect(x_, 
-                        y_ - 20,
-                        previous_abs * bar_char_width_, 
-                        40,
-                        Display::tft_background);
-        }
-        
-        // Clear extra bars on left if power decreased
-        if (previous_negative && bars < previous_abs) {
-            tft.fillRect(x_ - previous_abs * bar_char_width_,
-                        y_ - 20,
-                        (previous_abs - bars) * bar_char_width_,
-                        40,
-                        Display::tft_background);
+        for (int i = draw_start; i < bars; i++) {
+            draw_dynamic_bar(i, true, gradient_green_[i]);
         }
     } else {
         // Discharging: draw bars on right side (blue→red gradient)
-        for (int i = 0; i < bars; i++) {
-            drawBar(i, false, gradient_red_[i]);
-        }
-
-        int previous_abs = abs(previous_signed_bars_);
-        bool previous_negative = previous_signed_bars_ < 0;
-        
-        // Clear left side if previously charging
-        if (previous_abs > 0 && previous_negative) {
-            tft.fillRect(x_ - previous_abs * bar_char_width_,
-                        y_ - 20,
-                        previous_abs * bar_char_width_,
-                        40,
-                        Display::tft_background);
-        }
-        
-        // Clear extra bars on right if power decreased
-        if (!previous_negative && bars < previous_abs) {
-            tft.fillRect(x_ + bars * bar_char_width_,
-                        y_ - 20,
-                        (previous_abs - bars) * bar_char_width_,
-                        40,
-                        Display::tft_background);
+        for (int i = draw_start; i < bars; i++) {
+            draw_dynamic_bar(i, false, gradient_red_[i]);
         }
     }
+
+    draw_center_marker();
     
     previous_signed_bars_ = target_signed_bars;
-    last_rendered_power_ = current_power_;
     render_power_text();
 }
 

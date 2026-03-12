@@ -72,6 +72,7 @@ public:
     uint16_t get_battery_cell_max_voltage_mV() const { return battery_cell_max_voltage_mV_; }
     uint16_t get_battery_cell_min_voltage_mV() const { return battery_cell_min_voltage_mV_; }
     bool get_battery_soc_estimated() const { return battery_soc_estimated_; }
+    uint8_t get_battery_led_mode() const { return battery_led_mode_; }
 
     // Power settings getters
     uint16_t get_power_charge_w() const { return power_charge_w_; }
@@ -200,6 +201,7 @@ private:
     uint16_t battery_cell_max_voltage_mV_{4200};       // 4.2V default
     uint16_t battery_cell_min_voltage_mV_{3000};       // 3.0V default
     bool battery_soc_estimated_{false};                // SOC estimation disabled
+    uint8_t battery_led_mode_{0};                      // 0=Classic, 1=Energy Flow, 2=Heartbeat
 
     // Power settings storage
     uint16_t power_charge_w_{3000};                    // 3kW default

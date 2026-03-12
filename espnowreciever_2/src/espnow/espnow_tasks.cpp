@@ -487,6 +487,34 @@ void setup_message_routes() {
                     request_sent = true;
                 }
 
+                // Check battery settings version
+                // Request if: 1) Never received, OR 2) Version mismatch
+                bool need_battery_update = !TransmitterManager::hasBatterySettings();
+                if (!need_battery_update) {
+                    const uint32_t cached_battery_version = BatterySettingsCache::instance().get_version();
+                    need_battery_update = (cached_battery_version != beacon->battery_settings_version);
+                }
+
+                if (need_battery_update) {
+                    LOG_INFO(kLogTag, "[VERSION_BEACON] Battery config %s: cached v%u, beacon v%u - requesting update",
+                             TransmitterManager::hasBatterySettings() ? "stale" : "unknown",
+                             TransmitterManager::hasBatterySettings() ? BatterySettingsCache::instance().get_version() : 0,
+                             beacon->battery_settings_version);
+
+                    config_section_request_t request;
+                    request.type = msg_config_section_request;
+                    request.section = config_section_battery;
+                    request.requested_version = beacon->battery_settings_version;
+
+                    esp_err_t result = esp_now_send(msg->mac, (const uint8_t*)&request, sizeof(request));
+                    if (result == ESP_OK) {
+                        LOG_INFO(kLogTag, "[VERSION_BEACON] Sent Battery config request (v%u)", beacon->battery_settings_version);
+                    } else {
+                        LOG_ERROR(kLogTag, "[VERSION_BEACON] Failed to send Battery config request: %s", esp_err_to_name(result));
+                    }
+                    request_sent = true;
+                }
+
                 // Extract metadata directly from beacon (no separate request/response needed)
                 // Store in cache with MAC address from sender
                 TransmitterManager::storeMetadata(
@@ -505,7 +533,7 @@ void setup_message_routes() {
                          beacon->version_minor,
                          beacon->version_patch);
                 
-                // Battery and power profile checks would go here when implemented
+                // Power profile checks would go here when implemented
                 
                 if (!request_sent) {
                     LOG_DEBUG(kLogTag, "All cached configs up-to-date");
@@ -645,20 +673,32 @@ void handle_flash_led_message(const espnow_queue_msg_t* msg) {
     if (msg->len >= (int)sizeof(flash_led_t)) {
         const flash_led_t* flash_msg = reinterpret_cast<const flash_led_t*>(msg->data);
         
-        // Validate color code (wire format matches enum: 0=RED, 1=GREEN, 2=ORANGE)
-        if (flash_msg->color > LED_ORANGE) {
+        // Validate color code (wire format matches enum: 0=RED, 1=GREEN, 2=ORANGE, 3=BLUE)
+        if (flash_msg->color > LED_BLUE) {
             LOG_WARN(kLogTag, "Invalid LED color code: %d", flash_msg->color);
+            return;
+        }
+
+        // Validate effect code (0=CONTINUOUS, 1=FLASH, 2=HEARTBEAT)
+        if (flash_msg->effect > LED_EFFECT_HEARTBEAT) {
+            LOG_WARN(kLogTag, "Invalid LED effect code: %d", flash_msg->effect);
             return;
         }
         
         LEDColor color = static_cast<LEDColor>(flash_msg->color);
+        LEDEffect effect = static_cast<LEDEffect>(flash_msg->effect);
         
-        static const char* color_names[] = {"RED", "GREEN", "ORANGE"};
-        LOG_DEBUG(kLogTag, "Flash LED request: color=%d (%s)", flash_msg->color, color_names[flash_msg->color]);
+        static const char* color_names[] = {"RED", "GREEN", "ORANGE", "BLUE"};
+        static const char* effect_names[] = {"CONTINUOUS", "FLASH", "HEARTBEAT"};
+        LOG_DEBUG(kLogTag, "LED request: color=%d (%s), effect=%d (%s)",
+                 flash_msg->color,
+                 color_names[flash_msg->color],
+                 flash_msg->effect,
+                 effect_names[flash_msg->effect]);
         
         // Store the current LED color for status indicator task to use
         ESPNow::current_led_color = color;
-        ESPNow::current_led_effect = LED_EFFECT_FLASH;
+        ESPNow::current_led_effect = effect;
     }
 }
 

@@ -113,6 +113,17 @@ static esp_err_t transmitter_hub_handler(httpd_req_t *req) {
                 <div style='font-size: 12px; color: #888; margin-top: 8px;'>Network, MQTT, Settings</div>
             </div>
         </a>
+
+        <!-- Hardware Config -->
+        <a href='/transmitter/hardware' style='text-decoration: none;'>
+            <div class='info-box' style='cursor: pointer; text-align: center; transition: transform 0.2s, border-color 0.2s; border: 2px solid #2196F3;'
+                 onmouseover='this.style.transform="translateY(-3px)"; this.style.borderColor="#42A5F5"'
+                 onmouseout='this.style.transform="translateY(0)"; this.style.borderColor="#2196F3"'>
+                <div style='font-size: 36px; margin: 10px 0;'>💡</div>
+                <div style='font-weight: bold; color: #2196F3; font-size: 16px;'>Hardware Config</div>
+                <div style='font-size: 12px; color: #888; margin-top: 8px;'>Status LED Pattern</div>
+            </div>
+        </a>
         
         <!-- Battery Settings -->
         <a href='/transmitter/battery' style='text-decoration: none;'>

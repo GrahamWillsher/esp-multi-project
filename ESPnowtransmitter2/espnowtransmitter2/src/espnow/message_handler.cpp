@@ -3,6 +3,7 @@
 #include "version_beacon_manager.h"
 #include "heartbeat_manager.h"
 #include "tx_state_machine.h"
+#include "tx_send_guard.h"
 #include "../network/ethernet_manager.h"
 #include "../network/mqtt_manager.h"
 #include "../system_settings.h"
@@ -243,7 +244,12 @@ void EspnowMessageHandler::setup_message_routes() {
                 strncpy(response.build_time, __TIME__, sizeof(response.build_time) - 1);
                 response.build_time[sizeof(response.build_time) - 1] = '\0';
                 
-                esp_err_t result = esp_now_send(msg->mac, (const uint8_t*)&response, sizeof(response));
+                esp_err_t result = TxSendGuard::send_to_receiver_guarded(
+                    msg->mac,
+                    (const uint8_t*)&response,
+                    sizeof(response),
+                    "version_response"
+                );
                 if (result == ESP_OK) {
                     LOG_DEBUG("VERSION", "Sent VERSION_RESPONSE to receiver");
                 } else {
@@ -389,7 +395,12 @@ void EspnowMessageHandler::handle_request_data(const espnow_queue_msg_t& msg) {
                 }
                 
                 packet.checksum = EspnowPacketUtils::calculate_checksum(packet.payload, packet.payload_len);
-                esp_err_t result = esp_now_send(msg.mac, (const uint8_t*)&packet, sizeof(packet));
+                esp_err_t result = TxSendGuard::send_to_receiver_guarded(
+                    msg.mac,
+                    (const uint8_t*)&packet,
+                    sizeof(packet),
+                    "network_config"
+                );
                 
                 if (result == ESP_OK) {
                     LOG_DEBUG("DATA_REQUEST", "Sent network config: %s, GW: %s, Subnet: %s",
@@ -418,6 +429,7 @@ void EspnowMessageHandler::handle_request_data(const espnow_queue_msg_t& msg) {
             settings_msg.soc_low_limit = SettingsManager::instance().get_battery_soc_low_limit();
             settings_msg.cell_count = SettingsManager::instance().get_battery_cell_count();
             settings_msg.chemistry = SettingsManager::instance().get_battery_chemistry();
+            settings_msg.led_mode = SettingsManager::instance().get_battery_led_mode();
             
             uint16_t sum = 0;
             const uint8_t* bytes = (const uint8_t*)&settings_msg;
@@ -426,7 +438,12 @@ void EspnowMessageHandler::handle_request_data(const espnow_queue_msg_t& msg) {
             }
             settings_msg.checksum = sum;
             
-            esp_err_t result = esp_now_send(msg.mac, (const uint8_t*)&settings_msg, sizeof(settings_msg));
+            esp_err_t result = TxSendGuard::send_to_receiver_guarded(
+                msg.mac,
+                (const uint8_t*)&settings_msg,
+                sizeof(settings_msg),
+                "battery_settings"
+            );
             if (result == ESP_OK) {
                 const char* chem[] = {"NCA", "NMC", "LFP", "LTO"};
                 LOG_INFO("DATA_REQUEST", "Sent FULL battery settings: %dWh, %dS, %s, %.1fA/%.1fA, SOC:%d-%d%%", 
@@ -464,7 +481,12 @@ void EspnowMessageHandler::handle_request_data(const espnow_queue_msg_t& msg) {
                 }
                 
                 packet.checksum = EspnowPacketUtils::calculate_checksum(packet.payload, packet.payload_len);
-                esp_err_t result = esp_now_send(msg.mac, (const uint8_t*)&packet, sizeof(packet));
+                esp_err_t result = TxSendGuard::send_to_receiver_guarded(
+                    msg.mac,
+                    (const uint8_t*)&packet,
+                    sizeof(packet),
+                    "settings_ip"
+                );
                 
                 if (result == ESP_OK) {
                     LOG_DEBUG("DATA_REQUEST", "Sent IP data (legacy subtype_settings)");
@@ -483,7 +505,12 @@ void EspnowMessageHandler::handle_request_data(const espnow_queue_msg_t& msg) {
                 memset(packet.payload, 0, 12);  // All zeros = no IP yet
                 packet.checksum = EspnowPacketUtils::calculate_checksum(packet.payload, packet.payload_len);
                 
-                esp_err_t result = esp_now_send(msg.mac, (const uint8_t*)&packet, sizeof(packet));
+                esp_err_t result = TxSendGuard::send_to_receiver_guarded(
+                    msg.mac,
+                    (const uint8_t*)&packet,
+                    sizeof(packet),
+                    "settings_ip_empty"
+                );
                 if (result == ESP_OK) {
                     LOG_INFO("DATA_REQUEST", "Sent empty IP data (Ethernet not connected yet)");
                 } else {
@@ -503,6 +530,7 @@ void EspnowMessageHandler::handle_request_data(const espnow_queue_msg_t& msg) {
             settings_msg.soc_low_limit = SettingsManager::instance().get_battery_soc_low_limit();
             settings_msg.cell_count = SettingsManager::instance().get_battery_cell_count();
             settings_msg.chemistry = SettingsManager::instance().get_battery_chemistry();
+            settings_msg.led_mode = SettingsManager::instance().get_battery_led_mode();
             
             uint16_t sum = 0;
             const uint8_t* bytes = (const uint8_t*)&settings_msg;
@@ -511,7 +539,12 @@ void EspnowMessageHandler::handle_request_data(const espnow_queue_msg_t& msg) {
             }
             settings_msg.checksum = sum;
             
-            esp_err_t result = esp_now_send(msg.mac, (const uint8_t*)&settings_msg, sizeof(settings_msg));
+            esp_err_t result = TxSendGuard::send_to_receiver_guarded(
+                msg.mac,
+                (const uint8_t*)&settings_msg,
+                sizeof(settings_msg),
+                "settings_battery"
+            );
             if (result == ESP_OK) {
                 const char* chem[] = {"NCA", "NMC", "LFP", "LTO"};
                 LOG_INFO("DATA_REQUEST", "Sent battery settings: %dWh, %dS, %s, %.1f/%.1fA, SOC:%d-%d%%", 
@@ -635,7 +668,12 @@ void send_ip_to_receiver() {
     packet.checksum = EspnowPacketUtils::calculate_checksum(packet.payload, packet.payload_len);
     
     // Send IP data via ESP-NOW
-    esp_err_t result = esp_now_send(peer_mac, (const uint8_t*)&packet, sizeof(packet));
+    esp_err_t result = TxSendGuard::send_to_receiver_guarded(
+        peer_mac,
+        (const uint8_t*)&packet,
+        sizeof(packet),
+        "eth_ip_push"
+    );
     
     if (result == ESP_OK) {
         LOG_INFO("ETH", "Sent IP configuration to receiver: %s", local_ip.toString().c_str());
@@ -734,7 +772,12 @@ void EspnowMessageHandler::send_debug_ack(uint8_t applied, uint8_t previous, uin
     };
     
     // Send to receiver (stored peer address)
-    esp_err_t result = esp_now_send(receiver_mac_, (uint8_t*)&ack, sizeof(ack));
+    esp_err_t result = TxSendGuard::send_to_receiver_guarded(
+        receiver_mac_,
+        (const uint8_t*)&ack,
+        sizeof(ack),
+        "debug_ack"
+    );
     
     if (result == ESP_OK) {
         LOG_DEBUG("DEBUG_CTRL", "Debug ACK sent (applied=%u, status=%u)", applied, status);
@@ -1089,7 +1132,12 @@ void EspnowMessageHandler::send_network_config_ack(bool success, const char* mes
         }
     }
     
-    esp_err_t result = esp_now_send(receiver_mac_, (const uint8_t*)&ack, sizeof(ack));
+    esp_err_t result = TxSendGuard::send_to_receiver_guarded(
+        receiver_mac_,
+        (const uint8_t*)&ack,
+        sizeof(ack),
+        "network_config_ack"
+    );
     if (result == ESP_OK) {
         LOG_INFO("NET_CFG", "Sent ACK: %s (success=%d)", message, success);
         LOG_DEBUG("NET_CFG", "  Current: %d.%d.%d.%d", 
@@ -1332,7 +1380,12 @@ void EspnowMessageHandler::send_mqtt_config_ack(bool success, const char* messag
         }
     }
     
-    esp_err_t result = esp_now_send(receiver_mac_, (const uint8_t*)&ack, sizeof(ack));
+    esp_err_t result = TxSendGuard::send_to_receiver_guarded(
+        receiver_mac_,
+        (const uint8_t*)&ack,
+        sizeof(ack),
+        "mqtt_config_ack"
+    );
     if (result == ESP_OK) {
         LOG_INFO("MQTT_CFG", "✓ ACK sent to receiver (success=%d, connected=%d)", 
                  ack.success, ack.connected);

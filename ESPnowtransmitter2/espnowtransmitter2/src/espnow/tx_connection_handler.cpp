@@ -7,6 +7,7 @@
 #include "discovery_task.h"
 #include "heartbeat_manager.h"
 #include "tx_state_machine.h"
+#include "tx_send_guard.h"
 #include <connection_manager.h>
 #include <channel_manager.h>
 #include <espnow_peer_manager.h>
@@ -72,6 +73,7 @@ void TransmitterConnectionHandler::init() {
                 }
                 
             } else if (new_state == EspNowConnectionState::CONNECTED) {
+                TxSendGuard::notify_connection_state(true);
                 TransmitterConnectionHandler::instance().peer_register_event_posted_ = false;
                 TransmitterConnectionHandler::instance().peer_registered_deferred_ = false;
                 // Lock channel when connected
@@ -86,6 +88,7 @@ void TransmitterConnectionHandler::init() {
                 
             } else if (old_state == EspNowConnectionState::CONNECTED && 
                        new_state == EspNowConnectionState::IDLE) {
+                TxSendGuard::notify_connection_state(false);
                 TransmitterConnectionHandler::instance().peer_register_event_posted_ = false;
                 TransmitterConnectionHandler::instance().peer_registered_deferred_ = false;
                 HeartbeatManager::instance().reset();

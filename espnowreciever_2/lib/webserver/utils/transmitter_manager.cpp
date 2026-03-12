@@ -130,7 +130,8 @@ BatteryEmulatorSettings TransmitterManager::battery_emulator_settings = {
     .pack_min_voltage_dV = 460,
     .cell_max_voltage_mV = 4200,
     .cell_min_voltage_mV = 3000,
-    .soc_estimated = false
+    .soc_estimated = false,
+    .led_mode = 0
 };
 bool TransmitterManager::battery_emulator_settings_known = false;
 

@@ -272,6 +272,12 @@ void ReceiverConnectionHandler::send_initialization_requests(const uint8_t* tran
     meta_req.section = config_section_metadata;
     meta_req.requested_version = 0;  // Force send
     esp_now_send(transmitter_mac, (const uint8_t*)&meta_req, sizeof(meta_req));
+
+    config_section_request_t batt_req;
+    batt_req.type = msg_config_section_request;
+    batt_req.section = config_section_battery;
+    batt_req.requested_version = 0;  // Force send
+    esp_now_send(transmitter_mac, (const uint8_t*)&batt_req, sizeof(batt_req));
     
     // Send REQUEST_DATA to ensure power profile stream is active
     request_data_t req_msg = { msg_request_data, subtype_power_profile };

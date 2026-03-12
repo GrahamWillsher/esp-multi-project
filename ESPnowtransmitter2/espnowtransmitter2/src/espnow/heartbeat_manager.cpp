@@ -1,5 +1,6 @@
 #include "heartbeat_manager.h"
 #include "tx_state_machine.h"
+#include "tx_send_guard.h"
 #include <espnow_transmitter.h>
 #include <connection_manager.h>
 #include <connection_event.h>
@@ -79,7 +80,12 @@ void HeartbeatManager::send_heartbeat() {
     // Calculate CRC16 over all fields except checksum
     hb.checksum = calculate_crc16(&hb, sizeof(hb) - sizeof(hb.checksum));
     
-    esp_err_t result = esp_now_send(peer_mac, (uint8_t*)&hb, sizeof(hb));
+    esp_err_t result = TxSendGuard::send_to_receiver_guarded(
+        peer_mac,
+        (const uint8_t*)&hb,
+        sizeof(hb),
+        "heartbeat"
+    );
     
     if (result == ESP_OK) {
         LOG_DEBUG("HEARTBEAT", "Sent heartbeat seq=%u, uptime=%llu ms to %02X:%02X:%02X:%02X:%02X:%02X", 

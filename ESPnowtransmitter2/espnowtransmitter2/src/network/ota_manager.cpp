@@ -58,15 +58,20 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
         LOG_DEBUG("HTTP_OTA", "Written: %d bytes, remaining: %d", recv_len, remaining);
     }
     
-    // Finalize update
+    // Finalize update and validate
     if (Update.end(true)) {
-        LOG_INFO("HTTP_OTA", "Update successful! Size: %u bytes", Update.size());
+        LOG_INFO("HTTP_OTA", "Firmware validation successful! Size: %u bytes", Update.size());
+        LOG_INFO("HTTP_OTA", "Sending success response and initiating reboot...");
         httpd_resp_sendstr(req, "OTA update successful! Rebooting...");
-        delay(1000);
+        
+        // Give time for response to be sent before reboot
+        delay(500);
+        LOG_INFO("HTTP_OTA", "Rebooting now...");
+        delay(500);  // Extra delay to ensure logs are flushed
         ESP.restart();
         return ESP_OK;
     } else {
-        LOG_ERROR("HTTP_OTA", "Update.end failed: %s", Update.errorString());
+        LOG_ERROR("HTTP_OTA", "Update.end (validation) failed: %s", Update.errorString());
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, Update.errorString());
         mgr.ota_in_progress_ = false;
         return ESP_FAIL;

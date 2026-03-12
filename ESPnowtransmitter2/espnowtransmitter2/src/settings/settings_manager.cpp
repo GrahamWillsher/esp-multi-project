@@ -1,5 +1,7 @@
 #include "settings_manager.h"
 #include "../config/logging_config.h"
+#include "../datalayer/datalayer.h"
+#include "../battery_emulator/devboard/utils/led_handler.h"
 #include <esp_now.h>
 #include <connection_manager.h>
 #include <espnow_packet_utils.h>
@@ -24,6 +26,7 @@ struct __attribute__((packed)) BatterySettingsBlob {
     uint16_t cell_max_voltage_mv;
     uint16_t cell_min_voltage_mv;
     bool soc_estimated;
+    uint8_t led_mode;
     uint32_t version;
     uint32_t crc32;
 };
@@ -142,6 +145,12 @@ SettingsManager::ValidationResult SettingsManager::validate_battery_settings() c
         result.error_message = "SOC low limit must be less than or equal to SOC high limit";
         return result;
     }
+    if (battery_led_mode_ > 2) {
+        ValidationResult result;
+        result.is_valid = false;
+        result.error_message = "LED mode out of range";
+        return result;
+    }
     return ValidationResult{};
 }
 
@@ -239,6 +248,10 @@ bool SettingsManager::init() {
     }
     
     initialized_ = true;
+
+    // Keep runtime LED mode aligned with authoritative managed settings.
+    datalayer.battery.status.led_mode = static_cast<led_mode_enum>(battery_led_mode_);
+
     LOG_INFO("SETTINGS", "Settings manager initialized");
     return true;
 }
@@ -310,6 +323,7 @@ bool SettingsManager::load_battery_settings() {
             battery_cell_max_voltage_mV_ = blob.cell_max_voltage_mv;
             battery_cell_min_voltage_mV_ = blob.cell_min_voltage_mv;
             battery_soc_estimated_ = blob.soc_estimated;
+            battery_led_mode_ = blob.led_mode;
             battery_settings_version_ = blob.version;
             loaded_from_blob = true;
         } else {
@@ -334,6 +348,7 @@ bool SettingsManager::load_battery_settings() {
         battery_cell_max_voltage_mV_ = prefs.getUShort("cell_max_mv", 4200);
         battery_cell_min_voltage_mV_ = prefs.getUShort("cell_min_mv", 3000);
         battery_soc_estimated_ = prefs.getBool("soc_est", false);
+        battery_led_mode_ = prefs.getUChar("led_mode", 0);
         battery_settings_version_ = prefs.getUInt("version", 0);
     }
     
@@ -384,6 +399,7 @@ bool SettingsManager::save_battery_settings() {
     prefs.putUShort("cell_max_mv", battery_cell_max_voltage_mV_);
     prefs.putUShort("cell_min_mv", battery_cell_min_voltage_mV_);
     prefs.putBool("soc_est", battery_soc_estimated_);
+    prefs.putUChar("led_mode", battery_led_mode_);
     prefs.putUInt("version", battery_settings_version_);
 
     BatterySettingsBlob blob{};
@@ -402,6 +418,7 @@ bool SettingsManager::save_battery_settings() {
     blob.cell_max_voltage_mv = battery_cell_max_voltage_mV_;
     blob.cell_min_voltage_mv = battery_cell_min_voltage_mV_;
     blob.soc_estimated = battery_soc_estimated_;
+    blob.led_mode = battery_led_mode_;
     blob.version = battery_settings_version_;
     blob.crc32 = calculate_blob_crc32(blob);
     size_t written = prefs.putBytes(kSettingsBlobKey, &blob, sizeof(blob));
@@ -753,6 +770,8 @@ void SettingsManager::restore_defaults() {
     battery_cell_max_voltage_mV_ = 4200;
     battery_cell_min_voltage_mV_ = 3000;
     battery_soc_estimated_ = false;
+    battery_led_mode_ = 0;
+    datalayer.battery.status.led_mode = static_cast<led_mode_enum>(battery_led_mode_);
     
     // Save defaults to NVS
     save_battery_settings();
@@ -919,6 +938,18 @@ bool SettingsManager::save_battery_setting(uint8_t field_id, uint32_t value_uint
             changed = true;
             LOG_INFO("SETTINGS", "SOC estimation updated: %s", battery_soc_estimated_ ? "ENABLED" : "DISABLED");
             break;
+
+        case BATTERY_LED_MODE:
+            if (value_uint32 <= 2) { // 0=Classic, 1=Energy Flow, 2=Heartbeat
+                battery_led_mode_ = value_uint32;
+                datalayer.battery.status.led_mode = static_cast<led_mode_enum>(battery_led_mode_);
+                changed = true;
+                LOG_INFO("SETTINGS", "LED mode updated: %u", battery_led_mode_);
+            } else {
+                LOG_ERROR("SETTINGS", "Invalid LED mode: %d", value_uint32);
+                return false;
+            }
+            break;
             
         default:
             LOG_ERROR("SETTINGS", "Unknown battery field ID: %d", field_id);
@@ -932,6 +963,14 @@ bool SettingsManager::save_battery_setting(uint8_t field_id, uint32_t value_uint
         if (saved) {
             // Send change notification to receiver
             send_settings_changed_notification(SETTINGS_BATTERY, battery_settings_version_);
+
+            // Apply LED policy changes immediately at runtime (if connected).
+            if (field_id == BATTERY_LED_MODE) {
+                const esp_err_t led_result = led_publish_current_state(true, nullptr);
+                if (led_result != ESP_OK && led_result != ESP_ERR_INVALID_STATE && led_result != ESP_ERR_INVALID_ARG) {
+                    LOG_WARN("SETTINGS", "LED replay after LEDMODE update failed: %s", esp_err_to_name(led_result));
+                }
+            }
         }
         return saved;
     }
