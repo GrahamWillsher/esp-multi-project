@@ -21,6 +21,7 @@ public:
      * @return true if OTA is active, false otherwise
      */
     bool is_ota_in_progress() const { return ota_in_progress_; }
+    bool is_ota_ready_for_reboot() const { return ota_ready_for_reboot_; }
     
 private:
     OtaManager() = default;
@@ -57,6 +58,13 @@ private:
      * @return ESP_OK on success
      */
     static esp_err_t event_logs_handler(httpd_req_t *req);
+
+    /**
+     * @brief HTTP handler for OTA status API
+     * @param req HTTP request object
+     * @return ESP_OK on success
+     */
+    static esp_err_t ota_status_handler(httpd_req_t *req);
     
     /**
      * @brief HTTP handler for test data configuration GET
@@ -88,4 +96,7 @@ private:
     
     httpd_handle_t http_server_{nullptr};
     volatile bool ota_in_progress_{false};
+    volatile bool ota_ready_for_reboot_{false};
+    bool ota_last_success_{false};
+    char ota_last_error_[96] = {0};
 };

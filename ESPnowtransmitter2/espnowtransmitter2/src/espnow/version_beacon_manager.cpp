@@ -125,6 +125,8 @@ void VersionBeaconManager::send_version_beacon(bool force) {
         beacon.version_major = FirmwareMetadata::metadata.version_major;
         beacon.version_minor = FirmwareMetadata::metadata.version_minor;
         beacon.version_patch = FirmwareMetadata::metadata.version_patch;
+        strncpy(beacon.build_date, FirmwareMetadata::metadata.build_date, sizeof(beacon.build_date) - 1);
+        beacon.build_date[sizeof(beacon.build_date) - 1] = '\0';
     } else {
         // Fallback to compile-time values if metadata invalid
         strncpy(beacon.env_name, DEVICE_NAME, sizeof(beacon.env_name) - 1);
@@ -132,8 +134,8 @@ void VersionBeaconManager::send_version_beacon(bool force) {
         beacon.version_major = FW_VERSION_MAJOR;
         beacon.version_minor = FW_VERSION_MINOR;
         beacon.version_patch = FW_VERSION_PATCH;
+        snprintf(beacon.build_date, sizeof(beacon.build_date), "%s %s", __DATE__, __TIME__);
     }
-    beacon.reserved[0] = 0;
     
     // Send via ESP-NOW to receiver (if connected)
     if (EspNowConnectionManager::instance().is_connected()) {

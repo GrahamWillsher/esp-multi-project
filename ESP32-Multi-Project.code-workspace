@@ -2,19 +2,22 @@
 	"folders": [
 		{
 			"name": "ESP32 Common",
-			"path": "c:\\users\\grahamwillsher\\esp32projects\\esp32common"
+			"path": "esp32common"
 		},
 		{
 			"name": "ESP-NOW Receiver",
-			"path": "c:\\users\\grahamwillsher\\esp32projects\\espnowreciever"
+			"path": "espnowreciever"
 		},
 		{
+			"name": "ESPnowtransmitter2",
 			"path": "ESPnowtransmitter2"
 		},
 		{
-			"path": "espnowreciever_2"
+			"name": "espnowreceiver_2",
+			"path": "espnowreceiver_2"
 		},
 		{
+			"name": "Battery-Emulator-9.2.4",
 			"path": "../Downloads/Battery-Emulator-9.2.4/Battery-Emulator-9.2.4"
 		}
 	],

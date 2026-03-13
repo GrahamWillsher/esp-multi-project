@@ -8,6 +8,7 @@
 #include <firmware_version.h>
 #include <algorithm>
 #include <vector>
+#include <cstring>
 
 OtaManager& OtaManager::instance() {
     static OtaManager instance;
@@ -18,27 +19,48 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
     auto& mgr = instance();
     char buf[1024];
     size_t remaining = req->content_len;
+    const size_t expected_size = req->content_len;
+    size_t total_written = 0;
+    size_t last_reported = 0;
+    int timeout_count = 0;
     
-    LOG_INFO("HTTP_OTA", "Receiving OTA update, size: %d bytes", remaining);
+    LOG_INFO("HTTP_OTA", "=== OTA START ===");
+    LOG_INFO("HTTP_OTA", "Receiving OTA update, size: %u bytes", (unsigned)remaining);
+    LOG_INFO("HTTP_OTA", "Heap before OTA: free=%u, max_alloc=%u", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
     
     // Stop other tasks to free resources
     mgr.ota_in_progress_ = true;
+    mgr.ota_ready_for_reboot_ = false;
+    mgr.ota_last_success_ = false;
+    strncpy(mgr.ota_last_error_, "", sizeof(mgr.ota_last_error_) - 1);
+    mgr.ota_last_error_[sizeof(mgr.ota_last_error_) - 1] = '\0';
     
+    LOG_INFO("HTTP_OTA", "Calling Update.begin(UPDATE_SIZE_UNKNOWN)...");
     if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
         LOG_ERROR("HTTP_OTA", "Update.begin failed: %s", Update.errorString());
+        LOG_ERROR("HTTP_OTA", "Update.begin error code: %d", Update.getError());
+        strncpy(mgr.ota_last_error_, Update.errorString(), sizeof(mgr.ota_last_error_) - 1);
+        mgr.ota_last_error_[sizeof(mgr.ota_last_error_) - 1] = '\0';
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Update begin failed");
         mgr.ota_in_progress_ = false;
         return ESP_FAIL;
     }
+    LOG_INFO("HTTP_OTA", "Update.begin OK");
     
     // Receive and write firmware data
     while (remaining > 0) {
         int recv_len = httpd_req_recv(req, buf, (remaining < sizeof(buf)) ? remaining : sizeof(buf));
         if (recv_len <= 0) {
             if (recv_len == HTTPD_SOCK_ERR_TIMEOUT) {
+                timeout_count++;
+                if ((timeout_count % 20) == 0) {
+                    LOG_WARN("HTTP_OTA", "recv timeout x%d, remaining=%u, written=%u", timeout_count, (unsigned)remaining, (unsigned)total_written);
+                }
                 continue;
             }
-            LOG_ERROR("HTTP_OTA", "Connection error during upload");
+            LOG_ERROR("HTTP_OTA", "Connection error during upload (recv_len=%d, remaining=%u, written=%u)", recv_len, (unsigned)remaining, (unsigned)total_written);
+            strncpy(mgr.ota_last_error_, "Connection error during upload", sizeof(mgr.ota_last_error_) - 1);
+            mgr.ota_last_error_[sizeof(mgr.ota_last_error_) - 1] = '\0';
             Update.abort();
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Connection error");
             mgr.ota_in_progress_ = false;
@@ -48,6 +70,9 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
         // Write firmware chunk
         if (Update.write((uint8_t*)buf, recv_len) != (size_t)recv_len) {
             LOG_ERROR("HTTP_OTA", "Update.write failed: %s", Update.errorString());
+            LOG_ERROR("HTTP_OTA", "Update.write error code: %d (chunk=%d, remaining=%u, written=%u)", Update.getError(), recv_len, (unsigned)remaining, (unsigned)total_written);
+            strncpy(mgr.ota_last_error_, Update.errorString(), sizeof(mgr.ota_last_error_) - 1);
+            mgr.ota_last_error_[sizeof(mgr.ota_last_error_) - 1] = '\0';
             Update.abort();
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Write failed");
             mgr.ota_in_progress_ = false;
@@ -55,23 +80,36 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
         }
         
         remaining -= recv_len;
-        LOG_DEBUG("HTTP_OTA", "Written: %d bytes, remaining: %d", recv_len, remaining);
+        total_written += (size_t)recv_len;
+
+        if ((total_written - last_reported) >= 32768 || remaining == 0) {
+            last_reported = total_written;
+            const unsigned percent = (expected_size > 0) ? (unsigned)((total_written * 100U) / expected_size) : 0U;
+            LOG_DEBUG("HTTP_OTA", "Progress: %u%%, written=%u/%u, remaining=%u, heap=%u",
+                      percent, (unsigned)total_written, (unsigned)expected_size, (unsigned)remaining, ESP.getFreeHeap());
+        }
     }
+
+    LOG_INFO("HTTP_OTA", "Receive loop complete: written=%u bytes, expected=%u bytes", (unsigned)total_written, (unsigned)expected_size);
+    LOG_INFO("HTTP_OTA", "Calling Update.end(true)...");
     
-    // Finalize update and validate
+    // Finalize update
     if (Update.end(true)) {
-        LOG_INFO("HTTP_OTA", "Firmware validation successful! Size: %u bytes", Update.size());
-        LOG_INFO("HTTP_OTA", "Sending success response and initiating reboot...");
-        httpd_resp_sendstr(req, "OTA update successful! Rebooting...");
-        
-        // Give time for response to be sent before reboot
-        delay(500);
-        LOG_INFO("HTTP_OTA", "Rebooting now...");
-        delay(500);  // Extra delay to ensure logs are flushed
-        ESP.restart();
+        LOG_INFO("HTTP_OTA", "Update successful! Size: %u bytes", Update.size());
+        LOG_INFO("HTTP_OTA", "OTA ready for reboot. Heap after OTA: free=%u, max_alloc=%u", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+        mgr.ota_in_progress_ = false;
+        mgr.ota_ready_for_reboot_ = true;
+        mgr.ota_last_success_ = true;
+
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"success\":true,\"ready_for_reboot\":true,\"message\":\"OTA applied. Waiting for reboot command\"}");
         return ESP_OK;
     } else {
-        LOG_ERROR("HTTP_OTA", "Update.end (validation) failed: %s", Update.errorString());
+        LOG_ERROR("HTTP_OTA", "Update.end failed: %s", Update.errorString());
+        LOG_ERROR("HTTP_OTA", "Update.end error code: %d, written=%u, expected=%u", Update.getError(), (unsigned)total_written, (unsigned)expected_size);
+        LOG_ERROR("HTTP_OTA", "Heap on failure: free=%u, max_alloc=%u", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+        strncpy(mgr.ota_last_error_, Update.errorString(), sizeof(mgr.ota_last_error_) - 1);
+        mgr.ota_last_error_[sizeof(mgr.ota_last_error_) - 1] = '\0';
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, Update.errorString());
         mgr.ota_in_progress_ = false;
         return ESP_FAIL;
@@ -159,6 +197,30 @@ esp_err_t OtaManager::event_logs_handler(httpd_req_t *req) {
     
     json += "]}";
     
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json.c_str(), json.length());
+    return ESP_OK;
+}
+
+esp_err_t OtaManager::ota_status_handler(httpd_req_t *req) {
+    auto& mgr = instance();
+
+    LOG_DEBUG("HTTP_OTA", "Status requested: in_progress=%d, ready_for_reboot=%d, last_success=%d",
+              mgr.ota_in_progress_ ? 1 : 0,
+              mgr.ota_ready_for_reboot_ ? 1 : 0,
+              mgr.ota_last_success_ ? 1 : 0);
+
+    String error = String(mgr.ota_last_error_);
+    error.replace("\"", "'");
+
+    String json = "{";
+    json += "\"success\":true,";
+    json += "\"in_progress\":" + String(mgr.ota_in_progress_ ? "true" : "false") + ",";
+    json += "\"ready_for_reboot\":" + String(mgr.ota_ready_for_reboot_ ? "true" : "false") + ",";
+    json += "\"last_success\":" + String(mgr.ota_last_success_ ? "true" : "false") + ",";
+    json += "\"last_error\":\"" + error + "\"";
+    json += "}";
+
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, json.c_str(), json.length());
     return ESP_OK;
@@ -271,7 +333,7 @@ void OtaManager::init_http_server() {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
     config.ctrl_port = 32768;
-    config.max_uri_handlers = 8;
+    config.max_uri_handlers = 12;
     config.max_resp_headers = 8;
     config.recv_wait_timeout = 10;
     config.send_wait_timeout = 10;
@@ -286,6 +348,15 @@ void OtaManager::init_http_server() {
             .user_ctx = NULL
         };
         httpd_register_uri_handler(http_server_, &ota_upload_uri);
+
+        // Register OTA status handler
+        httpd_uri_t ota_status_uri = {
+            .uri = "/api/ota_status",
+            .method = HTTP_GET,
+            .handler = ota_status_handler,
+            .user_ctx = NULL
+        };
+        httpd_register_uri_handler(http_server_, &ota_status_uri);
         
         // Register firmware info handler
         httpd_uri_t firmware_info_uri = {

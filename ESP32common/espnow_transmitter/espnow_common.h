@@ -642,8 +642,8 @@ typedef struct __attribute__((packed)) {
     uint8_t version_major;              // Major version
     uint8_t version_minor;              // Minor version
     uint8_t version_patch;              // Patch version
-    uint8_t reserved[1];                // Future expansion
-} version_beacon_t;  // Total: 62 bytes (still well under ESP-NOW's 250 byte limit)
+    char build_date[48];                // Build timestamp (e.g., "13-03-2026 14:22:00")
+} version_beacon_t;  // Total: 107 bytes (well under ESP-NOW's 250 byte limit)
 
 // Config section request (receiver → transmitter when version mismatch detected)
 typedef struct __attribute__((packed)) {
