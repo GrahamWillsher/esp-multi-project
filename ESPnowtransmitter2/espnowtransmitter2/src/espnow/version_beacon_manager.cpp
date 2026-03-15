@@ -2,7 +2,7 @@
 #include "tx_send_guard.h"
 #include <esp_now.h>
 #include <espnow_transmitter.h>
-#include <connection_manager.h>
+#include <esp32common/espnow/connection_manager.h>
 #include <mqtt_manager.h>
 #include "../config/logging_config.h"
 #include "../settings/settings_manager.h"

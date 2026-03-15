@@ -8,7 +8,7 @@
 #include <esp_netif.h>
 #include <ESP.h>
 #include <esp_now.h>
-#include <espnow_common.h>
+#include <esp32common/espnow/common.h>
 #include <WiFiClient.h>
 #include <HTTPClient.h>
 #include <PubSubClient.h>

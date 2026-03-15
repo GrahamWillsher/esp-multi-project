@@ -1,5 +1,5 @@
 #include "battery_data_store.h"
-#include <espnow_common.h>
+#include <esp32common/espnow/common.h>
 
 namespace BatteryData {
     // Battery status (real-time)

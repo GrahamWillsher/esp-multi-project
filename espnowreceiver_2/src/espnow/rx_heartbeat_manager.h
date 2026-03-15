@@ -3,8 +3,8 @@
 
 #include <Arduino.h>
 #include <esp_now.h>
-#include <espnow_common.h>
-#include <connection_manager.h>
+#include <esp32common/espnow/common.h>
+#include <esp32common/espnow/connection_manager.h>
 
 /**
  * Heartbeat Manager - Receiver Side

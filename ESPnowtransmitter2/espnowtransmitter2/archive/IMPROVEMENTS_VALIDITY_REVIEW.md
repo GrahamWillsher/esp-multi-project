@@ -4,6 +4,8 @@
 **Reviewer**: Code Analysis Agent  
 **Status**: 6 of 8 items VALID, 2 items require clarification
 
+> **Historical note (March 15, 2026):** This validity review is retained as a pre-cleanup assessment. Timing centralization has since been completed with the canonical header at `esp32common/config/timing_config.h`, and the temporary wrapper paths discussed here have been removed.
+
 ---
 
 ## Executive Summary

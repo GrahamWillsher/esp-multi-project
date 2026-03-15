@@ -8,10 +8,10 @@
 #include "heartbeat_manager.h"
 #include "tx_state_machine.h"
 #include "tx_send_guard.h"
-#include <connection_manager.h>
+#include <esp32common/espnow/connection_manager.h>
 #include <channel_manager.h>
 #include <espnow_peer_manager.h>
-#include <logging_config.h>
+#include <esp32common/logging/logging_config.h>
 #include <Arduino.h>
 #include <cstring>
 

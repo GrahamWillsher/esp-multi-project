@@ -27,8 +27,8 @@
 #ifdef USE_LVGL
 #include "hal/display/lvgl_driver.h"
 #endif
-#include <connection_manager.h>
-#include <connection_event_processor.h>
+#include <esp32common/espnow/connection_manager.h>
+#include <esp32common/espnow/connection_event_processor.h>
 #include <channel_manager.h>
 #include "config/wifi_setup.h"
 #include "config/littlefs_init.h"

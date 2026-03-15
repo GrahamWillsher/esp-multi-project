@@ -40,11 +40,20 @@ MqttLogger& MqttLogger::instance() {
     return instance;
 }
 
+bool MqttLogger::is_mqtt_available() {
+    return initialized_ && mqtt_client_ && mqtt_available_cached_;
+}
+
+void MqttLogger::set_mqtt_available(bool available) {
+    mqtt_available_cached_ = available;
+}
+
 void MqttLogger::init(PubSubClient* mqtt_client, const char* device_id) {
     mqtt_client_ = mqtt_client;
     device_id_ = device_id;
     topic_prefix_ = String(device_id_) + "/debug/";
     initialized_ = true;
+    mqtt_available_cached_ = false;
     
     Serial.printf("[MQTT_LOG] Initialized for device: %s\n", device_id);
     
@@ -85,7 +94,7 @@ void MqttLogger::log(MqttLogLevel level, const char* tag, const char* format, ..
     }
     
     // Publish to MQTT
-    if (initialized_ && mqtt_client_ && mqtt_client_->connected()) {
+    if (is_mqtt_available()) {
         publish_message(level, tag, buffer);
         
         // Flush any buffered messages
@@ -137,6 +146,8 @@ void MqttLogger::publish_message(MqttLogLevel level, const char* tag, const char
     bool published = mqtt_client_->publish(topic.c_str(), payload.c_str(), get_retained(level));
     
     if (!published) {
+        // Stop immediate retries until next probe interval
+        mqtt_available_cached_ = false;
         Serial.printf("[MQTT_LOG] Failed to publish: %s\n", topic.c_str());
     }
 }
@@ -182,7 +193,7 @@ void MqttLogger::set_level(MqttLogLevel min_level) {
 }
 
 void MqttLogger::publish_status() {
-    if (!mqtt_client_ || !mqtt_client_->connected()) return;
+    if (!is_mqtt_available()) return;
     
     String topic = topic_prefix_ + "level";
     mqtt_client_->publish(topic.c_str(), level_to_string(min_level_), true);

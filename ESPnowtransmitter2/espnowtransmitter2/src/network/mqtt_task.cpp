@@ -56,6 +56,7 @@ void task_mqtt_loop(void* parameter) {
         if (is_connected_now != was_connected) {
             // MQTT state changed - notify version beacon manager
             VersionBeaconManager::instance().notify_mqtt_connected(is_connected_now);
+            MqttLogger::instance().set_mqtt_available(is_connected_now);
             
             if (is_connected_now) {
                 // Just connected - initialize logger if needed
@@ -89,6 +90,12 @@ void task_mqtt_loop(void* parameter) {
                 }
                 if (MqttManager::instance().publish_battery_specs()) {
                     LOG_INFO("MQTT", "✓ Battery specs published to transmitter/BE/battery_specs (SMART routing)");
+                }
+                if (MqttManager::instance().publish_battery_type_catalog()) {
+                    LOG_INFO("MQTT", "✓ Battery type catalog published to transmitter/BE/battery_type_catalog");
+                }
+                if (MqttManager::instance().publish_inverter_type_catalog()) {
+                    LOG_INFO("MQTT", "✓ Inverter type catalog published to transmitter/BE/inverter_type_catalog");
                 }
             }
             

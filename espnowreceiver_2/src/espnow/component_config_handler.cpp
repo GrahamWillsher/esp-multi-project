@@ -6,7 +6,7 @@
 #include "component_config_handler.h"
 #include "../common.h"
 #include <esp_log.h>
-#include <espnow_common.h>
+#include <esp32common/espnow/common.h>
 #include <nvs_flash.h>
 #include <cstring>
 

@@ -4,6 +4,8 @@
 **Status:** ✅ Verified Working - TFT_eSPI Direct Rendering  
 **Hardware:** ESP32-S3 + ST7789 (320x170) + LittleFS + JPEGDecoder  
 
+> **Historical note (March 15, 2026):** This pattern reference is kept for working-display examples. Any shared ESP-NOW protocol includes shown below should now be read as canonical `esp32common/...` includes.
+
 ---
 
 ## Pattern 1: Direct TFT Rendering (✅ WORKS)
@@ -343,7 +345,7 @@ void initlittlefs() {
 #include <esp_wifi.h>
 #include <LittleFS.h>
 #include <JPEGDecoder.h>
-#include <espnow_common.h>
+#include <esp32common/espnow/common.h>
 
 // Display namespace and configuration
 namespace Display {

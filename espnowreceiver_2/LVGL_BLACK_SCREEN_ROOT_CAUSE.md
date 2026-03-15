@@ -510,7 +510,7 @@ In your workspace:
 ## Next Actions
 
 ### Immediate (Now)
-- [ ] Read `LVGL_WORKING_CODE_PATTERNS.md` - shows exact working code
+- [ ] Read `archive/LVGL_WORKING_CODE_PATTERNS.md` - shows exact working code
 - [ ] Copy patterns from `display_splash.cpp` - proven implementation
 - [ ] Test standalone splash display without LVGL
 

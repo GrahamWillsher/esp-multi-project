@@ -10,7 +10,7 @@
 #include "../../src/mqtt/mqtt_client.h"
 #include <Arduino.h>
 #include <esp_now.h>
-#include <espnow_common.h>
+#include <esp32common/espnow/common.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <firmware_version.h>

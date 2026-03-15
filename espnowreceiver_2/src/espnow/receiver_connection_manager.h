@@ -11,7 +11,7 @@
 #pragma once
 
 #include "espnow_connection_base.h"
-#include "espnow_message_queue.h"
+#include <esp32common/espnow/message_queue.h>
 #include <cstdint>
 
 /**

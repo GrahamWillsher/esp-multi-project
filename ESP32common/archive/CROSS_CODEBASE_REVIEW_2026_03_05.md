@@ -5,6 +5,8 @@
 **Review Context**: Both transmitter and receiver independent improvements now complete  
 **Status**: Document is still valid, but with important context clarifications needed
 
+> **Historical note (March 15, 2026):** This review is retained as a planning snapshot. Parts of the proposed migration path below have since been implemented and cleaned up. Canonical public includes now use `esp32common/...`, the dynamic type-catalog flow is implemented, and the old manual fallback-array path is no longer the active repository direction.
+
 ---
 
 ## Executive Summary
@@ -62,33 +64,9 @@ Both transmitter and receiver need matching state machines:
 ```cpp
 // ESP32Common/include/espnow/connection_state.h
 enum class EspNowConnectionState {
-    // Initialization
-    UNINITIALIZED,      // Before setup
-    INITIALIZING,       // WiFi/radio starting up
-    
-    // Discovery Phase
-    IDLE,               // Ready but not discovering
-    DISCOVERY_INITIATING, // Starting discovery process
-    DISCOVERY_IN_PROGRESS, // Actively scanning/probing
-    DISCOVERY_TIMEOUT,  // Discovery took too long
-    
-    // Connection Established
-    CONNECTED,          // Peer found, link established
-    SYNCING_CACHE,      // Connected, syncing data
-    
-    // Connection Issues
-    PEER_NOT_RESPONDING, // Was connected, no heartbeat
-    RECONNECTING,       // Trying to re-establish
-    RECONNECT_BACKOFF,  // Waiting before retry
-    
-    // Error States
-    DISCOVERY_FAILED,   // Gave up on discovery
-    CONNECTION_LOST,    // Was connected, now offline
-    ERROR_UNRECOVERABLE, // Fatal error
-    
-    // Shutdown
-    DISCONNECTING,      // Intentional disconnect
-    DISCONNECTED        // Offline and idle
+    IDLE,          // Ready but not connected
+    CONNECTING,    // Discovery/peer registration in progress
+    CONNECTED      // Ready to exchange data
 };
 
 class EspNowConnectionManager {
@@ -105,22 +83,7 @@ public:
     
     // Queries
     bool is_connected() const {
-        return get_state() == EspNowConnectionState::CONNECTED ||
-               get_state() == EspNowConnectionState::SYNCING_CACHE;
-    }
-    
-    bool is_attempting_connection() const {
-        auto state = get_state();
-        return state == EspNowConnectionState::DISCOVERY_IN_PROGRESS ||
-               state == EspNowConnectionState::RECONNECTING ||
-               state == EspNowConnectionState::RECONNECT_BACKOFF;
-    }
-    
-    bool is_in_error_state() const {
-        auto state = get_state();
-        return state == EspNowConnectionState::DISCOVERY_FAILED ||
-               state == EspNowConnectionState::CONNECTION_LOST ||
-               state == EspNowConnectionState::ERROR_UNRECOVERABLE;
+        return get_state() == EspNowConnectionState::CONNECTED;
     }
     
     // Statistics & diagnostics
@@ -829,26 +792,18 @@ static esp_err_t api_get_battery_types_handler(httpd_req_t *req) {
 }
 ```
 
-#### Phase 5: Fallback Strategy
+#### Phase 5: Historical Fallback Strategy (Superseded)
 
 ```cpp
 // src/config/type_fallback.h
-// Keep static fallback arrays for reliability, but mark deprecated
-
-static const TypeEntry FALLBACK_BATTERY_TYPES[] = {
-    {0, "None"}, {2, "BMW i3"}, {3, "BMW iX"}, {4, "Bolt/Ampera"},
-    // ... rest of array ...
-};
-
-static const TypeEntry FALLBACK_INVERTER_TYPES[] = {
-    {0, "None"}, {1, "Afore battery over CAN"}, {2, "BYD Battery-Box..."},
-    // ... rest of array ...
-};
+// Historical proposal only.
+// Current repository direction does NOT keep static fallback arrays.
+// Dynamic ESP-NOW/MQTT-backed catalogs are the canonical implementation.
 
 class TypeProvider {
 public:
-    // Primary: MQTT discovered types
-    // Fallback: Static arrays
+    // Primary: dynamic discovered types
+    // No permanent static-array fallback retained in the cleaned repository
     const std::vector<TypeEntry>& get_battery_types() {
         auto& mqtt_types = TypeSubscriber::instance().get_battery_types();
         

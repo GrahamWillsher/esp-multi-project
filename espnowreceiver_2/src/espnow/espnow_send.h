@@ -38,6 +38,30 @@ bool send_component_interface_selection(uint8_t battery_interface, uint8_t inver
 bool send_event_logs_control(bool subscribe);
 
 /**
+ * @brief Request battery type catalog from transmitter
+ * @return true if request sent successfully
+ */
+bool send_battery_types_request();
+
+/**
+ * @brief Request inverter type catalog from transmitter
+ * @return true if request sent successfully
+ */
+bool send_inverter_types_request();
+
+/**
+ * @brief Request inverter interface catalog from transmitter
+ * @return true if request sent successfully
+ */
+bool send_inverter_interfaces_request();
+
+/**
+ * @brief Request current battery/inverter catalog versions from transmitter
+ * @return true if request sent successfully
+ */
+bool send_type_catalog_versions_request();
+
+/**
  * @brief Send test data mode control to transmitter via ESP-NOW
  * @param mode Test data mode (0=OFF, 1=SOC_POWER_ONLY, 2=FULL_BATTERY_DATA)
  * @return true if sent successfully, false otherwise

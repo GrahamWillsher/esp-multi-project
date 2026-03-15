@@ -1,6 +1,6 @@
 #include "data_cache.h"
 #include "../config/logging_config.h"
-#include <connection_manager.h>
+#include <esp32common/espnow/connection_manager.h>
 #include <esp_now.h>
 
 DataCache::DataCache() {

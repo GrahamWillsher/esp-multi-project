@@ -30,6 +30,9 @@ public:
     
     // Publish current configuration
     void publish_status();
+
+    // Update MQTT availability from external state machine (avoids direct socket probes)
+    void set_mqtt_available(bool available);
     
     // Flush buffered messages (call after MQTT reconnects)
     void flush_buffer();
@@ -58,7 +61,11 @@ private:
     BufferedMessage buffer_[BUFFER_SIZE];
     size_t buffer_head_ = 0;
     size_t buffer_count_ = 0;
+
+    // MQTT availability cache (managed by MQTT task/state machine)
+    bool mqtt_available_cached_ = false;
     
+    bool is_mqtt_available();
     void publish_message(MqttLogLevel level, const char* tag, const char* message);
     uint8_t get_qos(MqttLogLevel level) const;
     bool get_retained(MqttLogLevel level) const;

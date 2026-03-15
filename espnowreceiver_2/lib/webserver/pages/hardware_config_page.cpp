@@ -69,8 +69,8 @@ static esp_err_t hardware_config_handler(httpd_req_t *req) {
     </div>
 
     <div style='text-align: center; margin-top: 30px;'>
-        <button id='saveHardwareBtn' onclick='saveHardwareSettings()' style='padding: 12px 40px; font-size: 16px; background-color: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;'>
-            Save Hardware Config
+        <button id='saveHardwareBtn' onclick='saveHardwareSettings()' disabled style='padding: 12px 40px; font-size: 16px; background-color: #6c757d; color: white; border: none; border-radius: 4px; cursor: not-allowed;'>
+            Nothing to Save
         </button>
         <div id='saveStatus' style='color: #888; font-size: 12px; margin-top: 12px; min-height: 18px;'></div>
     </div>
@@ -80,9 +80,26 @@ static esp_err_t hardware_config_handler(httpd_req_t *req) {
 
         function updateSaveButton() {
             const button = document.getElementById('saveHardwareBtn');
+            const statusEl = document.getElementById('saveStatus');
             const currentValue = document.getElementById('ledMode').value;
             const changed = currentValue !== initialLedMode;
-            button.textContent = changed ? 'Save Hardware Config (1 change)' : 'Save Hardware Config';
+
+            if (changed) {
+                button.textContent = 'Save 1 Change';
+                button.style.backgroundColor = '#4CAF50';
+                button.disabled = false;
+                button.style.cursor = 'pointer';
+
+                if (statusEl.textContent === '✓ Hardware config saved') {
+                    statusEl.textContent = '';
+                    statusEl.style.color = '#888';
+                }
+            } else {
+                button.textContent = 'Nothing to Save';
+                button.style.backgroundColor = '#6c757d';
+                button.disabled = true;
+                button.style.cursor = 'not-allowed';
+            }
         }
 
         async function loadLiveLedStatus() {
@@ -137,9 +154,19 @@ static esp_err_t hardware_config_handler(httpd_req_t *req) {
         }
 
         async function saveHardwareSettings() {
+            const button = document.getElementById('saveHardwareBtn');
             const statusEl = document.getElementById('saveStatus');
             const ledMode = parseInt(document.getElementById('ledMode').value, 10);
 
+            if (String(ledMode) === initialLedMode) {
+                updateSaveButton();
+                return;
+            }
+
+            button.textContent = 'Saving...';
+            button.style.backgroundColor = '#ff9800';
+            button.disabled = true;
+            button.style.cursor = 'wait';
             statusEl.textContent = 'Saving...';
             statusEl.style.color = '#888';
 
@@ -162,13 +189,19 @@ static esp_err_t hardware_config_handler(httpd_req_t *req) {
                     statusEl.style.color = '#4CAF50';
                     setTimeout(loadLiveLedStatus, 400);
                 } else {
+                    button.textContent = '✗ Save Failed';
+                    button.style.backgroundColor = '#dc3545';
                     statusEl.textContent = '✗ ' + (data.message || 'Failed to save hardware config');
                     statusEl.style.color = '#f44336';
+                    setTimeout(updateSaveButton, 3000);
                 }
             } catch (error) {
                 console.error('Failed to save hardware settings:', error);
+                button.textContent = '✗ Network Error';
+                button.style.backgroundColor = '#dc3545';
                 statusEl.textContent = '✗ Failed to save hardware config';
                 statusEl.style.color = '#f44336';
+                setTimeout(updateSaveButton, 3000);
             }
         }
 

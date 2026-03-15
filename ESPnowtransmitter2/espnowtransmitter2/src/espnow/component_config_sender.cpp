@@ -7,7 +7,7 @@
 #include "../system_settings.h"
 #include "../config/logging_config.h"
 #include <mqtt_logger.h>
-#include <espnow_common.h>
+#include <esp32common/espnow/common.h>
 #include <espnow_send_utils.h>
 #include <espnow_peer_manager.h>
 #include <freertos/FreeRTOS.h>

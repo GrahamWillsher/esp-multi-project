@@ -163,6 +163,16 @@ private:
      * @brief Handle incoming battery_specs message
      */
     static void handleBatterySpecs(const char* json_payload, size_t length);
+
+    /**
+     * @brief Handle incoming battery_type_catalog message
+     */
+    static void handleBatteryTypeCatalog(const char* json_payload, size_t length);
+
+    /**
+     * @brief Handle incoming inverter_type_catalog message
+     */
+    static void handleInverterTypeCatalog(const char* json_payload, size_t length);
     
     /**
      * @brief Handle incoming cell_data message

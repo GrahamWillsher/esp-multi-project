@@ -4,11 +4,33 @@
 #include "../config/logging_config.h"
 #include "../datalayer/static_data.h"
 #include "../battery_emulator/devboard/utils/events.h"
+#if CONFIG_CAN_ENABLED
+#include "../battery_emulator/battery/Battery.h"
+#include "../battery_emulator/inverter/InverterProtocol.h"
+#endif
 #include <Arduino.h>
 #include <HTTPUpdate.h>
 #include <ArduinoJson.h>
 #include <algorithm>
 #include <vector>
+#include <firmware_version.h>
+
+namespace {
+constexpr uint16_t MAX_CATALOG_BASE_VERSION = 32767;
+
+uint16_t catalog_base_version() {
+    const uint32_t fw = FW_VERSION_NUMBER;
+    return static_cast<uint16_t>((fw > MAX_CATALOG_BASE_VERSION) ? MAX_CATALOG_BASE_VERSION : fw);
+}
+
+uint16_t mqtt_battery_type_catalog_version() {
+    return static_cast<uint16_t>(catalog_base_version() * 2u);
+}
+
+uint16_t mqtt_inverter_type_catalog_version() {
+    return static_cast<uint16_t>((catalog_base_version() * 2u) + 1u);
+}
+}
 
 MqttManager::MqttManager() : client_(eth_client_) {
     initialization_time_ = millis();
@@ -18,6 +40,11 @@ MqttManager::MqttManager() : client_(eth_client_) {
 MqttManager& MqttManager::instance() {
     static MqttManager instance;
     return instance;
+}
+
+bool MqttManager::is_connected() {
+    // State machine must report CONNECTED and PubSubClient transport must still be valid.
+    return (state_ == MqttState::CONNECTED) && (client_.state() == 0);
 }
 
 void MqttManager::init() {
@@ -63,13 +90,14 @@ void MqttManager::update() {
         }
             
         case MqttState::CONNECTED:
-            if (client_.connected()) {
+            if (client_.state() == MQTT_CONNECTED) {
                 // Process subscriptions while connected
                 client_.loop();
             } else {
                 // Connection dropped
-                LOG_WARN("MQTT", "Connection lost");
-                transition_to(MqttState::DISCONNECTED);
+                const int rc = client_.state();
+                LOG_WARN("MQTT", "Connection lost (rc=%d) - applying retry backoff", rc);
+                on_connection_failed();
             }
             break;
             
@@ -147,6 +175,9 @@ void MqttManager::on_connection_success() {
 
 void MqttManager::on_connection_failed() {
     LOG_WARN("MQTT", "Connection failed");
+
+    // Ensure underlying socket is fully closed before backoff/retry
+    client_.disconnect();
     
     transition_to(MqttState::CONNECTION_FAILED);
     connected_ = false;  // Legacy flag
@@ -371,6 +402,90 @@ bool MqttManager::publish_inverter_specs() {
     return success;
 }
 
+bool MqttManager::publish_battery_type_catalog() {
+    if (!is_connected()) return false;
+
+    DynamicJsonDocument doc(4096);
+    doc["catalog_version"] = mqtt_battery_type_catalog_version();
+    JsonArray types = doc.createNestedArray("types");
+
+#if CONFIG_CAN_ENABLED
+    for (int id = 0; id < static_cast<int>(BatteryType::Highest); ++id) {
+        const char* name = name_for_battery_type(static_cast<BatteryType>(id));
+        if (!name || name[0] == '\0') {
+            continue;
+        }
+        JsonObject obj = types.createNestedObject();
+        obj["id"] = id;
+        obj["name"] = name;
+    }
+#else
+    JsonObject obj = types.createNestedObject();
+    obj["id"] = 0;
+    obj["name"] = "None";
+#endif
+
+    char* buffer = (char*)ps_malloc(4096);
+    if (!buffer) {
+        LOG_ERROR("MQTT", "Failed to allocate PSRAM for battery type catalog");
+        return false;
+    }
+
+    const size_t len = serializeJson(doc, buffer, 4096);
+    bool success = false;
+    if (len > 0) {
+        success = client_.publish("transmitter/BE/battery_type_catalog", buffer, true);
+        if (success) {
+            LOG_INFO("MQTT", "Published battery type catalog (%u bytes)", (unsigned)len);
+        }
+    }
+
+    free(buffer);
+    return success;
+}
+
+bool MqttManager::publish_inverter_type_catalog() {
+    if (!is_connected()) return false;
+
+    DynamicJsonDocument doc(3072);
+    doc["catalog_version"] = mqtt_inverter_type_catalog_version();
+    JsonArray types = doc.createNestedArray("types");
+
+#if CONFIG_CAN_ENABLED
+    for (int id = 0; id < static_cast<int>(InverterProtocolType::Highest); ++id) {
+        const char* name = name_for_inverter_type(static_cast<InverterProtocolType>(id));
+        if (!name || name[0] == '\0') {
+            continue;
+        }
+        JsonObject obj = types.createNestedObject();
+        obj["id"] = id;
+        obj["name"] = name;
+    }
+#else
+    JsonObject obj = types.createNestedObject();
+    obj["id"] = 0;
+    obj["name"] = "None";
+#endif
+
+    char* buffer = (char*)ps_malloc(3072);
+    if (!buffer) {
+        LOG_ERROR("MQTT", "Failed to allocate PSRAM for inverter type catalog");
+        return false;
+    }
+
+    const size_t len = serializeJson(doc, buffer, 3072);
+    bool success = false;
+    if (len > 0) {
+        success = client_.publish("transmitter/BE/inverter_type_catalog", buffer, true);
+        if (success) {
+            LOG_INFO("MQTT", "Published inverter type catalog (%u bytes)", (unsigned)len);
+        }
+    }
+
+    free(buffer);
+    return success;
+}
+
 static uint8_t map_event_level(EVENTS_LEVEL_TYPE level) {
     switch (level) {
         case EVENT_LEVEL_ERROR:   return 3;
@@ -471,7 +586,7 @@ void MqttManager::decrement_event_log_subscribers() {
 }
 
 void MqttManager::loop() {
-    if (client_.connected()) {
+    if (client_.state() == MQTT_CONNECTED) {
         connected_ = true;
         client_.loop();
     } else {

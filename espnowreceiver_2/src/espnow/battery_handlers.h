@@ -8,7 +8,7 @@
 #ifndef BATTERY_HANDLERS_H
 #define BATTERY_HANDLERS_H
 
-#include <espnow_common.h>
+#include <esp32common/espnow/common.h>
 #include "../common.h"
 
 /**

@@ -96,7 +96,19 @@ enum msg_type : uint8_t {
     msg_component_interface,        // Component interface selections (battery/inverter comm)
 
     // Event logs subscription control (receiver → transmitter)
-    msg_event_logs_control          // Subscribe/unsubscribe event logs publishing
+    msg_event_logs_control,         // Subscribe/unsubscribe event logs publishing
+
+    // Dynamic type catalog discovery (receiver requests, transmitter responds)
+    msg_request_battery_types,      // Request battery type catalog
+    msg_battery_types_fragment,     // Battery type catalog fragment response
+    msg_request_inverter_types,     // Request inverter type catalog
+    msg_inverter_types_fragment,    // Inverter type catalog fragment response
+    msg_request_inverter_interfaces, // Request inverter interface catalog
+    msg_inverter_interfaces_fragment, // Inverter interface catalog fragment response
+
+    // Dynamic type catalog version exchange (receiver requests, transmitter responds)
+    msg_request_type_catalog_versions, // Request current battery/inverter catalog versions
+    msg_type_catalog_versions          // Current battery/inverter catalog versions
 };
 
 // ESP-NOW packet subtypes (for fragmented messages)
@@ -147,6 +159,41 @@ typedef struct __attribute__((packed)) {
     uint8_t type;        // msg_event_logs_control
     uint8_t action;      // 0 = unsubscribe, 1 = subscribe
 } event_logs_control_t;
+
+// ============================================================================
+// Dynamic type catalog discovery (battery/inverter)
+// ============================================================================
+
+constexpr uint8_t TYPE_CATALOG_NAME_MAX = 48;
+constexpr uint8_t TYPE_CATALOG_MAX_ENTRIES_PER_FRAGMENT = 4;
+
+typedef struct __attribute__((packed)) {
+    uint8_t id;                                  // BatteryType or InverterProtocolType numeric ID
+    char name[TYPE_CATALOG_NAME_MAX];            // Null-terminated display name
+} type_catalog_entry_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                                // msg_request_battery_types / msg_request_inverter_types / msg_request_inverter_interfaces
+} type_catalog_request_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                                // msg_battery_types_fragment / msg_inverter_types_fragment / msg_inverter_interfaces_fragment
+    uint16_t sequence;                           // Correlates fragments belonging to same snapshot
+    uint8_t fragment_index;                      // 0-based index
+    uint8_t fragment_total;                      // Total fragments in snapshot
+    uint8_t entry_count;                         // Number of valid entries in entries[]
+    type_catalog_entry_t entries[TYPE_CATALOG_MAX_ENTRIES_PER_FRAGMENT];
+} type_catalog_fragment_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                                // msg_request_type_catalog_versions
+} type_catalog_versions_request_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                                // msg_type_catalog_versions
+    uint16_t battery_catalog_version;            // Monotonic battery catalog version
+    uint16_t inverter_catalog_version;           // Monotonic inverter catalog version
+} type_catalog_versions_t;
 
 typedef struct __attribute__((packed)) {
     uint8_t type;       // msg_abort_data

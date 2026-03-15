@@ -6,6 +6,34 @@ This folder contains shared code for ESP-NOW communication between ESP32 devices
 
 The library follows a **utility-based** design where applications have full control over their message handling:
 
+## Stable Public Include Paths
+
+Use these canonical includes for cross-project stability:
+
+- `#include <esp32common/espnow/common.h>`
+- `#include <esp32common/espnow/connection_manager.h>`
+- `#include <esp32common/espnow/connection_event.h>`
+- `#include <esp32common/espnow/connection_event_processor.h>`
+- `#include <esp32common/espnow/message_router.h>`
+- `#include <esp32common/espnow/message_queue.h>`
+- `#include <esp32common/espnow/standard_handlers.h>`
+- `#include <esp32common/espnow/packet_utils.h>`
+- `#include <esp32common/espnow/timing_config.h>`
+- `#include <esp32common/espnow/heartbeat_monitor.h>`
+- `#include <esp32common/espnow/reconnection_backoff.h>`
+- `#include <esp32common/config/timing_config.h>`
+- `#include <esp32common/logging/logging_config.h>`
+- `#include <esp32common/interfaces/iconnection_manager.h>`
+- `#include <esp32common/interfaces/idata_sender.h>`
+- `#include <esp32common/interfaces/idata_cache.h>`
+- `#include <esp32common/patterns/non_blocking_operation.h>`
+- `#include <esp32common/events/connection_events.h>`
+- `#include <esp32common/ota/ota_coordinator.h>`
+
+All temporary compatibility shims have been removed. All active usage must now include the canonical `esp32common/...` paths directly.
+
+> **Compatibility note:** Old include forms such as `<connection_manager.h>`, `<espnow_packet_utils.h>`, and `<logging_config.h>` are no longer supported in this repository.
+
 ### espnow_common.h
 Shared protocol definitions used by all ESP-NOW applications:
 - Message types (msg_probe, msg_ack, msg_data, msg_request_data, msg_abort_data, msg_packet)
@@ -31,7 +59,7 @@ Each application should:
 
 1. **Include the common header:**
    ```cpp
-   #include <espnow_transmitter/espnow_common.h>
+    #include <esp32common/espnow/common.h>
    ```
 
 2. **Create its own queue:**

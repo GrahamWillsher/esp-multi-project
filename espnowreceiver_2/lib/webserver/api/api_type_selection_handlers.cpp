@@ -1,8 +1,9 @@
 #include "api_type_selection_handlers.h"
 
-#include <logging_config.h>
+#include <esp32common/logging/logging_config.h>
 #include "../../receiver_config/receiver_config_manager.h"
 #include "../../src/espnow/espnow_send.h"
+#include "../../src/espnow/type_catalog_cache.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <algorithm>
@@ -19,90 +20,7 @@ struct TypeEntry {
     }
 };
 
-static TypeEntry battery_types[] = {
-    {0, "None"},
-    {2, "BMW i3"},
-    {3, "BMW iX"},
-    {4, "Bolt/Ampera"},
-    {5, "BYD Atto 3"},
-    {6, "Cellpower BMS"},
-    {7, "CHAdeMO"},
-    {8, "CMFA EV"},
-    {9, "Foxess"},
-    {10, "Geely Geometry C"},
-    {11, "Orion BMS"},
-    {12, "Sono"},
-    {13, "ECMP"},
-    {14, "i-MiEV/C-Zero"},
-    {15, "Jaguar I-PACE"},
-    {16, "Kia E-GMP"},
-    {17, "Kia/Hyundai 64"},
-    {18, "Kia/Hyundai Hybrid"},
-    {19, "VW MEB"},
-    {20, "MG 5"},
-    {21, "Nissan Leaf"},
-    {22, "Pylon"},
-    {23, "Daly BMS"},
-    {24, "RJXZS BMS"},
-    {25, "Range Rover PHEV"},
-    {26, "Renault Kangoo"},
-    {27, "Renault Twizy"},
-    {28, "Renault Zoe Gen1"},
-    {29, "Renault Zoe Gen2"},
-    {30, "Santa Fe PHEV"},
-    {31, "SimpBMS"},
-    {32, "Tesla Model 3/Y"},
-    {33, "Tesla Model S/X"},
-    {34, "Test/Fake"},
-    {35, "Volvo SPA"},
-    {36, "Volvo SPA Hybrid"},
-    {37, "MG HS PHEV"},
-    {38, "Samsung SDI LV"},
-    {39, "Hyundai Ioniq 28"},
-    {40, "Kia 64FD"},
-    {41, "Relion LV"},
-    {42, "Rivian"},
-    {43, "BMW PHEV"},
-    {44, "Ford Mach-E"},
-    {45, "CMP Smart"},
-    {46, "Maxus EV80"}
-};
-
-static TypeEntry inverter_types[] = {
-    {0, "None"},
-    {1, "Afore battery over CAN"},
-    {2, "BYD Battery-Box Premium HVS over CAN Bus"},
-    {3, "BYD 11kWh HVM battery over Modbus RTU"},
-    {4, "Ferroamp Pylon battery over CAN bus"},
-    {5, "FoxESS compatible HV2600/ECS4100 battery"},
-    {6, "Growatt High Voltage protocol via CAN"},
-    {7, "Growatt Low Voltage (48V) protocol via CAN"},
-    {8, "Growatt WIT compatible battery via CAN"},
-    {9, "BYD battery via Kostal RS485"},
-    {10, "Pylontech HV battery over CAN bus"},
-    {11, "Pylontech LV battery over CAN bus"},
-    {12, "Schneider V2 SE BMS CAN"},
-    {13, "SMA compatible BYD H"},
-    {14, "SMA compatible BYD Battery-Box HVS"},
-    {15, "SMA Low Voltage (48V) protocol via CAN"},
-    {16, "SMA Tripower CAN"},
-    {17, "Sofar BMS (Extended) via CAN, Battery ID"},
-    {18, "SolaX Triple Power LFP over CAN bus"},
-    {19, "Solxpow compatible battery"},
-    {20, "Sol-Ark LV protocol over CAN bus"},
-    {21, "Sungrow SBRXXX emulation over CAN bus"}
-};
-
 static TypeEntry battery_interfaces[] = {
-    {0, "Modbus"},
-    {1, "RS485"},
-    {2, "CAN (Native)"},
-    {3, "CAN-FD (Native)"},
-    {4, "CAN (MCP2515 add-on)"},
-    {5, "CAN-FD (MCP2518 add-on)"}
-};
-
-static TypeEntry inverter_interfaces[] = {
     {0, "Modbus"},
     {1, "RS485"},
     {2, "CAN (Native)"},
@@ -132,14 +50,78 @@ static String generate_sorted_type_json(TypeEntry* types, size_t count) {
 }
 
 static esp_err_t api_get_battery_types_handler(httpd_req_t *req) {
-    String json_response = generate_sorted_type_json(battery_types, sizeof(battery_types) / sizeof(TypeEntry));
+    // Heap-allocate: 128 * 49 bytes = 6 KB, too large for the httpd task stack
+    auto* cache_entries = new TypeCatalogCache::TypeEntry[128];
+    if (!cache_entries) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
+        return ESP_FAIL;
+    }
+    size_t count = TypeCatalogCache::copy_battery_entries(cache_entries, 128);
+
+    if (count == 0) {
+        delete[] cache_entries;
+        send_battery_types_request();
+        const char* loading = "{\"types\":[],\"loading\":true}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, loading, strlen(loading));
+        return ESP_OK;
+    }
+
+    // response_entries.name pointers point into cache_entries — keep cache_entries alive
+    // until after generate_sorted_type_json has built the String
+    auto* response_entries = new TypeEntry[count];
+    if (!response_entries) {
+        delete[] cache_entries;
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
+        return ESP_FAIL;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        response_entries[i].id = cache_entries[i].id;
+        response_entries[i].name = cache_entries[i].name;
+    }
+
+    String json_response = generate_sorted_type_json(response_entries, count);
+    delete[] response_entries;
+    delete[] cache_entries;  // safe: JSON string has already copied the name data
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, json_response.c_str(), json_response.length());
     return ESP_OK;
 }
 
 static esp_err_t api_get_inverter_types_handler(httpd_req_t *req) {
-    String json_response = generate_sorted_type_json(inverter_types, sizeof(inverter_types) / sizeof(TypeEntry));
+    // Heap-allocate: 128 * 49 bytes = 6 KB, too large for the httpd task stack
+    auto* cache_entries = new TypeCatalogCache::TypeEntry[128];
+    if (!cache_entries) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
+        return ESP_FAIL;
+    }
+    size_t count = TypeCatalogCache::copy_inverter_entries(cache_entries, 128);
+
+    if (count == 0) {
+        delete[] cache_entries;
+        send_inverter_types_request();
+        const char* loading = "{\"types\":[],\"loading\":true}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, loading, strlen(loading));
+        return ESP_OK;
+    }
+
+    // response_entries.name pointers point into cache_entries — keep cache_entries alive
+    // until after generate_sorted_type_json has built the String
+    auto* response_entries = new TypeEntry[count];
+    if (!response_entries) {
+        delete[] cache_entries;
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
+        return ESP_FAIL;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        response_entries[i].id = cache_entries[i].id;
+        response_entries[i].name = cache_entries[i].name;
+    }
+
+    String json_response = generate_sorted_type_json(response_entries, count);
+    delete[] response_entries;
+    delete[] cache_entries;  // safe: JSON string has already copied the name data
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, json_response.c_str(), json_response.length());
     return ESP_OK;
@@ -251,7 +233,39 @@ static esp_err_t api_get_battery_interfaces_handler(httpd_req_t *req) {
 }
 
 static esp_err_t api_get_inverter_interfaces_handler(httpd_req_t *req) {
-    String json_response = generate_sorted_type_json(inverter_interfaces, sizeof(inverter_interfaces) / sizeof(TypeEntry));
+    auto* cache_entries = new TypeCatalogCache::TypeEntry[128];
+    if (!cache_entries) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
+        return ESP_FAIL;
+    }
+
+    size_t count = TypeCatalogCache::copy_inverter_interface_entries(cache_entries, 128);
+
+    if (count == 0) {
+        delete[] cache_entries;
+        send_inverter_interfaces_request();
+        const char* loading = "{\"types\":[],\"loading\":true}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, loading, strlen(loading));
+        return ESP_OK;
+    }
+
+    auto* response_entries = new TypeEntry[count];
+    if (!response_entries) {
+        delete[] cache_entries;
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
+        return ESP_FAIL;
+    }
+
+    for (size_t i = 0; i < count; ++i) {
+        response_entries[i].id = cache_entries[i].id;
+        response_entries[i].name = cache_entries[i].name;
+    }
+
+    String json_response = generate_sorted_type_json(response_entries, count);
+    delete[] response_entries;
+    delete[] cache_entries;
+
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, json_response.c_str(), json_response.length());
     return ESP_OK;

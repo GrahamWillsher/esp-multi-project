@@ -13,7 +13,7 @@
 #include <esp_wifi.h>
 #include <LittleFS.h>
 #include <JPEGDecoder.h>
-#include <espnow_common.h>
+#include <esp32common/espnow/common.h>
 #include "config/led_config.h"
 #include "config/logging_config.h"
 #include "state/connection_state.h"

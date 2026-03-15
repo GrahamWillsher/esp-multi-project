@@ -30,7 +30,7 @@
 #include "config/network_config.h"
 #include "config/task_config.h"
 #include "config/logging_config.h"
-#include "config/timing_config.h"
+#include <esp32common/config/timing_config.h>
 
 // Network managers
 #include "network/ethernet_manager.h"
@@ -58,8 +58,8 @@
 #include "espnow/tx_state_machine.h"
 #include <channel_manager.h>                 // Centralized channel management
 #include "espnow/heartbeat_manager.h"         // Section 11: Heartbeat protocol
-#include <connection_manager.h>
-#include <connection_event_processor.h>
+#include <esp32common/espnow/connection_manager.h>
+#include <esp32common/espnow/connection_event_processor.h>
 
 // Settings manager
 #include "settings/settings_manager.h"

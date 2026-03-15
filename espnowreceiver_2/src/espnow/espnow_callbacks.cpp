@@ -1,7 +1,7 @@
 #include "espnow_callbacks.h"
 #include "../common.h"
 #include <esp_now.h>
-#include <espnow_common.h>
+#include <esp32common/espnow/common.h>
 #include "../../lib/webserver/utils/transmitter_manager.h"
 
 void on_espnow_sent(const uint8_t *mac, esp_now_send_status_t status) {

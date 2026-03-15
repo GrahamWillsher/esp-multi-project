@@ -3,13 +3,13 @@
 #include "events.h"
 #include "../../../espnow/tx_send_guard.h"
 #include "../../../config/logging_config.h"
-#include <connection_manager.h>
+#include <esp32common/espnow/connection_manager.h>
 #ifdef BMS_FAULT
 #pragma push_macro("BMS_FAULT")
 #undef BMS_FAULT
 #define LED_HANDLER_RESTORE_BMS_FAULT_MACRO
 #endif
-#include <espnow_common.h>
+#include <esp32common/espnow/common.h>
 #ifdef LED_HANDLER_RESTORE_BMS_FAULT_MACRO
 #pragma pop_macro("BMS_FAULT")
 #undef LED_HANDLER_RESTORE_BMS_FAULT_MACRO

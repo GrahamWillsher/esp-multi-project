@@ -1,7 +1,7 @@
 #ifndef PAGE_DEFINITIONS_H
 #define PAGE_DEFINITIONS_H
 
-#include <espnow_common.h>
+#include <esp32common/espnow/common.h>
 
 // ═══════════════════════════════════════════════════════════════════════
 // PAGE-TO-SUBTYPE MAPPING STRUCTURE

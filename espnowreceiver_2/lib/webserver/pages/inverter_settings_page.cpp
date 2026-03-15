@@ -51,6 +51,10 @@ static esp_err_t inverter_settings_handler(httpd_req_t *req) {
         // Store initial value to detect changes
         let initialInverterType = '';
         let initialInverterInterface = '';
+        let inverterTypeRetries = 0;
+        const MAX_INVERTER_TYPE_RETRIES = 15;
+        let inverterInterfaceRetries = 0;
+        const MAX_INVERTER_INTERFACE_RETRIES = 15;
         
         window.onload = function() {
             // Load inverter types and current selection
@@ -65,6 +69,20 @@ static esp_err_t inverter_settings_handler(httpd_req_t *req) {
                 .then(response => response.json())
                 .then(data => {
                     const typeSelect = document.getElementById('inverterType');
+
+                    if (data.loading || !Array.isArray(data.types) || data.types.length === 0) {
+                        typeSelect.innerHTML = "<option value=''>Loading...</option>";
+
+                        if (inverterTypeRetries < MAX_INVERTER_TYPE_RETRIES) {
+                            inverterTypeRetries++;
+                            setTimeout(loadInverterTypes, 1000);
+                        } else {
+                            typeSelect.innerHTML = "<option value=''>No data (check transmitter link)</option>";
+                        }
+                        return;
+                    }
+
+                    inverterTypeRetries = 0;
                     typeSelect.innerHTML = '';
                     
                     // Populate dropdown with all inverter types
@@ -90,8 +108,9 @@ static esp_err_t inverter_settings_handler(httpd_req_t *req) {
                 .then(response => response.json())
                 .then(data => {
                     const typeSelect = document.getElementById('inverterType');
-                    typeSelect.value = data.inverter_type;
-                    initialInverterType = data.inverter_type;
+                    const currentType = String(data.inverter_type);
+                    typeSelect.value = currentType;
+                    initialInverterType = currentType;
                     
                     updateButtonState();
                     
@@ -110,6 +129,20 @@ static esp_err_t inverter_settings_handler(httpd_req_t *req) {
                 .then(response => response.json())
                 .then(data => {
                     const interfaceSelect = document.getElementById('inverterInterface');
+
+                    if (data.loading || !Array.isArray(data.types) || data.types.length === 0) {
+                        interfaceSelect.innerHTML = "<option value=''>Loading...</option>";
+
+                        if (inverterInterfaceRetries < MAX_INVERTER_INTERFACE_RETRIES) {
+                            inverterInterfaceRetries++;
+                            setTimeout(loadInverterInterfaces, 1000);
+                        } else {
+                            interfaceSelect.innerHTML = "<option value=''>No data (check transmitter link)</option>";
+                        }
+                        return;
+                    }
+
+                    inverterInterfaceRetries = 0;
                     interfaceSelect.innerHTML = '';
 
                     data.types.forEach(type => {
@@ -133,8 +166,9 @@ static esp_err_t inverter_settings_handler(httpd_req_t *req) {
                 .then(response => response.json())
                 .then(data => {
                     const interfaceSelect = document.getElementById('inverterInterface');
-                    interfaceSelect.value = data.inverter_interface;
-                    initialInverterInterface = data.inverter_interface;
+                    const currentInterface = String(data.inverter_interface);
+                    interfaceSelect.value = currentInterface;
+                    initialInverterInterface = currentInterface;
 
                     updateButtonState();
 

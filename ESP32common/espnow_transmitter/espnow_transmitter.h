@@ -5,7 +5,7 @@
 #include <esp_now.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
-#include "espnow_common.h"
+#include <esp32common/espnow/common.h>
 
 // ============================================================================
 // EXTERNAL VARIABLES

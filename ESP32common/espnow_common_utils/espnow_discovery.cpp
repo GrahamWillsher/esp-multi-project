@@ -7,7 +7,7 @@
 #include "espnow_peer_manager.h"
 #include <WiFi.h>
 #include <esp_now.h>
-#include <espnow_common.h>
+#include <esp32common/espnow/common.h>
 #include <mqtt_logger.h>
 
 EspnowDiscovery& EspnowDiscovery::instance() {

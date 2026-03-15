@@ -2,7 +2,7 @@
 #define ESPNOW_PACKET_UTILS_H
 
 #include <Arduino.h>
-#include <espnow_common.h>
+#include <esp32common/espnow/common.h>
 
 namespace EspnowPacketUtils {
 

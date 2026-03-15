@@ -3,8 +3,8 @@
 #include "../datalayer/datalayer.h"
 #include "../battery_emulator/devboard/utils/led_handler.h"
 #include <esp_now.h>
-#include <connection_manager.h>
-#include <espnow_packet_utils.h>
+#include <esp32common/espnow/connection_manager.h>
+#include <esp32common/espnow/packet_utils.h>
 
 namespace {
 

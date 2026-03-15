@@ -26,7 +26,7 @@
 
 ---
 
-### 2. **LVGL_WORKING_CODE_PATTERNS.md**
+### 2. **archive/LVGL_WORKING_CODE_PATTERNS.md**
 **🎯 START HERE IF: You want to copy exact working code**
 
 **Contents:**
@@ -103,11 +103,11 @@
 1. Read: **LVGL_BLACK_SCREEN_ROOT_CAUSE.md** (10 min)
 2. Choose: Quick fix vs. Proper fix vs. Full solution
 3. Reference: **QUICK_REFERENCE_IMAGE_DISPLAY.md** for code snippets
-4. Copy: Code from **LVGL_WORKING_CODE_PATTERNS.md**
+4. Copy: Code from **archive/LVGL_WORKING_CODE_PATTERNS.md**
 5. Test: Use diagnostic script from root cause doc
 
 ### Scenario 2: "I want the exact working code"
-1. Go directly to: **LVGL_WORKING_CODE_PATTERNS.md**
+1. Go directly to: **archive/LVGL_WORKING_CODE_PATTERNS.md**
 2. Copy: Complete functions (copy-paste ready)
 3. Reference: Header file and init code patterns
 4. Test: Using provided testing checklist
@@ -116,7 +116,7 @@
 ### Scenario 3: "I'm building a new image display feature"
 1. Start: **LVGL_IMAGE_DISPLAY_RESEARCH_FINDINGS.md** for overview
 2. Decide: Which approach (direct TFT vs. LVGL vs. custom decoder)
-3. Implement: Using patterns from **LVGL_WORKING_CODE_PATTERNS.md**
+3. Implement: Using patterns from **archive/LVGL_WORKING_CODE_PATTERNS.md**
 4. Optimize: Using performance metrics and checklist
 5. Debug: Using troubleshooting tree in **QUICK_REFERENCE_IMAGE_DISPLAY.md**
 
@@ -207,7 +207,7 @@ You have an issue?
 │     └─> LVGL_BLACK_SCREEN_ROOT_CAUSE.md
 │
 ├─ Want the working code
-│  └─> LVGL_WORKING_CODE_PATTERNS.md
+│  └─> archive/LVGL_WORKING_CODE_PATTERNS.md
 │
 ├─ Need to understand architecture
 │  └─> LVGL_IMAGE_DISPLAY_RESEARCH_FINDINGS.md
@@ -277,7 +277,7 @@ Completeness: ✅ 95%
 
 Files Created:
 - LVGL_BLACK_SCREEN_ROOT_CAUSE.md (8,500 words)
-- LVGL_WORKING_CODE_PATTERNS.md (6,800 words)
+- archive/LVGL_WORKING_CODE_PATTERNS.md (6,800 words)
 - LVGL_IMAGE_DISPLAY_RESEARCH_FINDINGS.md (7,200 words)
 - QUICK_REFERENCE_IMAGE_DISPLAY.md (4,900 words)
 

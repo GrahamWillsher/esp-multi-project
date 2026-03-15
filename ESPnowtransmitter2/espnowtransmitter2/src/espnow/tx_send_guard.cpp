@@ -4,7 +4,7 @@
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <espnow_transmitter.h>
-#include <connection_manager.h>
+#include <esp32common/espnow/connection_manager.h>
 #include "../config/logging_config.h"
 
 namespace {

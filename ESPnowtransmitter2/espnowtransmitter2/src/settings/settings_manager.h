@@ -2,7 +2,7 @@
 
 #include <Arduino.h>
 #include <Preferences.h>
-#include <espnow_common.h>
+#include <esp32common/espnow/common.h>
 #include <version_utils.h>
 
 /**

@@ -23,19 +23,115 @@
 #include <esp_wifi.h>
 #include <espnow_transmitter.h>
 #include <espnow_peer_manager.h>
-#include <espnow_message_router.h>
-#include <espnow_standard_handlers.h>
-#include <espnow_packet_utils.h>
-#include <connection_manager.h>
+#include <esp32common/espnow/message_router.h>
+#include <esp32common/espnow/standard_handlers.h>
+#include <esp32common/espnow/packet_utils.h>
+#include <esp32common/espnow/connection_manager.h>
 #include <channel_manager.h>
 #include <mqtt_logger.h>
 #include <mqtt_manager.h>
 #include <Preferences.h>
+#include <vector>
+#include <cstddef>
 #include <ethernet_config.h>
 #include <firmware_version.h>
 #include <firmware_metadata.h>
 
 // Note: STRINGIFY macro is defined in firmware_version.h
+
+namespace {
+
+// Catalog version policy:
+// - Base version tracks firmware semantic version (FW_VERSION_NUMBER)
+// - Battery/Inverter are separated by +0/+1 offsets
+// - 16-bit wire field requires bounded base value
+constexpr uint16_t MAX_CATALOG_BASE_VERSION = 32767;
+
+uint16_t catalog_base_version() {
+    const uint32_t fw = FW_VERSION_NUMBER;
+    return static_cast<uint16_t>((fw > MAX_CATALOG_BASE_VERSION) ? MAX_CATALOG_BASE_VERSION : fw);
+}
+
+uint16_t battery_type_catalog_version() {
+    return static_cast<uint16_t>(catalog_base_version() * 2u);
+}
+
+uint16_t inverter_type_catalog_version() {
+    return static_cast<uint16_t>((catalog_base_version() * 2u) + 1u);
+}
+
+#if CONFIG_CAN_ENABLED
+uint8_t comm_interface_to_wire_id(comm_interface iface) {
+    switch (iface) {
+        case comm_interface::Modbus:
+            return 0;
+        case comm_interface::RS485:
+            return 1;
+        case comm_interface::CanNative:
+            return 2;
+        case comm_interface::CanFdNative:
+            return 3;
+        case comm_interface::CanAddonMcp2515:
+            return 4;
+        case comm_interface::CanFdAddonMcp2518:
+            return 5;
+        default:
+            return 0xFF;
+    }
+}
+#endif
+
+void send_type_catalog_fragments(const uint8_t* target_mac,
+                                 uint8_t response_type,
+                                 const std::vector<type_catalog_entry_t>& entries,
+                                 const char* log_tag) {
+    if (!target_mac) {
+        return;
+    }
+
+    const size_t per_fragment = TYPE_CATALOG_MAX_ENTRIES_PER_FRAGMENT;
+    const size_t total_fragments_sz = entries.empty() ? 1 : ((entries.size() + per_fragment - 1) / per_fragment);
+    const uint8_t total_fragments = static_cast<uint8_t>(total_fragments_sz);
+    const uint16_t sequence = static_cast<uint16_t>(esp_random() & 0xFFFF);
+
+    for (uint8_t fragment_index = 0; fragment_index < total_fragments; ++fragment_index) {
+        type_catalog_fragment_t fragment{};
+        fragment.type = response_type;
+        fragment.sequence = sequence;
+        fragment.fragment_index = fragment_index;
+        fragment.fragment_total = total_fragments;
+
+        const size_t start = static_cast<size_t>(fragment_index) * per_fragment;
+        const size_t remaining = (start < entries.size()) ? (entries.size() - start) : 0;
+        const size_t count = (remaining > per_fragment) ? per_fragment : remaining;
+        fragment.entry_count = static_cast<uint8_t>(count);
+
+        for (size_t i = 0; i < count; ++i) {
+            fragment.entries[i] = entries[start + i];
+        }
+
+        const size_t wire_size = offsetof(type_catalog_fragment_t, entries) +
+                                 (static_cast<size_t>(fragment.entry_count) * sizeof(type_catalog_entry_t));
+
+        esp_err_t result = TxSendGuard::send_to_receiver_guarded(
+            target_mac,
+            reinterpret_cast<const uint8_t*>(&fragment),
+            wire_size,
+            log_tag
+        );
+
+        if (result != ESP_OK) {
+            LOG_WARN("TYPE_CATALOG", "%s fragment %u/%u failed: %s",
+                     log_tag,
+                     static_cast<unsigned>(fragment_index + 1),
+                     static_cast<unsigned>(total_fragments),
+                     esp_err_to_name(result));
+            break;
+        }
+    }
+}
+
+}  // namespace
 
 EspnowMessageHandler& EspnowMessageHandler::instance() {
     static EspnowMessageHandler instance;
@@ -150,6 +246,30 @@ void EspnowMessageHandler::setup_message_routes() {
     router.register_route(msg_component_interface,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             static_cast<EspnowMessageHandler*>(ctx)->handle_component_interface(*msg);
+        },
+        0xFF, this);
+
+    router.register_route(msg_request_battery_types,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            static_cast<EspnowMessageHandler*>(ctx)->handle_request_battery_types(*msg);
+        },
+        0xFF, this);
+
+    router.register_route(msg_request_inverter_types,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            static_cast<EspnowMessageHandler*>(ctx)->handle_request_inverter_types(*msg);
+        },
+        0xFF, this);
+
+    router.register_route(msg_request_inverter_interfaces,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            static_cast<EspnowMessageHandler*>(ctx)->handle_request_inverter_interfaces(*msg);
+        },
+        0xFF, this);
+
+    router.register_route(msg_request_type_catalog_versions,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            static_cast<EspnowMessageHandler*>(ctx)->handle_request_type_catalog_versions(*msg);
         },
         0xFF, this);
 
@@ -821,7 +941,11 @@ void EspnowMessageHandler::handle_component_config(const espnow_queue_msg_t& msg
     bool battery_updated = false;
     bool inverter_updated = false;
 
-    if (config->battery_type <= 46) {
+#if CONFIG_CAN_ENABLED
+    if (config->battery_type < static_cast<uint8_t>(BatteryType::Highest)) {
+#else
+    if (true) {
+#endif
         if (settings.get_battery_profile_type() != config->battery_type) {
             settings.set_battery_profile_type(config->battery_type);
             battery_updated = true;
@@ -839,7 +963,11 @@ void EspnowMessageHandler::handle_component_config(const espnow_queue_msg_t& msg
         LOG_WARN("COMP_CFG", "Invalid battery type: %u", config->battery_type);
     }
 
-    if (config->inverter_type <= 21) {
+#if CONFIG_CAN_ENABLED
+    if (config->inverter_type < static_cast<uint8_t>(InverterProtocolType::Highest)) {
+#else
+    if (true) {
+#endif
         if (settings.get_inverter_type() != config->inverter_type) {
             settings.set_inverter_type(config->inverter_type);
             inverter_updated = true;
@@ -869,9 +997,11 @@ void EspnowMessageHandler::handle_component_config(const espnow_queue_msg_t& msg
         if (MqttManager::instance().is_connected()) {
             if (battery_updated) {
                 MqttManager::instance().publish_battery_specs();
+                MqttManager::instance().publish_battery_type_catalog();
             }
             if (inverter_updated) {
                 MqttManager::instance().publish_inverter_specs();
+                MqttManager::instance().publish_inverter_type_catalog();
             }
             MqttManager::instance().publish_static_specs();
         }
@@ -942,6 +1072,142 @@ void EspnowMessageHandler::handle_component_interface(const espnow_queue_msg_t& 
 
     delay(1000);
     ESP.restart();
+}
+
+void EspnowMessageHandler::handle_request_battery_types(const espnow_queue_msg_t& msg) {
+    memcpy(receiver_mac_, msg.mac, sizeof(receiver_mac_));
+
+    std::vector<type_catalog_entry_t> entries;
+
+#if CONFIG_CAN_ENABLED
+    for (int id = 0; id < static_cast<int>(BatteryType::Highest); ++id) {
+        const BatteryType type = static_cast<BatteryType>(id);
+        const char* name = name_for_battery_type(type);
+        if (!name || name[0] == '\0') {
+            continue;
+        }
+
+        type_catalog_entry_t entry{};
+        entry.id = static_cast<uint8_t>(id);
+        strncpy(entry.name, name, sizeof(entry.name) - 1);
+        entry.name[sizeof(entry.name) - 1] = '\0';
+        entries.push_back(entry);
+    }
+#else
+    type_catalog_entry_t fallback{};
+    fallback.id = 0;
+    strncpy(fallback.name, "None", sizeof(fallback.name) - 1);
+    entries.push_back(fallback);
+#endif
+
+    send_type_catalog_fragments(msg.mac, msg_battery_types_fragment, entries, "battery_types_fragment");
+    LOG_INFO("TYPE_CATALOG", "Sent battery catalog (%u entries)", (unsigned)entries.size());
+}
+
+void EspnowMessageHandler::handle_request_inverter_types(const espnow_queue_msg_t& msg) {
+    memcpy(receiver_mac_, msg.mac, sizeof(receiver_mac_));
+
+    std::vector<type_catalog_entry_t> entries;
+
+#if CONFIG_CAN_ENABLED
+    for (int id = 0; id < static_cast<int>(InverterProtocolType::Highest); ++id) {
+        const InverterProtocolType type = static_cast<InverterProtocolType>(id);
+        const char* name = name_for_inverter_type(type);
+        if (!name || name[0] == '\0') {
+            continue;
+        }
+
+        type_catalog_entry_t entry{};
+        entry.id = static_cast<uint8_t>(id);
+        strncpy(entry.name, name, sizeof(entry.name) - 1);
+        entry.name[sizeof(entry.name) - 1] = '\0';
+        entries.push_back(entry);
+    }
+#else
+    type_catalog_entry_t fallback{};
+    fallback.id = 0;
+    strncpy(fallback.name, "None", sizeof(fallback.name) - 1);
+    entries.push_back(fallback);
+#endif
+
+    send_type_catalog_fragments(msg.mac, msg_inverter_types_fragment, entries, "inverter_types_fragment");
+    LOG_INFO("TYPE_CATALOG", "Sent inverter catalog (%u entries)", (unsigned)entries.size());
+}
+
+void EspnowMessageHandler::handle_request_inverter_interfaces(const espnow_queue_msg_t& msg) {
+    memcpy(receiver_mac_, msg.mac, sizeof(receiver_mac_));
+
+    std::vector<type_catalog_entry_t> entries;
+
+#if CONFIG_CAN_ENABLED
+    if (esp32hal) {
+        const auto interfaces = esp32hal->available_interfaces();
+        for (const auto iface : interfaces) {
+            const uint8_t wire_id = comm_interface_to_wire_id(iface);
+            if (wire_id == 0xFF) {
+                continue;
+            }
+
+            const char* name = name_for_comm_interface(iface);
+            if (!name || name[0] == '\0') {
+                continue;
+            }
+
+            type_catalog_entry_t entry{};
+            entry.id = wire_id;
+            strncpy(entry.name, name, sizeof(entry.name) - 1);
+            entry.name[sizeof(entry.name) - 1] = '\0';
+            entries.push_back(entry);
+        }
+    }
+#endif
+
+    if (entries.empty()) {
+        // Conservative fallback set
+        const char* fallback_names[] = {
+            "Modbus",
+            "RS485",
+            "CAN (Native)",
+            "CAN-FD (Native)",
+            "CAN (MCP2515 add-on)",
+            "CAN-FD (MCP2518 add-on)"
+        };
+
+        for (uint8_t id = 0; id < 6; ++id) {
+            type_catalog_entry_t entry{};
+            entry.id = id;
+            strncpy(entry.name, fallback_names[id], sizeof(entry.name) - 1);
+            entry.name[sizeof(entry.name) - 1] = '\0';
+            entries.push_back(entry);
+        }
+    }
+
+    send_type_catalog_fragments(msg.mac, msg_inverter_interfaces_fragment, entries, "inverter_interfaces_fragment");
+    LOG_INFO("TYPE_CATALOG", "Sent inverter interface catalog (%u entries)", (unsigned)entries.size());
+}
+
+void EspnowMessageHandler::handle_request_type_catalog_versions(const espnow_queue_msg_t& msg) {
+    memcpy(receiver_mac_, msg.mac, sizeof(receiver_mac_));
+
+    type_catalog_versions_t versions{};
+    versions.type = msg_type_catalog_versions;
+    versions.battery_catalog_version = battery_type_catalog_version();
+    versions.inverter_catalog_version = inverter_type_catalog_version();
+
+    esp_err_t result = TxSendGuard::send_to_receiver_guarded(
+        msg.mac,
+        reinterpret_cast<const uint8_t*>(&versions),
+        sizeof(versions),
+        "type_catalog_versions"
+    );
+
+    if (result == ESP_OK) {
+        LOG_INFO("TYPE_CATALOG", "Sent catalog versions: battery=%u inverter=%u",
+                 (unsigned)versions.battery_catalog_version,
+                 (unsigned)versions.inverter_catalog_version);
+    } else {
+        LOG_WARN("TYPE_CATALOG", "Failed to send catalog versions: %s", esp_err_to_name(result));
+    }
 }
 
 void EspnowMessageHandler::save_debug_level(uint8_t level) {

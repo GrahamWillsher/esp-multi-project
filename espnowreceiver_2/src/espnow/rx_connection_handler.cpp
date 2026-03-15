@@ -1,10 +1,12 @@
 #include "rx_connection_handler.h"
 #include "rx_heartbeat_manager.h"
 #include "rx_state_machine.h"
+#include "espnow_send.h"
+#include "type_catalog_cache.h"
 #include "../config/logging_config.h"
 #include "../../lib/webserver/utils/transmitter_manager.h"
-#include <connection_manager.h>
-#include <connection_event.h>
+#include <esp32common/espnow/connection_manager.h>
+#include <esp32common/espnow/connection_event.h>
 #include <channel_manager.h>
 #include <espnow_peer_manager.h>
 #include <espnow_transmitter.h>
@@ -34,7 +36,13 @@ ReceiverConnectionHandler::ReceiverConnectionHandler()
     : last_rx_time_ms_(0),
       power_data_confirmed_(false),
       connected_at_ms_(0),
-      last_retry_ms_(0) {
+    last_retry_ms_(0),
+    last_catalog_retry_ms_(0),
+    catalog_versions_received_(false),
+    versions_retry_count_(0),
+    battery_catalog_retry_count_(0),
+    inverter_catalog_retry_count_(0),
+    inverter_interface_retry_count_(0) {
     memset(transmitter_mac_, 0, sizeof(transmitter_mac_));
         memset(deferred_peer_mac_, 0, sizeof(deferred_peer_mac_));
 }
@@ -251,6 +259,14 @@ void ReceiverConnectionHandler::send_initialization_requests(const uint8_t* tran
     // Mark that we've sent initialization for this connection
     // Flag will be reset only when connection is lost
     first_data_received_ = true;
+
+    // Reset catalog retry state for this connection window
+    catalog_versions_received_ = false;
+    versions_retry_count_ = 0;
+    battery_catalog_retry_count_ = 0;
+    inverter_catalog_retry_count_ = 0;
+    inverter_interface_retry_count_ = 0;
+    last_catalog_retry_ms_ = millis();
     
     LOG_INFO("CONN_HANDLER", "[INIT] Connection CONFIRMED (both devices ready) - sending initialization requests");
 
@@ -311,6 +327,33 @@ void ReceiverConnectionHandler::send_initialization_requests(const uint8_t* tran
     } else {
         LOG_WARN("CONN_HANDLER", "Failed to send version info: %s", esp_err_to_name(result));
     }
+
+    // Request transmitter catalog versions first (freshness check).
+    // Receiver will request catalogs selectively when versions differ.
+    send_type_catalog_versions_request();
+
+    // Immediate fallback: request catalogs when local cache is empty
+    // (covers first boot and any version-response loss).
+    if (!TypeCatalogCache::has_battery_entries()) {
+        send_battery_types_request();
+        LOG_INFO("CONN_HANDLER", "[INIT] Requested battery type catalog (cache empty)");
+    } else {
+        LOG_INFO("CONN_HANDLER", "[INIT] Skipped battery type catalog request (cache populated; awaiting version check)");
+    }
+
+    if (!TypeCatalogCache::has_inverter_entries()) {
+        send_inverter_types_request();
+        LOG_INFO("CONN_HANDLER", "[INIT] Requested inverter type catalog (cache empty)");
+    } else {
+        LOG_INFO("CONN_HANDLER", "[INIT] Skipped inverter type catalog request (cache populated; awaiting version check)");
+    }
+
+    if (!TypeCatalogCache::has_inverter_interface_entries()) {
+        send_inverter_interfaces_request();
+        LOG_INFO("CONN_HANDLER", "[INIT] Requested inverter interface catalog (cache empty)");
+    } else {
+        LOG_INFO("CONN_HANDLER", "[INIT] Skipped inverter interface catalog request (cache populated)");
+    }
     
     LOG_INFO("CONN_HANDLER", "[INIT] Initialization requests sent (will retry any that failed)");
 }
@@ -364,6 +407,60 @@ void ReceiverConnectionHandler::tick() {
     if (result != ESP_OK) {
         LOG_WARN("CONN_HANDLER", "[RETRY] esp_now_send failed: %s", esp_err_to_name(result));
     }
+
+    // Catalog request retry engine (version + battery + inverter + interfaces)
+    if ((now - connected_at_ms_) < CATALOG_RETRY_INITIAL_DELAY_MS) {
+        return;
+    }
+
+    if ((now - last_catalog_retry_ms_) < CATALOG_RETRY_INTERVAL_MS) {
+        return;
+    }
+
+    last_catalog_retry_ms_ = now;
+
+    if (!catalog_versions_received_ && versions_retry_count_ < CATALOG_MAX_RETRIES) {
+        if (send_type_catalog_versions_request()) {
+            versions_retry_count_++;
+            LOG_INFO("CONN_HANDLER", "[CATALOG_RETRY] Re-requested catalog versions (%u/%u)",
+                     (unsigned)versions_retry_count_,
+                     (unsigned)CATALOG_MAX_RETRIES);
+        }
+    }
+
+    if ((TypeCatalogCache::battery_refresh_required() || !TypeCatalogCache::has_battery_entries()) &&
+        battery_catalog_retry_count_ < CATALOG_MAX_RETRIES) {
+        if (send_battery_types_request()) {
+            battery_catalog_retry_count_++;
+            LOG_INFO("CONN_HANDLER", "[CATALOG_RETRY] Re-requested battery catalog (%u/%u)",
+                     (unsigned)battery_catalog_retry_count_,
+                     (unsigned)CATALOG_MAX_RETRIES);
+        }
+    }
+
+    if ((TypeCatalogCache::inverter_refresh_required() || !TypeCatalogCache::has_inverter_entries()) &&
+        inverter_catalog_retry_count_ < CATALOG_MAX_RETRIES) {
+        if (send_inverter_types_request()) {
+            inverter_catalog_retry_count_++;
+            LOG_INFO("CONN_HANDLER", "[CATALOG_RETRY] Re-requested inverter catalog (%u/%u)",
+                     (unsigned)inverter_catalog_retry_count_,
+                     (unsigned)CATALOG_MAX_RETRIES);
+        }
+    }
+
+    if (!TypeCatalogCache::has_inverter_interface_entries() &&
+        inverter_interface_retry_count_ < CATALOG_MAX_RETRIES) {
+        if (send_inverter_interfaces_request()) {
+            inverter_interface_retry_count_++;
+            LOG_INFO("CONN_HANDLER", "[CATALOG_RETRY] Re-requested inverter interfaces (%u/%u)",
+                     (unsigned)inverter_interface_retry_count_,
+                     (unsigned)CATALOG_MAX_RETRIES);
+        }
+    }
+}
+
+void ReceiverConnectionHandler::on_type_catalog_versions_received() {
+    catalog_versions_received_ = true;
 }
 
 void ReceiverConnectionHandler::on_transmitter_reboot_detected() {
@@ -390,6 +487,12 @@ void ReceiverConnectionHandler::on_connection_lost() {
     power_data_confirmed_ = false;
     connected_at_ms_      = 0;
     last_retry_ms_        = 0;
+    last_catalog_retry_ms_ = 0;
+    catalog_versions_received_ = false;
+    versions_retry_count_ = 0;
+    battery_catalog_retry_count_ = 0;
+    inverter_catalog_retry_count_ = 0;
+    inverter_interface_retry_count_ = 0;
     peer_registered_event_posted_ = false;
     peer_registered_deferred_ = false;
     deferred_peer_registered_ms_ = 0;

@@ -2,8 +2,8 @@
 #include "tx_state_machine.h"
 #include "tx_send_guard.h"
 #include <espnow_transmitter.h>
-#include <connection_manager.h>
-#include <connection_event.h>
+#include <esp32common/espnow/connection_manager.h>
+#include <esp32common/espnow/connection_event.h>
 #include "../config/logging_config.h"
 #include "../network/time_manager.h"
 #include "../network/ethernet_manager.h"

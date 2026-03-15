@@ -3,7 +3,7 @@
 #include "rx_state_machine.h"
 #include "../config/logging_config.h"
 #include <espnow_transmitter.h>
-#include <connection_event.h>
+#include <esp32common/espnow/connection_event.h>
 #include "../webserver/utils/transmitter_manager.h"
 
 void RxHeartbeatManager::init() {

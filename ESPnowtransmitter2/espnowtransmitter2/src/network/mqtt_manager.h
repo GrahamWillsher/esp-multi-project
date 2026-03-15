@@ -69,7 +69,7 @@ public:
      * @brief Check if currently connected to MQTT broker
      * @return true if in CONNECTED state, false otherwise
      */
-    bool is_connected() const { return state_ == MqttState::CONNECTED; }
+    bool is_connected();
     
     /**
      * @brief Disconnect from MQTT broker gracefully
@@ -112,6 +112,18 @@ public:
      * @return true if published successfully, false otherwise
      */
     bool publish_inverter_specs();
+
+    /**
+     * @brief Publish battery type catalog for receiver MQTT backup path
+     * @return true if published successfully, false otherwise
+     */
+    bool publish_battery_type_catalog();
+
+    /**
+     * @brief Publish inverter type catalog for receiver MQTT backup path
+     * @return true if published successfully, false otherwise
+     */
+    bool publish_inverter_type_catalog();
     
     /**
      * @brief Publish cell voltages and balancing status (BE/cell_data topic)

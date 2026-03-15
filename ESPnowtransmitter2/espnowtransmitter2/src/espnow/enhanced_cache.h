@@ -1,7 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
-#include <espnow_common.h>
+#include <esp32common/espnow/common.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 

@@ -8,6 +8,8 @@ This document outlines the implementation required to dynamically update the rec
 **Status**: Design & Implementation Plan  
 **Priority**: Medium (UX Enhancement)
 
+> **Historical note (March 15, 2026):** This document is retained as migration history. Some include examples predate the canonical public include surface; current shared protocol includes should use `#include <esp32common/espnow/common.h>`.
+
 ---
 
 ## Problem Statement
@@ -254,7 +256,7 @@ struct version_beacon_t {
 ```cpp
 #pragma once
 #include <Arduino.h>
-#include <espnow_common.h>
+#include <esp32common/espnow/common.h>
 
 class VersionBeaconManager {
 public:

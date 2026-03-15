@@ -18,6 +18,7 @@
     "srcFilter": [
       "+<src/espnow/>",
       "+<espnow_common_utils/>",
+      "+<espnow_phase0/>",
       "+<espnow_transmitter/>",
       "+<firmware_metadata/>",
       "+<hal/>",

@@ -107,8 +107,8 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
     </div>
     
     <div style='text-align: center; margin-top: 30px;'>
-        <button id='saveButton' onclick='saveAllSettings()' style='padding: 12px 40px; font-size: 16px; background-color: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;'>
-            Save All Settings
+        <button id='saveButton' onclick='saveAllSettings()' disabled style='padding: 12px 40px; font-size: 16px; background-color: #6c757d; color: white; border: none; border-radius: 4px; cursor: not-allowed;'>
+            Nothing to Save
         </button>
     </div>
 )rawliteral";
@@ -118,6 +118,8 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
         let initialValues = {};
         let batterySettingsRetries = 0;
         const MAX_BATTERY_SETTINGS_RETRIES = 5;
+        let batteryTypeRetries = 0;
+        const MAX_BATTERY_TYPE_RETRIES = 15;
         
         window.onload = function() {
             // Load current settings from transmitter
@@ -534,6 +536,20 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
                 .then(response => response.json())
                 .then(data => {
                     const typeSelect = document.getElementById('batteryType');
+
+                    if (data.loading || !Array.isArray(data.types) || data.types.length === 0) {
+                        typeSelect.innerHTML = "<option value=''>Loading...</option>";
+
+                        if (batteryTypeRetries < MAX_BATTERY_TYPE_RETRIES) {
+                            batteryTypeRetries++;
+                            setTimeout(loadBatteryTypes, 1000);
+                        } else {
+                            typeSelect.innerHTML = "<option value=''>No data (check transmitter link)</option>";
+                        }
+                        return;
+                    }
+
+                    batteryTypeRetries = 0;
                     typeSelect.innerHTML = '';
                     
                     data.types.forEach(type => {
@@ -619,10 +635,12 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
                 saveButton.textContent = 'Nothing to Save';
                 saveButton.style.backgroundColor = '#6c757d';
                 saveButton.disabled = true;
+                saveButton.style.cursor = 'not-allowed';
             } else {
                 saveButton.textContent = `Save ${changedCount} Changed Setting${changedCount > 1 ? 's' : ''}`;
                 saveButton.style.backgroundColor = '#4CAF50';
                 saveButton.disabled = false;
+                saveButton.style.cursor = 'pointer';
             }
         }
     )rawliteral";

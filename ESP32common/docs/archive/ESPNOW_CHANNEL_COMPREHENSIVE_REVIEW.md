@@ -5,6 +5,8 @@
 **Issue:** Channel hopping/mismatch between transmitter and receiver  
 **Reviewer:** AI Analysis Engine
 
+> **Historical note (March 15, 2026):** This review is preserved as architectural history. Some code snippets predate the canonical shared include surface; current protocol/header references should use `esp32common/...` include paths.
+
 ---
 
 ## Executive Summary
@@ -1523,7 +1525,7 @@ void DiscoveryTask::continuous_passive_scan_task(void* parameter) {
 
 #include <Arduino.h>
 #include <vector>
-#include <espnow_common.h>
+#include <esp32common/espnow/common.h>
 
 /**
  * @brief Static data cache for ESP-NOW messages

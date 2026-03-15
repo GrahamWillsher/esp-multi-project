@@ -9,7 +9,7 @@
 #include "display/display_core.h"
 #include "espnow/rx_heartbeat_manager.h"
 #include "espnow/rx_state_machine.h"
-#include <connection_manager.h>
+#include <esp32common/espnow/connection_manager.h>
 
 static bool rx_has_live_data_flow() {
     return RxStateMachine::instance().connection_state() == EspNowDeviceState::ACTIVE;

@@ -2,7 +2,9 @@
 #include "../lib/webserver/utils/transmitter_manager.h"
 #include "../common.h"
 #include "../espnow/espnow_send.h"
+#include "../espnow/type_catalog_cache.h"
 #include <ArduinoJson.h>
+#include <cstring>
 
 // Static member initialization
 WiFiClient MqttClient::wifi_client_;
@@ -150,6 +152,10 @@ void MqttClient::messageCallback(char* topic, uint8_t* payload, unsigned int len
         handleSpecData2(json_payload, length);
     } else if (strcmp(topic, "transmitter/BE/battery_specs") == 0) {
         handleBatterySpecs(json_payload, length);
+    } else if (strcmp(topic, "transmitter/BE/battery_type_catalog") == 0) {
+        handleBatteryTypeCatalog(json_payload, length);
+    } else if (strcmp(topic, "transmitter/BE/inverter_type_catalog") == 0) {
+        handleInverterTypeCatalog(json_payload, length);
     } else if (strcmp(topic, "transmitter/BE/cell_data") == 0) {
         handleCellData(json_payload, length);
     } else if (strcmp(topic, "transmitter/BE/event_logs") == 0) {
@@ -165,6 +171,8 @@ void MqttClient::subscribeToTopics() {
     mqtt_client_.subscribe("transmitter/BE/spec_data");
     mqtt_client_.subscribe("transmitter/BE/spec_data_2");
     mqtt_client_.subscribe("transmitter/BE/battery_specs");
+    mqtt_client_.subscribe("transmitter/BE/battery_type_catalog");
+    mqtt_client_.subscribe("transmitter/BE/inverter_type_catalog");
     mqtt_client_.subscribe("transmitter/BE/event_logs");
     
     // Only subscribe to cell_data if not paused (subscription optimization)
@@ -228,6 +236,118 @@ void MqttClient::handleBatterySpecs(const char* json_payload, size_t length) {
     TransmitterManager::storeBatterySpecs(doc.as<JsonObject>());
     
     LOG_INFO("MQTT", "Stored battery specs from transmitter/BE/battery_specs");
+}
+
+void MqttClient::handleBatteryTypeCatalog(const char* json_payload, size_t length) {
+    LOG_DEBUG("MQTT", "Processing transmitter/BE/battery_type_catalog");
+
+    DynamicJsonDocument doc(4096);
+    DeserializationError error = deserializeJson(doc, json_payload, length);
+    if (error) {
+        LOG_ERROR("MQTT", "Failed to parse battery_type_catalog: %s", error.c_str());
+        return;
+    }
+
+    const uint16_t version = doc["catalog_version"] | 0;
+    const uint16_t applied = TypeCatalogCache::battery_applied_version();
+    if (version != 0 && applied != 0 && version <= applied) {
+        LOG_DEBUG("MQTT", "Skipping battery_type_catalog version %u (applied=%u)",
+                  (unsigned)version,
+                  (unsigned)applied);
+        return;
+    }
+
+    JsonArray types = doc["types"].as<JsonArray>();
+    if (types.isNull()) {
+        LOG_WARN("MQTT", "battery_type_catalog missing types array");
+        return;
+    }
+
+    auto* entries = new TypeCatalogCache::TypeEntry[128]{};
+    if (!entries) {
+        LOG_ERROR("MQTT", "OOM allocating battery type catalog parse buffer");
+        return;
+    }
+
+    size_t count = 0;
+    for (JsonVariant v : types) {
+        if (count >= 128) {
+            break;
+        }
+
+        const int id = v["id"] | -1;
+        const char* name = v["name"] | "";
+        if (id < 0 || id > 255 || name[0] == '\0') {
+            continue;
+        }
+
+        entries[count].id = static_cast<uint8_t>(id);
+        strncpy(entries[count].name, name, sizeof(entries[count].name) - 1);
+        entries[count].name[sizeof(entries[count].name) - 1] = '\0';
+        count++;
+    }
+
+    if (count > 0) {
+        TypeCatalogCache::replace_battery_entries(entries, count, version);
+    }
+
+    delete[] entries;
+}
+
+void MqttClient::handleInverterTypeCatalog(const char* json_payload, size_t length) {
+    LOG_DEBUG("MQTT", "Processing transmitter/BE/inverter_type_catalog");
+
+    DynamicJsonDocument doc(3072);
+    DeserializationError error = deserializeJson(doc, json_payload, length);
+    if (error) {
+        LOG_ERROR("MQTT", "Failed to parse inverter_type_catalog: %s", error.c_str());
+        return;
+    }
+
+    const uint16_t version = doc["catalog_version"] | 0;
+    const uint16_t applied = TypeCatalogCache::inverter_applied_version();
+    if (version != 0 && applied != 0 && version <= applied) {
+        LOG_DEBUG("MQTT", "Skipping inverter_type_catalog version %u (applied=%u)",
+                  (unsigned)version,
+                  (unsigned)applied);
+        return;
+    }
+
+    JsonArray types = doc["types"].as<JsonArray>();
+    if (types.isNull()) {
+        LOG_WARN("MQTT", "inverter_type_catalog missing types array");
+        return;
+    }
+
+    auto* entries = new TypeCatalogCache::TypeEntry[128]{};
+    if (!entries) {
+        LOG_ERROR("MQTT", "OOM allocating inverter type catalog parse buffer");
+        return;
+    }
+
+    size_t count = 0;
+    for (JsonVariant v : types) {
+        if (count >= 128) {
+            break;
+        }
+
+        const int id = v["id"] | -1;
+        const char* name = v["name"] | "";
+        if (id < 0 || id > 255 || name[0] == '\0') {
+            continue;
+        }
+
+        entries[count].id = static_cast<uint8_t>(id);
+        strncpy(entries[count].name, name, sizeof(entries[count].name) - 1);
+        entries[count].name[sizeof(entries[count].name) - 1] = '\0';
+        count++;
+    }
+
+    if (count > 0) {
+        TypeCatalogCache::replace_inverter_entries(entries, count, version);
+    }
+
+    delete[] entries;
 }
 
 void MqttClient::handleCellData(const char* json_payload, size_t length) {

@@ -3,7 +3,7 @@
 #include "display_manager.h"
 #include "../helpers.h"
 #include <TFT_eSPI.h>
-#include <logging_config.h>
+#include <esp32common/logging/logging_config.h>
 
 // ════════════════════════════════════════════════════════════════════════════
 // Global TFT Hardware Instance (for initialization only)

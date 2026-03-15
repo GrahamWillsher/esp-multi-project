@@ -657,30 +657,11 @@ private:
 Both Receiver and Transmitter could use a shared base pattern:
 
 ```cpp
-// ESP32Common/include/state/espnow_connection_state.h
+// ESP32Common/include/esp32common/espnow/connection_event.h
 enum class EspNowConnectionState {
-    // Initialization
-    UNINITIALIZED,
-    INITIALIZING,
-    
-    // Discovery (both need this)
     IDLE,
-    DISCOVERING,
-    WAITING_FOR_ACK,
-    ACK_RECEIVED,
-    
-    // Connection
-    CONNECTED,
-    DEGRADED,
-    
-    // Disconnection
-    DISCONNECTING,
-    DISCONNECTED,
-    
-    // Error/Recovery
-    CONNECTION_LOST,
-    RECONNECTING,
-    ERROR_STATE
+    CONNECTING,
+    CONNECTED
 };
 
 class EspNowConnectionManager : public BaseStateMachine<EspNowConnectionState> {
@@ -694,19 +675,10 @@ public:
         return get_state() == EspNowConnectionState::CONNECTED;
     }
     
-    bool is_discovering() const {
-        return get_state() >= EspNowConnectionState::DISCOVERING &&
-               get_state() <= EspNowConnectionState::ACK_RECEIVED;
-    }
-    
 protected:
     void log_transition(EspNowConnectionState old_state, EspNowConnectionState new_state) override {
         static const char* names[] = {
-            "UNINITIALIZED", "INITIALIZING",
-            "IDLE", "DISCOVERING", "WAITING_FOR_ACK", "ACK_RECEIVED",
-            "CONNECTED", "DEGRADED",
-            "DISCONNECTING", "DISCONNECTED",
-            "CONNECTION_LOST", "RECONNECTING", "ERROR_STATE"
+            "IDLE", "CONNECTING", "CONNECTED"
         };
         
         LOG_INFO("[ESPNOW CONNECTION] %s → %s",
@@ -1371,6 +1343,113 @@ See the linked document for detailed analysis and recommendations for Phase 1 re
 
 ---
 
+## 📌 March 13, 2026 Status Refresh (What Still Needs to Be Done in ESP32Common)
+
+This section reflects the current cross-codebase state after recent receiver/transmitter migrations and reconnect hardening work.
+
+### What is already in place in ESP32Common
+
+- ✅ Shared ESP-NOW utility layer exists (`espnow_common_utils/`) including connection manager, event processing, routing, queue, peer/channel helpers.
+- ✅ Reconnect/heartbeat primitives exist (`espnow_phase0/`) and are integrated into current architecture.
+- ✅ Shared logging utilities exist (`logging_utilities/logging_config.h`, MQTT logger integration).
+- ✅ Shared protocol header has grown substantially (`espnow_transmitter/espnow_common.h`) for config sync, heartbeat, versioning, component config, etc.
+- ✅ Shared config sync module exists (`config_sync/`) and is documented as implemented.
+- ✅ Shared packet parsing helper exists (`espnow_common_utils/espnow_packet_utils.h`).
+
+### Remaining work for the **common** codebase
+
+1. [x] **Create a stable public include surface for common modules**
+    - Current design intent in this document references `include/config`, `include/state`, `include/events`, `include/interfaces`, etc.
+    - Actual implementation is spread across `espnow_common_utils/`, `espnow_phase0/`, `logging_utilities/`, `config_sync/`.
+        - ✅ Implemented canonical wrapper paths under `include/esp32common/*`.
+        - Canonical paths include:
+            - `esp32common/espnow/common.h`
+            - `esp32common/espnow/connection_manager.h`
+            - `esp32common/espnow/connection_event.h`
+            - `esp32common/espnow/connection_event_processor.h`
+            - `esp32common/espnow/message_router.h`
+            - `esp32common/espnow/message_queue.h`
+            - `esp32common/espnow/standard_handlers.h`
+            - `esp32common/espnow/packet_utils.h`
+            - `esp32common/espnow/timing_config.h`
+            - `esp32common/espnow/heartbeat_monitor.h`
+            - `esp32common/espnow/reconnection_backoff.h`
+            - `esp32common/logging/logging_config.h`
+        - ✅ TX/RX include migration completed: active transmitter/receiver code now uses canonical `esp32common/...` include paths.
+        - ✅ Common-source cleanup completed: remaining active `esp32common` source that previously referenced root shim headers now uses canonical public paths or direct internal implementation headers as appropriate.
+        - ✅ Deprecated root shim headers removed from `include/` after migration verification; the old include surface is no longer present in the codebase.
+
+2. [x] **Finish timing centralization at common level**
+    - `esp32common/espnow_common_utils/espnow_timing_config.h` exists (ESP-NOW focused).
+    - Transmitter previously had its own `src/config/timing_config.h` include path usage.
+    - ✅ Added canonical shared contract: `include/esp32common/config/timing_config.h`.
+    - ✅ Removed the temporary timing compatibility wrappers after migration verification:
+        - `include/config/timing_config.h`
+        - `ESPnowtransmitter2/src/config/timing_config.h`
+    - ✅ Migrated transmitter active source include usage to canonical `#include <esp32common/config/timing_config.h>`.
+    - Result: timing values now have a single authoritative source in ESP32Common for cross-device domains (discovery, heartbeat, MQTT, OTA, task loop timing).
+
+3. [x] **Implement dynamic battery/inverter type discovery protocol in common header**
+    - Receiver still uses static type arrays in web API handlers.
+    - `espnow_common.h` does not yet define the dedicated type-list request/response message family proposed in this doc.
+        - ✅ Added protocol messages and wire structures in `esp32common/espnow_transmitter/espnow_common.h`:
+            - `msg_request_battery_types`, `msg_battery_types_fragment`
+            - `msg_request_inverter_types`, `msg_inverter_types_fragment`
+            - `type_catalog_request_t`, `type_catalog_fragment_t`, `type_catalog_entry_t`
+        - ✅ Implemented transmitter handlers to source names from authoritative Battery Emulator mappings and send fragmented catalogs.
+        - ✅ Implemented receiver cache/assembly for catalog fragments and wired routes in ESP-NOW task router.
+        - ✅ Updated receiver web API handlers to use dynamic cache and trigger discovery when cache is empty.
+        - ✅ Removed old hardcoded receiver `battery_types[]` and `inverter_types[]` arrays from API handlers.
+
+4. [x] **Resolve state-model duplication in common architecture**
+    - ✅ Canonical shared connection lifecycle model is now the existing 3-state `EspNowConnectionState` in `espnow_common_utils/connection_event.h` (`IDLE`, `CONNECTING`, `CONNECTED`).
+    - ✅ The separate expanded experimental state model has been removed from active code/docs for now.
+    - ✅ Rationale: richer state granularity is currently unnecessary complexity relative to active runtime needs and increases ambiguity across callbacks/logging.
+    - Future option: reintroduce additional diagnostic-only substates later if concrete production requirements emerge.
+
+5. [x] **Fix packaging/build exposure gaps in ESP32Common**
+    - ✅ Root `library.json` `srcFilter` now explicitly includes `espnow_phase0/` alongside `espnow_common_utils/`.
+    - ✅ Common manager dependencies on heartbeat/backoff phase0 components are now explicitly compiled as part of the packaged common library.
+    - ✅ Result: TX/RX consumption of `esp32common` is self-contained and no longer depends on implicit/nested-library discovery behavior.
+
+6. [x] **Deliver planned generic abstraction layers not yet materialized in common**
+    - ✅ Added shared public interface contracts under `include/esp32common/interfaces/`:
+        - `iconnection_manager.h`
+        - `idata_sender.h`
+        - `idata_cache.h`
+    - ✅ Added shared non-blocking pattern base under `include/esp32common/patterns/`:
+        - `non_blocking_operation.h`
+    - ✅ Added formal connection event-notification API under `include/esp32common/events/`:
+        - `connection_events.h` (`IConnectionListener`, `ConnectionEventManager`)
+    - ✅ Added shared OTA coordination abstraction under `include/esp32common/ota/`:
+        - `ota_coordinator.h`
+    - Result: planned abstraction APIs are now materialized as a unified public include surface in ESP32Common.
+
+7. [ ] **Add shared automated validation for common cross-device behavior**
+    - Current tests in `esp32common/tests/` are minimal and do not cover reconnect matrix, event sequencing, or protocol compatibility.
+    - Action: add host/unit/integration tests for state transitions, heartbeat timeout behavior, backoff, and message schema compatibility.
+
+### Suggested execution order for common-code completion
+
+1. Public include surface + packaging cleanup
+2. Timing contract unification
+3. Canonical state model decision
+4. Dynamic type-discovery message family
+5. Missing abstraction APIs (or explicit de-scope)
+6. Common automated test matrix
+
+### ✅ Mandatory cleanup rule (applies to every step)
+
+For each implementation step, completion means:
+
+1. New approach is implemented and validated.
+2. **All old/redundant code for that step is removed** (no permanent dual paths).
+3. Temporary compatibility shims are tracked with explicit removal follow-up and then deleted once migration is complete.
+
+Current Step 1 status: this rule is fully satisfied. Active source paths were migrated first, then the deprecated root shim headers were deleted from the repository so the old include surface cannot regress back into use.
+
+---
+
 ## Version History
 
 | Date | Author | Change |
@@ -1378,5 +1457,16 @@ See the linked document for detailed analysis and recommendations for Phase 1 re
 | Feb 26, 2026 | Original | Initial document creation |
 | March 5, 2026 | AI Assistant | Added Item #2 (Dynamic Type Discovery via ESP-NOW) with investigation notes, fallback to MQTT option, and implementation plan |
 | March 5, 2026 | AI Assistant | Added Phase 0 findings reference and link to detailed analysis document |
+| March 13, 2026 | AI Assistant | Added status refresh section identifying outstanding ESP32Common implementation gaps after recent TX/RX migration work |
+| March 13, 2026 | AI Assistant | Implemented Step 1 stable public include surface (`include/esp32common/*`) with legacy compatibility shims |
+| March 13, 2026 | AI Assistant | Implemented Step 2 timing centralization with canonical `esp32common/config/timing_config.h` and removed duplicated transmitter timing constants |
+| March 13, 2026 | AI Assistant | Implemented Step 3 dynamic battery/inverter type discovery over ESP-NOW with fragmented catalog responses; removed hardcoded receiver type arrays |
+| March 15, 2026 | AI Assistant | Completed TX/RX canonical include-path migration cleanup (`esp32common/...`) and verified both transmitter and receiver builds pass |
+| March 15, 2026 | AI Assistant | Completed final common-source include cleanup pass and removed deprecated root shim headers from `include/`; both transmitter and receiver builds still pass |
+| March 15, 2026 | AI Assistant | Fixed receiver `/transmitter/hardware` and `/transmitter/battery` save-button dirty-state behavior to match `/transmitter/inverter` (disabled when unchanged, enabled on edits, stale saved-status cleared on new edits) |
+| March 15, 2026 | AI Assistant | Removed references to the unused expanded ESP-NOW connection model and documented the decision to keep the canonical 3-state model for now due to unnecessary complexity |
+| March 15, 2026 | AI Assistant | Closed Item #5 packaging gap by adding `espnow_phase0/` to root `esp32common/library.json` `srcFilter`, ensuring phase0 heartbeat/backoff sources are explicitly built with the common library |
+| March 15, 2026 | AI Assistant | Implemented Item #6 abstraction-layer API surface under `include/esp32common/interfaces`, `patterns`, `events`, and `ota` (DI contracts, non-blocking base, connection-event manager, OTA coordinator) |
+| March 15, 2026 | AI Assistant | Removed the final temporary timing/include compatibility wrappers and deleted obsolete receiver manual type-mapping docs so the cleanup rule is now satisfied without dual paths |
 
 

@@ -1,6 +1,6 @@
 #include "transmitter_manager.h"
 #include "sse_notifier.h"
-#include <connection_manager.h>
+#include <esp32common/espnow/connection_manager.h>
 #include <esp_now.h>
 #include <string.h>
 #include <Preferences.h>

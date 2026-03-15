@@ -9,7 +9,7 @@
 
 #pragma once
 
-#include <espnow_common.h>
+#include <esp32common/espnow/common.h>
 #include <functional>
 
 /**

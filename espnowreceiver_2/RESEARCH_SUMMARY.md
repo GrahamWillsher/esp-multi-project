@@ -92,7 +92,7 @@ Implement custom JPG decoder in LVGL
 | Document | Purpose | When to Use | Time |
 |----------|---------|-----------|------|
 | **LVGL_BLACK_SCREEN_ROOT_CAUSE.md** | Root cause + 3 solutions | Have black screen issue | 10 min |
-| **LVGL_WORKING_CODE_PATTERNS.md** | Complete working code | Want to copy code | 5 min |
+| **archive/LVGL_WORKING_CODE_PATTERNS.md** | Complete working code | Want to copy code | 5 min |
 | **LVGL_IMAGE_DISPLAY_RESEARCH_FINDINGS.md** | Full background info | Need to understand | 25 min |
 | **QUICK_REFERENCE_IMAGE_DISPLAY.md** | Quick lookup tables | Need quick answers | 5 min |
 | **RESEARCH_DOCUMENTATION_INDEX.md** | This index | Finding documents | 3 min |
@@ -224,7 +224,7 @@ LVGL with .bin format:
 
 ### Documentation Files (4)
 1. **LVGL_BLACK_SCREEN_ROOT_CAUSE.md** - Root cause analysis + solutions
-2. **LVGL_WORKING_CODE_PATTERNS.md** - Complete working code patterns
+2. **archive/LVGL_WORKING_CODE_PATTERNS.md** - Complete working code patterns
 3. **LVGL_IMAGE_DISPLAY_RESEARCH_FINDINGS.md** - Full research findings
 4. **QUICK_REFERENCE_IMAGE_DISPLAY.md** - Quick reference tables
 5. **RESEARCH_DOCUMENTATION_INDEX.md** - Document index
@@ -284,7 +284,7 @@ You now have:
 - Read relevant section
 
 ### Step 3: Implement
-- Copy code from [LVGL_WORKING_CODE_PATTERNS.md](LVGL_WORKING_CODE_PATTERNS.md)
+- Copy code from [archive/LVGL_WORKING_CODE_PATTERNS.md](archive/LVGL_WORKING_CODE_PATTERNS.md)
 - Follow the pattern
 - Reference quick fixes from [QUICK_REFERENCE_IMAGE_DISPLAY.md](QUICK_REFERENCE_IMAGE_DISPLAY.md)
 
@@ -327,7 +327,7 @@ You've successfully fixed the issue when:
 
 ## 🔗 Quick Links to Solutions
 
-1. **For immediate splash screen fix:** See [LVGL_WORKING_CODE_PATTERNS.md](LVGL_WORKING_CODE_PATTERNS.md)
+1. **For immediate splash screen fix:** See [archive/LVGL_WORKING_CODE_PATTERNS.md](archive/LVGL_WORKING_CODE_PATTERNS.md)
 2. **For LVGL image support:** See [LVGL_BLACK_SCREEN_ROOT_CAUSE.md](LVGL_BLACK_SCREEN_ROOT_CAUSE.md) - "Proper Fix" section
 3. **For quick answers:** See [QUICK_REFERENCE_IMAGE_DISPLAY.md](QUICK_REFERENCE_IMAGE_DISPLAY.md)
 4. **For background info:** See [LVGL_IMAGE_DISPLAY_RESEARCH_FINDINGS.md](LVGL_IMAGE_DISPLAY_RESEARCH_FINDINGS.md)

@@ -16,7 +16,7 @@
 
 #include <cstdint>
 #include <nvs.h>
-#include <espnow_common.h>  // Include actual message structure definitions
+#include <esp32common/espnow/common.h>  // Include actual message structure definitions
 
 /**
  * @brief Component configuration data storage

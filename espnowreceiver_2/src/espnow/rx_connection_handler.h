@@ -76,6 +76,11 @@ public:
     void on_transmitter_reboot_detected();
 
     /**
+     * @brief Mark catalog version response as received.
+     */
+    void on_type_catalog_versions_received();
+
+    /**
      * @brief Get last receive timestamp
      * @return Milliseconds since boot of last received message
      */
@@ -111,6 +116,17 @@ private:
     static constexpr uint32_t RETRY_INTERVAL_MS        = 2000;  // Re-send every 2 s while retrying
     static constexpr uint32_t POWER_DATA_FRESHNESS_MS  = 8000;  // Consider stream active only if data seen recently
     static constexpr uint32_t DEFERRED_PEER_TTL_MS     = 5000;  // Drop stale deferred PEER_REGISTERED
+
+    // Catalog retry policy
+    uint32_t last_catalog_retry_ms_ = 0;
+    bool catalog_versions_received_ = false;
+    uint8_t versions_retry_count_ = 0;
+    uint8_t battery_catalog_retry_count_ = 0;
+    uint8_t inverter_catalog_retry_count_ = 0;
+    uint8_t inverter_interface_retry_count_ = 0;
+    static constexpr uint32_t CATALOG_RETRY_INITIAL_DELAY_MS = 2500;
+    static constexpr uint32_t CATALOG_RETRY_INTERVAL_MS = 3000;
+    static constexpr uint8_t CATALOG_MAX_RETRIES = 8;
 
     // Send initialization requests when connection state is confirmed
     // Called by state machine callback when entering CONNECTED state

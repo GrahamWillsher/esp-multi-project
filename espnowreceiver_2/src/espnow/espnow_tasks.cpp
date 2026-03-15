@@ -2,7 +2,9 @@
 #include "rx_connection_handler.h"
 #include "rx_heartbeat_manager.h"
 #include "rx_state_machine.h"
-#include <connection_manager.h>
+#include "espnow_send.h"
+#include "type_catalog_cache.h"
+#include <esp32common/espnow/connection_manager.h>
 #include "battery_handlers.h"  // Phase 1: Battery Emulator data handlers
 #include "battery_settings_cache.h"  // Phase 2: Settings version tracking
 #include "../common.h"
@@ -13,12 +15,12 @@
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
-#include <espnow_common.h>
+#include <esp32common/espnow/common.h>
 #include <espnow_peer_manager.h>
 #include <espnow_discovery.h>
-#include <espnow_message_router.h>
-#include <espnow_standard_handlers.h>
-#include <espnow_packet_utils.h>
+#include <esp32common/espnow/message_router.h>
+#include <esp32common/espnow/standard_handlers.h>
+#include <esp32common/espnow/packet_utils.h>
 #include <firmware_version.h>
 
 extern void notify_sse_data_updated();
@@ -141,6 +143,7 @@ static void request_config_section(const uint8_t* mac, config_section_t section,
 
 void setup_message_routes() {
     auto& router = EspnowMessageRouter::instance();
+    TypeCatalogCache::init();
     probe_config = {};
     ack_config = {};
     
@@ -257,6 +260,59 @@ void setup_message_routes() {
     router.register_route(msg_component_config,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             handle_component_config(msg);
+        },
+        0xFF, nullptr);
+
+    // Dynamic type catalog responses from transmitter
+    router.register_route(msg_battery_types_fragment,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            const auto* fragment = reinterpret_cast<const type_catalog_fragment_t*>(msg->data);
+            TypeCatalogCache::handle_battery_fragment(fragment, static_cast<size_t>(msg->len));
+        },
+        0xFF, nullptr);
+
+    router.register_route(msg_inverter_types_fragment,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            const auto* fragment = reinterpret_cast<const type_catalog_fragment_t*>(msg->data);
+            TypeCatalogCache::handle_inverter_fragment(fragment, static_cast<size_t>(msg->len));
+        },
+        0xFF, nullptr);
+
+    router.register_route(msg_inverter_interfaces_fragment,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            const auto* fragment = reinterpret_cast<const type_catalog_fragment_t*>(msg->data);
+            TypeCatalogCache::handle_inverter_interface_fragment(fragment, static_cast<size_t>(msg->len));
+        },
+        0xFF, nullptr);
+
+    router.register_route(msg_type_catalog_versions,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            if (msg->len < (int)sizeof(type_catalog_versions_t)) {
+                LOG_WARN("TYPE_CATALOG", "Invalid catalog versions message size: %d", msg->len);
+                return;
+            }
+
+            ReceiverConnectionHandler::instance().on_type_catalog_versions_received();
+
+            const auto* versions = reinterpret_cast<const type_catalog_versions_t*>(msg->data);
+            TypeCatalogCache::update_announced_versions(versions->battery_catalog_version,
+                                                        versions->inverter_catalog_version);
+
+            LOG_INFO("TYPE_CATALOG", "Received catalog versions: battery=%u (applied=%u), inverter=%u (applied=%u)",
+                     (unsigned)versions->battery_catalog_version,
+                     (unsigned)TypeCatalogCache::battery_applied_version(),
+                     (unsigned)versions->inverter_catalog_version,
+                     (unsigned)TypeCatalogCache::inverter_applied_version());
+
+            if (TypeCatalogCache::battery_refresh_required()) {
+                LOG_INFO("TYPE_CATALOG", "Battery catalog refresh required - requesting battery catalog");
+                send_battery_types_request();
+            }
+
+            if (TypeCatalogCache::inverter_refresh_required()) {
+                LOG_INFO("TYPE_CATALOG", "Inverter catalog refresh required - requesting inverter catalog");
+                send_inverter_types_request();
+            }
         },
         0xFF, nullptr);
     

@@ -1,7 +1,7 @@
 # SECTION 11: REVISED ARCHITECTURE - Transmitter-Active with Bidirectional Sync
 
 **Date:** February 11, 2026  
-**Status:** SUPERSEDES Section 10 (Receiver-Master) in ESPNOW_CHANNEL_COMPREHENSIVE_REVIEW.md  
+**Status:** SUPERSEDES Section 10 (Receiver-Master) in [docs/archive/ESPNOW_CHANNEL_COMPREHENSIVE_REVIEW.md](docs/archive/ESPNOW_CHANNEL_COMPREHENSIVE_REVIEW.md)  
 **Rationale:** Simplifies architecture, leverages existing versioning system, provides bidirectional sync
 
 ---

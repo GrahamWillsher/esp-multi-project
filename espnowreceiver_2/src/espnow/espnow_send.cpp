@@ -1,9 +1,10 @@
 #include "espnow_send.h"
 #include "../common.h"
 #include "../espnow/rx_state_machine.h"
+#include <esp32common/espnow/connection_manager.h>
 #include <esp_now.h>
-#include <espnow_common.h>
-#include <espnow_packet_utils.h>
+#include <esp32common/espnow/common.h>
+#include <esp32common/espnow/packet_utils.h>
 
 // Track the last debug level sent to transmitter
 static uint8_t last_debug_level_sent = 6;  // Default to INFO level
@@ -17,6 +18,36 @@ uint8_t get_last_debug_level() {
 
 uint8_t get_last_test_data_mode() {
     return last_test_data_mode_sent;
+}
+
+static bool has_transmitter_mac() {
+    for (int i = 0; i < 6; i++) {
+        if (ESPNow::transmitter_mac[i] != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool can_send_catalog_request() {
+    const bool message_valid =
+        (RxStateMachine::instance().message_state() == RxStateMachine::MessageState::VALID);
+    const bool connected =
+        (EspNowConnectionManager::instance().get_state() == EspNowConnectionState::CONNECTED);
+
+    if (!(message_valid || connected)) {
+        LOG_WARN("ESP-NOW", "Transmitter not ready - cannot send catalog request (state=%d, msg_valid=%d)",
+                 (int)EspNowConnectionManager::instance().get_state(),
+                 message_valid ? 1 : 0);
+        return false;
+    }
+
+    if (!has_transmitter_mac()) {
+        LOG_WARN("ESP-NOW", "Transmitter MAC not registered - cannot send catalog request");
+        return false;
+    }
+
+    return true;
 }
 
 bool send_debug_level_control(uint8_t level) {
@@ -76,17 +107,6 @@ bool send_debug_level_control(uint8_t level) {
     }
 }
 bool send_component_type_selection(uint8_t battery_type, uint8_t inverter_type) {
-    // Validate types
-    if (battery_type > 46) {
-        LOG_ERROR("ESP-NOW", "Invalid battery type: %d (must be 0-46)", battery_type);
-        return false;
-    }
-    
-    if (inverter_type > 21) {
-        LOG_ERROR("ESP-NOW", "Invalid inverter type: %d (must be 0-21)", inverter_type);
-        return false;
-    }
-    
     // Check if transmitter is connected
     if (RxStateMachine::instance().message_state() != RxStateMachine::MessageState::VALID) {
         LOG_WARN("ESP-NOW", "Transmitter not connected - cannot send component type selection");
@@ -295,4 +315,76 @@ bool send_event_logs_control(bool subscribe) {
 
     LOG_ERROR("ESP-NOW", "Failed to send event logs control: %s", esp_err_to_name(result));
     return false;
+}
+
+bool send_battery_types_request() {
+    if (!can_send_catalog_request()) {
+        return false;
+    }
+
+    type_catalog_request_t req{};
+    req.type = msg_request_battery_types;
+
+    esp_err_t result = esp_now_send(ESPNow::transmitter_mac, reinterpret_cast<uint8_t*>(&req), sizeof(req));
+    if (result != ESP_OK) {
+        LOG_WARN("ESP-NOW", "Failed to request battery types: %s", esp_err_to_name(result));
+        return false;
+    }
+
+    LOG_INFO("ESP-NOW", "Requested battery type catalog");
+    return true;
+}
+
+bool send_inverter_types_request() {
+    if (!can_send_catalog_request()) {
+        return false;
+    }
+
+    type_catalog_request_t req{};
+    req.type = msg_request_inverter_types;
+
+    esp_err_t result = esp_now_send(ESPNow::transmitter_mac, reinterpret_cast<uint8_t*>(&req), sizeof(req));
+    if (result != ESP_OK) {
+        LOG_WARN("ESP-NOW", "Failed to request inverter types: %s", esp_err_to_name(result));
+        return false;
+    }
+
+    LOG_INFO("ESP-NOW", "Requested inverter type catalog");
+    return true;
+}
+
+bool send_inverter_interfaces_request() {
+    if (!can_send_catalog_request()) {
+        return false;
+    }
+
+    type_catalog_request_t req{};
+    req.type = msg_request_inverter_interfaces;
+
+    esp_err_t result = esp_now_send(ESPNow::transmitter_mac, reinterpret_cast<uint8_t*>(&req), sizeof(req));
+    if (result != ESP_OK) {
+        LOG_WARN("ESP-NOW", "Failed to request inverter interfaces: %s", esp_err_to_name(result));
+        return false;
+    }
+
+    LOG_INFO("ESP-NOW", "Requested inverter interface catalog");
+    return true;
+}
+
+bool send_type_catalog_versions_request() {
+    if (!can_send_catalog_request()) {
+        return false;
+    }
+
+    type_catalog_versions_request_t req{};
+    req.type = msg_request_type_catalog_versions;
+
+    esp_err_t result = esp_now_send(ESPNow::transmitter_mac, reinterpret_cast<uint8_t*>(&req), sizeof(req));
+    if (result != ESP_OK) {
+        LOG_WARN("ESP-NOW", "Failed to request catalog versions: %s", esp_err_to_name(result));
+        return false;
+    }
+
+    LOG_INFO("ESP-NOW", "Requested type catalog versions");
+    return true;
 }

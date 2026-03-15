@@ -5,7 +5,7 @@
  * This is the core state machine used by BOTH transmitter and receiver.
  * 
  * PHASE 0 ENHANCEMENTS:
- * - 16-state machine (was 3-state) for detailed connection tracking
+ * - Keep canonical 3-state machine for deterministic behavior
  * - Heartbeat monitoring with 5-second timeout detection
  * - Exponential backoff (500ms→30s) with jitter for reconnection
  * - Connection reliability metrics and diagnostics
@@ -25,8 +25,8 @@
 #pragma once
 
 #include "connection_event.h"
-#include "espnow_heartbeat_monitor.h"
-#include "reconnection_backoff.h"
+#include "../espnow_phase0/espnow_heartbeat_monitor.h"
+#include "../espnow_phase0/reconnection_backoff.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <cstdint>

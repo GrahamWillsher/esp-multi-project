@@ -439,7 +439,7 @@ pio run -e receiver_lvgl
 **Documentation:**
 - `LVGL_BLACK_SCREEN_ROOT_CAUSE.md` ← Read this first
 - `LVGL_IMAGE_DISPLAY_RESEARCH_FINDINGS.md` ← Background info
-- `LVGL_WORKING_CODE_PATTERNS.md` ← Complete patterns
+- `archive/LVGL_WORKING_CODE_PATTERNS.md` ← Complete patterns
 
 ---
 

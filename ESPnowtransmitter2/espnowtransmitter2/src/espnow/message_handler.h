@@ -1,8 +1,8 @@
 #pragma once
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
-#include <espnow_common.h>
-#include <espnow_standard_handlers.h>
+#include <esp32common/espnow/common.h>
+#include <esp32common/espnow/standard_handlers.h>
 #include "tx_state_machine.h"
 
 /**
@@ -118,6 +118,26 @@ private:
      * @param msg ESP-NOW message
      */
     void handle_component_interface(const espnow_queue_msg_t& msg);
+
+    /**
+     * @brief Handle request for battery type catalog
+     */
+    void handle_request_battery_types(const espnow_queue_msg_t& msg);
+
+    /**
+     * @brief Handle request for inverter type catalog
+     */
+    void handle_request_inverter_types(const espnow_queue_msg_t& msg);
+
+    /**
+     * @brief Handle request for inverter interface catalog
+     */
+    void handle_request_inverter_interfaces(const espnow_queue_msg_t& msg);
+
+    /**
+     * @brief Handle request for battery/inverter catalog versions
+     */
+    void handle_request_type_catalog_versions(const espnow_queue_msg_t& msg);
     
     /**
      * @brief Handle NETWORK_CONFIG_REQUEST message (receiver requests current config)

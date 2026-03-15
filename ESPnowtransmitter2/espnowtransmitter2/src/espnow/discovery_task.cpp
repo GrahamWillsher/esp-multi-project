@@ -4,11 +4,11 @@
 #include "data_cache.h"  // For cache flush on connection
 #include "version_beacon_manager.h"  // For sending initial beacon on connection
 #include "tx_connection_handler.h"
-#include <connection_manager.h>
+#include <esp32common/espnow/connection_manager.h>
 #include <channel_manager.h>
 #include "../config/task_config.h"
 #include "../config/logging_config.h"
-#include "../config/timing_config.h"
+#include <esp32common/config/timing_config.h>
 #include "../queue/espnow_queue_manager.h"
 #include <Arduino.h>
 #include <espnow_discovery.h>
