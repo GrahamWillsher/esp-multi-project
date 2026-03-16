@@ -24,10 +24,11 @@ Both issues stem from improper state management during the connection handshake.
 
 The receiver sends the following messages **every time** it receives a PROBE from the transmitter:
 
-1. `REQUEST_DATA` with `subtype_settings` (static data request)
-2. `REQUEST_DATA` with `subtype_power_profile` (power profile stream request)
-3. `VERSION_ANNOUNCE` (firmware version info)
-4. `CONFIG_REQUEST_FULL` (configuration snapshot request)
+1. `REQUEST_DATA` with `subtype_network_config` (network snapshot request)
+2. `REQUEST_DATA` with `subtype_battery_config` (battery settings request)
+3. `REQUEST_DATA` with `subtype_power_profile` (power profile stream request)
+4. `VERSION_ANNOUNCE` (firmware version info)
+5. `CONFIG_REQUEST_FULL` (configuration snapshot request)
 
 **Why This is a Problem:**
 - PROBE messages are sent every 5 seconds during discovery
@@ -53,9 +54,12 @@ probe_config.on_probe_received = [](const uint8_t* mac, uint32_t seq) {
     // (transmitter may have rebooted with new config)
     ReceiverConfigManager::instance().requestFullSnapshot(mac);
     
-    // Request static data (IP address, settings, etc.)
-    request_data_t static_req = { msg_request_data, subtype_settings };
-    esp_err_t static_result = esp_now_send(mac, (const uint8_t*)&static_req, sizeof(static_req));
+    // Request granular static/config data
+    request_data_t network_req = { msg_request_data, subtype_network_config };
+    esp_err_t network_result = esp_now_send(mac, (const uint8_t*)&network_req, sizeof(network_req));
+    // ...
+    request_data_t battery_req = { msg_request_data, subtype_battery_config };
+    esp_err_t battery_result = esp_now_send(mac, (const uint8_t*)&battery_req, sizeof(battery_req));
     // ...
     
     // Send REQUEST_DATA to ensure power profile stream is active
@@ -223,9 +227,11 @@ probe_config.on_probe_received = [](const uint8_t* mac, uint32_t seq) {
         // Request full configuration snapshot
         ReceiverConfigManager::instance().requestFullSnapshot(mac);
         
-        // Request static data (IP address, settings, etc.)
-        request_data_t static_req = { msg_request_data, subtype_settings };
-        esp_now_send(mac, (const uint8_t*)&static_req, sizeof(static_req));
+        // Request granular static/config data
+        request_data_t network_req = { msg_request_data, subtype_network_config };
+        esp_now_send(mac, (const uint8_t*)&network_req, sizeof(network_req));
+        request_data_t battery_req = { msg_request_data, subtype_battery_config };
+        esp_now_send(mac, (const uint8_t*)&battery_req, sizeof(battery_req));
         
         // Send REQUEST_DATA to ensure power profile stream is active
         request_data_t req_msg = { msg_request_data, subtype_power_profile };

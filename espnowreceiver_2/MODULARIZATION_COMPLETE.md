@@ -200,7 +200,7 @@ esp_err_t register_xxx_page(httpd_handle_t server) {
 
 [SSE] Sent REQUEST_DATA (subtype=6) to transmitter
 [SSE] Sent ABORT_DATA (subtype=6) to transmitter
-[API] Sent REQUEST_DATA (subtype_settings) for IP configuration
+[API] Sent REQUEST_DATA (subtype_network_config) for IP configuration
 [REBOOT] Sent REBOOT command to transmitter
 [ESP-NOW] Received IP data: 192.168.1.50, Gateway: 192.168.1.1
 ```

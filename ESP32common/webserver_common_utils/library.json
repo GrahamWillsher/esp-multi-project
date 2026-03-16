@@ -1,0 +1,11 @@
+{
+  "name": "webserver_common_utils",
+  "version": "1.0.0",
+  "description": "Shared HTTP JSON/SSE helper implementations",
+  "frameworks": "arduino",
+  "platforms": "espressif32",
+  "build": {
+    "includeDir": "include",
+    "srcDir": "src"
+  }
+}

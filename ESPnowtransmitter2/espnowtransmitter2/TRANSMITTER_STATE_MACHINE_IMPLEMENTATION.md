@@ -38,7 +38,7 @@ The following message handlers now check state before responding:
 - **Subtypes**:
   - `subtype_network_config` - sends IP/Gateway/Subnet
   - `subtype_battery_config` - sends battery settings
-  - `subtype_settings` - sends both (legacy)
+  - `subtype_settings` - legacy/unsupported (mixed response path removed)
 - **Log**: `DATA_REQUEST: Cannot respond to data request - receiver state is X (need CONNECTED)`
 
 #### **handle_metadata_request** ✅

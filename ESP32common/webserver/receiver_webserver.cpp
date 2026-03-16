@@ -688,8 +688,6 @@ static esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
                 
                 last_soc = current_soc;
                 last_power = current_power;
-                last_soc = current_soc;
-                last_power = current_power;
                 last_mode = test_mode_enabled;
             }
         } else {

@@ -174,22 +174,27 @@ Receiver                           Transmitter
 
 **Implemented Request Types:**
 1. **subtype_power_profile** → Starts battery_status stream (1Hz)
-2. **subtype_settings** → Returns IP data (packet) + battery_info message
-3. **subtype_events** → Not yet implemented
-4. **subtype_logs** → Not yet implemented
-5. **subtype_cell_info** → Not yet implemented
+2. **subtype_network_config** → Returns IP/gateway/subnet packet
+3. **subtype_battery_config** → Returns battery settings payload
+4. **subtype_settings** → **Deprecated/unsupported legacy wire value** (mixed payload path removed)
+5. **subtype_events** → Not yet implemented
+6. **subtype_logs** → Not yet implemented
+7. **subtype_cell_info** → Not yet implemented
 
-**Transmitter Response Handler:**
+**Transmitter Response Handler (current behavior):**
 ```cpp
-// message_handler.cpp:299 (handle_request_data)
+// request_data_handlers.cpp (handle_request_data)
 switch (req->subtype) {
     case subtype_power_profile:
         transmission_active_ = true;  // Start streaming
         break;
-    
-    case subtype_settings:
+
+    case subtype_network_config:
         // Send espnow_packet_t with IP data
-        // Send battery_info_msg_t with settings from NVS
+        break;
+
+    case subtype_battery_config:
+        // Send battery_settings_full_msg_t from NVS/settings manager
         break;
 }
 ```
@@ -423,7 +428,7 @@ Receiver (espnow_tasks.cpp:663)
 ┌─────────────────────────────────────────────────────────────────┐
 │ STEP 6: Granular Category Refresh                              │
 └─────────────────────────────────────────────────────────────────┘
-Receiver → REQUEST_DATA (subtype_settings)
+Receiver → REQUEST_DATA (subtype_battery_config)
   ↓
 Transmitter → battery_info_msg_t (fresh from NVS)
   ↓
@@ -441,9 +446,8 @@ Web page refreshes, reads updated value from cache
 static void request_category_refresh(const uint8_t* mac, uint8_t category, const char* reason) {
     switch (category) {
         case SETTINGS_BATTERY:
-            // Request battery settings (currently via subtype_settings)
-            // TODO Phase 3: Create subtype_battery_only to avoid re-requesting IP data
-            request_data_t req = { msg_request_data, subtype_settings };
+      // Request battery settings via granular subtype
+      request_data_t req = { msg_request_data, subtype_battery_config };
             esp_now_send(mac, (const uint8_t*)&req, sizeof(req));
             break;
         
@@ -463,10 +467,15 @@ static void request_category_refresh(const uint8_t* mac, uint8_t category, const
 ```
 
 **Future Expansion:**
-- Phase 3 will add charger/inverter/system settings
+- Add granular charger/inverter/system refresh subtypes as those payloads are introduced
 - Each category has separate version number
 - Each category has dedicated REQUEST_DATA subtype
 - Cache updates only changed category, not full settings bundle
+
+**Legacy note:**
+- `subtype_settings` is retained in the wire enum for compatibility only.
+- Transmitter no longer implements the mixed legacy response path.
+- Legacy `subtype_settings` requests are treated as unsupported and receive no mixed payload response.
 
 ### 5.3 Version Tracking
 
@@ -704,9 +713,11 @@ ack_config.on_connection = [](const uint8_t* mac, bool connected) {
     // Request full configuration snapshot (DUPLICATE)
     ReceiverConfigManager::instance().requestFullSnapshot(mac);
     
-    // Request static data (DUPLICATE)
-    request_data_t static_req = { msg_request_data, subtype_settings };
-    esp_now_send(mac, (const uint8_t*)&static_req, sizeof(static_req));
+  // Request granular static/config data (DUPLICATE)
+  request_data_t network_req = { msg_request_data, subtype_network_config };
+  esp_now_send(mac, (const uint8_t*)&network_req, sizeof(network_req));
+  request_data_t battery_req = { msg_request_data, subtype_battery_config };
+  esp_now_send(mac, (const uint8_t*)&battery_req, sizeof(battery_req));
     
     // Request power profile (DUPLICATE)
     request_data_t req_msg = { msg_request_data, subtype_power_profile };
@@ -721,9 +732,11 @@ probe_config.on_probe_received = [](const uint8_t* mac, uint32_t seq) {
     // Request full configuration snapshot (ORIGINAL)
     ReceiverConfigManager::instance().requestFullSnapshot(mac);
     
-    // Request static data (ORIGINAL)
-    request_data_t static_req = { msg_request_data, subtype_settings };
-    esp_now_send(mac, (const uint8_t*)&static_req, sizeof(static_req));
+  // Request granular static/config data (ORIGINAL)
+  request_data_t network_req = { msg_request_data, subtype_network_config };
+  esp_now_send(mac, (const uint8_t*)&network_req, sizeof(network_req));
+  request_data_t battery_req = { msg_request_data, subtype_battery_config };
+  esp_now_send(mac, (const uint8_t*)&battery_req, sizeof(battery_req));
     
     // Request power profile (ORIGINAL)
     request_data_t req_msg = { msg_request_data, subtype_power_profile };
@@ -813,23 +826,24 @@ Discovery task already terminated (won't restart)
 
 ---
 
-### 7.6 subtype_settings Returns Multiple Data Types
+### 7.6 Granular Request Subtypes Keep Concerns Separated
 
-**Current Implementation (message_handler.cpp:313):**
+**Current Design:**
 ```cpp
-case subtype_settings:
-    // Send IP data (espnow_packet_t)
-    send_ip_packet(mac);
-    
-    // Send battery info (battery_info_msg_t)
-    send_battery_info(mac);
-    break;
+case subtype_network_config:
+  send_ip_packet(mac);
+  break;
+
+case subtype_battery_config:
+  send_battery_info(mac);
+  break;
 ```
 
-**Issue:**
-- Single REQUEST_DATA subtype returns two unrelated message types
-- Receiver expects both, can't request IP-only or battery-only
-- Wastes bandwidth if only one piece of data needed
+**Why This Helps:**
+- Each request subtype maps to one coherent response concern
+- Receiver can refresh battery settings without re-requesting network data
+- Reduces bandwidth and simplifies cache update behavior
+- Keeps request/response semantics easier to reason about
 
 **Impact (Phase 2):**
 - request_category_refresh(BATTERY) re-requests IP data unnecessarily
@@ -1198,18 +1212,16 @@ if (!is_version_compatible(announce->firmware_version)) {
 
 ---
 
-### 9.6 Split subtype_settings Into Granular Subtypes
+### 9.6 Use Granular Request Subtypes Per Config Category
 
-**Issue:** subtype_settings returns IP + battery info (mixed concerns)
+**Current Approach:**
 
-**Implementation:**
-
-**New Subtypes:**
+**Request Subtypes:**
 ```cpp
 // File: espnow_common.h
 typedef enum {
     subtype_power_profile = 0,
-    subtype_settings = 1,          // DEPRECATED in Phase 3
+    subtype_settings = 1,          // Deprecated/unsupported legacy wire value
     subtype_events = 2,
     subtype_logs = 3,
     subtype_cell_info = 4,
@@ -1223,28 +1235,21 @@ typedef enum {
 } msg_subtype;
 ```
 
-**Transmitter Handler Update:**
+**Transmitter Handler Pattern:**
 ```cpp
-// File: message_handler.cpp
-void EspnowMessageHandler::handle_request_data(const espnow_queue_msg_t& msg) {
-    switch (req->subtype) {
-        case subtype_network_config:
-            send_ip_packet(msg.mac);  // IP only
-            break;
-        
-        case subtype_battery_config:
-            send_battery_info(msg.mac);  // Battery only
-            break;
-        
-        case subtype_settings:  // Legacy support
-            send_ip_packet(msg.mac);
-            send_battery_info(msg.mac);
-            break;
-    }
+// File: request_data_handlers.cpp
+switch (req->subtype) {
+    case subtype_network_config:
+        send_ip_packet(msg.mac);  // IP only
+        break;
+
+    case subtype_battery_config:
+        send_battery_info(msg.mac);  // Battery only
+        break;
 }
 ```
 
-**Receiver Update:**
+**Receiver Refresh Pattern:**
 ```cpp
 // File: espnow_tasks.cpp
 static void request_category_refresh(const uint8_t* mac, uint8_t category, const char* reason) {
@@ -1262,7 +1267,7 @@ static void request_category_refresh(const uint8_t* mac, uint8_t category, const
 - Eliminates unnecessary data re-requests
 - Reduces bandwidth (IP data not re-sent on battery setting change)
 - Cleaner separation of concerns
-- Backward compatible (subtype_settings still supported)
+- Scales cleanly as charger/inverter/system categories are added
 
 ---
 
@@ -1416,7 +1421,7 @@ TEST(VersionUtilsTest, Equal) {
 **Scalability Concerns (Address in Phase 3):**
 1. ⚠️ Message router at 75% capacity (increase to 48)
 2. ⚠️ Web handler at 86% capacity (increase to 50)
-3. ⚠️ subtype_settings mixed concerns (split into granular)
+3. ⚠️ Ensure all future config categories keep one-subtype/one-concern semantics
 
 ### Implementation Priority
 
@@ -1428,7 +1433,7 @@ TEST(VersionUtilsTest, Equal) {
 5. Add version compatibility matrix (9.5) - **1 day**
 
 **Phase 3 (Settings Expansion):**
-1. Split subtype_settings (9.6) - **1 day**
+1. Extend granular request coverage (9.6) - **1 day**
 2. Increase router/handler capacities (9.7) - **0.5 days**
 3. Implement charger/inverter/system settings - **5 days**
 4. Add granular refresh for all categories - **2 days**

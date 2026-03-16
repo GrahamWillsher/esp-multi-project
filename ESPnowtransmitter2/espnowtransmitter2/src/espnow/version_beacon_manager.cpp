@@ -12,6 +12,7 @@
 #include "../battery_emulator/devboard/utils/led_handler.h"
 #include <firmware_version.h>
 #include <firmware_metadata.h>
+#include <cstddef>
 
 VersionBeaconManager& VersionBeaconManager::instance() {
     static VersionBeaconManager instance;
@@ -315,7 +316,7 @@ void VersionBeaconManager::send_config_section(config_section_t section, const u
 
             uint16_t sum = 0;
             const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&settings_msg);
-            for (size_t i = 0; i < sizeof(settings_msg) - 2; i++) {
+            for (size_t i = 0; i < offsetof(battery_settings_full_msg_t, checksum); i++) {
                 sum += bytes[i];
             }
             settings_msg.checksum = sum;

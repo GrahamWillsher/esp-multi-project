@@ -143,8 +143,8 @@ espnowtransmitter2/
 3. Receiver sends `msg_abort_data` to stop transmission
 
 ### Configuration Sync
-1. Receiver sends `msg_probe` with `subtype_settings`
-2. Transmitter responds with IP configuration via `send_settings()`
+1. Receiver sends `msg_request_data` with `subtype_network_config` and `subtype_battery_config`
+2. Transmitter responds with a network packet and battery settings payload
 
 ### Remote Control
 - `msg_reboot`: Reboot ESP32 via `ESP.restart()`

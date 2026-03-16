@@ -115,7 +115,7 @@ enum msg_type : uint8_t {
 enum msg_subtype : uint8_t {
     subtype_none = 0xFF,            // No subtype (used for pages without ESP-NOW data)
     subtype_power_profile = 0,      // Power profile data stream
-    subtype_settings = 1,           // DEPRECATED: Returns IP + battery (use granular subtypes instead)
+    subtype_settings = 1,           // DEPRECATED/unsupported legacy subtype retained for wire compatibility
     subtype_events = 2,             // Real-time event stream
     subtype_logs = 3,               // Large multi-KB log dump
     subtype_cell_info = 4,          // Cell-level structured data
@@ -311,7 +311,7 @@ static_assert(sizeof(mqtt_config_t) <= sizeof(((config_changed_t*)0)->data),
 // Fragmented packet structure for large data transfers
 typedef struct __attribute__((packed)) {
     uint8_t   type;          // Packet type (msg_packet)
-    uint8_t   subtype;       // Data category (subtype_settings, subtype_events, etc.)
+    uint8_t   subtype;       // Data category (for example network, battery, events, logs)
     uint32_t  seq;           // Unique sequence ID for a full request/response cycle
     uint16_t  frag_index;    // Index of this fragment (0-based)
     uint16_t  frag_total;    // Total fragment count

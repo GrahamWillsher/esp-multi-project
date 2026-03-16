@@ -1,7 +1,16 @@
 #include "api_handlers.h"
 #include "api_type_selection_handlers.h"
+#include "api_modular_handlers.h"
+#include "api_network_handlers.h"
+#include "api_telemetry_handlers.h"
+#include "api_sse_handlers.h"
+#include "api_settings_handlers.h"
+#include "api_debug_handlers.h"
+#include "api_control_handlers.h"
+#include "api_led_handlers.h"
 #include "../utils/transmitter_manager.h"
 #include "../utils/receiver_config_manager.h"
+#include "../utils/http_json_utils.h"
 #include "../../receiver_config/receiver_config_manager.h"
 #include "../utils/sse_notifier.h"
 #include "../page_definitions.h"
@@ -33,24 +42,7 @@ extern uint8_t current_led_color;
 extern uint8_t current_led_effect;
 }
 
-static const char* led_color_name(uint8_t color) {
-    switch (color) {
-        case 0: return "RED";
-        case 1: return "GREEN";
-        case 2: return "ORANGE";
-        case 3: return "BLUE";
-        default: return "UNKNOWN";
-    }
-}
-
-static const char* led_effect_name(uint8_t effect) {
-    switch (effect) {
-        case 0: return "CONTINUOUS";
-        case 1: return "FLASH";
-        case 2: return "HEARTBEAT";
-        default: return "UNKNOWN";
-    }
-}
+#if 0
 
 // ═══════════════════════════════════════════════════════════════════════
 // API ENDPOINT HANDLERS
@@ -126,21 +118,15 @@ static esp_err_t api_get_data_source_handler(httpd_req_t *req) {
 // Set data source (deprecated - receiver always uses MQTT data)
 static esp_err_t api_set_data_source_handler(httpd_req_t *req) {
     char buf[128];
-    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
-    if (ret <= 0) {
-        const char* json = "{\"success\":false,\"error\":\"No data received\"}";
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
+    const char* read_error = nullptr;
+    if (!HttpJsonUtils::read_request_body(req, buf, sizeof(buf), nullptr, &read_error)) {
+        return HttpJsonUtils::send_json_error(req, read_error);
     }
-    buf[ret] = '\0';
 
     // Receiver no longer supports test mode - always uses MQTT data
     // This endpoint kept for API compatibility but does nothing
     const char* json = "{\"success\":true,\"message\":\"Receiver always uses MQTT data from transmitter\"}\n";
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json, strlen(json));
-    return ESP_OK;
+    return HttpJsonUtils::send_json(req, json);
 }
 
 // Cell monitor data - receiver only displays MQTT data from transmitter
@@ -936,29 +922,15 @@ static esp_err_t api_save_setting_handler(httpd_req_t *req) {
     
     char json[256];
     char buf[512];
-    int ret, remaining = req->content_len;
     
-    Serial.printf("Content length: %d\n", remaining);
-    LOG_INFO("API: save_setting called, content_len=%d", remaining);
-    
-    // Read POST body
-    if (remaining == 0 || remaining > sizeof(buf) - 1) {
-        LOG_ERROR("API: Invalid request size: %d", remaining);
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"Invalid request size\"}");
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
+    Serial.printf("Content length: %d\n", req->content_len);
+    LOG_INFO("API: save_setting called, content_len=%d", req->content_len);
+
+    const char* read_error = nullptr;
+    if (!HttpJsonUtils::read_request_body(req, buf, sizeof(buf), nullptr, &read_error)) {
+        LOG_ERROR("API: %s", read_error);
+        return HttpJsonUtils::send_json_error(req, read_error);
     }
-    
-    ret = httpd_req_recv(req, buf, remaining);
-    if (ret <= 0) {
-        LOG_ERROR("API: Failed to read request body");
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"Failed to read request\"}");
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
-    }
-    buf[ret] = '\0';
     
     LOG_INFO("API: Received JSON: %s", buf);
     
@@ -968,18 +940,14 @@ static esp_err_t api_save_setting_handler(httpd_req_t *req) {
     if (error) {
         LOG_ERROR("API: JSON parse error: %s", error.c_str());
         snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"JSON parse error: %s\"}", error.c_str());
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
+        return HttpJsonUtils::send_json(req, json);
     }
     
     // Extract parameters
     if (!doc.containsKey("category") || !doc.containsKey("field") || !doc.containsKey("value")) {
         LOG_ERROR("API: Missing required fields in JSON");
         snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"Missing required fields (category, field, value)\"}");
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
+        return HttpJsonUtils::send_json(req, json);
     }
     
     uint8_t category = doc["category"];
@@ -1021,9 +989,7 @@ static esp_err_t api_save_setting_handler(httpd_req_t *req) {
     if (!TransmitterManager::isMACKnown()) {
         LOG_ERROR("API: Transmitter not connected");
         snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"Transmitter not connected\"}");
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
+        return HttpJsonUtils::send_json(req, json);
     }
     
     LOG_INFO("API: Sending to transmitter MAC: %s", TransmitterManager::getMACString().c_str());
@@ -1094,567 +1060,10 @@ static esp_err_t api_save_setting_handler(httpd_req_t *req) {
         snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"ESP-NOW send failed: %s\"}", esp_err_to_name(result));
     }
     
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json, strlen(json));
-    return ESP_OK;
+    return HttpJsonUtils::send_json(req, json);
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// NETWORK CONFIGURATION API HANDLERS
-// ═══════════════════════════════════════════════════════════════════════
-
-static bool parse_ip_string(const char* ip_str, uint8_t out[4]) {
-    if (!ip_str || ip_str[0] == '\0') {
-        return false;
-    }
-
-    int a = 0, b = 0, c = 0, d = 0;
-    if (sscanf(ip_str, "%d.%d.%d.%d", &a, &b, &c, &d) != 4) {
-        return false;
-    }
-
-    if (a < 0 || a > 255 || b < 0 || b > 255 || c < 0 || c > 255 || d < 0 || d > 255) {
-        return false;
-    }
-
-    out[0] = static_cast<uint8_t>(a);
-    out[1] = static_cast<uint8_t>(b);
-    out[2] = static_cast<uint8_t>(c);
-    out[3] = static_cast<uint8_t>(d);
-    return true;
-}
-
-// Get receiver's own WiFi configuration (for network config page)
-static esp_err_t api_get_receiver_network_handler(httpd_req_t *req) {
-    char json[1024];
-    
-    // Get WiFi MAC address (different from eFuse MAC)
-    String wifi_mac = WiFi.macAddress();
-    
-    // Get current WiFi connection info
-    String ssid = WiFi.SSID();
-    int channel = WiFi.channel();
-    bool is_ap_mode = (WiFi.getMode() == WIFI_AP || WiFi.getMode() == WIFI_AP_STA);
-    
-    // Get chip information
-    String chip_model = ESP.getChipModel();
-    uint8_t chip_revision = ESP.getChipRevision();
-    
-    // Get receiver network config from NVS
-    const char* hostname = ReceiverNetworkConfig::getHostname();
-    const char* configured_ssid = ReceiverNetworkConfig::getSSID();
-    const char* configured_password = ReceiverNetworkConfig::getPassword();
-    bool use_static_ip = ReceiverNetworkConfig::useStaticIP();
-    const uint8_t* static_ip = ReceiverNetworkConfig::getStaticIP();
-    const uint8_t* gateway = ReceiverNetworkConfig::getGateway();
-    const uint8_t* subnet = ReceiverNetworkConfig::getSubnet();
-    const uint8_t* dns_primary = ReceiverNetworkConfig::getDNSPrimary();
-    const uint8_t* dns_secondary = ReceiverNetworkConfig::getDNSSecondary();
-    
-    // Get MQTT configuration
-    bool mqtt_enabled = ReceiverNetworkConfig::isMqttEnabled();
-    const uint8_t* mqtt_server = ReceiverNetworkConfig::getMqttServer();
-    uint16_t mqtt_port = ReceiverNetworkConfig::getMqttPort();
-    const char* mqtt_username = ReceiverNetworkConfig::getMqttUsername();
-    
-    // Build JSON response
-    snprintf(json, sizeof(json),
-        "{"
-        "\"success\":true,"
-        "\"is_ap_mode\":%s,"
-        "\"wifi_mac\":\"%s\","
-        "\"chip_model\":\"%s\","
-        "\"chip_revision\":%d,"
-        "\"hostname\":\"%s\","
-        "\"ssid\":\"%s\","
-        "\"password\":\"%s\","
-        "\"channel\":%d,"
-        "\"use_static_ip\":%s,"
-        "\"static_ip\":\"%d.%d.%d.%d\","
-        "\"gateway\":\"%d.%d.%d.%d\","
-        "\"subnet\":\"%d.%d.%d.%d\","
-        "\"dns_primary\":\"%d.%d.%d.%d\","
-        "\"dns_secondary\":\"%d.%d.%d.%d\","
-        "\"mqtt_enabled\":%s,"
-        "\"mqtt_server\":\"%d.%d.%d.%d\","
-        "\"mqtt_port\":%d,"
-        "\"mqtt_username\":\"%s\","
-        "\"mqtt_password\":\"%s\""
-        "}",
-        is_ap_mode ? "true" : "false",
-        wifi_mac.c_str(),
-        chip_model.c_str(),
-        chip_revision,
-        hostname,
-        configured_ssid[0] ? configured_ssid : ssid.c_str(),  // Fall back to current if not configured
-        configured_password,
-        channel,
-        use_static_ip ? "true" : "false",
-        static_ip[0], static_ip[1], static_ip[2], static_ip[3],
-        gateway[0], gateway[1], gateway[2], gateway[3],
-        subnet[0], subnet[1], subnet[2], subnet[3],
-        dns_primary[0], dns_primary[1], dns_primary[2], dns_primary[3],
-        dns_secondary[0], dns_secondary[1], dns_secondary[2], dns_secondary[3],
-        mqtt_enabled ? "true" : "false",
-        mqtt_server[0], mqtt_server[1], mqtt_server[2], mqtt_server[3],
-        mqtt_port,
-        mqtt_username,
-        "********"  // Never send actual password
-    );
-    
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json, strlen(json));
-    return ESP_OK;
-}
-
-// Save receiver's own WiFi configuration
-static esp_err_t api_save_receiver_network_handler(httpd_req_t *req) {
-    char json[256];
-    char buf[512];
-    int ret, remaining = req->content_len;
-
-    LOG_INFO("API: save_receiver_network called, content_len=%d", remaining);
-
-    if (remaining == 0 || remaining > static_cast<int>(sizeof(buf) - 1)) {
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"Invalid request size\"}");
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
-    }
-
-    ret = httpd_req_recv(req, buf, (remaining < static_cast<int>(sizeof(buf) - 1)) ? remaining : (sizeof(buf) - 1));
-    if (ret <= 0) {
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"Failed to read request body\"}");
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
-    }
-    buf[ret] = '\0';
-
-    StaticJsonDocument<512> doc;
-    DeserializationError error = deserializeJson(doc, buf);
-    if (error) {
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"JSON parse error\"}");
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
-    }
-
-    const char* hostname = doc["hostname"] | "";
-    const char* ssid = doc["ssid"] | "";
-    const char* password = doc["password"] | "";
-    bool use_static_ip = doc["use_static_ip"].as<bool>();
-    
-    // MQTT configuration
-    bool mqtt_enabled = doc["mqtt_enabled"].as<bool>();
-    const char* mqtt_server_str = doc["mqtt_server"] | "";
-    uint16_t mqtt_port = doc["mqtt_port"] | 1883;
-    const char* mqtt_username = doc["mqtt_username"] | "";
-    const char* mqtt_password = doc["mqtt_password"] | "";
-
-    if (!ssid || ssid[0] == '\0') {
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"SSID is required\"}");
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
-    }
-
-    const char* password_to_save = password;
-    if (!password || password[0] == '\0') {
-        password_to_save = ReceiverNetworkConfig::getPassword();
-    }
-
-    uint8_t ip[4] = {0};
-    uint8_t gateway[4] = {0};
-    uint8_t subnet[4] = {0};
-    uint8_t dns_primary[4] = {8, 8, 8, 8};
-    uint8_t dns_secondary[4] = {8, 8, 4, 4};
-    uint8_t mqtt_server[4] = {0};
-
-    if (use_static_ip) {
-        const char* ip_str = doc["ip"] | "";
-        const char* gateway_str = doc["gateway"] | "";
-        const char* subnet_str = doc["subnet"] | "";
-        const char* dns1_str = doc["dns_primary"] | "";
-        const char* dns2_str = doc["dns_secondary"] | "";
-
-        if (!parse_ip_string(ip_str, ip) || !parse_ip_string(gateway_str, gateway) || !parse_ip_string(subnet_str, subnet)) {
-            snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"Invalid static IP configuration\"}");
-            httpd_resp_set_type(req, "application/json");
-            httpd_resp_send(req, json, strlen(json));
-            return ESP_OK;
-        }
-
-        if (!parse_ip_string(dns1_str, dns_primary)) {
-            dns_primary[0] = 8; dns_primary[1] = 8; dns_primary[2] = 8; dns_primary[3] = 8;
-        }
-
-        if (!parse_ip_string(dns2_str, dns_secondary)) {
-            dns_secondary[0] = 8; dns_secondary[1] = 8; dns_secondary[2] = 4; dns_secondary[3] = 4;
-        }
-    }
-    
-    // Parse MQTT server IP
-    if (mqtt_enabled && mqtt_server_str && mqtt_server_str[0] != '\0') {
-        if (!parse_ip_string(mqtt_server_str, mqtt_server)) {
-            snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"Invalid MQTT server IP\"}");
-            httpd_resp_set_type(req, "application/json");
-            httpd_resp_send(req, json, strlen(json));
-            return ESP_OK;
-        }
-    }
-
-    bool saved = ReceiverNetworkConfig::saveConfig(
-        hostname,
-        ssid,
-        password_to_save,
-        use_static_ip,
-        ip,
-        gateway,
-        subnet,
-        dns_primary,
-        dns_secondary,
-        mqtt_enabled,
-        mqtt_server,
-        mqtt_port,
-        mqtt_username,
-        mqtt_password
-    );
-
-    if (saved) {
-        snprintf(json, sizeof(json), "{\"success\":true,\"message\":\"Receiver network config saved\"}");
-    } else {
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"Failed to save receiver config\"}");
-    }
-
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json, strlen(json));
-    return ESP_OK;
-}
-
-// Get current network configuration from TransmitterManager
-static esp_err_t api_get_network_config_handler(httpd_req_t *req) {
-    char json[1024];  // Increased size for both configs
-
-    if (!TransmitterManager::isIPKnown()) {
-        snprintf(json, sizeof(json),
-            "{"
-            "\"success\":false,"
-            "\"message\":\"No network config cached yet\""
-            "}"
-        );
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
-    }
-    
-    bool is_static = TransmitterManager::isStaticIP();
-    uint32_t version = TransmitterManager::getNetworkConfigVersion();
-    
-    // Current network configuration
-    const uint8_t* current_ip = TransmitterManager::getIP();
-    const uint8_t* current_gateway = TransmitterManager::getGateway();
-    const uint8_t* current_subnet = TransmitterManager::getSubnet();
-    
-    // Static configuration from NVS
-    const uint8_t* static_ip = TransmitterManager::getStaticIP();
-    const uint8_t* static_gateway = TransmitterManager::getStaticGateway();
-    const uint8_t* static_subnet = TransmitterManager::getStaticSubnet();
-    const uint8_t* static_dns1 = TransmitterManager::getStaticDNSPrimary();
-    const uint8_t* static_dns2 = TransmitterManager::getStaticDNSSecondary();
-    
-    if (current_ip && current_gateway && current_subnet && 
-        static_ip && static_gateway && static_subnet && static_dns1 && static_dns2) {
-        snprintf(json, sizeof(json),
-            "{"
-            "\"success\":true,"
-            "\"use_static_ip\":%s,"
-            "\"current\":{"
-                "\"ip\":\"%d.%d.%d.%d\","
-                "\"gateway\":\"%d.%d.%d.%d\","
-                "\"subnet\":\"%d.%d.%d.%d\""
-            "},"
-            "\"static_config\":{"
-                "\"ip\":\"%d.%d.%d.%d\","
-                "\"gateway\":\"%d.%d.%d.%d\","
-                "\"subnet\":\"%d.%d.%d.%d\","
-                "\"dns_primary\":\"%d.%d.%d.%d\","
-                "\"dns_secondary\":\"%d.%d.%d.%d\""
-            "},"
-            "\"config_version\":%u"
-            "}",
-            is_static ? "true" : "false",
-            current_ip[0], current_ip[1], current_ip[2], current_ip[3],
-            current_gateway[0], current_gateway[1], current_gateway[2], current_gateway[3],
-            current_subnet[0], current_subnet[1], current_subnet[2], current_subnet[3],
-            static_ip[0], static_ip[1], static_ip[2], static_ip[3],
-            static_gateway[0], static_gateway[1], static_gateway[2], static_gateway[3],
-            static_subnet[0], static_subnet[1], static_subnet[2], static_subnet[3],
-            static_dns1[0], static_dns1[1], static_dns1[2], static_dns1[3],
-            static_dns2[0], static_dns2[1], static_dns2[2], static_dns2[3],
-            version
-        );
-    } else {
-        // No IP data available yet
-        snprintf(json, sizeof(json),
-            "{"
-            "\"success\":false,"
-            "\"message\":\"No network data available\""
-            "}"
-        );
-    }
-    
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json, strlen(json));
-    return ESP_OK;
-}
-
-// Save network configuration to transmitter via ESP-NOW
-static esp_err_t api_save_network_config_handler(httpd_req_t *req) {
-    Serial.println("\n===== API SAVE NETWORK CONFIG CALLED =====");
-    
-    char json[256];
-    char buf[512];
-    int ret, remaining = req->content_len;
-    
-    LOG_INFO("API: save_network_config called, content_len=%d", remaining);
-    
-    // Read POST body
-    if (remaining == 0 || remaining > sizeof(buf) - 1) {
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"Invalid request size\"}");
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
-    }
-    
-    ret = httpd_req_recv(req, buf, (remaining < (int)(sizeof(buf) - 1)) ? remaining : (sizeof(buf) - 1));
-    if (ret <= 0) {
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"Failed to read request body\"}");
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
-    }
-    buf[ret] = '\0';
-    
-    Serial.printf("Received JSON: %s\n", buf);
-    LOG_INFO("API: Received network config JSON: %s", buf);
-    
-    // Parse JSON
-    StaticJsonDocument<512> doc;
-    DeserializationError error = deserializeJson(doc, buf);
-    if (error) {
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"JSON parse error\"}");
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
-    }
-    
-    // Check if transmitter MAC is known
-    if (!TransmitterManager::isMACKnown()) {
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"Transmitter MAC unknown\"}");
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
-    }
-    
-    // Build ESP-NOW message
-    network_config_update_t msg;
-    memset(&msg, 0, sizeof(msg));
-    msg.type = msg_network_config_update;
-    
-    msg.use_static_ip = doc["use_static_ip"].as<bool>() ? 1 : 0;
-    
-    if (msg.use_static_ip) {
-        // Parse IP addresses from strings
-        String ip_str = doc["ip"].as<String>();
-        String gateway_str = doc["gateway"].as<String>();
-        String subnet_str = doc["subnet"].as<String>();
-        String dns1_str = doc.containsKey("dns_primary") ? doc["dns_primary"].as<String>() : "8.8.8.8";
-        String dns2_str = doc.containsKey("dns_secondary") ? doc["dns_secondary"].as<String>() : "8.8.4.4";
-        
-        // Parse IP
-        sscanf(ip_str.c_str(), "%hhu.%hhu.%hhu.%hhu", 
-               &msg.ip[0], &msg.ip[1], &msg.ip[2], &msg.ip[3]);
-        
-        // Parse gateway
-        sscanf(gateway_str.c_str(), "%hhu.%hhu.%hhu.%hhu",
-               &msg.gateway[0], &msg.gateway[1], &msg.gateway[2], &msg.gateway[3]);
-        
-        // Parse subnet
-        sscanf(subnet_str.c_str(), "%hhu.%hhu.%hhu.%hhu",
-               &msg.subnet[0], &msg.subnet[1], &msg.subnet[2], &msg.subnet[3]);
-        
-        // Parse DNS
-        sscanf(dns1_str.c_str(), "%hhu.%hhu.%hhu.%hhu",
-               &msg.dns_primary[0], &msg.dns_primary[1], &msg.dns_primary[2], &msg.dns_primary[3]);
-        sscanf(dns2_str.c_str(), "%hhu.%hhu.%hhu.%hhu",
-               &msg.dns_secondary[0], &msg.dns_secondary[1], &msg.dns_secondary[2], &msg.dns_secondary[3]);
-        
-        LOG_INFO("API: Sending static IP config: %d.%d.%d.%d", 
-                 msg.ip[0], msg.ip[1], msg.ip[2], msg.ip[3]);
-    } else {
-        LOG_INFO("API: Sending DHCP mode config");
-    }
-    
-    msg.config_version = 0;  // Transmitter will increment
-    msg.checksum = 0;  // TODO: Implement checksum if needed
-    
-    // Send via ESP-NOW
-    esp_err_t result = esp_now_send(TransmitterManager::getMAC(), (const uint8_t*)&msg, sizeof(msg));
-    if (result == ESP_OK) {
-        LOG_INFO("API: ✓ Network config sent to transmitter");
-        snprintf(json, sizeof(json), 
-                 "{\"success\":true,\"message\":\"Network config sent - awaiting transmitter response\"}");
-    } else {
-        LOG_ERROR("API: ✗ ESP-NOW send FAILED: %s", esp_err_to_name(result));
-        snprintf(json, sizeof(json), 
-                 "{\"success\":false,\"message\":\"ESP-NOW send failed: %s\"}", 
-                 esp_err_to_name(result));
-    }
-    
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json, strlen(json));
-    return ESP_OK;
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// MQTT CONFIGURATION API HANDLERS
-// ═══════════════════════════════════════════════════════════════════════
-
-// Get MQTT configuration from transmitter cache
-static esp_err_t api_get_mqtt_config_handler(httpd_req_t *req) {
-    Serial.println("\n===== API GET MQTT CONFIG CALLED =====");
-    char json[512];
-    
-    if (!TransmitterManager::isMqttConfigKnown()) {
-        LOG_INFO("API: MQTT config not cached");
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"MQTT config not cached\"}");
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
-    }
-    
-    const uint8_t* server = TransmitterManager::getMqttServer();
-    snprintf(json, sizeof(json),
-        "{\"success\":true,"
-        "\"enabled\":%s,"
-        "\"server\":\"%d.%d.%d.%d\","
-        "\"port\":%d,"
-        "\"username\":\"%s\","
-        "\"password\":\"********\","  // Always mask password
-        "\"client_id\":\"%s\","
-        "\"connected\":%s}",
-        TransmitterManager::isMqttEnabled() ? "true" : "false",
-        server[0], server[1], server[2], server[3],
-        TransmitterManager::getMqttPort(),
-        TransmitterManager::getMqttUsername(),
-        TransmitterManager::getMqttClientId(),
-        TransmitterManager::isMqttConnected() ? "true" : "false"
-    );
-    
-    LOG_INFO("API: ✓ Returning cached MQTT config (enabled=%d, connected=%d)",
-             TransmitterManager::isMqttEnabled(), TransmitterManager::isMqttConnected());
-    
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json, strlen(json));
-    return ESP_OK;
-}
-
-// Save MQTT configuration to transmitter via ESP-NOW
-static esp_err_t api_save_mqtt_config_handler(httpd_req_t *req) {
-    Serial.println("\n===== API SAVE MQTT CONFIG CALLED =====");
-    
-    char json[256];
-    char buf[512];
-    int ret, remaining = req->content_len;
-    
-    LOG_INFO("API: save_mqtt_config called, content_len=%d", remaining);
-    
-    // Read POST body
-    if (remaining > (int)sizeof(buf) - 1) {
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"Request too large\"}");
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
-    }
-    
-    ret = httpd_req_recv(req, buf, remaining);
-    if (ret <= 0) {
-        if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
-            httpd_resp_send_408(req);
-        }
-        return ESP_FAIL;
-    }
-    buf[ret] = '\0';
-    
-    Serial.printf("Received JSON: %s\n", buf);
-    LOG_INFO("API: Received MQTT config JSON: %s", buf);
-    
-    // Parse JSON
-    StaticJsonDocument<512> doc;
-    DeserializationError error = deserializeJson(doc, buf);
-    if (error) {
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"JSON parse error\"}");
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
-    }
-    
-    // Check if transmitter MAC is known
-    if (!TransmitterManager::isMACKnown()) {
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"Transmitter MAC unknown\"}");
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
-    }
-    
-    // Build ESP-NOW message
-    mqtt_config_update_t msg;
-    memset(&msg, 0, sizeof(msg));
-    msg.type = msg_mqtt_config_update;
-    
-    msg.enabled = doc["enabled"].as<bool>() ? 1 : 0;
-    
-    // Parse server IP from string
-    String server_str = doc["server"].as<String>();
-    sscanf(server_str.c_str(), "%hhu.%hhu.%hhu.%hhu",
-           &msg.server[0], &msg.server[1], &msg.server[2], &msg.server[3]);
-    
-    msg.port = doc["port"].as<uint16_t>();
-    
-    String username = doc.containsKey("username") ? doc["username"].as<String>() : "";
-    String password = doc.containsKey("password") ? doc["password"].as<String>() : "";
-    String client_id = doc.containsKey("client_id") ? doc["client_id"].as<String>() : "espnow_transmitter";
-    
-    strncpy(msg.username, username.c_str(), sizeof(msg.username) - 1);
-    strncpy(msg.password, password.c_str(), sizeof(msg.password) - 1);
-    strncpy(msg.client_id, client_id.c_str(), sizeof(msg.client_id) - 1);
-    
-    msg.config_version = 0;  // Transmitter will increment
-    msg.checksum = 0;  // TODO: Implement checksum if needed
-    
-    LOG_INFO("API: Sending MQTT config: %s, %d.%d.%d.%d:%d",
-             msg.enabled ? "ENABLED" : "DISABLED",
-             msg.server[0], msg.server[1], msg.server[2], msg.server[3],
-             msg.port);
-    
-    // Send via ESP-NOW
-    esp_err_t result = esp_now_send(TransmitterManager::getMAC(), (const uint8_t*)&msg, sizeof(msg));
-    if (result == ESP_OK) {
-        LOG_INFO("API: ✓ MQTT config sent to transmitter");
-        snprintf(json, sizeof(json), 
-                 "{\"success\":true,\"message\":\"MQTT config sent - awaiting transmitter response\"}");
-    } else {
-        LOG_ERROR("API: ✗ ESP-NOW send FAILED: %s", esp_err_to_name(result));
-        snprintf(json, sizeof(json), 
-                 "{\"success\":false,\"message\":\"ESP-NOW send failed: %s\"}", 
-                 esp_err_to_name(result));
-    }
-    
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json, strlen(json));
-    return ESP_OK;
-}
+// Network + MQTT handlers moved to api_network_handlers.cpp
 
 // Get transmitter health data (uptime, time, connection status)
 // Returns cached heartbeat data for dashboard display
@@ -1813,198 +1222,6 @@ static esp_err_t api_get_event_logs_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
-static esp_err_t api_get_led_runtime_status_handler(httpd_req_t *req) {
-    char json[512];
-
-    const uint8_t current_color = ESPNow::current_led_color;
-    const uint8_t current_effect = ESPNow::current_led_effect;
-
-    const bool has_policy = TransmitterManager::hasBatteryEmulatorSettings();
-    const uint8_t led_mode = has_policy ? TransmitterManager::getBatteryEmulatorSettings().led_mode : 0;
-    const uint8_t expected_effect = (led_mode <= 2) ? led_mode : 0;
-
-    const bool synced = has_policy && (static_cast<uint8_t>(current_effect) == expected_effect);
-
-    snprintf(json, sizeof(json),
-        "{"
-        "\"success\":true,"
-        "\"led_mode\":%u,"
-        "\"has_led_policy\":%s,"
-        "\"current_color\":%u,"
-        "\"current_color_name\":\"%s\","
-        "\"current_effect\":%u,"
-        "\"current_effect_name\":\"%s\","
-        "\"expected_effect\":%u,"
-        "\"expected_effect_name\":\"%s\","
-        "\"effect_synced\":%s"
-        "}",
-        led_mode,
-        has_policy ? "true" : "false",
-        static_cast<uint8_t>(current_color),
-        led_color_name(current_color),
-        static_cast<uint8_t>(current_effect),
-        led_effect_name(current_effect),
-        expected_effect,
-        led_effect_name(expected_effect),
-        synced ? "true" : "false"
-    );
-
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json, strlen(json));
-    return ESP_OK;
-}
-
-static esp_err_t api_resync_led_state_handler(httpd_req_t *req) {
-    char json[256];
-
-    if (!TransmitterManager::isMACKnown()) {
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"Transmitter MAC unknown\"}");
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
-    }
-
-    config_section_request_t request;
-    request.type = msg_config_section_request;
-    request.section = config_section_battery;
-    request.requested_version = 0;
-
-    const esp_err_t result = esp_now_send(
-        TransmitterManager::getMAC(),
-        reinterpret_cast<const uint8_t*>(&request),
-        sizeof(request)
-    );
-
-    if (result == ESP_OK) {
-        snprintf(json, sizeof(json), "{\"success\":true,\"message\":\"Battery section resync requested\"}");
-    } else {
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"ESP-NOW send failed: %s\"}", esp_err_to_name(result));
-    }
-
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json, strlen(json));
-    return ESP_OK;
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// TEST DATA CONFIGURATION HANDLERS
-// ═══════════════════════════════════════════════════════════════════════
-
-static esp_err_t api_get_test_data_mode_handler(httpd_req_t *req) {
-    char json_response[256];
-    
-    // Get the last mode sent to transmitter (locally cached)
-    uint8_t mode = get_last_test_data_mode();
-    const char* mode_names[] = {"OFF", "SOC_POWER_ONLY", "FULL_BATTERY_DATA"};
-    
-    snprintf(json_response, sizeof(json_response), 
-             "{\"success\":true,\"mode\":%d,\"mode_name\":\"%s\",\"message\":\"Current test data mode\"}",
-             mode, mode_names[mode]);
-    
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json_response, strlen(json_response));
-    return ESP_OK;
-}
-
-static esp_err_t api_set_test_data_mode_handler(httpd_req_t *req) {
-    char buffer[100];
-    int total_len = httpd_req_recv(req, buffer, sizeof(buffer) - 1);
-    
-    if (total_len <= 0) {
-        char error[128];
-        snprintf(error, sizeof(error), "{\"success\":false,\"error\":\"No data received\"}");
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, error, strlen(error));
-        return ESP_OK;
-    }
-    
-    buffer[total_len] = '\0';
-    
-    // Parse JSON: {"mode": 0} or {"mode": "OFF"}
-    DynamicJsonDocument doc(256);
-    DeserializationError error = deserializeJson(doc, buffer);
-    
-    if (error) {
-        char response[256];
-        snprintf(response, sizeof(response), "{\"success\":false,\"error\":\"Invalid JSON\"}");
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, response, strlen(response));
-        return ESP_OK;
-    }
-    
-    uint8_t mode = 0;
-    
-    if (doc["mode"].is<const char*>()) {
-        // Mode is a string: "OFF", "SOC_POWER_ONLY", or "FULL_BATTERY_DATA"
-        const char* mode_str = doc["mode"];
-        if (strcmp(mode_str, "OFF") == 0) mode = 0;
-        else if (strcmp(mode_str, "SOC_POWER_ONLY") == 0) mode = 1;
-        else if (strcmp(mode_str, "FULL_BATTERY_DATA") == 0) mode = 2;
-        else {
-            char response[256];
-            snprintf(response, sizeof(response), "{\"success\":false,\"error\":\"Invalid mode string\"}");
-            httpd_resp_set_type(req, "application/json");
-            httpd_resp_send(req, response, strlen(response));
-            return ESP_OK;
-        }
-    } else if (doc["mode"].is<int>()) {
-        // Mode is a number
-        mode = doc["mode"].as<int>();
-        if (mode > 2) {
-            char response[256];
-            snprintf(response, sizeof(response), "{\"success\":false,\"error\":\"Invalid mode number (0-2)\"}");
-            httpd_resp_set_type(req, "application/json");
-            httpd_resp_send(req, response, strlen(response));
-            return ESP_OK;
-        }
-    }
-    
-    // Send test data mode control to transmitter
-    if (send_test_data_mode_control(mode)) {
-        const char* mode_names[] = {"OFF", "SOC_POWER_ONLY", "FULL_BATTERY_DATA"};
-        char response[256];
-        snprintf(response, sizeof(response), 
-                 "{\"success\":true,\"mode\":\"%s\",\"message\":\"Test data mode changed\"}",
-                 mode_names[mode]);
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, response, strlen(response));
-    } else {
-        char response[256];
-        snprintf(response, sizeof(response), 
-                 "{\"success\":false,\"error\":\"Failed to send command to transmitter\"}");
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, response, strlen(response));
-    }
-    
-    return ESP_OK;
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// EVENT LOGS SUBSCRIPTION MANAGEMENT
-// ═══════════════════════════════════════════════════════════════════════
-
-static esp_err_t api_event_logs_subscribe_handler(httpd_req_t *req) {
-    MqttClient::incrementEventLogSubscribers();
-    
-    char response[64];
-    snprintf(response, sizeof(response), "{\"success\":true}");
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, response, strlen(response));
-    
-    return ESP_OK;
-}
-
-static esp_err_t api_event_logs_unsubscribe_handler(httpd_req_t *req) {
-    MqttClient::decrementEventLogSubscribers();
-    
-    char response[64];
-    snprintf(response, sizeof(response), "{\"success\":true}");
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, response, strlen(response));
-    
-    return ESP_OK;
-}
-
 // ═══════════════════════════════════════════════════════════════════════
 // REGISTRATION FUNCTION
 // ═══════════════════════════════════════════════════════════════════════
@@ -2068,5 +1285,73 @@ int register_all_api_handlers(httpd_handle_t server) {
         count++;
     }
     
+    return count;
+}
+
+#endif
+
+static esp_err_t notfound_handler(httpd_req_t *req) {
+    httpd_resp_set_status(req, "404 Not Found");
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_sendstr(req, "Endpoint not found");
+    return ESP_OK;
+}
+
+int register_all_api_handlers(httpd_handle_t server) {
+    int count = 0;
+
+    httpd_uri_t handlers[] = {
+        {.uri = "/api/data", .method = HTTP_GET, .handler = api_data_handler, .user_ctx = NULL},
+        {.uri = "/api/get_receiver_info", .method = HTTP_GET, .handler = api_get_receiver_info_handler, .user_ctx = NULL},
+        {.uri = "/api/dashboard_data", .method = HTTP_GET, .handler = api_dashboard_data_handler, .user_ctx = NULL},
+        {.uri = "/api/monitor", .method = HTTP_GET, .handler = api_monitor_handler, .user_ctx = NULL},
+        {.uri = "/api/get_data_source", .method = HTTP_GET, .handler = api_get_data_source_handler, .user_ctx = NULL},
+        {.uri = "/api/set_data_source", .method = HTTP_POST, .handler = api_set_data_source_handler, .user_ctx = NULL},
+        {.uri = "/api/cell_data", .method = HTTP_GET, .handler = api_cell_data_handler, .user_ctx = NULL},
+        {.uri = "/api/transmitter_ip", .method = HTTP_GET, .handler = api_transmitter_ip_handler, .user_ctx = NULL},
+        {.uri = "/api/transmitter_health", .method = HTTP_GET, .handler = api_transmitter_health_handler, .user_ctx = NULL},
+        {.uri = "/api/version", .method = HTTP_GET, .handler = api_version_handler, .user_ctx = NULL},
+        {.uri = "/api/firmware_info", .method = HTTP_GET, .handler = api_firmware_info_handler, .user_ctx = NULL},
+        {.uri = "/api/transmitter_metadata", .method = HTTP_GET, .handler = api_transmitter_metadata_handler, .user_ctx = NULL},
+        {.uri = "/api/monitor_sse", .method = HTTP_GET, .handler = api_monitor_sse_handler, .user_ctx = NULL},
+        {.uri = "/api/cell_stream", .method = HTTP_GET, .handler = api_cell_data_sse_handler, .user_ctx = NULL},
+        {.uri = "/api/reboot", .method = HTTP_GET, .handler = api_reboot_handler, .user_ctx = NULL},
+        {.uri = "/api/transmitter_ota_status", .method = HTTP_GET, .handler = api_transmitter_ota_status_handler, .user_ctx = NULL},
+        {.uri = "/api/debugLevel", .method = HTTP_GET, .handler = api_get_debug_level_handler, .user_ctx = NULL},
+        {.uri = "/api/setDebugLevel", .method = HTTP_GET, .handler = api_set_debug_level_handler, .user_ctx = NULL},
+        {.uri = "/api/get_battery_settings", .method = HTTP_GET, .handler = api_get_battery_settings_handler, .user_ctx = NULL},
+        {.uri = "/api/save_setting", .method = HTTP_POST, .handler = api_save_setting_handler, .user_ctx = NULL},
+        {.uri = "/api/get_receiver_network", .method = HTTP_GET, .handler = api_get_receiver_network_handler, .user_ctx = NULL},
+        {.uri = "/api/save_receiver_network", .method = HTTP_POST, .handler = api_save_receiver_network_handler, .user_ctx = NULL},
+        {.uri = "/api/get_network_config", .method = HTTP_GET, .handler = api_get_network_config_handler, .user_ctx = NULL},
+        {.uri = "/api/save_network_config", .method = HTTP_POST, .handler = api_save_network_config_handler, .user_ctx = NULL},
+        {.uri = "/api/get_mqtt_config", .method = HTTP_GET, .handler = api_get_mqtt_config_handler, .user_ctx = NULL},
+        {.uri = "/api/save_mqtt_config", .method = HTTP_POST, .handler = api_save_mqtt_config_handler, .user_ctx = NULL},
+        {.uri = "/api/static_specs", .method = HTTP_GET, .handler = api_static_specs_handler, .user_ctx = NULL},
+        {.uri = "/api/battery_specs", .method = HTTP_GET, .handler = api_battery_specs_handler, .user_ctx = NULL},
+        {.uri = "/api/inverter_specs", .method = HTTP_GET, .handler = api_inverter_specs_handler, .user_ctx = NULL},
+        {.uri = "/api/get_event_logs", .method = HTTP_GET, .handler = api_get_event_logs_handler, .user_ctx = NULL},
+        {.uri = "/api/event_logs/subscribe", .method = HTTP_POST, .handler = api_event_logs_subscribe_handler, .user_ctx = NULL},
+        {.uri = "/api/event_logs/unsubscribe", .method = HTTP_POST, .handler = api_event_logs_unsubscribe_handler, .user_ctx = NULL},
+        {.uri = "/api/get_test_data_mode", .method = HTTP_GET, .handler = api_get_test_data_mode_handler, .user_ctx = NULL},
+        {.uri = "/api/set_test_data_mode", .method = HTTP_POST, .handler = api_set_test_data_mode_handler, .user_ctx = NULL},
+        {.uri = "/api/get_led_runtime_status", .method = HTTP_GET, .handler = api_get_led_runtime_status_handler, .user_ctx = NULL},
+        {.uri = "/api/resync_led_state", .method = HTTP_POST, .handler = api_resync_led_state_handler, .user_ctx = NULL},
+        {.uri = "/api/ota_upload", .method = HTTP_POST, .handler = api_ota_upload_handler, .user_ctx = NULL}
+    };
+
+    for (int i = 0; i < sizeof(handlers) / sizeof(httpd_uri_t); i++) {
+        if (httpd_register_uri_handler(server, &handlers[i]) == ESP_OK) {
+            count++;
+        }
+    }
+
+    count += register_type_selection_api_handlers(server);
+
+    httpd_uri_t notfound = {.uri = "/*", .method = HTTP_GET, .handler = notfound_handler, .user_ctx = NULL};
+    if (httpd_register_uri_handler(server, &notfound) == ESP_OK) {
+        count++;
+    }
+
     return count;
 }

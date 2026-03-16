@@ -37,7 +37,7 @@ All temporary compatibility shims have been removed. All active usage must now i
 ### espnow_common.h
 Shared protocol definitions used by all ESP-NOW applications:
 - Message types (msg_probe, msg_ack, msg_data, msg_request_data, msg_abort_data, msg_packet)
-- Message subtypes (subtype_none, subtype_settings, subtype_events, subtype_logs, subtype_cell_info)
+- Message subtypes (including granular `subtype_network_config` and `subtype_battery_config`; `subtype_settings` is a deprecated/unsupported legacy wire value)
 - Data structures (espnow_payload_t, probe_t, ack_t, espnow_packet_t, etc.)
 
 ### espnow_transmitter/

@@ -57,7 +57,6 @@
 #include "espnow/tx_connection_handler.h"
 #include "espnow/tx_state_machine.h"
 #include <channel_manager.h>                 // Centralized channel management
-#include "espnow/heartbeat_manager.h"         // Section 11: Heartbeat protocol
 #include <esp32common/espnow/connection_manager.h>
 #include <esp32common/espnow/connection_event_processor.h>
 

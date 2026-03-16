@@ -96,12 +96,6 @@ private:
     void handle_debug_control(const espnow_queue_msg_t& msg);
     
     /**
-     * @brief Handle test data mode control (via debug_control packet with flag 0x80)
-     * @param pkt Debug control packet containing mode in level field
-     */
-    void handle_test_data_mode_control(const debug_control_t* pkt);
-    
-    /**
      * @brief Handle HEARTBEAT_ACK message from receiver
      * @param msg ESP-NOW message
      */
@@ -182,14 +176,6 @@ private:
      * @param parameter Task parameter (unused)
      */
     static void network_config_task_impl(void* parameter);
-    
-    /**
-     * @brief Send DEBUG_ACK message back to receiver
-     * @param applied_level Level that was applied
-     * @param previous_level Previous level before change
-     * @param status 0=success, 1=invalid, 2=error
-     */
-    void send_debug_ack(uint8_t applied_level, uint8_t previous_level, uint8_t status);
     
     /**
      * @brief Save debug level to NVS for persistence
