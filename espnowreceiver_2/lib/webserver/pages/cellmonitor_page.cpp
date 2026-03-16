@@ -94,10 +94,11 @@ static esp_err_t cellmonitor_handler(httpd_req_t *req) {
                     cell.style.border = '1px solid #333';
                 }
                 
-                // Highlight min/max cells
-                if (mv === min || mv === max) {
-                    cell.style.borderColor = '#FF6B6B';
+                // Highlight min/max cells with distinct colors
+                if (mv === max || mv === min) {
+                    cell.style.borderColor = '#FFD700';  // Yellow for both min and max
                     cell.style.borderWidth = '2px';
+                    cell.style.boxShadow = '0 0 8px rgba(255, 215, 0, 0.5)';
                 }
                 
                 // Red text for low voltage
@@ -154,10 +155,10 @@ static esp_err_t cellmonitor_handler(httpd_req_t *req) {
                 
                 // Color based on voltage level
                 let color = '#4CAF50';  // Green - normal
-                if (mv < min + range * 0.33) {
-                    color = '#FF6B6B';  // Red - low
-                } else if (mv > max - range * 0.1) {
-                    color = '#FFD700';  // Yellow - high
+                if (mv === max || mv === min) {
+                    color = '#FFD700';  // Yellow - both min and max stand out
+                } else if (mv < min + range * 0.33) {
+                    color = '#FF6B6B';  // Red - low voltage
                 }
                 
                 barSegment.style.cssText = `
