@@ -39,6 +39,14 @@ namespace TaskConfig {
      * Increase if: MQTT operations fail or task crashes
      */
     constexpr uint32_t MQTT_CLIENT_STACK = 8192;
+
+    /**
+     * @brief Display renderer task stack size
+     *
+     * Consumes display snapshots and performs the actual TFT/LVGL rendering.
+     * Keeps rendering work out of the ESP-NOW worker hot path.
+     */
+    constexpr uint32_t DISPLAY_RENDERER_STACK = 4096;
     
     /**
      * @brief Periodic announcement (discovery) task stack size
@@ -70,6 +78,13 @@ namespace TaskConfig {
      * Low priority - network I/O can be deferred.
      */
     constexpr uint8_t MQTT_CLIENT_PRIORITY = 0;
+
+    /**
+     * @brief Display renderer task priority
+     *
+     * Medium priority so rendering stays responsive without blocking ESP-NOW ingest.
+     */
+    constexpr uint8_t DISPLAY_RENDERER_PRIORITY = 1;
     
     /**
      * @brief Periodic announcement task priority

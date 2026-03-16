@@ -20,7 +20,7 @@ unsigned long MqttClient::last_connect_attempt_ = 0;
 // Cell data subscription state management
 int MqttClient::cell_data_subscribers_ = 0;
 MqttClient::CellDataSubscriptionState MqttClient::cell_data_state_ = MqttClient::PAUSED;
-TaskHandle_t MqttClient::cell_data_pause_timer_ = nullptr;
+TimerHandle_t MqttClient::cell_data_pause_timer_ = nullptr;
 
 // Event log subscription management
 int MqttClient::event_log_subscribers_ = 0;
@@ -376,7 +376,7 @@ void MqttClient::handleCellData(const char* json_payload, size_t length) {
     // Store cell data in TransmitterManager
     TransmitterManager::storeCellData(doc.as<JsonObject>());
     
-    LOG_INFO("MQTT", "Stored cell data from transmitter/BE/cell_data");
+    LOG_DEBUG("MQTT", "Stored cell data from transmitter/BE/cell_data");
 }
 
 void MqttClient::handleEventLogs(const char* json_payload, size_t length) {

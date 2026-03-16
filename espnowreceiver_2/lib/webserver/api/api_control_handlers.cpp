@@ -12,27 +12,25 @@
 #include <esp32common/espnow/common.h>
 
 esp_err_t api_reboot_handler(httpd_req_t *req) {
-    String json = "{";
+    char json[192];
 
     if (TransmitterManager::isMACKnown()) {
         reboot_t reboot_msg = { msg_reboot };
         esp_err_t result = esp_now_send(TransmitterManager::getMAC(), (const uint8_t*)&reboot_msg, sizeof(reboot_msg));
         if (result == ESP_OK) {
             LOG_INFO("REBOOT: Sent command to transmitter");
-            json += "\"success\":true,\"message\":\"Reboot command sent\"";
+            snprintf(json, sizeof(json), "{\"success\":true,\"message\":\"Reboot command sent\"}");
         } else {
             LOG_ERROR("REBOOT: Failed to send command: %s", esp_err_to_name(result));
-            json += "\"success\":false,\"message\":\"" + String(esp_err_to_name(result)) + "\"";
+            snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"%s\"}", esp_err_to_name(result));
         }
     } else {
         LOG_WARN("REBOOT: Transmitter MAC unknown, cannot send command");
-        json += "\"success\":false,\"message\":\"Transmitter MAC unknown\"";
+        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"Transmitter MAC unknown\"}");
     }
 
-    json += "}";
-
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json.c_str(), json.length());
+    httpd_resp_send(req, json, strlen(json));
     return ESP_OK;
 }
 
@@ -64,16 +62,25 @@ esp_err_t api_transmitter_ota_status_handler(httpd_req_t *req) {
         bool in_progress = doc["in_progress"] | false;
         bool ready_for_reboot = doc["ready_for_reboot"] | false;
         bool last_success = doc["last_success"] | false;
-        String last_error = doc["last_error"] | "";
-        last_error.replace("\"", "'");
+        const char* raw_last_error = doc["last_error"] | "";
+        char safe_last_error[128];
+        size_t copy_index = 0;
+        while (raw_last_error[copy_index] != '\0' && copy_index < sizeof(safe_last_error) - 1) {
+            safe_last_error[copy_index] = (raw_last_error[copy_index] == '"') ? '\'' : raw_last_error[copy_index];
+            copy_index++;
+        }
+        safe_last_error[copy_index] = '\0';
 
-        String json = "{";
-        json += "\"success\":true,";
-        json += "\"in_progress\":" + String(in_progress ? "true" : "false") + ",";
-        json += "\"ready_for_reboot\":" + String(ready_for_reboot ? "true" : "false") + ",";
-        json += "\"last_success\":" + String(last_success ? "true" : "false") + ",";
-        json += "\"last_error\":\"" + last_error + "\"";
-        json += "}";
+        StaticJsonDocument<256> out_doc;
+        out_doc["success"] = true;
+        out_doc["in_progress"] = in_progress;
+        out_doc["ready_for_reboot"] = ready_for_reboot;
+        out_doc["last_success"] = last_success;
+        out_doc["last_error"] = safe_last_error;
+
+        String json;
+        json.reserve(160);
+        serializeJson(out_doc, json);
 
         httpd_resp_set_type(req, "application/json");
         httpd_resp_send(req, json.c_str(), json.length());
@@ -81,9 +88,10 @@ esp_err_t api_transmitter_ota_status_handler(httpd_req_t *req) {
     }
 
     http.end();
-    String err_json = "{\"success\":false,\"message\":\"Status HTTP error: " + String(code) + "\"}";
+    char err_json[96];
+    snprintf(err_json, sizeof(err_json), "{\"success\":false,\"message\":\"Status HTTP error: %d\"}", code);
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, err_json.c_str(), err_json.length());
+    httpd_resp_send(req, err_json, strlen(err_json));
     return ESP_OK;
 }
 
@@ -207,7 +215,15 @@ esp_err_t api_ota_upload_handler(httpd_req_t *req) {
         httpd_resp_sendstr(req, "{\"success\":true,\"message\":\"Firmware streamed to transmitter\",\"status\":\"forwarded\"}");
     } else {
         body.replace("\"", "'");
-        String err_json = "{\"success\":false,\"message\":\"Transmitter OTA HTTP error: " + String(status_code) + "\",\"detail\":\"" + body + "\"}";
+        StaticJsonDocument<768> out_doc;
+        char message[80];
+        snprintf(message, sizeof(message), "Transmitter OTA HTTP error: %d", status_code);
+        out_doc["success"] = false;
+        out_doc["message"] = message;
+        out_doc["detail"] = body;
+        String err_json;
+        err_json.reserve(256 + body.length());
+        serializeJson(out_doc, err_json);
         httpd_resp_set_type(req, "application/json");
         httpd_resp_send(req, err_json.c_str(), err_json.length());
     }

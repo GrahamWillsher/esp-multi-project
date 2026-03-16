@@ -4,11 +4,26 @@
 #include "../../battery/Shunt.h"
 #include "../../charger/CanCharger.h"
 #include "../../communication/can/comm_can.h"
-#include "../../devboard/wifi/wifi.h"
 #include "../../inverter/INVERTERS.h"
+#include "../../../network/ethernet_manager.h"
 #include "../contactorcontrol/comm_contactorcontrol.h"
 #include "../equipmentstopbutton/comm_equipmentstopbutton.h"
 #include "../precharge_control/precharge_control.h"
+#include <algorithm>
+
+namespace {
+
+bool is_supported_battery_type(BatteryType type) {
+  const std::vector<BatteryType> supported_types = supported_battery_types();
+  return std::find(supported_types.begin(), supported_types.end(), type) != supported_types.end();
+}
+
+bool is_supported_inverter_type(InverterProtocolType type) {
+  const std::vector<InverterProtocolType> supported_types = supported_inverter_protocols();
+  return std::find(supported_types.begin(), supported_types.end(), type) != supported_types.end();
+}
+
+}  // namespace
 
 // Parameters
 Preferences settings;  // Store user settings
@@ -130,6 +145,33 @@ void init_stored_settings() {
 
   equipment_stop_behavior = (STOP_BUTTON_BEHAVIOR)settings.getUInt("EQSTOP", (int)STOP_BUTTON_BEHAVIOR::NOT_CONNECTED);
   user_selected_second_battery = settings.getBool("DBLBTR", false);
+
+  bool selection_values_corrected = false;
+  if (!is_supported_battery_type(user_selected_battery_type)) {
+    DEBUG_PRINTF("Invalid stored battery type %d, falling back to None\n", (int)user_selected_battery_type);
+    user_selected_battery_type = BatteryType::None;
+    user_selected_second_battery = false;
+    selection_values_corrected = true;
+  }
+
+  if (!is_supported_inverter_type(user_selected_inverter_protocol)) {
+    DEBUG_PRINTF("Invalid stored inverter type %d, falling back to None\n", (int)user_selected_inverter_protocol);
+    user_selected_inverter_protocol = InverterProtocolType::None;
+    selection_values_corrected = true;
+  }
+
+  if (user_selected_second_battery && user_selected_battery_type == BatteryType::None) {
+    DEBUG_PRINTF("Stored second battery flag ignored because primary battery is None\n");
+    user_selected_second_battery = false;
+    selection_values_corrected = true;
+  }
+
+  if (selection_values_corrected) {
+    settings.putUInt("BATTTYPE", static_cast<uint32_t>(user_selected_battery_type));
+    settings.putUInt("INVTYPE", static_cast<uint32_t>(user_selected_inverter_protocol));
+    settings.putBool("DBLBTR", user_selected_second_battery);
+  }
+
   contactor_control_enabled = settings.getBool("CNTCTRL", false);
   contactor_control_inverted_logic = settings.getBool("NCCONTACTOR", false);
   precharge_time_ms = settings.getUInt("PRECHGMS", 100);
@@ -158,19 +200,54 @@ void init_stored_settings() {
   datalayer.battery.status.override_charge_power_W = settings.getUInt("CHGPOWER", 1000);
   datalayer.battery.status.override_discharge_power_W = settings.getUInt("DCHGPOWER", 1000);
 
-  static_IP_enabled = settings.getBool("STATICIP", false);
-  static_local_IP1 = settings.getUInt("LOCALIP1", 192);
-  static_local_IP2 = settings.getUInt("LOCALIP2", 168);
-  static_local_IP3 = settings.getUInt("LOCALIP3", 10);
-  static_local_IP4 = settings.getUInt("LOCALIP4", 150);
-  static_gateway1 = settings.getUInt("GATEWAY1", 192);
-  static_gateway2 = settings.getUInt("GATEWAY2", 168);
-  static_gateway3 = settings.getUInt("GATEWAY3", 10);
-  static_gateway4 = settings.getUInt("GATEWAY4", 1);
-  static_subnet1 = settings.getUInt("SUBNET1", 255);
-  static_subnet2 = settings.getUInt("SUBNET2", 255);
-  static_subnet3 = settings.getUInt("SUBNET3", 255);
-  static_subnet4 = settings.getUInt("SUBNET4", 0);
+  // Legacy migration path: these keys were historically stored in batterySettings and
+  // consumed via devboard/wifi globals. The transmitter now uses EthernetManager's
+  // dedicated "network" namespace for static IP settings.
+  const bool legacy_static_ip_enabled = settings.getBool("STATICIP", false);
+  const uint8_t legacy_ip[4] = {
+      static_cast<uint8_t>(settings.getUInt("LOCALIP1", 192)),
+      static_cast<uint8_t>(settings.getUInt("LOCALIP2", 168)),
+      static_cast<uint8_t>(settings.getUInt("LOCALIP3", 10)),
+      static_cast<uint8_t>(settings.getUInt("LOCALIP4", 150)),
+  };
+  const uint8_t legacy_gateway[4] = {
+      static_cast<uint8_t>(settings.getUInt("GATEWAY1", 192)),
+      static_cast<uint8_t>(settings.getUInt("GATEWAY2", 168)),
+      static_cast<uint8_t>(settings.getUInt("GATEWAY3", 10)),
+      static_cast<uint8_t>(settings.getUInt("GATEWAY4", 1)),
+  };
+  const uint8_t legacy_subnet[4] = {
+      static_cast<uint8_t>(settings.getUInt("SUBNET1", 255)),
+      static_cast<uint8_t>(settings.getUInt("SUBNET2", 255)),
+      static_cast<uint8_t>(settings.getUInt("SUBNET3", 255)),
+      static_cast<uint8_t>(settings.getUInt("SUBNET4", 0)),
+  };
+
+  // Use gateway as DNS to preserve previous behavior.
+  const uint8_t legacy_dns_primary[4] = {
+      legacy_gateway[0], legacy_gateway[1], legacy_gateway[2], legacy_gateway[3],
+  };
+  const uint8_t legacy_dns_secondary[4] = {
+      legacy_gateway[0], legacy_gateway[1], legacy_gateway[2], legacy_gateway[3],
+  };
+
+  // One-time migration guard: only populate EthernetManager network namespace if
+  // no network config exists yet.
+  Preferences networkPrefs;
+  bool has_network_config = false;
+  if (networkPrefs.begin("network", true)) {
+    has_network_config = networkPrefs.isKey("use_static") || networkPrefs.isKey("version");
+    networkPrefs.end();
+  }
+
+  if (!has_network_config) {
+    if (EthernetManager::instance().saveNetworkConfig(legacy_static_ip_enabled, legacy_ip, legacy_gateway,
+                                                      legacy_subnet, legacy_dns_primary, legacy_dns_secondary)) {
+      DEBUG_PRINTF("Migrated legacy static IP settings from batterySettings to network namespace\n");
+    } else {
+      DEBUG_PRINTF("Failed to migrate legacy static IP settings to network namespace\n");
+    }
+  }
 
   // MQTT settings are handled by external MQTT manager, not in Battery Emulator core
   // mqtt_server = settings.getString("MQTTSERVER").c_str();

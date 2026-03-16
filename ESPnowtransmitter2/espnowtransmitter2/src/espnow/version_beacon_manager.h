@@ -6,7 +6,7 @@
 /**
  * @brief Manages periodic version beacons for cache synchronization
  * 
- * Sends lightweight version beacons (~20 bytes) every 15 seconds containing:
+ * Sends lightweight version beacons (~20 bytes) every 30 seconds containing:
  * - Configuration version numbers (MQTT, Network, Battery, Power Profile)
  * - Runtime status (MQTT connected, Ethernet link status)
  * 
@@ -50,7 +50,7 @@ public:
     
     /**
      * @brief Periodic update - call from main loop
-     * Sends periodic heartbeat beacon every 15 seconds
+        * Sends periodic heartbeat beacon every 30 seconds
      */
     void update();
     
@@ -89,6 +89,6 @@ private:
     
     // Timing
     uint32_t last_beacon_ms_{0};
-    static constexpr uint32_t PERIODIC_INTERVAL_MS = 15000;  // 15 seconds
+    static constexpr uint32_t PERIODIC_INTERVAL_MS = 30000;  // 30 seconds
     static constexpr uint32_t MIN_BEACON_INTERVAL_MS = 1000; // Rate limit (1s minimum)
 };

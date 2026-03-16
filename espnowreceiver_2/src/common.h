@@ -81,8 +81,13 @@ namespace ESPNow {
     extern uint8_t transmitter_mac[6];      // Transmitter MAC address for sending commands
     
     // Message queue
-    constexpr int QUEUE_SIZE = 10;
+    constexpr int QUEUE_SIZE = 24;
     extern QueueHandle_t queue;
+
+    // Queue telemetry
+    extern volatile uint32_t rx_callback_count;
+    extern volatile uint32_t rx_queue_drop_count;
+    extern volatile uint32_t rx_queue_high_watermark;
 }
 
 // FreeRTOS Resources
@@ -90,6 +95,7 @@ namespace RTOS {
     extern TaskHandle_t task_test_data;
     extern TaskHandle_t task_indicator;
     extern TaskHandle_t task_espnow_worker;
+    extern TaskHandle_t task_display_renderer;
     extern TaskHandle_t task_announcement;
     extern SemaphoreHandle_t tft_mutex;
 }

@@ -19,7 +19,22 @@
 #include "battery_emulator/battery/Shunt.h"
 #include "battery_emulator/datalayer/datalayer.h"
 #include "../config/logging_config.h"
+#include <algorithm>
 #include <mqtt_logger.h>
+
+namespace {
+
+bool is_supported_battery_type(BatteryType type) {
+  const std::vector<BatteryType> supported_types = supported_battery_types();
+  return std::find(supported_types.begin(), supported_types.end(), type) != supported_types.end();
+}
+
+bool is_supported_inverter_type(InverterProtocolType type) {
+  const std::vector<InverterProtocolType> supported_types = supported_inverter_protocols();
+  return std::find(supported_types.begin(), supported_types.end(), type) != supported_types.end();
+}
+
+}  // namespace
 
 // External from Battery Emulator - global component pointers
 extern Battery* battery;
@@ -55,6 +70,11 @@ bool BatteryManager::init_primary_battery(BatteryType battery_type) {
     LOG_WARN("BATTERY_MGR", "Battery already initialized!");
     return false;
   }
+
+  if (!is_supported_battery_type(battery_type)) {
+    LOG_ERROR("BATTERY_MGR", "Unsupported primary battery type: %d", static_cast<int>(battery_type));
+    return false;
+  }
   
   LOG_INFO("BATTERY_MGR", "Initializing PRIMARY battery (type %d)...", static_cast<int>(battery_type));
   user_selected_battery_type = battery_type;
@@ -74,6 +94,11 @@ bool BatteryManager::init_primary_battery(BatteryType battery_type) {
 bool BatteryManager::init_secondary_battery(BatteryType battery_type) {
   if (battery2) {
     LOG_WARN("BATTERY_MGR", "Secondary battery already initialized!");
+    return false;
+  }
+
+  if (!is_supported_battery_type(battery_type)) {
+    LOG_ERROR("BATTERY_MGR", "Unsupported secondary battery type: %d", static_cast<int>(battery_type));
     return false;
   }
   
@@ -102,6 +127,11 @@ bool BatteryManager::init_inverter(InverterProtocolType inverter_type) {
     LOG_INFO("BATTERY_MGR", "Inverter disabled");
     inverter_type_ = InverterProtocolType::None;
     return true;
+  }
+
+  if (!is_supported_inverter_type(inverter_type)) {
+    LOG_ERROR("BATTERY_MGR", "Unsupported inverter type: %d", static_cast<int>(inverter_type));
+    return false;
   }
   
   LOG_INFO("BATTERY_MGR", "Initializing inverter (type %d)...", static_cast<int>(inverter_type));

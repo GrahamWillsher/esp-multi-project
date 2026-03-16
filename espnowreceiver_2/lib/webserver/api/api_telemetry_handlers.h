@@ -18,5 +18,6 @@ esp_err_t api_static_specs_handler(httpd_req_t *req);
 esp_err_t api_battery_specs_handler(httpd_req_t *req);
 esp_err_t api_inverter_specs_handler(httpd_req_t *req);
 esp_err_t api_get_event_logs_handler(httpd_req_t *req);
+esp_err_t api_system_metrics_handler(httpd_req_t *req);
 
 #endif // API_TELEMETRY_HANDLERS_H

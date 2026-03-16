@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <PubSubClient.h>
 #include <WiFi.h>
+#include <freertos/timers.h>
 
 /**
  * @brief MQTT client for subscribing to battery emulator static specs
@@ -128,7 +129,7 @@ private:
     // Cell data subscription management (for SSE clients)
     static int cell_data_subscribers_;           // Count of active SSE clients
     static CellDataSubscriptionState cell_data_state_;
-    static TaskHandle_t cell_data_pause_timer_;  // Timer handle for grace period
+    static TimerHandle_t cell_data_pause_timer_;  // Timer handle for grace period
     static const uint32_t CELL_DATA_GRACE_PERIOD_MS = 5000;  // 5 second grace period
     
     // Event log subscription management

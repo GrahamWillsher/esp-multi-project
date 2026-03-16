@@ -15,6 +15,8 @@ void on_espnow_sent(const uint8_t *mac, esp_now_send_status_t status) {
 void on_data_recv(const uint8_t *mac, const uint8_t *data, int len) {
     // MINIMAL ISR WORK - just validate and queue the raw message
     if (!data || len < 1 || len > 250) return;
+
+    ESPNow::rx_callback_count++;
     
     // Prepare queue message with raw data
     espnow_queue_msg_t queue_msg;
@@ -27,11 +29,17 @@ void on_data_recv(const uint8_t *mac, const uint8_t *data, int len) {
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
     if (xQueueSendFromISR(ESPNow::queue, &queue_msg, &xHigherPriorityTaskWoken) != pdTRUE) {
         // Queue full - message dropped
+        ESPNow::rx_queue_drop_count++;
         static uint32_t last_drop_log_ms = 0;
         uint32_t now = millis();
         if (now - last_drop_log_ms > 2000) {
             last_drop_log_ms = now;
             Serial.println("[ESP-NOW] RX queue full - message dropped");
+        }
+    } else {
+        UBaseType_t waiting = uxQueueMessagesWaitingFromISR(ESPNow::queue);
+        if (waiting > ESPNow::rx_queue_high_watermark) {
+            ESPNow::rx_queue_high_watermark = waiting;
         }
     }
     

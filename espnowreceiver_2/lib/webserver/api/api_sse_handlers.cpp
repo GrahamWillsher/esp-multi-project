@@ -18,76 +18,180 @@ extern int32_t received_power;
 extern uint32_t received_voltage_mv;
 }
 
+namespace {
+struct SseMetricsInternal {
+    volatile uint32_t cell_connects = 0;
+    volatile uint32_t cell_disconnects = 0;
+    volatile uint32_t cell_send_failures = 0;
+    volatile uint32_t cell_ping_failures = 0;
+    volatile uint32_t cell_active_clients = 0;
+    volatile uint32_t cell_last_session_ms = 0;
+    volatile uint32_t cell_max_session_ms = 0;
+
+    volatile uint32_t monitor_connects = 0;
+    volatile uint32_t monitor_disconnects = 0;
+    volatile uint32_t monitor_send_failures = 0;
+    volatile uint32_t monitor_ping_failures = 0;
+    volatile uint32_t monitor_active_clients = 0;
+    volatile uint32_t monitor_last_session_ms = 0;
+    volatile uint32_t monitor_max_session_ms = 0;
+};
+
+SseMetricsInternal g_sse_metrics;
+portMUX_TYPE g_sse_metrics_mux = portMUX_INITIALIZER_UNLOCKED;
+
+void recordCellSessionEnd(uint32_t duration_ms) {
+    portENTER_CRITICAL(&g_sse_metrics_mux);
+    g_sse_metrics.cell_disconnects++;
+    if (g_sse_metrics.cell_active_clients > 0) {
+        g_sse_metrics.cell_active_clients--;
+    }
+    g_sse_metrics.cell_last_session_ms = duration_ms;
+    if (duration_ms > g_sse_metrics.cell_max_session_ms) {
+        g_sse_metrics.cell_max_session_ms = duration_ms;
+    }
+    portEXIT_CRITICAL(&g_sse_metrics_mux);
+}
+
+void recordMonitorSessionEnd(uint32_t duration_ms) {
+    portENTER_CRITICAL(&g_sse_metrics_mux);
+    g_sse_metrics.monitor_disconnects++;
+    if (g_sse_metrics.monitor_active_clients > 0) {
+        g_sse_metrics.monitor_active_clients--;
+    }
+    g_sse_metrics.monitor_last_session_ms = duration_ms;
+    if (duration_ms > g_sse_metrics.monitor_max_session_ms) {
+        g_sse_metrics.monitor_max_session_ms = duration_ms;
+    }
+    portEXIT_CRITICAL(&g_sse_metrics_mux);
+}
+}
+
+void get_sse_runtime_metrics(SseRuntimeMetrics& out_metrics) {
+    portENTER_CRITICAL(&g_sse_metrics_mux);
+    out_metrics.cell_connects = g_sse_metrics.cell_connects;
+    out_metrics.cell_disconnects = g_sse_metrics.cell_disconnects;
+    out_metrics.cell_send_failures = g_sse_metrics.cell_send_failures;
+    out_metrics.cell_ping_failures = g_sse_metrics.cell_ping_failures;
+    out_metrics.cell_active_clients = g_sse_metrics.cell_active_clients;
+    out_metrics.cell_last_session_ms = g_sse_metrics.cell_last_session_ms;
+    out_metrics.cell_max_session_ms = g_sse_metrics.cell_max_session_ms;
+
+    out_metrics.monitor_connects = g_sse_metrics.monitor_connects;
+    out_metrics.monitor_disconnects = g_sse_metrics.monitor_disconnects;
+    out_metrics.monitor_send_failures = g_sse_metrics.monitor_send_failures;
+    out_metrics.monitor_ping_failures = g_sse_metrics.monitor_ping_failures;
+    out_metrics.monitor_active_clients = g_sse_metrics.monitor_active_clients;
+    out_metrics.monitor_last_session_ms = g_sse_metrics.monitor_last_session_ms;
+    out_metrics.monitor_max_session_ms = g_sse_metrics.monitor_max_session_ms;
+    portEXIT_CRITICAL(&g_sse_metrics_mux);
+}
+
 esp_err_t api_cell_data_sse_handler(httpd_req_t *req) {
+    const uint32_t session_start_ms = millis();
+
+    portENTER_CRITICAL(&g_sse_metrics_mux);
+    g_sse_metrics.cell_connects++;
+    g_sse_metrics.cell_active_clients++;
+    portEXIT_CRITICAL(&g_sse_metrics_mux);
+
     MqttClient::incrementCellDataSubscribers();
     LOG_DEBUG("[SSE]", "SSE client connected (subscribers: %d)", MqttClient::getCellDataSubscriberCount());
 
     if (HttpSseUtils::begin_sse(req) != ESP_OK || HttpSseUtils::send_retry_hint(req) != ESP_OK) {
+        MqttClient::decrementCellDataSubscribers();
+        recordCellSessionEnd(millis() - session_start_ms);
         return ESP_FAIL;
     }
 
     auto sendCellData = [req]() -> bool {
-        if (TransmitterManager::hasCellData()) {
-            const uint16_t* voltages = TransmitterManager::getCellVoltages();
-            const bool* balancing = TransmitterManager::getCellBalancingStatus();
-            uint16_t min_voltage = TransmitterManager::getCellMinVoltage();
-            uint16_t max_voltage = TransmitterManager::getCellMaxVoltage();
-            bool balancing_active = TransmitterManager::isBalancingActive();
-            uint16_t cell_count = TransmitterManager::getCellCount();
+        TransmitterManager::CellDataSnapshot snapshot;
+        if (TransmitterManager::getCellDataSnapshot(snapshot) && snapshot.known) {
 
             String json = "{\"success\":true,\"cells\":[";
-            for (uint16_t i = 0; i < cell_count; i++) {
+            json.reserve(180 + (snapshot.cell_count * 16));
+            for (uint16_t i = 0; i < snapshot.cell_count; i++) {
                 if (i > 0) json += ",";
-                json += String(voltages[i]);
+                json += String(snapshot.voltages_mV[i]);
             }
             json += "],\"balancing\":[";
-            for (uint16_t i = 0; i < cell_count; i++) {
+            for (uint16_t i = 0; i < snapshot.cell_count; i++) {
                 if (i > 0) json += ",";
-                json += balancing[i] ? "true" : "false";
+                json += snapshot.balancing_status[i] ? "true" : "false";
             }
             json += "],\"cell_min_voltage_mV\":";
-            json += String(min_voltage);
+            json += String(snapshot.min_voltage_mV);
             json += ",\"cell_max_voltage_mV\":";
-            json += String(max_voltage);
+            json += String(snapshot.max_voltage_mV);
             json += ",\"balancing_active\":";
-            json += balancing_active ? "true" : "false";
+            json += snapshot.balancing_active ? "true" : "false";
             json += ",\"mode\":\"";
-            json += TransmitterManager::getCellDataSource();
+            json += snapshot.data_source;
             json += "\"}";
 
             String event = "data: " + json + "\n\n";
-            return httpd_resp_send_chunk(req, event.c_str(), event.length()) == ESP_OK;
+            event.reserve(json.length() + 12);
+            const bool ok = (httpd_resp_send_chunk(req, event.c_str(), event.length()) == ESP_OK);
+            if (!ok) {
+                portENTER_CRITICAL(&g_sse_metrics_mux);
+                g_sse_metrics.cell_send_failures++;
+                portEXIT_CRITICAL(&g_sse_metrics_mux);
+            }
+            return ok;
         }
 
         String json = "{\"success\":false,\"mode\":\"unavailable\",\"message\":\"Waiting for transmitter data\"}";
         String event = "data: " + json + "\n\n";
-        return httpd_resp_send_chunk(req, event.c_str(), event.length()) == ESP_OK;
+        const bool ok = (httpd_resp_send_chunk(req, event.c_str(), event.length()) == ESP_OK);
+        if (!ok) {
+            portENTER_CRITICAL(&g_sse_metrics_mux);
+            g_sse_metrics.cell_send_failures++;
+            portEXIT_CRITICAL(&g_sse_metrics_mux);
+        }
+        return ok;
     };
 
     if (!sendCellData()) {
+        recordCellSessionEnd(millis() - session_start_ms);
+        MqttClient::decrementCellDataSubscribers();
         return ESP_FAIL;
     }
 
     TickType_t start_time = xTaskGetTickCount();
     const TickType_t max_duration = pdMS_TO_TICKS(300000);
-    const TickType_t poll_interval = pdMS_TO_TICKS(500);
 
     while ((xTaskGetTickCount() - start_time) < max_duration) {
-        vTaskDelay(poll_interval);
-        if (!sendCellData()) {
+        const bool changed = SSENotifier::waitForCellDataUpdate(15000);
+        if (changed) {
+            if (!sendCellData()) {
+                break;
+            }
+        } else if (!HttpSseUtils::send_ping(req)) {
+            portENTER_CRITICAL(&g_sse_metrics_mux);
+            g_sse_metrics.cell_ping_failures++;
+            portEXIT_CRITICAL(&g_sse_metrics_mux);
             break;
         }
     }
 
     HttpSseUtils::end_sse(req);
     MqttClient::decrementCellDataSubscribers();
+    recordCellSessionEnd(millis() - session_start_ms);
     LOG_DEBUG("[SSE]", "SSE client disconnected (subscribers: %d)", MqttClient::getCellDataSubscriberCount());
 
     return ESP_OK;
 }
 
 esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
+    const uint32_t session_start_ms = millis();
+
+    portENTER_CRITICAL(&g_sse_metrics_mux);
+    g_sse_metrics.monitor_connects++;
+    g_sse_metrics.monitor_active_clients++;
+    portEXIT_CRITICAL(&g_sse_metrics_mux);
+
     if (HttpSseUtils::begin_sse(req) != ESP_OK || HttpSseUtils::send_retry_hint(req) != ESP_OK) {
+        recordMonitorSessionEnd(millis() - session_start_ms);
         return ESP_FAIL;
     }
 
@@ -115,6 +219,10 @@ esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
              current_soc, current_power, current_voltage, current_voltage / 1000.0f);
 
     if (httpd_resp_send_chunk(req, event_data, strlen(event_data)) != ESP_OK) {
+        portENTER_CRITICAL(&g_sse_metrics_mux);
+        g_sse_metrics.monitor_send_failures++;
+        portEXIT_CRITICAL(&g_sse_metrics_mux);
+        recordMonitorSessionEnd(millis() - session_start_ms);
         return ESP_FAIL;
     }
 
@@ -145,6 +253,9 @@ esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
                          current_soc, current_power, current_voltage, current_voltage / 1000.0f);
 
                 if (httpd_resp_send_chunk(req, event_data, strlen(event_data)) != ESP_OK) {
+                    portENTER_CRITICAL(&g_sse_metrics_mux);
+                    g_sse_metrics.monitor_send_failures++;
+                    portEXIT_CRITICAL(&g_sse_metrics_mux);
                     break;
                 }
 
@@ -154,6 +265,9 @@ esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
             }
         } else {
             if (HttpSseUtils::send_ping(req) != ESP_OK) {
+                portENTER_CRITICAL(&g_sse_metrics_mux);
+                g_sse_metrics.monitor_ping_failures++;
+                portEXIT_CRITICAL(&g_sse_metrics_mux);
                 break;
             }
         }
@@ -166,5 +280,6 @@ esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
     }
 
     HttpSseUtils::end_sse(req);
+    recordMonitorSessionEnd(millis() - session_start_ms);
     return ESP_OK;
 }

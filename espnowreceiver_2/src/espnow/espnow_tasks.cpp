@@ -8,7 +8,7 @@
 #include "battery_handlers.h"  // Phase 1: Battery Emulator data handlers
 #include "battery_settings_cache.h"  // Phase 2: Settings version tracking
 #include "../common.h"
-#include "../display/display_core.h"
+#include "../display/display_update_queue.h"
 #include "../display/display_led.h"
 #include "../../lib/webserver/utils/transmitter_manager.h"
 #include <cstring>
@@ -80,20 +80,8 @@ static uint32_t estimate_voltage_mv(uint8_t soc) {
 }
 
 static void update_display_if_changed(uint8_t soc, int32_t power, bool soc_changed, bool power_changed) {
-    if (!soc_changed && !power_changed) {
-        return;
-    }
-
-    if (xSemaphoreTake(RTOS::tft_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        if (soc_changed) {
-            display_soc((float)soc);
-        }
-        if (power_changed) {
-            display_power(power);
-        }
-        xSemaphoreGive(RTOS::tft_mutex);
-    } else {
-        LOG_WARN(kLogTag, "TFT mutex timeout - display update skipped");
+    if (!DisplayUpdateQueue::enqueue(soc, power, soc_changed, power_changed)) {
+        LOG_WARN(kLogTag, "Display snapshot queue full - latest update may have been dropped");
     }
 }
 
@@ -625,6 +613,9 @@ void task_espnow_worker(void *parameter) {
     
     // Connection watchdog state
     static ConnectionState transmitter_state = { false, 0 };
+    uint32_t last_stats_log_ms = millis();
+    uint32_t last_callbacks = 0;
+    uint32_t last_drops = 0;
     
     // NOTE: Connection timeout is now handled by RxHeartbeatManager::tick() (90s timeout)
     // This ensures consistency and avoids duplicate timeout checks
@@ -710,6 +701,28 @@ void task_espnow_worker(void *parameter) {
         }
 
         RxStateMachine::instance().check_stale(90000, 5000);  // 90s timeout + 5s grace window for config updates
+
+        const uint32_t now_ms = millis();
+        if ((now_ms - last_stats_log_ms) >= 15000) {
+            uint32_t callbacks = ESPNow::rx_callback_count;
+            uint32_t drops = ESPNow::rx_queue_drop_count;
+            UBaseType_t queued_now = uxQueueMessagesWaiting(ESPNow::queue);
+            uint32_t high_water = ESPNow::rx_queue_high_watermark;
+
+            LOG_INFO(kLogTag,
+                     "Queue stats: cb(+%lu)=%lu drop(+%lu)=%lu q=%u/%d high=%lu",
+                     static_cast<unsigned long>(callbacks - last_callbacks),
+                     static_cast<unsigned long>(callbacks),
+                     static_cast<unsigned long>(drops - last_drops),
+                     static_cast<unsigned long>(drops),
+                     static_cast<unsigned>(queued_now),
+                     ESPNow::QUEUE_SIZE,
+                     static_cast<unsigned long>(high_water));
+
+            last_callbacks = callbacks;
+            last_drops = drops;
+            last_stats_log_ms = now_ms;
+        }
         
         // NOTE: Connection timeout check REMOVED - now handled by RxHeartbeatManager::tick()
         // The heartbeat manager provides proper 90-second timeout with grace period
@@ -809,12 +822,12 @@ void handle_data_message(const espnow_queue_msg_t* msg) {
             store_transmitter_mac(msg->mac);
             notify_sse_data_updated();
             
-            LOG_INFO(kLogTag, "ESP-NOW RX: SOC=%d%%, Power=%dW (first=%s)", 
-                     payload->soc, payload->power, first_data ? "YES" : "no");
+            LOG_DEBUG(kLogTag, "ESP-NOW RX: SOC=%d%%, Power=%dW (first=%s)", 
+                      payload->soc, payload->power, first_data ? "YES" : "no");
             
             update_display_if_changed(payload->soc, payload->power, display_soc_changed, display_power_changed);
             if (display_soc_changed || display_power_changed) {
-                LOG_INFO(kLogTag, "Display updated: SOC=%d%% Power=%dW", payload->soc, payload->power);
+                LOG_TRACE(kLogTag, "Display updated: SOC=%d%% Power=%dW", payload->soc, payload->power);
             }
         } else {
             // CRC mismatch

@@ -273,18 +273,37 @@ static esp_err_t inverter_settings_handler(httpd_req_t *req) {
                         initialInverterInterface = interfaceSelect.value;
                     }
 
-                    saveButton.textContent = '✓ Saved!';
-                    saveButton.style.backgroundColor = '#28a745';
-
-                    alert(
-                        '✓ Inverter settings saved successfully!\n\n' +
-                        'The transmitter will reboot to apply the new inverter settings.\n\n' +
-                        'Please wait approximately 30 seconds for the transmitter to restart.'
-                    );
-
-                    setTimeout(() => {
-                        updateButtonState();
-                    }, 3000);
+                    TransmitterReboot.run({
+                        countdownSeconds: TransmitterReboot.COUNTDOWN_SECONDS,
+                        updateCountdown: (seconds) => {
+                            saveButton.disabled = true;
+                            saveButton.style.cursor = 'not-allowed';
+                            saveButton.style.backgroundColor = '#ff9800';
+                            saveButton.textContent = `Reboot in ${seconds}s...`;
+                        },
+                        onCommandStart: () => {
+                            saveButton.textContent = 'Sending reboot command...';
+                        },
+                        onSuccess: () => {
+                            saveButton.textContent = '✓ Reboot command sent';
+                            saveButton.style.backgroundColor = '#28a745';
+                        },
+                        onFailure: () => {
+                            saveButton.textContent = '✗ Reboot failed';
+                            saveButton.style.backgroundColor = '#dc3545';
+                            setTimeout(() => {
+                                updateButtonState();
+                            }, 3000);
+                        },
+                        onError: (error) => {
+                            console.error('Reboot request failed:', error);
+                            saveButton.textContent = '✗ Reboot request error';
+                            saveButton.style.backgroundColor = '#dc3545';
+                            setTimeout(() => {
+                                updateButtonState();
+                            }, 3000);
+                        }
+                    });
                     return;
                 }
 

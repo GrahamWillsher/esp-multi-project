@@ -4,9 +4,30 @@
  */
 
 #include "system_settings.h"
+#include "battery_emulator/battery/BATTERIES.h"
+#include "battery_emulator/battery/Battery.h"
+#include "battery_emulator/inverter/INVERTERS.h"
+#include "battery_emulator/inverter/InverterProtocol.h"
 #include "config/logging_config.h"
+#include <algorithm>
 #include <mqtt_logger.h>
 #include <esp_err.h>
+
+namespace {
+
+bool contains_battery_type(uint8_t type) {
+  const BatteryType battery_type = static_cast<BatteryType>(type);
+  const std::vector<BatteryType> supported_types = supported_battery_types();
+  return std::find(supported_types.begin(), supported_types.end(), battery_type) != supported_types.end();
+}
+
+bool contains_inverter_type(uint8_t type) {
+  const InverterProtocolType inverter_type = static_cast<InverterProtocolType>(type);
+  const std::vector<InverterProtocolType> supported_types = supported_inverter_protocols();
+  return std::find(supported_types.begin(), supported_types.end(), inverter_type) != supported_types.end();
+}
+
+}  // namespace
 
 // ========== SINGLETON ==========
 
@@ -87,6 +108,41 @@ bool SystemSettings::load_from_nvs() {
   
   // Load update rate
   nvs_read_u16(NVS_UPDATE_RATE_KEY, espnow_update_rate_ms_, DEFAULT_ESPNOW_UPDATE_RATE_MS);
+
+  bool corrected_invalid_selection = false;
+  if (!contains_battery_type(bms_type_)) {
+    LOG_WARN("SETTINGS", "Invalid stored BMS type %u, falling back to None", bms_type_);
+    bms_type_ = static_cast<uint8_t>(BatteryType::None);
+    corrected_invalid_selection = true;
+  }
+
+  if (!contains_battery_type(battery_profile_type_)) {
+    LOG_WARN("SETTINGS", "Invalid stored battery profile type %u, falling back to None", battery_profile_type_);
+    battery_profile_type_ = static_cast<uint8_t>(BatteryType::None);
+    corrected_invalid_selection = true;
+  }
+
+  if (!contains_battery_type(secondary_bms_type_)) {
+    LOG_WARN("SETTINGS", "Invalid stored secondary BMS type %u, falling back to None", secondary_bms_type_);
+    secondary_bms_type_ = static_cast<uint8_t>(BatteryType::None);
+    corrected_invalid_selection = true;
+  }
+
+  if (!contains_inverter_type(inverter_type_)) {
+    LOG_WARN("SETTINGS", "Invalid stored inverter type %u, falling back to None", inverter_type_);
+    inverter_type_ = static_cast<uint8_t>(InverterProtocolType::None);
+    corrected_invalid_selection = true;
+  }
+
+  if (multi_battery_enabled_ && bms_type_ == static_cast<uint8_t>(BatteryType::None)) {
+    LOG_WARN("SETTINGS", "Multi-battery mode disabled because primary BMS type is None");
+    multi_battery_enabled_ = false;
+    corrected_invalid_selection = true;
+  }
+
+  if (corrected_invalid_selection) {
+    save_to_nvs();
+  }
   
   LOG_INFO("SETTINGS", "✓ Settings loaded from NVS");
   print_settings();
@@ -168,7 +224,7 @@ bool SystemSettings::reset_to_defaults() {
 // ========== SETTERS WITH NVS PERSISTENCE ==========
 
 bool SystemSettings::set_bms_type(uint8_t type) {
-  if (type > 45) {
+  if (!contains_battery_type(type)) {
     LOG_ERROR("SETTINGS", "Invalid BMS type: %d", type);
     return false;
   }
@@ -178,7 +234,7 @@ bool SystemSettings::set_bms_type(uint8_t type) {
 }
 
 bool SystemSettings::set_battery_profile_type(uint8_t type) {
-  if (type > 45) {
+  if (!contains_battery_type(type)) {
     LOG_ERROR("SETTINGS", "Invalid battery profile type: %d", type);
     return false;
   }
@@ -188,7 +244,7 @@ bool SystemSettings::set_battery_profile_type(uint8_t type) {
 }
 
 bool SystemSettings::set_secondary_bms_type(uint8_t type) {
-  if (type > 45) {
+  if (!contains_battery_type(type)) {
     LOG_ERROR("SETTINGS", "Invalid secondary BMS type: %d", type);
     return false;
   }
@@ -204,7 +260,7 @@ bool SystemSettings::set_multi_battery_enabled(bool enabled) {
 }
 
 bool SystemSettings::set_inverter_type(uint8_t type) {
-  if (type > 21) {
+  if (!contains_inverter_type(type)) {
     LOG_ERROR("SETTINGS", "Invalid inverter type: %d", type);
     return false;
   }

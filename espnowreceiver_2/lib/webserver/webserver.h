@@ -8,6 +8,23 @@
 // ESP-IDF HTTP Server handle
 extern httpd_handle_t server;
 
+struct WebserverRuntimeMetrics {
+    bool running;
+    uint16_t server_port;
+    uint16_t max_open_sockets;
+    uint16_t max_uri_handlers;
+    uint16_t registered_handlers;
+    uint16_t expected_handlers;
+    uint16_t task_stack_size;
+    uint8_t task_priority;
+    uint8_t recv_wait_timeout_s;
+    uint8_t send_wait_timeout_s;
+    bool lru_purge_enabled;
+    uint32_t init_attempts;
+    uint32_t init_successes;
+    uint32_t init_failures;
+};
+
 // Mock/Stub class for BatteryEmulatorSettingsStore
 // This replaces the full NVM settings store since we'll get data via ESP-NOW
 class MockSettingsStore {
@@ -37,6 +54,7 @@ void init_webserver();
  * @return void
  */
 void stop_webserver();
+void get_webserver_runtime_metrics(WebserverRuntimeMetrics& out_metrics);
 
 /**
  * @brief Notify SSE clients that battery data has been updated

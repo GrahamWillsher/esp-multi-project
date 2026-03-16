@@ -30,6 +30,25 @@ extern volatile int32_t& g_test_power;
 // ESP-IDF HTTP Server handle
 httpd_handle_t server = NULL;
 
+namespace {
+WebserverRuntimeMetrics g_webserver_metrics = {
+    false,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    false,
+    0,
+    0,
+    0
+};
+}
+
 // OTA firmware storage - using LittleFS file instead of RAM
 size_t ota_firmware_size = 0;
 
@@ -44,6 +63,7 @@ size_t ota_firmware_size = 0;
 
 void init_webserver() {
     LOG_INFO("WEBSERVER", "Initializing ESP-IDF http_server...");
+    g_webserver_metrics.init_attempts++;
     
     // Check if server already running
     if (server != NULL) {
@@ -60,6 +80,7 @@ void init_webserver() {
     }
     
     if (WiFi.status() != WL_CONNECTED) {
+        g_webserver_metrics.init_failures++;
         LOG_ERROR("WEBSERVER", "WiFi still not connected after retries - webserver startup delayed");
         LOG_INFO("WEBSERVER", "Will try to start webserver when WiFi connects");
         return;
@@ -82,6 +103,7 @@ void init_webserver() {
             LOG_INFO("WEBSERVER", "Network interface initialized");
             netif_initialized = true;
         } else {
+            g_webserver_metrics.init_failures++;
             LOG_ERROR("WEBSERVER", "esp_netif_init failed: %s", esp_err_to_name(ret));
             return;
         }
@@ -98,6 +120,16 @@ void init_webserver() {
     config.recv_wait_timeout = 10;  // Receive timeout for battery data uploads
     config.send_wait_timeout = 10;  // Send timeout for large JSON responses
     config.lru_purge_enable = true;
+
+    g_webserver_metrics.server_port = static_cast<uint16_t>(config.server_port);
+    g_webserver_metrics.max_open_sockets = static_cast<uint16_t>(config.max_open_sockets);
+    g_webserver_metrics.max_uri_handlers = static_cast<uint16_t>(config.max_uri_handlers);
+    g_webserver_metrics.task_stack_size = static_cast<uint16_t>(config.stack_size);
+    g_webserver_metrics.task_priority = static_cast<uint8_t>(config.task_priority);
+    g_webserver_metrics.recv_wait_timeout_s = static_cast<uint8_t>(config.recv_wait_timeout);
+    g_webserver_metrics.send_wait_timeout_s = static_cast<uint8_t>(config.send_wait_timeout);
+    g_webserver_metrics.lru_purge_enabled = config.lru_purge_enable;
+    g_webserver_metrics.expected_handlers = static_cast<uint16_t>(EXPECTED_HANDLER_COUNT);
     
     // Verify configuration can handle all handlers
     if (config.max_uri_handlers < EXPECTED_HANDLER_COUNT) {
@@ -110,9 +142,13 @@ void init_webserver() {
     // Start HTTP server
     esp_err_t ret = httpd_start(&server, &config);
     if (ret != ESP_OK) {
+        g_webserver_metrics.init_failures++;
         LOG_ERROR("WEBSERVER", "Failed to start: %s", esp_err_to_name(ret));
         return;
     }
+
+    g_webserver_metrics.running = true;
+    g_webserver_metrics.init_successes++;
     
     LOG_INFO("WEBSERVER", "Server started successfully");
     LOG_INFO("WEBSERVER", "Accessible at: http://%s", WiFi.localIP().toString().c_str());
@@ -162,6 +198,8 @@ void init_webserver() {
     } else {
         LOG_INFO("WEBSERVER", "All %d handlers registered successfully", registered_count);
     }
+
+    g_webserver_metrics.registered_handlers = static_cast<uint16_t>(registered_count);
     
     // Log accessible URLs for debugging
     LOG_INFO("WEBSERVER", "Access webserver at: http://%s", WiFi.localIP().toString().c_str());
@@ -186,8 +224,14 @@ void stop_webserver() {
     if (server != NULL) {
         httpd_stop(server);
         server = NULL;
+        g_webserver_metrics.running = false;
         LOG_INFO("WEBSERVER", "Server stopped");
     }
+}
+
+void get_webserver_runtime_metrics(WebserverRuntimeMetrics& out_metrics) {
+    out_metrics = g_webserver_metrics;
+    out_metrics.running = (server != NULL);
 }
 
 // ═══════════════════════════════════════════════════════════════════════

@@ -427,7 +427,7 @@ void setup() {
     
     // Initialize version beacon manager (after all other systems are up)
     VersionBeaconManager::instance().init();
-    LOG_INFO("VERSION", "Version beacon manager initialized (15s heartbeat)");
+    LOG_INFO("VERSION", "Version beacon manager initialized (30s heartbeat)");
     
     // Initialize heartbeat manager (after connection manager is ready)
     HeartbeatManager::instance().init();
@@ -494,7 +494,7 @@ void loop() {
     // Handle deferred logging from timer callbacks
     EspnowSendUtils::handle_deferred_logging();
     
-    // Version beacon periodic update (every 15s heartbeat) - Phase 4
+    // Version beacon periodic update (every 30s heartbeat) - Phase 4
     VersionBeaconManager::instance().update();
     
     // Heartbeat periodic update (every 10s) - Section 11

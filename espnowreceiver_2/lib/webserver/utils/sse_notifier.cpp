@@ -20,6 +20,12 @@ void SSENotifier::notifyDataUpdated() {
     }
 }
 
+void SSENotifier::notifyCellDataUpdated() {
+    if (event_group != nullptr) {
+        xEventGroupSetBits(event_group, CELL_DATA_UPDATED_BIT);
+    }
+}
+
 bool SSENotifier::waitForUpdate(TickType_t timeout_ms) {
     if (event_group == nullptr) return false;
     
@@ -32,6 +38,20 @@ bool SSENotifier::waitForUpdate(TickType_t timeout_ms) {
     );
     
     return (bits & DATA_UPDATED_BIT) != 0;
+}
+
+bool SSENotifier::waitForCellDataUpdate(TickType_t timeout_ms) {
+    if (event_group == nullptr) return false;
+
+    EventBits_t bits = xEventGroupWaitBits(
+        event_group,
+        CELL_DATA_UPDATED_BIT,
+        pdTRUE,
+        pdFALSE,
+        pdMS_TO_TICKS(timeout_ms)
+    );
+
+    return (bits & CELL_DATA_UPDATED_BIT) != 0;
 }
 
 EventGroupHandle_t SSENotifier::getEventGroup() {

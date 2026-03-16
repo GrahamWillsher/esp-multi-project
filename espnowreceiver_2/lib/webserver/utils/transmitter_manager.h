@@ -4,6 +4,9 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <vector>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <freertos/timers.h>
 
 // Battery settings structure (matches transmitter)
 struct BatterySettings {
@@ -60,6 +63,14 @@ struct ContactorSettings {
 
 class TransmitterManager {
 private:
+    static SemaphoreHandle_t data_mutex_;
+    static TimerHandle_t nvs_save_timer_;
+    static constexpr uint32_t NVS_SAVE_DEBOUNCE_MS = 2000;
+
+    static void nvs_save_timer_callback(TimerHandle_t timer);
+    static void persist_to_nvs_now();
+    static void schedule_nvs_save();
+
     static uint8_t mac[6];
     static bool mac_known;
     
@@ -141,8 +152,9 @@ private:
     static bool static_specs_known_;
     
     // Cell monitor data (from BE/cell_data MQTT topic)
-    static uint16_t* cell_voltages_mV_;      // Dynamically allocated array
-    static bool* cell_balancing_status_;     // Dynamically allocated array
+    static constexpr uint16_t MAX_CELL_COUNT = 128;
+    static uint16_t cell_voltages_mV_[MAX_CELL_COUNT];
+    static bool cell_balancing_status_[MAX_CELL_COUNT];
     static uint16_t cell_count_;
     static uint16_t cell_min_voltage_mV_;
     static uint16_t cell_max_voltage_mV_;
@@ -150,6 +162,7 @@ private:
     static bool cell_data_known_;
     static char cell_data_source_[32];       // Data source tag (dummy/live/live_simulated)
 
+public:
     struct EventLogEntry {
         uint32_t timestamp;
         uint8_t level;
@@ -157,6 +170,18 @@ private:
         char message[96];
     };
 
+    struct CellDataSnapshot {
+        bool known;
+        uint16_t cell_count;
+        uint16_t min_voltage_mV;
+        uint16_t max_voltage_mV;
+        bool balancing_active;
+        std::vector<uint16_t> voltages_mV;
+        std::vector<bool> balancing_status;
+        char data_source[32];
+    };
+
+private:
     static std::vector<EventLogEntry> event_logs_;
     static bool event_logs_known_;
     static uint32_t event_logs_last_update_ms_;
@@ -294,19 +319,20 @@ public:
     
     // Cell monitor data (from BE/cell_data MQTT topic)
     static void storeCellData(const JsonObject& cell_data);
-    static bool hasCellData() { return cell_data_known_; }
-    static uint16_t getCellCount() { return cell_count_; }
-    static const uint16_t* getCellVoltages() { return cell_voltages_mV_; }
-    static const bool* getCellBalancingStatus() { return cell_balancing_status_; }
-    static uint16_t getCellMinVoltage() { return cell_min_voltage_mV_; }
-    static uint16_t getCellMaxVoltage() { return cell_max_voltage_mV_; }
-    static bool isBalancingActive() { return balancing_active_; }
-    static const char* getCellDataSource() { return cell_data_source_; }
+    static bool hasCellData();
+    static uint16_t getCellCount();
+    static const uint16_t* getCellVoltages();
+    static const bool* getCellBalancingStatus();
+    static uint16_t getCellMinVoltage();
+    static uint16_t getCellMaxVoltage();
+    static bool isBalancingActive();
+    static const char* getCellDataSource();
+    static bool getCellDataSnapshot(CellDataSnapshot& snapshot);
 
     // Event logs (from transmitter via MQTT or HTTP proxy)
     static void storeEventLogs(const JsonObject& logs);
     static bool hasEventLogs();
-    static const std::vector<EventLogEntry>& getEventLogs();
+    static void getEventLogsSnapshot(std::vector<EventLogEntry>& out_logs, uint32_t* out_last_update_ms = nullptr);
     static uint32_t getEventLogCount();
     static uint32_t getEventLogsLastUpdateMs();
 };

@@ -38,12 +38,17 @@ static String generate_sorted_type_json(TypeEntry* types, size_t count) {
     memcpy(sorted_copy, types, count * sizeof(TypeEntry));
     std::sort(sorted_copy, sorted_copy + count);
 
-    String json = "{\"types\":[";
+    DynamicJsonDocument doc(64 + (count * 32));
+    JsonArray json_types = doc.createNestedArray("types");
     for (size_t i = 0; i < count; i++) {
-        if (i > 0) json += ",";
-        json += "{\"id\":" + String(sorted_copy[i].id) + ",\"name\":\"" + sorted_copy[i].name + "\"}";
+        JsonObject entry = json_types.createNestedObject();
+        entry["id"] = sorted_copy[i].id;
+        entry["name"] = sorted_copy[i].name;
     }
-    json += "]}";
+
+    String json;
+    json.reserve(32 + (count * 32));
+    serializeJson(doc, json);
 
     delete[] sorted_copy;
     return json;

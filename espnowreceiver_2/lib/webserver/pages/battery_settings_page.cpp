@@ -376,11 +376,46 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
                         if (batteryInterfaceChanged) {
                             initialValues['batteryInterface'] = interfaceSelect.value;
                         }
-                        saveButton.textContent = '✓ All Saved!';
-                        saveButton.style.backgroundColor = '#28a745';
-                        setTimeout(() => {
-                            updateButtonText(getChangedCount());
-                        }, 3000);
+
+                        if (batteryTypeChanged || batteryInterfaceChanged) {
+                            TransmitterReboot.run({
+                                countdownSeconds: TransmitterReboot.COUNTDOWN_SECONDS,
+                                updateCountdown: (seconds) => {
+                                    saveButton.disabled = true;
+                                    saveButton.style.cursor = 'not-allowed';
+                                    saveButton.style.backgroundColor = '#ff9800';
+                                    saveButton.textContent = `Reboot in ${seconds}s...`;
+                                },
+                                onCommandStart: () => {
+                                    saveButton.textContent = 'Sending reboot command...';
+                                },
+                                onSuccess: () => {
+                                    saveButton.textContent = '✓ Reboot command sent';
+                                    saveButton.style.backgroundColor = '#28a745';
+                                },
+                                onFailure: () => {
+                                    saveButton.textContent = '✗ Reboot failed';
+                                    saveButton.style.backgroundColor = '#dc3545';
+                                    setTimeout(() => {
+                                        updateButtonText(getChangedCount());
+                                    }, 3000);
+                                },
+                                onError: (error) => {
+                                    console.error('Reboot request failed:', error);
+                                    saveButton.textContent = '✗ Reboot request error';
+                                    saveButton.style.backgroundColor = '#dc3545';
+                                    setTimeout(() => {
+                                        updateButtonText(getChangedCount());
+                                    }, 3000);
+                                }
+                            });
+                        } else {
+                            saveButton.textContent = '✓ All Saved!';
+                            saveButton.style.backgroundColor = '#28a745';
+                            setTimeout(() => {
+                                updateButtonText(getChangedCount());
+                            }, 3000);
+                        }
                     } else {
                         saveButton.textContent = '⚠ ' + failedCount + ' Failed';
                         saveButton.style.backgroundColor = '#dc3545';

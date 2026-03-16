@@ -309,42 +309,30 @@ static esp_err_t ota_handler(httpd_req_t *req) {
                                                 if (status.success && status.ready_for_reboot) {
                                                     clearInterval(statusPollInterval);
 
-                                                    statusDiv.innerHTML = '✅ OTA verified on transmitter.<br><br>Reboot command in <span id="countdown' + device + '">10</span> seconds...';
-
-                                                    let seconds = 10;
-                                                    const countdownInterval = setInterval(function() {
-                                                        seconds--;
-                                                        const countdownEl = document.getElementById('countdown' + device);
-                                                        if (countdownEl) {
-                                                            countdownEl.innerText = seconds;
-                                                        }
-                                                        if (seconds <= 0) {
-                                                            clearInterval(countdownInterval);
+                                                    TransmitterReboot.run({
+                                                        countdownSeconds: TransmitterReboot.COUNTDOWN_SECONDS,
+                                                        updateCountdown: (seconds) => {
+                                                            statusDiv.innerHTML = '✅ OTA verified on transmitter.<br><br>Reboot command in <span id="countdown' + device + '">' + seconds + '</span> seconds...';
+                                                        },
+                                                        onCommandStart: () => {
                                                             statusDiv.innerHTML = '✅ Sending reboot command to transmitter...';
-
-                                                            fetch('/api/reboot')
-                                                                .then(resp => resp.json())
-                                                                .then(data => {
-                                                                    if (data.success) {
-                                                                        statusDiv.innerHTML = '✅ Reboot command sent.<br><br>Redirecting...';
-                                                                        setTimeout(function() {
-                                                                            window.location.href = '/';
-                                                                        }, 1500);
-                                                                    } else {
-                                                                        statusDiv.innerHTML = '❌ OTA uploaded, but reboot command failed: ' + (data.message || 'Unknown error');
-                                                                        uploadBtn.disabled = false;
-                                                                        uploadBtn.style.backgroundColor = '#ff6b35';
-                                                                        uploadBtn.innerText = 'Retry Upload';
-                                                                    }
-                                                                })
-                                                                .catch(err => {
-                                                                    statusDiv.innerHTML = '❌ OTA uploaded, but reboot request error: ' + err.message;
-                                                                    uploadBtn.disabled = false;
-                                                                    uploadBtn.style.backgroundColor = '#ff6b35';
-                                                                    uploadBtn.innerText = 'Retry Upload';
-                                                                });
+                                                        },
+                                                        onSuccess: () => {
+                                                            statusDiv.innerHTML = '✅ Reboot command sent.<br><br>Redirecting...';
+                                                        },
+                                                        onFailure: (message) => {
+                                                            statusDiv.innerHTML = '❌ OTA uploaded, but reboot command failed: ' + (message || 'Unknown error');
+                                                            uploadBtn.disabled = false;
+                                                            uploadBtn.style.backgroundColor = '#ff6b35';
+                                                            uploadBtn.innerText = 'Retry Upload';
+                                                        },
+                                                        onError: (err) => {
+                                                            statusDiv.innerHTML = '❌ OTA uploaded, but reboot request error: ' + err.message;
+                                                            uploadBtn.disabled = false;
+                                                            uploadBtn.style.backgroundColor = '#ff6b35';
+                                                            uploadBtn.innerText = 'Retry Upload';
                                                         }
-                                                    }, 1000);
+                                                    });
                                                 } else if (status.success && status.in_progress) {
                                                     statusDiv.innerHTML = '✅ Firmware uploaded to transmitter.<br><br>Applying OTA... please wait';
                                                 } else if (status.success && !status.in_progress && !status.ready_for_reboot && status.last_success === false) {

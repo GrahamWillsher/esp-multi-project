@@ -23,7 +23,8 @@ void CommunicationManager::register_transmitter(Transmitter* transmitter) {
 void CommunicationManager::process_can_frame(const CAN_frame& frame) {
   // Find and call the receiver for this interface
   // For now, we route to all registered receivers
-  for (auto& [interface, receiver_pair] : can_receivers_) {
+  for (auto& entry : can_receivers_) {
+    auto& receiver_pair = entry.second;
     CanReceiver* receiver = receiver_pair.first;
     if (receiver) {
       CAN_frame mutable_frame = frame;  // Copy to allow modification

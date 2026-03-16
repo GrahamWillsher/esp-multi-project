@@ -7,7 +7,6 @@
 #include "../../datalayer/datalayer.h"
 #include "../../devboard/utils/events.h"
 #include "../../devboard/utils/logging.h"
-#include "../../devboard/wifi/wifi.h"
 
 /**
  * @brief Initialization of setting storage

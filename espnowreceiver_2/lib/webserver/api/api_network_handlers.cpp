@@ -310,21 +310,21 @@ esp_err_t api_save_network_config_handler(httpd_req_t *req) {
     msg.use_static_ip = doc["use_static_ip"].as<bool>() ? 1 : 0;
 
     if (msg.use_static_ip) {
-        String ip_str = doc["ip"].as<String>();
-        String gateway_str = doc["gateway"].as<String>();
-        String subnet_str = doc["subnet"].as<String>();
-        String dns1_str = doc.containsKey("dns_primary") ? doc["dns_primary"].as<String>() : "8.8.8.8";
-        String dns2_str = doc.containsKey("dns_secondary") ? doc["dns_secondary"].as<String>() : "8.8.4.4";
+         const char* ip_str = doc["ip"] | "";
+         const char* gateway_str = doc["gateway"] | "";
+         const char* subnet_str = doc["subnet"] | "";
+         const char* dns1_str = doc["dns_primary"] | "8.8.8.8";
+         const char* dns2_str = doc["dns_secondary"] | "8.8.4.4";
 
-        sscanf(ip_str.c_str(), "%hhu.%hhu.%hhu.%hhu",
+         sscanf(ip_str, "%hhu.%hhu.%hhu.%hhu",
                &msg.ip[0], &msg.ip[1], &msg.ip[2], &msg.ip[3]);
-        sscanf(gateway_str.c_str(), "%hhu.%hhu.%hhu.%hhu",
+         sscanf(gateway_str, "%hhu.%hhu.%hhu.%hhu",
                &msg.gateway[0], &msg.gateway[1], &msg.gateway[2], &msg.gateway[3]);
-        sscanf(subnet_str.c_str(), "%hhu.%hhu.%hhu.%hhu",
+         sscanf(subnet_str, "%hhu.%hhu.%hhu.%hhu",
                &msg.subnet[0], &msg.subnet[1], &msg.subnet[2], &msg.subnet[3]);
-        sscanf(dns1_str.c_str(), "%hhu.%hhu.%hhu.%hhu",
+         sscanf(dns1_str, "%hhu.%hhu.%hhu.%hhu",
                &msg.dns_primary[0], &msg.dns_primary[1], &msg.dns_primary[2], &msg.dns_primary[3]);
-        sscanf(dns2_str.c_str(), "%hhu.%hhu.%hhu.%hhu",
+         sscanf(dns2_str, "%hhu.%hhu.%hhu.%hhu",
                &msg.dns_secondary[0], &msg.dns_secondary[1], &msg.dns_secondary[2], &msg.dns_secondary[3]);
 
         LOG_INFO("API: Sending static IP config: %d.%d.%d.%d",
@@ -419,19 +419,19 @@ esp_err_t api_save_mqtt_config_handler(httpd_req_t *req) {
 
     msg.enabled = doc["enabled"].as<bool>() ? 1 : 0;
 
-    String server_str = doc["server"].as<String>();
-    sscanf(server_str.c_str(), "%hhu.%hhu.%hhu.%hhu",
+        const char* server_str = doc["server"] | "";
+        sscanf(server_str, "%hhu.%hhu.%hhu.%hhu",
            &msg.server[0], &msg.server[1], &msg.server[2], &msg.server[3]);
 
     msg.port = doc["port"].as<uint16_t>();
 
-    String username = doc.containsKey("username") ? doc["username"].as<String>() : "";
-    String password = doc.containsKey("password") ? doc["password"].as<String>() : "";
-    String client_id = doc.containsKey("client_id") ? doc["client_id"].as<String>() : "espnow_transmitter";
+        const char* username = doc["username"] | "";
+        const char* password = doc["password"] | "";
+        const char* client_id = doc["client_id"] | "espnow_transmitter";
 
-    strncpy(msg.username, username.c_str(), sizeof(msg.username) - 1);
-    strncpy(msg.password, password.c_str(), sizeof(msg.password) - 1);
-    strncpy(msg.client_id, client_id.c_str(), sizeof(msg.client_id) - 1);
+        strncpy(msg.username, username, sizeof(msg.username) - 1);
+        strncpy(msg.password, password, sizeof(msg.password) - 1);
+        strncpy(msg.client_id, client_id, sizeof(msg.client_id) - 1);
 
     msg.config_version = 0;
     msg.checksum = 0;

@@ -4,6 +4,7 @@
 #include <esp_now.h>
 #include <string.h>
 #include <Preferences.h>
+#include <algorithm>
 
 namespace {
     constexpr const char* kTxCacheNamespace = "tx_cache";
@@ -58,7 +59,33 @@ namespace {
     constexpr const char* kKeyContactorSettings = "contactor_set";
 }
 
+namespace {
+    struct ScopedMutex {
+        explicit ScopedMutex(SemaphoreHandle_t mutex)
+            : mutex_(mutex), locked_(false) {
+            if (mutex_ != nullptr) {
+                locked_ = (xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) == pdTRUE);
+            }
+        }
+
+        ~ScopedMutex() {
+            if (locked_) {
+                xSemaphoreGive(mutex_);
+            }
+        }
+
+        bool locked() const { return locked_; }
+
+    private:
+        SemaphoreHandle_t mutex_;
+        bool locked_;
+    };
+
+}
+
 // Static member initialization
+SemaphoreHandle_t TransmitterManager::data_mutex_ = nullptr;
+TimerHandle_t TransmitterManager::nvs_save_timer_ = nullptr;
 uint8_t TransmitterManager::mac[6] = {0};
 bool TransmitterManager::mac_known = false;
 
@@ -177,8 +204,8 @@ String TransmitterManager::system_specs_json_ = "";
 bool TransmitterManager::static_specs_known_ = false;
 
 // Cell monitor data initialization
-uint16_t* TransmitterManager::cell_voltages_mV_ = nullptr;
-bool* TransmitterManager::cell_balancing_status_ = nullptr;
+uint16_t TransmitterManager::cell_voltages_mV_[TransmitterManager::MAX_CELL_COUNT] = {0};
+bool TransmitterManager::cell_balancing_status_[TransmitterManager::MAX_CELL_COUNT] = {false};
 uint16_t TransmitterManager::cell_count_ = 0;
 uint16_t TransmitterManager::cell_min_voltage_mV_ = 0;
 uint16_t TransmitterManager::cell_max_voltage_mV_ = 0;
@@ -191,6 +218,26 @@ bool TransmitterManager::event_logs_known_ = false;
 uint32_t TransmitterManager::event_logs_last_update_ms_ = 0;
 
 void TransmitterManager::init() {
+    if (data_mutex_ == nullptr) {
+        data_mutex_ = xSemaphoreCreateMutex();
+        if (data_mutex_ == nullptr) {
+            Serial.println("[TX_MGR] ERROR: Failed to create data mutex");
+        }
+    }
+
+    if (nvs_save_timer_ == nullptr) {
+        nvs_save_timer_ = xTimerCreate(
+            "TxCacheNVS",
+            pdMS_TO_TICKS(NVS_SAVE_DEBOUNCE_MS),
+            pdFALSE,
+            nullptr,
+            nvs_save_timer_callback
+        );
+        if (nvs_save_timer_ == nullptr) {
+            Serial.println("[TX_MGR] ERROR: Failed to create NVS debounce timer");
+        }
+    }
+
     loadFromNVS();
 }
 
@@ -265,6 +312,28 @@ void TransmitterManager::loadFromNVS() {
 }
 
 void TransmitterManager::saveToNVS() {
+    schedule_nvs_save();
+}
+
+void TransmitterManager::schedule_nvs_save() {
+    if (nvs_save_timer_ == nullptr) {
+        persist_to_nvs_now();
+        return;
+    }
+
+    if (xTimerIsTimerActive(nvs_save_timer_) == pdTRUE) {
+        (void)xTimerReset(nvs_save_timer_, pdMS_TO_TICKS(50));
+    } else {
+        (void)xTimerStart(nvs_save_timer_, pdMS_TO_TICKS(50));
+    }
+}
+
+void TransmitterManager::nvs_save_timer_callback(TimerHandle_t timer) {
+    (void)timer;
+    persist_to_nvs_now();
+}
+
+void TransmitterManager::persist_to_nvs_now() {
     Preferences prefs;
     if (!prefs.begin(kTxCacheNamespace, false)) {
         return;
@@ -958,56 +1027,36 @@ void TransmitterManager::storeCellData(const JsonObject& cell_data) {
         Serial.println("[TX_MGR] Invalid cell data: missing number_of_cells");
         return;
     }
-    
-    uint16_t new_cell_count = cell_data["number_of_cells"];
-    
-    // Reallocate arrays if cell count changed
-    if (new_cell_count != cell_count_ || cell_voltages_mV_ == nullptr) {
-        if (cell_voltages_mV_) {
-            free(cell_voltages_mV_);
-            cell_voltages_mV_ = nullptr;
-        }
-        if (cell_balancing_status_) {
-            free(cell_balancing_status_);
-            cell_balancing_status_ = nullptr;
-        }
-        
-        if (new_cell_count > 0) {
-            cell_voltages_mV_ = (uint16_t*)malloc(new_cell_count * sizeof(uint16_t));
-            cell_balancing_status_ = (bool*)malloc(new_cell_count * sizeof(bool));
-            
-            if (!cell_voltages_mV_ || !cell_balancing_status_) {
-                Serial.println("[TX_MGR] Failed to allocate cell data arrays");
-                if (cell_voltages_mV_) free(cell_voltages_mV_);
-                if (cell_balancing_status_) free(cell_balancing_status_);
-                cell_voltages_mV_ = nullptr;
-                cell_balancing_status_ = nullptr;
-                cell_data_known_ = false;
-                return;
-            }
-        }
-        
-        cell_count_ = new_cell_count;
+
+    const uint16_t requested_count = cell_data["number_of_cells"];
+    const uint16_t new_cell_count = std::min<uint16_t>(requested_count, MAX_CELL_COUNT);
+
+    ScopedMutex guard(data_mutex_);
+    if (!guard.locked()) {
+        Serial.println("[TX_MGR] WARNING: Failed to lock data mutex for cell data");
+        return;
     }
-    
+
+    cell_count_ = new_cell_count;
+
     // Parse cell voltages
     if (cell_data.containsKey("cell_voltages_mV")) {
         JsonArray voltages = cell_data["cell_voltages_mV"];
-        uint16_t count = min((uint16_t)voltages.size(), cell_count_);
+        uint16_t count = std::min<uint16_t>(static_cast<uint16_t>(voltages.size()), cell_count_);
         for (uint16_t i = 0; i < count; i++) {
             cell_voltages_mV_[i] = voltages[i];
         }
     }
-    
+
     // Parse balancing status
     if (cell_data.containsKey("cell_balancing_status")) {
         JsonArray balancing = cell_data["cell_balancing_status"];
-        uint16_t count = min((uint16_t)balancing.size(), cell_count_);
+        uint16_t count = std::min<uint16_t>(static_cast<uint16_t>(balancing.size()), cell_count_);
         for (uint16_t i = 0; i < count; i++) {
             cell_balancing_status_[i] = balancing[i];
         }
     }
-    
+
     // Parse statistics
     if (cell_data.containsKey("cell_min_voltage_mV")) {
         cell_min_voltage_mV_ = cell_data["cell_min_voltage_mV"];
@@ -1018,9 +1067,8 @@ void TransmitterManager::storeCellData(const JsonObject& cell_data) {
     if (cell_data.containsKey("balancing_active")) {
         balancing_active_ = cell_data["balancing_active"];
     }
-    
+
     // Parse data_source field (dummy/live/live_simulated)
-    // NOTE: Must extract immediately since cell_data (JsonObject) reference is temporary
     if (cell_data.containsKey("data_source")) {
         const char* source = cell_data["data_source"].as<const char*>();
         if (source) {
@@ -1028,18 +1076,32 @@ void TransmitterManager::storeCellData(const JsonObject& cell_data) {
             cell_data_source_[sizeof(cell_data_source_) - 1] = '\0';
         } else {
             strncpy(cell_data_source_, "unknown", sizeof(cell_data_source_) - 1);
+            cell_data_source_[sizeof(cell_data_source_) - 1] = '\0';
         }
     } else {
-        // Default to unknown if not present
         strncpy(cell_data_source_, "unknown", sizeof(cell_data_source_) - 1);
+        cell_data_source_[sizeof(cell_data_source_) - 1] = '\0';
     }
-    
+
     cell_data_known_ = true;
+
+    if (requested_count > MAX_CELL_COUNT) {
+        Serial.printf("[TX_MGR] WARNING: Clamped cell data from %u to %u cells\n", requested_count, MAX_CELL_COUNT);
+    }
+
     Serial.printf("[TX_MGR] Stored cell data: %d cells, min=%dmV, max=%dmV, source=%s\\n",
                   cell_count_, cell_min_voltage_mV_, cell_max_voltage_mV_, cell_data_source_);
+
+    SSENotifier::notifyCellDataUpdated();
 }
 
 void TransmitterManager::storeEventLogs(const JsonObject& logs) {
+    ScopedMutex guard(data_mutex_);
+    if (!guard.locked()) {
+        Serial.println("[TX_MGR] WARNING: Failed to lock data mutex for event logs");
+        return;
+    }
+
     event_logs_.clear();
 
     if (!logs.containsKey("events") || !logs["events"].is<JsonArray>()) {
@@ -1071,20 +1133,132 @@ void TransmitterManager::storeEventLogs(const JsonObject& logs) {
     event_logs_known_ = true;
     event_logs_last_update_ms_ = millis();
     Serial.printf("[TX_MGR] Stored %u event logs\n", (unsigned)event_logs_.size());
+    SSENotifier::notifyDataUpdated();
 }
 
 bool TransmitterManager::hasEventLogs() {
+    ScopedMutex guard(data_mutex_);
+    if (!guard.locked()) {
+        return false;
+    }
     return event_logs_known_ && !event_logs_.empty();
 }
 
-const std::vector<TransmitterManager::EventLogEntry>& TransmitterManager::getEventLogs() {
-    return event_logs_;
+void TransmitterManager::getEventLogsSnapshot(std::vector<EventLogEntry>& out_logs, uint32_t* out_last_update_ms) {
+    out_logs.clear();
+
+    ScopedMutex guard(data_mutex_);
+    if (!guard.locked()) {
+        if (out_last_update_ms) {
+            *out_last_update_ms = 0;
+        }
+        return;
+    }
+
+    out_logs = event_logs_;
+    if (out_last_update_ms) {
+        *out_last_update_ms = event_logs_last_update_ms_;
+    }
 }
 
 uint32_t TransmitterManager::getEventLogCount() {
+    ScopedMutex guard(data_mutex_);
+    if (!guard.locked()) {
+        return 0;
+    }
     return static_cast<uint32_t>(event_logs_.size());
 }
 
 uint32_t TransmitterManager::getEventLogsLastUpdateMs() {
+    ScopedMutex guard(data_mutex_);
+    if (!guard.locked()) {
+        return 0;
+    }
     return event_logs_last_update_ms_;
+}
+
+bool TransmitterManager::hasCellData() {
+    ScopedMutex guard(data_mutex_);
+    if (!guard.locked()) {
+        return false;
+    }
+    return cell_data_known_;
+}
+
+uint16_t TransmitterManager::getCellCount() {
+    ScopedMutex guard(data_mutex_);
+    if (!guard.locked()) {
+        return 0;
+    }
+    return cell_count_;
+}
+
+const uint16_t* TransmitterManager::getCellVoltages() {
+    return cell_voltages_mV_;
+}
+
+const bool* TransmitterManager::getCellBalancingStatus() {
+    return cell_balancing_status_;
+}
+
+uint16_t TransmitterManager::getCellMinVoltage() {
+    ScopedMutex guard(data_mutex_);
+    if (!guard.locked()) {
+        return 0;
+    }
+    return cell_min_voltage_mV_;
+}
+
+uint16_t TransmitterManager::getCellMaxVoltage() {
+    ScopedMutex guard(data_mutex_);
+    if (!guard.locked()) {
+        return 0;
+    }
+    return cell_max_voltage_mV_;
+}
+
+bool TransmitterManager::isBalancingActive() {
+    ScopedMutex guard(data_mutex_);
+    if (!guard.locked()) {
+        return false;
+    }
+    return balancing_active_;
+}
+
+const char* TransmitterManager::getCellDataSource() {
+    return cell_data_source_;
+}
+
+bool TransmitterManager::getCellDataSnapshot(CellDataSnapshot& snapshot) {
+    snapshot.known = false;
+    snapshot.cell_count = 0;
+    snapshot.min_voltage_mV = 0;
+    snapshot.max_voltage_mV = 0;
+    snapshot.balancing_active = false;
+    snapshot.voltages_mV.clear();
+    snapshot.balancing_status.clear();
+    strncpy(snapshot.data_source, "unknown", sizeof(snapshot.data_source) - 1);
+    snapshot.data_source[sizeof(snapshot.data_source) - 1] = '\0';
+
+    ScopedMutex guard(data_mutex_);
+    if (!guard.locked()) {
+        return false;
+    }
+
+    snapshot.known = cell_data_known_;
+    snapshot.cell_count = cell_count_;
+    snapshot.min_voltage_mV = cell_min_voltage_mV_;
+    snapshot.max_voltage_mV = cell_max_voltage_mV_;
+    snapshot.balancing_active = balancing_active_;
+    strncpy(snapshot.data_source, cell_data_source_, sizeof(snapshot.data_source) - 1);
+    snapshot.data_source[sizeof(snapshot.data_source) - 1] = '\0';
+
+    snapshot.voltages_mV.reserve(cell_count_);
+    snapshot.balancing_status.reserve(cell_count_);
+    for (uint16_t i = 0; i < cell_count_; ++i) {
+        snapshot.voltages_mV.push_back(cell_voltages_mV_[i]);
+        snapshot.balancing_status.push_back(cell_balancing_status_[i]);
+    }
+
+    return snapshot.known;
 }

@@ -1,5 +1,10 @@
 #pragma once
 
+// Legacy compatibility header.
+// Active application code should prefer `display.h`, which is the canonical
+// backend-agnostic public API used by the compile-time display selection path.
+// This header remains only for older compatibility code and alternate builds.
+
 #include <Arduino.h>
 #include <TFT_eSPI.h>
 #include "../common.h"

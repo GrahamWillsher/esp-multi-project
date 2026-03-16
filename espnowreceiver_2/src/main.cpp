@@ -11,8 +11,9 @@
 #include "config/task_config.h"
 #include "state_machine.h"
 #include "display/display_led.h"
-#include "display/display_core.h"
+#include "display/display.h"
 #include "display/display_splash.h"
+#include "display/display_update_queue.h"
 #include "display/display_manager.h"
 #include "hal/display/tft_espi_display_driver.h"
 
@@ -309,6 +310,9 @@ void setup() {
     LOG_DEBUG("MAIN", "Setting up ESP-NOW message routes...");
     setup_message_routes();  // From espnow_tasks.cpp
     LOG_DEBUG("MAIN", "ESP-NOW message routes initialized");
+
+    // Initialize decoupled display snapshot queue
+    DisplayUpdateQueue::init();
     
     // Create FreeRTOS tasks
     LOG_DEBUG("MAIN", "Creating FreeRTOS tasks...");
@@ -321,6 +325,17 @@ void setup() {
         NULL,
         TaskConfig::ESPNOW_WORKER_PRIORITY,
         &RTOS::task_espnow_worker,
+        TaskConfig::WORKER_CORE
+    );
+
+    // Task: Display Renderer (priority 1, core 1) - decoupled from ESP-NOW worker
+    xTaskCreatePinnedToCore(
+        DisplayUpdateQueue::task_renderer,
+        "DisplayRenderer",
+        TaskConfig::DISPLAY_RENDERER_STACK,
+        NULL,
+        TaskConfig::DISPLAY_RENDERER_PRIORITY,
+        &RTOS::task_display_renderer,
         TaskConfig::WORKER_CORE
     );
     

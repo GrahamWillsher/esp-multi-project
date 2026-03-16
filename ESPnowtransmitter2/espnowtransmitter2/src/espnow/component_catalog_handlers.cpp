@@ -8,7 +8,9 @@
 
 #if CONFIG_CAN_ENABLED
 #include "../battery/battery_manager.h"
+#include "../battery_emulator/battery/BATTERIES.h"
 #include "../battery_emulator/battery/Battery.h"
+#include "../battery_emulator/inverter/INVERTERS.h"
 #include "../battery_emulator/inverter/InverterProtocol.h"
 #endif
 
@@ -37,6 +39,18 @@ uint16_t inverter_type_catalog_version() {
 }
 
 #if CONFIG_CAN_ENABLED
+bool is_supported_battery_selection(uint8_t raw_type) {
+    const BatteryType type = static_cast<BatteryType>(raw_type);
+    const std::vector<BatteryType> supported_types = supported_battery_types();
+    return std::find(supported_types.begin(), supported_types.end(), type) != supported_types.end();
+}
+
+bool is_supported_inverter_selection(uint8_t raw_type) {
+    const InverterProtocolType type = static_cast<InverterProtocolType>(raw_type);
+    const std::vector<InverterProtocolType> supported_types = supported_inverter_protocols();
+    return std::find(supported_types.begin(), supported_types.end(), type) != supported_types.end();
+}
+
 uint8_t comm_interface_to_wire_id(comm_interface iface) {
     switch (iface) {
         case comm_interface::Modbus:
@@ -135,47 +149,57 @@ void handle_component_config(const espnow_queue_msg_t& msg) {
     bool inverter_updated = false;
 
 #if CONFIG_CAN_ENABLED
-    if (config->battery_type < static_cast<uint8_t>(BatteryType::Highest)) {
+    if (is_supported_battery_selection(config->battery_type)) {
 #else
     if (true) {
 #endif
         if (settings.get_battery_profile_type() != config->battery_type) {
-            settings.set_battery_profile_type(config->battery_type);
-            battery_updated = true;
+            if (settings.set_battery_profile_type(config->battery_type)) {
+                battery_updated = true;
+            } else {
+                LOG_WARN("COMP_CFG", "Rejected battery type during settings update: %u", config->battery_type);
+            }
         }
 
 #if CONFIG_CAN_ENABLED
-        user_selected_battery_type = static_cast<BatteryType>(config->battery_type);
-        if (!BatteryManager::instance().is_primary_battery_initialized()) {
-            BatteryManager::instance().init_primary_battery(static_cast<BatteryType>(config->battery_type));
-        } else {
-            LOG_WARN("COMP_CFG", "Battery already initialized - change will apply on reboot");
+        if (battery_updated || settings.get_battery_profile_type() == config->battery_type) {
+            user_selected_battery_type = static_cast<BatteryType>(config->battery_type);
+            if (!BatteryManager::instance().is_primary_battery_initialized()) {
+                BatteryManager::instance().init_primary_battery(static_cast<BatteryType>(config->battery_type));
+            } else {
+                LOG_WARN("COMP_CFG", "Battery already initialized - change will apply on reboot");
+            }
         }
 #endif
     } else {
-        LOG_WARN("COMP_CFG", "Invalid battery type: %u", config->battery_type);
+        LOG_WARN("COMP_CFG", "Unsupported battery type: %u", config->battery_type);
     }
 
 #if CONFIG_CAN_ENABLED
-    if (config->inverter_type < static_cast<uint8_t>(InverterProtocolType::Highest)) {
+    if (is_supported_inverter_selection(config->inverter_type)) {
 #else
     if (true) {
 #endif
         if (settings.get_inverter_type() != config->inverter_type) {
-            settings.set_inverter_type(config->inverter_type);
-            inverter_updated = true;
+            if (settings.set_inverter_type(config->inverter_type)) {
+                inverter_updated = true;
+            } else {
+                LOG_WARN("COMP_CFG", "Rejected inverter type during settings update: %u", config->inverter_type);
+            }
         }
 
 #if CONFIG_CAN_ENABLED
-        user_selected_inverter_protocol = static_cast<InverterProtocolType>(config->inverter_type);
-        if (!BatteryManager::instance().is_inverter_initialized()) {
-            BatteryManager::instance().init_inverter(static_cast<InverterProtocolType>(config->inverter_type));
-        } else {
-            LOG_WARN("COMP_CFG", "Inverter already initialized - change will apply on reboot");
+        if (inverter_updated || settings.get_inverter_type() == config->inverter_type) {
+            user_selected_inverter_protocol = static_cast<InverterProtocolType>(config->inverter_type);
+            if (!BatteryManager::instance().is_inverter_initialized()) {
+                BatteryManager::instance().init_inverter(static_cast<InverterProtocolType>(config->inverter_type));
+            } else {
+                LOG_WARN("COMP_CFG", "Inverter already initialized - change will apply on reboot");
+            }
         }
 #endif
     } else {
-        LOG_WARN("COMP_CFG", "Invalid inverter type: %u", config->inverter_type);
+        LOG_WARN("COMP_CFG", "Unsupported inverter type: %u", config->inverter_type);
     }
 
     if (battery_updated) {
