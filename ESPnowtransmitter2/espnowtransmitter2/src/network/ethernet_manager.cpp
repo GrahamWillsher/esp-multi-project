@@ -1,9 +1,11 @@
 #include "ethernet_manager.h"
 #include "../config/hardware_config.h"
 #include "../config/network_config.h"
+#include "../config/task_config.h"
 #include "../config/logging_config.h"
 #include <Arduino.h>
 #include <ESP32Ping.h>
+#include <esp32common/config/timing_config.h>
 
 // ============================================================================
 // SINGLETON
@@ -222,7 +224,7 @@ void EthernetManager::update_state_machine() {
     if (current_state_ == EthernetConnectionState::LINK_LOST) {
         // Check if we should move to RECOVERING
         uint32_t age = get_state_age_ms();
-        if (age > 1000 && metrics_.recoveries_attempted == 0) {
+        if (age > timing::ETH_STATE_MACHINE_UPDATE_INTERVAL_MS && metrics_.recoveries_attempted == 0) {
             // Immediately move to RECOVERING after 1 second
             set_state(EthernetConnectionState::RECOVERING);
             metrics_.recoveries_attempted++;
@@ -260,7 +262,7 @@ void EthernetManager::check_state_timeout() {
             if (age > IP_ACQUIRING_TIMEOUT_MS) {
                 LOG_ERROR("ETH_TIMEOUT", "IP acquiring timeout - DHCP server may be down (%lu ms)", age);
                 set_state(EthernetConnectionState::ERROR_STATE);
-            } else if (age % 5000 == 0) {
+            } else if (age % timing::ANNOUNCEMENT_INTERVAL_MS == 0) {
                 LOG_INFO("ETH_TIMEOUT", "Still waiting for IP... (%lu ms)", age);
             }
             break;
@@ -475,7 +477,7 @@ bool EthernetManager::testStaticIPReachability(const uint8_t ip[4], const uint8_
              test_ip.toString().c_str(), test_gateway.toString().c_str());
     
     // 3. Wait for network stack to settle
-    delay(2000);
+    vTaskDelay(pdMS_TO_TICKS(TimingConfig::ETHERNET_PHY_RESET_DELAY_MS));
     
     // 4. Ping gateway using ICMP
     bool ping_success = Ping.ping(test_gateway, 3);  // 3 attempts
@@ -491,7 +493,7 @@ bool EthernetManager::testStaticIPReachability(const uint8_t ip[4], const uint8_
         } else {
             ETH.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);  // Re-enable DHCP
         }
-        delay(2000);
+        vTaskDelay(pdMS_TO_TICKS(TimingConfig::ETHERNET_PHY_RESET_DELAY_MS));
     }
     
     return ping_success;

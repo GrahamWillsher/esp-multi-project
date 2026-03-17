@@ -13,6 +13,7 @@
 #include <espnow_transmitter.h>
 #include <ethernet_utilities.h>
 #include <mqtt_logger.h>
+#include <esp32common/config/timing_config.h>
 
 // MqttTask singleton implementation
 MqttTask& MqttTask::instance() {
@@ -33,7 +34,7 @@ void task_mqtt_loop(void* parameter) {
     // Wait for Ethernet to be ready
     while (!EthernetManager::instance().is_connected()) {
         LOG_DEBUG("MQTT", "MQTT waiting for Ethernet");
-        vTaskDelay(pdMS_TO_TICKS(5000));
+        vTaskDelay(pdMS_TO_TICKS(timing::MQTT_RECONNECT_INTERVAL_MS));
     }
     
     LOG_INFO("MQTT", "MQTT task active");
@@ -103,7 +104,7 @@ void task_mqtt_loop(void* parameter) {
         }
         
         // Log statistics periodically
-        if (now - last_stats_log > 30000) {
+        if (now - last_stats_log > timing::MQTT_STATS_LOG_INTERVAL_MS) {
             auto stats = MqttManager::instance().get_statistics();
             LOG_INFO("MQTT_STATS", "Connections: %lu, Failed: %lu, Published: %lu, Uptime: %lu s, State: %d",
                     stats.total_connections,
@@ -135,7 +136,7 @@ void task_mqtt_loop(void* parameter) {
         }
         
         // Publish cell data periodically (less frequent - every 1 second) when connected
-        if (is_connected_now && (now - last_cell_publish > 1000)) {
+        if (is_connected_now && (now - last_cell_publish > timing::MQTT_CELL_PUBLISH_INTERVAL_MS)) {
             last_cell_publish = now;
             
             Serial.println("[MQTT_TASK_DEBUG] Calling publish_cell_data()...");
@@ -153,12 +154,12 @@ void task_mqtt_loop(void* parameter) {
         // Publish event logs periodically (every 5 seconds, only when subscribed) when connected
         if (is_connected_now && 
             MqttManager::instance().get_event_log_subscribers() > 0 &&
-            (now - last_event_publish > 5000)) {
+            (now - last_event_publish > timing::MQTT_EVENT_PUBLISH_INTERVAL_MS)) {
             last_event_publish = now;
             MqttManager::instance().publish_event_logs();
         }
         
         // Update task every second (state machine runs inside update())
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(TimingConfig::MQTT_LOOP_DELAY_MS));
     }
 }

@@ -232,125 +232,48 @@ static esp_err_t inverter_settings_handler(httpd_req_t *req) {
                 return;
             }
             
-            const selectedName = typeSelect.options[typeSelect.selectedIndex].text;
-            const interfaceName = interfaceSelect.options[interfaceSelect.selectedIndex].text;
             const typeId = parseInt(typeSelect.value);
             const interfaceId = parseInt(interfaceSelect.value);
             
-            // Show confirmation (inverter type change requires transmitter reboot)
-            const confirmed = confirm(
-                '⚠️ TRANSMITTER REBOOT REQUIRED\\n\\n' +
-                (typeChanged ? ('Changing the inverter type to "' + selectedName + '" will reboot the transmitter to apply changes.\n\n') : '') +
-                (interfaceChanged ? ('Changing the inverter interface to "' + interfaceName + '" will reboot the transmitter to apply changes.\n\n') : '') +
-                'This will temporarily interrupt data transmission (approximately 30 seconds).\\n\\n' +
-                'Do you want to continue?'
-            );
-            
-            if (!confirmed) {
-                console.log('Inverter change cancelled by user');
-                return;
-            }
-            
-            // Update button state
-            saveButton.textContent = 'Saving...';
-            saveButton.style.backgroundColor = '#ff9800';
-            saveButton.disabled = true;
-            
-            const pendingSaves = [];
-            if (typeChanged) {
-                pendingSaves.push({ kind: 'type', value: typeId, name: selectedName });
-            }
-            if (interfaceChanged) {
-                pendingSaves.push({ kind: 'interface', value: interfaceId, name: interfaceName });
-            }
+            // No confirmation popup: keep behavior aligned with /ota flow.
 
-            function saveNext(index) {
-                if (index >= pendingSaves.length) {
+            SaveOperation.setButtonState(saveButton, {
+                text: 'Saving...',
+                backgroundColor: '#ff9800',
+                disabled: true,
+                cursor: 'not-allowed'
+            });
+            
+            let applyMask = 0;
+            if (typeChanged) applyMask |= 0x02;
+            if (interfaceChanged) applyMask |= 0x08;
+
+            SaveOperation.runComponentApply({
+                payload: {
+                    apply_mask: applyMask,
+                    inverter_type: typeId,
+                    inverter_interface: interfaceId
+                },
+                saveButton: saveButton,
+                onReadyForReboot: () => {
                     if (typeChanged) {
                         initialInverterType = typeSelect.value;
                     }
                     if (interfaceChanged) {
                         initialInverterInterface = interfaceSelect.value;
                     }
-
-                    TransmitterReboot.run({
-                        countdownSeconds: TransmitterReboot.COUNTDOWN_SECONDS,
-                        updateCountdown: (seconds) => {
-                            saveButton.disabled = true;
-                            saveButton.style.cursor = 'not-allowed';
-                            saveButton.style.backgroundColor = '#ff9800';
-                            saveButton.textContent = `Reboot in ${seconds}s...`;
-                        },
-                        onCommandStart: () => {
-                            saveButton.textContent = 'Sending reboot command...';
-                        },
-                        onSuccess: () => {
-                            saveButton.textContent = '✓ Reboot command sent';
-                            saveButton.style.backgroundColor = '#28a745';
-                        },
-                        onFailure: () => {
-                            saveButton.textContent = '✗ Reboot failed';
-                            saveButton.style.backgroundColor = '#dc3545';
-                            setTimeout(() => {
-                                updateButtonState();
-                            }, 3000);
-                        },
-                        onError: (error) => {
-                            console.error('Reboot request failed:', error);
-                            saveButton.textContent = '✗ Reboot request error';
-                            saveButton.style.backgroundColor = '#dc3545';
-                            setTimeout(() => {
-                                updateButtonState();
-                            }, 3000);
-                        }
-                    });
-                    return;
-                }
-
-                const setting = pendingSaves[index];
-                const url = setting.kind === 'type' ? '/api/set_inverter_type' : '/api/set_inverter_interface';
-                const payload = setting.kind === 'type'
-                    ? {type: setting.value}
-                    : {interface: setting.value};
-
-                console.log('Saving inverter ' + setting.kind + ': ID=' + setting.value + ' (' + setting.name + ')');
-
-                fetch(url, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(payload)
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        console.log('Inverter ' + setting.kind + ' saved successfully');
-                        setTimeout(() => saveNext(index + 1), 100);
-                    } else {
-                        console.error('Failed to save inverter ' + setting.kind + ':', data.error);
-                        alert('ERROR: Failed to save inverter ' + setting.kind + '\n\n' + data.error);
-
-                        saveButton.textContent = '✗ Save Failed';
-                        saveButton.style.backgroundColor = '#dc3545';
-
-                        setTimeout(() => {
-                            updateButtonState();
-                        }, 3000);
-                    }
-                })
-                .catch(error => {
-                    console.error('Error saving inverter ' + setting.kind + ':', error);
-                    alert('ERROR: Network error while saving\n\n' + error.message + '\n\nPlease check transmitter connection and try again.');
-
-                    saveButton.textContent = '✗ Network Error';
-                    saveButton.style.backgroundColor = '#dc3545';
-
-                    setTimeout(() => {
+                },
+                restoreButton: () => {
+                    updateButtonState();
+                },
+                onRequestError: (error) => {
+                    console.error('Error saving inverter settings:', error);
+                    alert('ERROR: ' + error.message + '\n\nPlease check transmitter connection and try again.');
+                    SaveOperation.showError(saveButton, '✗ Save Failed', () => {
                         updateButtonState();
                     }, 3000);
-                });
-            }
-
-            saveNext(0);
+                }
+            });
         }
     )rawliteral";
 

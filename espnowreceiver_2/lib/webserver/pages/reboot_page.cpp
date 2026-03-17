@@ -15,19 +15,9 @@ esp_err_t reboot_handler(httpd_req_t *req) {
     
     <div class='info-box' style='text-align: center;'>
         <h3>Reboot Control</h3>
-        <div id='status' style='margin: 30px 0; font-size: 18px;'>
-            ⚠️ Are you sure you want to reboot the transmitter?
-        </div>
         <button id='confirmBtn' class='button' style='background-color: #ff6b35; font-size: 18px; padding: 15px 30px;'>
             Confirm Reboot
         </button>
-        <div style='margin-top: 20px; color: #FFD700; font-size: 14px;'>
-            The transmitter will restart and reconnect automatically.
-        </div>
-    </div>
-    
-    <div class='note'>
-        ⚠️ Use with caution: This will immediately restart the remote transmitter device.
     </div>
 )rawliteral";
 
@@ -42,52 +32,37 @@ esp_err_t reboot_handler(httpd_req_t *req) {
             
             confirmBtn.addEventListener('click', function() {
                 console.log('Confirm button clicked');
-                // Disable button to prevent double-clicks
-                this.disabled = true;
-                this.style.backgroundColor = '#666';
-                this.innerText = 'Sending...';
-                
-                // Send reboot command via fetch
-                fetch('/api/reboot')
-                    .then(response => {
-                        console.log('Response received:', response.status);
-                        return response.json();
-                    })
-                    .then(data => {
-                        console.log('Data received:', data);
-                        const statusDiv = document.getElementById('status');
-                        if (data.success) {
-                            statusDiv.innerHTML = '✅ Reboot command sent successfully!<br><br>Redirecting to home in <span id="countdown">5</span> seconds...';
-                            
-                            // Countdown and redirect
-                            let seconds = 5;
-                            const countdownInterval = setInterval(function() {
-                                seconds--;
-                                const countdownEl = document.getElementById('countdown');
-                                if (countdownEl) {
-                                    countdownEl.innerText = seconds;
-                                }
-                                if (seconds <= 0) {
-                                    clearInterval(countdownInterval);
-                                    window.location.href = '/';
-                                }
-                            }, 1000);
-                        } else {
-                            statusDiv.innerHTML = '❌ Failed: ' + data.message;
-                            // Re-enable button on failure
-                            this.disabled = false;
-                            this.style.backgroundColor = '#ff6b35';
-                            this.innerText = 'Confirm Reboot';
-                        }
-                    })
-                    .catch(err => {
-                        console.error('Fetch error:', err);
-                        document.getElementById('status').innerHTML = '❌ Error: ' + err.message;
-                        // Re-enable button on error
-                        this.disabled = false;
-                        this.style.backgroundColor = '#ff6b35';
-                        this.innerText = 'Confirm Reboot';
-                    });
+                const restoreButton = () => {
+                    confirmBtn.disabled = false;
+                    confirmBtn.style.backgroundColor = '#ff6b35';
+                    confirmBtn.innerText = 'Confirm Reboot';
+                };
+
+                confirmBtn.disabled = true;
+                confirmBtn.style.backgroundColor = '#666';
+                confirmBtn.innerText = 'Starting reboot sequence...';
+
+                TransmitterReboot.run({
+                    countdownSeconds: TransmitterReboot.COUNTDOWN_SECONDS,
+                    updateCountdown: (seconds) => {
+                        confirmBtn.innerText = 'Reboot in ' + seconds + 's...';
+                    },
+                    onCommandStart: () => {
+                        confirmBtn.innerText = 'Sending...';
+                    },
+                    onSuccess: () => {
+                        confirmBtn.innerText = '✓ Command sent';
+                        confirmBtn.style.backgroundColor = '#28a745';
+                    },
+                    onFailure: (message) => {
+                        console.error('Reboot failed:', message);
+                        restoreButton();
+                    },
+                    onError: (error) => {
+                        console.error('Reboot request failed:', error);
+                        restoreButton();
+                    }
+                });
             });
         };
     )rawliteral";

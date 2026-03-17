@@ -1,6 +1,9 @@
 #pragma once
 
 namespace hardware {
+    // Serial configuration
+    constexpr uint32_t SERIAL_BAUD_RATE = 115200;  // Serial monitor baud rate
+
     // Ethernet PHY configuration for Olimex ESP32-POE-ISO (WROVER variant)
     constexpr int PHY_ADDR = 0;
     constexpr int ETH_POWER_PIN = 12;

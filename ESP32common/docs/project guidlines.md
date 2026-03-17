@@ -1,181 +1,199 @@
 
-# PROJECT GUIDELINES  
-## Coding Standards, Architecture Rules & Best Practices  
-**Version:** 1.0  
-**Purpose:** Ensure all firmware in this repository is fast, readable, reliable, and maintainable using modern embedded‑systems best practices.
-
----
+# PROJECT GUIDELINES
+## Coding Standards, Architecture Rules & Best Practices
+**Version:** 2.0  
+**Last Updated:** March 17, 2026  
+**Purpose:** Ensure all firmware in this repository is fast, readable, reliable, and maintainable using modern embedded-systems best practices.
 
 # 1. Project Philosophy
 
-- **Clarity over cleverness:** Readability and intent are more important than “smart” code.  
-- **One responsibility per module.**  
-- **Never block critical tasks.**  
-- **No work inside ISRs except queueing data.**  
-- **Consistent naming and file structure.**  
-- **ESP‑NOW protocol must remain stable and versioned.**  
+- Clarity over cleverness.
+- One responsibility per module.
+- Prefer shared reusable code in `esp32common/` over duplication.
+- Keep protocol behavior backward-compatible unless explicitly versioned.
+- Validate changes with builds and reference checks.
 
 ---
 
-# 2. Repository Structure
+# 2. Repository Structure (Current Baseline)
 
 ```
-ESP32Projects/                          # Workspace root
-├── esp32common/                        # Shared libraries and utilities
+ESP32Projects/
+├── esp32common/                            # Shared libraries + shared docs
 │   ├── docs/
-│   │   └── project guidlines.md        # This file
-│   ├── espnow_transmitter/             # ESP-NOW transmitter library
-│   │   ├── espnow_common.h             # Protocol definitions
-│   │   ├── espnow_transmitter.h
-│   │   ├── espnow_transmitter.cpp
-│   │   └── library.json
-│   ├── espnow_common_utils/            # Common message routing/handling
-│   │   ├── espnow_discovery.h/cpp      # Discovery protocol
-│   │   ├── espnow_message_router.h/cpp # Message routing system
-│   │   ├── espnow_packet_utils.h       # Packet utilities
-│   │   ├── espnow_peer_manager.h/cpp   # Peer management
-│   │   ├── espnow_standard_handlers.h/cpp # Standard PROBE/ACK handlers
-│   │   └── library.json
-│   ├── webserver/                      # Shared web UI components
-│   │   ├── advanced_battery_html.h/cpp
-│   │   └── ... (other web pages)
-│   └── ethernet_config.h               # Shared Ethernet configuration
+│   │   ├── project guidlines.md
+│   │   ├── ESP-NOW_Communication_Architecture.md
+│   │   ├── ESPNOW_HEARTBEAT.md
+│   │   └── MQTT_LOGGER_IMPLEMENTATION.md
+│   ├── espnow_common_utils/
+│   ├── espnow_transmitter/
+│   ├── webserver_common/
+│   ├── webserver_common_utils/
+│   ├── logging_utilities/
+│   └── firmware_metadata/
 │
-├── espnowreciever_2/                   # ESP-NOW Receiver (T-Display-S3)
+├── espnowreceiver_2/                       # Receiver (LilyGo T-Display-S3)
+│   ├── PROJECT_ARCHITECTURE_MASTER.md
 │   ├── platformio.ini
 │   ├── src/
-│   │   ├── main.cpp
-│   │   ├── common.h                    # Global definitions
-│   │   ├── globals.cpp                 # Global state
-│   │   ├── helpers.h/cpp               # Utility functions
-│   │   ├── state_machine.h/cpp         # State management
-│   │   ├── config/                     # Configuration modules
-│   │   │   ├── wifi_setup.h/cpp
-│   │   │   └── littlefs_init.h/cpp
-│   │   ├── display/                    # Display management
-│   │   │   ├── display_core.h/cpp      # Core display functions
-│   │   │   ├── display_led.h/cpp       # LED indicator
-│   │   │   └── display_splash.h/cpp    # Splash screen
-│   │   ├── espnow/                     # ESP-NOW protocol
-│   │   │   ├── espnow_callbacks.h/cpp  # ESP-NOW callbacks
-│   │   │   └── espnow_tasks.h/cpp      # Message handling
-│   │   └── test/                       # Test data generation
-│   │       └── test_data.h/cpp
-│   ├── lib/
-│   │   └── webserver/                  # Web server module
+│   │   ├── espnow/
+│   │   ├── display/
+│   │   ├── mqtt/
+│   │   ├── state/
+│   │   ├── config/
+│   │   └── main.cpp
+│   ├── lib/webserver/
+│   │   ├── api/
+│   │   ├── pages/
+│   │   ├── common/
+│   │   └── utils/
 │   └── data/
-│       └── webserver/                  # Web UI assets
 │
-└── ESPnowtransmitter2/
-    └── espnowtransmitter2/             # ESP-NOW Transmitter (Olimex ESP32-POE)
-        ├── platformio.ini
-        ├── src/
-        │   ├── main.cpp
-        │   ├── config/                 # Configuration headers
-        │   │   ├── hardware_config.h   # ETH PHY pins
-        │   │   ├── network_config.h    # MQTT/NTP config
-        │   │   └── task_config.h       # FreeRTOS config
-        │   ├── network/                # Network modules
-        │   │   ├── ethernet_manager.h/cpp
-        │   │   ├── mqtt_manager.h/cpp
-        │   │   ├── mqtt_task.h/cpp
-        │   │   └── ota_manager.h/cpp
-        │   └── espnow/                 # ESP-NOW modules
-        │       ├── message_handler.h/cpp
-        │       ├── discovery_task.h/cpp
-        │       └── data_sender.h/cpp
-        └── lib/
-            └── ethernet_utilities/     # Ethernet helper functions
+├── ESPnowtransmitter2/espnowtransmitter2/  # Transmitter (Olimex ESP32-POE)
+│   ├── PROJECT_ARCHITECTURE_MASTER.md
+│   ├── platformio.ini
+│   ├── src/
+│   │   ├── espnow/
+│   │   ├── network/
+│   │   ├── battery/
+│   │   ├── battery_emulator/
+│   │   ├── communication/
+│   │   ├── config/
+│   │   ├── datalayer/
+│   │   ├── settings/
+│   │   └── main.cpp
+│   └── docs/
+│
+└── Battery-Emulator-9.2.4/                 # Upstream/reference codebase snapshot
 ```
-
-**Rules:**
-
-- Shared logic exists only in `esp32common/`.
-- No duplicated code between projects - make code common/reusable.
-- Each firmware project has its own `platformio.ini`.
-- Web UI code is separate and static by default.
-- Include guards required for all header files.
-- Use `lib_extra_dirs` in platformio.ini to reference `esp32common/`.
-- Do not use serial.println/f's always use the debugging function preferably the mqtt version.
-- Do not ask permission to access .md files. you are allowed to read and edit them.
-- When adding any endpoints to the webserver. please double check the webserver.cpp and this line    config.max_uri_handlers = 24;  // 8 pages + 14 API endpoints + 1 firmware.bin + 1 wildcard 404 to ensure that it will be registered correctly, to ensure that there are enough uti handlers.
-- When making any code changes, please ensure that you check the correctness of any new code and ensure that any code removed does not leave any hanging items.
 
 ---
 
-# 3. CODING STYLE (C / C++)
+# 3. Repository Rules
+
+1. Shared logic belongs in `esp32common/` whenever practical.
+2. Avoid duplicate implementations across transmitter and receiver.
+3. Each firmware project owns its own `platformio.ini` environments.
+4. Keep web/API handlers modular.
+5. Remove dead code during migrations.
+6. Keep architecture/review docs aligned with behavior changes.
+7. Prefer project logging utilities over ad-hoc serial prints.
+
+---
+
+# 4. Coding Style (C/C++)
 
 ## 3.1 Naming Conventions
 
 | Category | Style | Example |
 |---------|--------|----------|
-| Types | `snake_case_t` | `espnow_msg_t` |
+| Types | `snake_case_t` | `component_apply_request_t` |
 | Struct Types | `snake_case_t` | `device_state_t` |
-| Functions | `snake_case()` | `start_webserver()` |
-| Variables | `snake_case` | `last_update_time` |
-| Constants | `UPPER_SNAKE_CASE` | `MAX_ESPNOW_PAYLOAD` |
-| Enums | `UpperCamelCase` | `PacketType::Ack` |
-| Files | `snake_case` | `display_driver.cpp` |
+| Functions | `snake_case()` | `send_component_apply_request()` |
+| Variables | `snake_case` | `request_id` |
+| Constants | `UPPER_SNAKE_CASE` | `MAX_URI_HANDLERS` |
+| Enums | `UpperCamelCase` | `EspNowConnectionState` |
+| Files | `snake_case` | `api_type_selection_handlers.cpp` |
 
 ---
 
 ## 3.2 Struct Rules
 
-- Use this format exclusively:
+- Use this format:
+
 ```c
 typedef struct {
-    ...
+    // fields
 } name_t;
+```
 
+## 3.3 Function Rules
 
-3.3 Function Rules
+- One function = one responsibility.
+- Prefer short functions.
+- Use meaningful names.
+- Use structured return values (`bool`, `esp_err_t`).
+- Avoid long parameter lists; define small structs where helpful.
 
-One function = one responsibility.
-Prefer short functions.
-Use meaningful names.
-Use structured return values (bool, esp_err_t).
-Avoid long parameter lists — define small structs instead.
+---
 
-4. PERFORMANCE & RELIABILITY
-4.1 ESP‑NOW + Wi‑Fi Coexistence
+# 5. Performance & Reliability
 
-ESP‑NOW and Wi‑Fi must share the same channel.
-In STA mode, the router determines the channel.
-ESP‑NOW senders use channel hopping to find the receiver.
-Should the router change channels, nodes will re‑sync automatically.
+## 5.1 ESP-NOW + WiFi Coexistence
 
-4.2 Data Handling Rules
+- ESP-NOW and WiFi must share channel constraints.
+- In STA mode, router channel influences radio behavior.
+- State machines should govern readiness/recovery behavior.
 
-Always include a sequence number in ESP‑NOW packets.
-Implement app‑layer ACK: receiver echoes sequence number.
-Validate all packet sizes and types.
+## 5.2 Data Handling Rules
 
-5. FREE RTOS TASK ARCHITECTURE
-5.1 Required Tasks
+- Validate packet sizes and message types.
+- Keep checksum/validation logic consistent with shared protocol definitions.
+- Keep cache and state transitions deterministic.
 
+---
 
-5.2 Task Rules
+# 6. FreeRTOS Task Architecture
 
-No direct cross‑task calls. Use queues or message buffers.
-Avoid blocking long delays (delay(2000) etc).
-Protect shared state with mutexes.
-Keep stack sizes modest; avoid large allocations.
+## 6.1 Task Rules
 
-6. ISR (INTERRUPT) GUIDELINES
-Allowed in ISR (including ESP‑NOW receive callback):
+- No direct cross-task coupling where queues/message buffers are appropriate.
+- Avoid long blocking delays in runtime loops.
+- Protect shared state with mutexes/atomics when needed.
+- Keep stack sizes modest; avoid unnecessary large allocations.
 
-Copy fixed-size data
-Push to queue/ringbuffer (xQueueSendFromISR)
-Set atomic flags
-Return immediately
+---
+
+# 7. ISR (Interrupt) Guidelines
+
+Allowed in ISR (including ESP-NOW receive callback):
+
+- Copy fixed-size data.
+- Push to queue/ringbuffer (`xQueueSendFromISR`).
+- Set atomic flags.
+- Return immediately.
 
 Forbidden in ISR:
 
-Logging
-Dynamic memory (malloc/free/new/delete)
-ESP‑NOW send
-Wi‑Fi calls
-JSON parsing or string manipulation
-Display writes
-SPI / I2C
-Any blocking or waiting
+- Logging.
+- Dynamic memory (`malloc/free/new/delete`).
+- ESP-NOW send.
+- WiFi calls.
+- JSON parsing/string manipulation.
+- Display writes.
+- SPI/I2C transactions.
+- Any blocking/waiting.
+
+---
+
+# 8. Web/API Change Rules
+
+- Keep API/page handlers modular.
+- Centralize JSON/error responses through shared helpers.
+- Validate URI handler capacity when adding endpoints.
+- Remove retired endpoints and references completely.
+
+---
+
+# 9. Validation Requirements
+
+After code changes:
+
+1. Build affected project(s).
+2. Verify no unresolved references or dead declarations.
+3. Update relevant architecture/review docs when behavior changes.
+
+Minimum build checks:
+
+- Receiver: `pio run -e receiver_tft`
+- Transmitter: `pio run`
+
+---
+
+# 10. Primary References
+
+- `esp32common/docs/ESP-NOW_Communication_Architecture.md`
+- `esp32common/docs/ESPNOW_HEARTBEAT.md`
+- `esp32common/docs/MQTT_LOGGER_IMPLEMENTATION.md`
+- `espnowreceiver_2/PROJECT_ARCHITECTURE_MASTER.md`
+- `ESPnowtransmitter2/espnowtransmitter2/PROJECT_ARCHITECTURE_MASTER.md`

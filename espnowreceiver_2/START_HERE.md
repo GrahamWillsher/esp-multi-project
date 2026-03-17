@@ -4,6 +4,14 @@ Welcome to the display system refactoring project. This guide will help you navi
 
 ---
 
+## 🧭 Project-Level Architecture (Current Baseline)
+
+Before diving into display-specific implementation, see the receiver-wide architecture reference:
+
+- [PROJECT_ARCHITECTURE_MASTER.md](PROJECT_ARCHITECTURE_MASTER.md)
+
+---
+
 ## 📚 READ THESE FILES IN THIS ORDER
 
 ### 1. **SESSION_SUMMARY.md** ⭐ (YOU ARE HERE)

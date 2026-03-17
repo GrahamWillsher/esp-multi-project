@@ -3,6 +3,7 @@
 #include "../webserver.h"
 
 #include "../utils/transmitter_manager.h"
+#include "../utils/http_json_utils.h"
 #include "../utils/receiver_config_manager.h"
 #include "../logging.h"
 
@@ -166,17 +167,13 @@ esp_err_t api_data_handler(httpd_req_t *req) {
              chipModel.c_str(), chipRevision, efuseMacStr,
              ssid.c_str(), ip.c_str(), mac.c_str(), channel);
 
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json, strlen(json));
-    return ESP_OK;
+    return HttpJsonUtils::send_json(req, json);
 }
 
 esp_err_t api_get_receiver_info_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_GET_RECEIVER_INFO);
     String json = ReceiverConfigManager::getReceiverInfoJson();
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json.c_str(), json.length());
-    return ESP_OK;
+    return HttpJsonUtils::send_json(req, json.c_str());
 }
 
 esp_err_t api_monitor_handler(httpd_req_t *req) {
@@ -191,9 +188,7 @@ esp_err_t api_monitor_handler(httpd_req_t *req) {
              "{\"mode\":\"%s\",\"soc\":%d,\"power\":%ld,\"voltage_mv\":%u,\"voltage_v\":%.1f}",
              mode, soc, power, voltage_mv, voltage_mv / 1000.0f);
 
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json, strlen(json));
-    return ESP_OK;
+    return HttpJsonUtils::send_json(req, json);
 }
 
 esp_err_t api_get_data_source_handler(httpd_req_t *req) {
@@ -201,9 +196,7 @@ esp_err_t api_get_data_source_handler(httpd_req_t *req) {
     const char* mode = "live";
     char json[96];
     snprintf(json, sizeof(json), "{\"mode\":\"%s\"}", mode);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json, strlen(json));
-    return ESP_OK;
+    return HttpJsonUtils::send_json(req, json);
 }
 
 esp_err_t api_cell_data_handler(httpd_req_t *req) {
@@ -232,15 +225,11 @@ esp_err_t api_cell_data_handler(httpd_req_t *req) {
         json += snapshot.data_source;
         json += "\"}";
 
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json.c_str(), json.length());
-        return ESP_OK;
+        return HttpJsonUtils::send_json(req, json.c_str());
     }
 
     const char* json = "{\"success\":false,\"mode\":\"unavailable\",\"message\":\"No cell data received from transmitter\"}";
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json, strlen(json));
-    return ESP_OK;
+    return HttpJsonUtils::send_json(req, json);
 }
 
 esp_err_t api_dashboard_data_handler(httpd_req_t *req) {
@@ -281,9 +270,7 @@ esp_err_t api_dashboard_data_handler(httpd_req_t *req) {
         tx_firmware.c_str()
     );
 
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json, strlen(json));
-    return ESP_OK;
+    return HttpJsonUtils::send_json(req, json);
 }
 
 esp_err_t api_transmitter_ip_handler(httpd_req_t *req) {
@@ -305,9 +292,7 @@ esp_err_t api_transmitter_ip_handler(httpd_req_t *req) {
         snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"No IP data received yet\"}");
     }
 
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json, strlen(json));
-    return ESP_OK;
+    return HttpJsonUtils::send_json(req, json);
 }
 
 esp_err_t api_version_handler(httpd_req_t *req) {
@@ -385,9 +370,7 @@ esp_err_t api_version_handler(httpd_req_t *req) {
              ESP.getFreeHeap(),
              WiFi.channel());
 
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json, strlen(json));
-    return ESP_OK;
+    return HttpJsonUtils::send_json(req, json);
 }
 
 esp_err_t api_firmware_info_handler(httpd_req_t *req) {
@@ -417,9 +400,7 @@ esp_err_t api_firmware_info_handler(httpd_req_t *req) {
 
     String json;
     serializeJson(doc, json);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json.c_str(), json.length());
-    return ESP_OK;
+    return HttpJsonUtils::send_json(req, json.c_str());
 }
 
 esp_err_t api_transmitter_metadata_handler(httpd_req_t *req) {
@@ -447,9 +428,7 @@ esp_err_t api_transmitter_metadata_handler(httpd_req_t *req) {
 
     String json;
     serializeJson(doc, json);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json.c_str(), json.length());
-    return ESP_OK;
+    return HttpJsonUtils::send_json(req, json.c_str());
 }
 
 esp_err_t api_transmitter_health_handler(httpd_req_t *req) {
@@ -474,54 +453,37 @@ esp_err_t api_transmitter_health_handler(httpd_req_t *req) {
         TransmitterManager::isEthernetConnected() ? "true" : "false"
     );
 
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json, strlen(json));
-    return ESP_OK;
+    return HttpJsonUtils::send_json(req, json);
 }
 
 esp_err_t api_static_specs_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_STATIC_SPECS);
     if (!TransmitterManager::hasStaticSpecs()) {
-        const char* json = "{\"success\":false,\"error\":\"Static specs not available\"}";
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
+        return HttpJsonUtils::send_json(req, "{\"success\":false,\"error\":\"Static specs not available\"}");
     }
 
     String specs_json = TransmitterManager::getStaticSpecsJson();
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, specs_json.c_str(), specs_json.length());
-    return ESP_OK;
+    return HttpJsonUtils::send_json(req, specs_json.c_str());
 }
 
 esp_err_t api_battery_specs_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_BATTERY_SPECS);
     String specs_json = TransmitterManager::getBatterySpecsJson();
     if (specs_json.length() == 0) {
-        const char* json = "{\"success\":false,\"error\":\"Battery specs not available\"}";
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
+        return HttpJsonUtils::send_json(req, "{\"success\":false,\"error\":\"Battery specs not available\"}");
     }
 
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, specs_json.c_str(), specs_json.length());
-    return ESP_OK;
+    return HttpJsonUtils::send_json(req, specs_json.c_str());
 }
 
 esp_err_t api_inverter_specs_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_INVERTER_SPECS);
     String specs_json = TransmitterManager::getInverterSpecsJson();
     if (specs_json.length() == 0) {
-        const char* json = "{\"success\":false,\"error\":\"Inverter specs not available\"}";
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
+        return HttpJsonUtils::send_json(req, "{\"success\":false,\"error\":\"Inverter specs not available\"}");
     }
 
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, specs_json.c_str(), specs_json.length());
-    return ESP_OK;
+    return HttpJsonUtils::send_json(req, specs_json.c_str());
 }
 
 esp_err_t api_get_event_logs_handler(httpd_req_t *req) {
@@ -561,15 +523,11 @@ esp_err_t api_get_event_logs_handler(httpd_req_t *req) {
 
         String json;
         serializeJson(doc, json);
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json.c_str(), json.length());
-        return ESP_OK;
+        return HttpJsonUtils::send_json(req, json.c_str());
     }
 
     if (!TransmitterManager::isIPKnown()) {
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, "{\"success\":false,\"error\":\"Transmitter not connected\"}");
-        return ESP_OK;
+        return HttpJsonUtils::send_json(req, "{\"success\":false,\"error\":\"Transmitter not connected\"}");
     }
 
     String transmitter_url = TransmitterManager::getURL() + "/api/get_event_logs?limit=" + String(limit);
@@ -584,9 +542,7 @@ esp_err_t api_get_event_logs_handler(httpd_req_t *req) {
     if (httpCode == 200) {
         String response = http.getString();
         http.end();
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, response.c_str(), response.length());
-        return ESP_OK;
+        return HttpJsonUtils::send_json(req, response.c_str());
     }
 
     http.end();
@@ -599,9 +555,7 @@ esp_err_t api_get_event_logs_handler(httpd_req_t *req) {
                  "{\"success\":false,\"error\":\"Transmitter returned HTTP %d\"}", httpCode);
     }
 
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json_response, strlen(json_response));
-    return ESP_OK;
+    return HttpJsonUtils::send_json(req, json_response);
 }
 
 esp_err_t api_system_metrics_handler(httpd_req_t *req) {
@@ -747,7 +701,5 @@ esp_err_t api_system_metrics_handler(httpd_req_t *req) {
     String json;
     json.reserve(1024);
     serializeJson(doc, json);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json.c_str(), json.length());
-    return ESP_OK;
+    return HttpJsonUtils::send_json(req, json.c_str());
 }

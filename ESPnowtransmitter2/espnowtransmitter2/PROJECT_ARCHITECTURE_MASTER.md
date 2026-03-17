@@ -3,10 +3,10 @@
 **Attribution**: This work is completely based on Dala the Great’s Battery Emulator: https://github.com/dalathegreat/Battery-Emulator
 **Scope**: The goal is to split that project into two devices — one for control and one for display — with communication between them. If the display device stops working, it does not interfere with the main control device.
 
-**Version**: 1.0 Release Candidate  
-**Date**: February 19, 2026  
+**Version**: 1.2 (Current Workspace Baseline)  
+**Date**: March 17, 2026  
 **Device**: Olimex ESP32-POE-ISO (Transmitter)  
-**Status**: Ready for First Production Build
+**Status**: Active development baseline (build passing in current workspace)
 
 ---
 
@@ -20,6 +20,7 @@
 6. [First Release Timeline](#first-release-timeline)
 7. [Post-Release Improvements](#post-release-improvements)
 8. [Implementation Checklist](#implementation-checklist)
+9. [Current Codebase Snapshot (Mar 2026)](#current-codebase-snapshot-mar-2026)
 
 ---
 
@@ -54,6 +55,17 @@ Build a **real-time battery monitoring and control system** that transmits CAN b
 | **NTP time sync** | Accurate timestamps via Ethernet | ✅ Phase 2 |
 | **Heartbeat protocol** | Connection health monitoring (10s interval) | ✅ Section 11 |
 | **State machine control** | Deterministic system behavior | ✅ New |
+
+### Current Codebase Snapshot (Mar 2026)
+
+Primary active modules now align to this structure:
+
+- `src/espnow/tx_state_machine.*` + `src/espnow/tx_connection_handler.*` for transmitter-side ESP-NOW state and transitions.
+- `src/network/ethernet_manager.*` for Ethernet lifecycle and readiness gating.
+- `src/network/mqtt_manager.*`, `src/network/mqtt_task.*`, `src/network/time_manager.*`, `src/network/ota_manager.*` for network services.
+- `src/espnow/component_catalog_handlers.*`, `src/espnow/component_config_sender.*`, and `src/espnow/control_handlers.*` for runtime configuration/control exchange with the receiver.
+
+Receiver companion architecture reference: `../../espnowreceiver_2/PROJECT_ARCHITECTURE_MASTER.md`.
 
 ---
 
@@ -183,7 +195,7 @@ if (EthernetManager::instance().is_link_present()) {
 - Receiver (passive role): Listens, responds with ACK
 - Discovery: 1s per channel, 13s max (6x faster than previous design)
 
-**Reference**: [ESPNOW_CONNECTION_STATE_MACHINE_TECHNICAL_REFERENCE.md](ESPNOW_CONNECTION_STATE_MACHINE_TECHNICAL_REFERENCE.md)
+**Reference**: [TRANSMITTER_STATE_MACHINE_IMPLEMENTATION.md](TRANSMITTER_STATE_MACHINE_IMPLEMENTATION.md)
 
 **Implementation**:
 - Files: `src/espnow/connection_manager.cpp`, `src/espnow/discovery_task.cpp`
@@ -266,18 +278,10 @@ MQTT Task (if Ethernet ready)
 
 ### GPIO Reference Documentation
 
-**TRANSMITTER_GPIO_ALLOCATION.md** - Complete GPIO pin mapping
-- Quick reference table with all 18 allocated GPIO pins
-- Detailed Ethernet RMII interface (10 pins to LAN8720)
-- CAN SPI interface (5 pins to MCP2515 controller)
-- Contactor/Relay control (4 pins for battery contactors)
-- GPIO conflict resolution (why GPIO 4 is used for MISO instead of GPIO 19)
-- Initialization sequence (Ethernet → CAN → Contactors)
-- Power management (ETH_POWER_PIN control)
-- Precharge sequence for safe battery connection
-- Available GPIO for future expansion
-- SPI bus sharing analysis
-- Design constraints & lessons learned
+Use the following current documents for hardware pin allocation and conflicts:
+- [CAN_ETHERNET_GPIO_CONFLICT_ANALYSIS.md](CAN_ETHERNET_GPIO_CONFLICT_ANALYSIS.md)
+- [ETHERNET_SUMMARY.md](ETHERNET_SUMMARY.md)
+- `src/config/hardware_config.h`
 
 **Key Points:**
 - **Ethernet**: 10 GPIO pins (0, 12, 18-27) for RMII interface
@@ -300,12 +304,14 @@ MQTT Task (if Ethernet ready)
 - Timeout values, edge cases, state metrics
 - Implementation code examples
 
-**ESP-NOW State Machine** - [ESPNOW_CONNECTION_STATE_MACHINE_TECHNICAL_REFERENCE.md](ESPNOW_CONNECTION_STATE_MACHINE_TECHNICAL_REFERENCE.md)
-- Transmitter: 17 states (why not simplified)
-- Receiver: 10 states (simplified by design)
-- Channel locking mechanism
-- Discovery algorithm (1s per channel)
-- ACK/heartbeat protocol
+**ESP-NOW / Transmitter State Machine** - [TRANSMITTER_STATE_MACHINE_IMPLEMENTATION.md](TRANSMITTER_STATE_MACHINE_IMPLEMENTATION.md)
+- Transmitter-side states and transition behavior
+- Channel locking and reconnect behavior
+- Discovery + ACK/heartbeat interaction
+
+**ESP-NOW Protocol (Shared)** - [../../esp32common/docs/ESP-NOW_Communication_Architecture.md](../../esp32common/docs/ESP-NOW_Communication_Architecture.md)
+- Shared packet-level communication architecture
+- Inter-device message flow context used by both transmitter and receiver
 
 ### Service Integration Guide
 
@@ -543,13 +549,17 @@ This master document references the following technical documents. Start with th
 
 1. **PROJECT_ARCHITECTURE_MASTER.md** (this file) - High-level overview
 2. **ETHERNET_STATE_MACHINE_TECHNICAL_REFERENCE.md** - State machine details
-3. **ESPNOW_CONNECTION_STATE_MACHINE_TECHNICAL_REFERENCE.md** - Wireless protocol states
+3. **TRANSMITTER_STATE_MACHINE_IMPLEMENTATION.md** - Wireless protocol states
 4. **SERVICE_INTEGRATION_GUIDE.md** - How to use state machines
 5. **TASK_ARCHITECTURE_AND_SERVICE_ISOLATION.md** - FreeRTOS task design
 6. **ETHERNET_STATE_MACHINE_COMPLETE_IMPLEMENTATION.md** - Production code
 7. **POST_RELEASE_IMPROVEMENTS.md** - Future enhancements
 8. **ETHERNET_TIMING_ANALYSIS.md** - Historical debugging notes
 9. **STATE_MACHINE_ARCHITECTURE_ANALYSIS.md** - Architecture decision log
+10. **../../esp32common/docs/ESP-NOW_Communication_Architecture.md** - Shared ESP-NOW protocol architecture
+11. **../../esp32common/docs/MQTT_LOGGER_IMPLEMENTATION.md** - Shared MQTT logging integration details
+12. **../../espnowreceiver_2/PROJECT_ARCHITECTURE_MASTER.md** - Receiver architecture master document
+13. **../../esp32common/docs/project guidlines.md** - Cross-project coding and architecture rules
 
 ---
 

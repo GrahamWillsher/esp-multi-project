@@ -8,6 +8,7 @@
 #include "heartbeat_manager.h"
 #include "tx_state_machine.h"
 #include "tx_send_guard.h"
+#include "../config/task_config.h"
 #include <esp32common/espnow/connection_manager.h>
 #include <channel_manager.h>
 #include <espnow_peer_manager.h>
@@ -45,7 +46,7 @@ void TransmitterConnectionHandler::init() {
 
     // Make common connection manager the single owner of connection timeout.
     // TX liveness is based on heartbeat ACK activity with a 35s threshold.
-    EspNowConnectionManager::instance().set_heartbeat_timeout_ms(35000);
+    EspNowConnectionManager::instance().set_heartbeat_timeout_ms(timing::TX_HEARTBEAT_TIMEOUT_MS);
     EspNowConnectionManager::instance().set_heartbeat_timeout_enabled(true);
     
     // Register state change callback
@@ -68,7 +69,7 @@ void TransmitterConnectionHandler::init() {
                     TransmitterConnectionHandler::instance().start_discovery_hopping_only();
                 } else {
                     TransmitterConnectionHandler::instance().deferred_discovery_start_ = true;
-                    TransmitterConnectionHandler::instance().deferred_discovery_due_ms_ = millis() + 250;
+                    TransmitterConnectionHandler::instance().deferred_discovery_due_ms_ = millis() + timing::DEFERRED_DISCOVERY_POLL_MS;
                     LOG_INFO("TX_CONN", "Backoff active - deferring discovery start");
                 }
                 
@@ -253,6 +254,6 @@ void TransmitterConnectionHandler::tick() {
         start_discovery_hopping_only();
     } else {
         // Poll gently until backoff allows next attempt
-        deferred_discovery_due_ms_ = now + 250;
+        deferred_discovery_due_ms_ = now + timing::DEFERRED_DISCOVERY_POLL_MS;
     }
 }

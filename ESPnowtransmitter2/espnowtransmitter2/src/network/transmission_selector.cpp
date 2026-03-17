@@ -9,7 +9,7 @@ namespace TransmissionSelector {
 
 // Configuration
 static TransmissionMode current_mode = TransmissionMode::SMART;
-static const size_t ESPNOW_PAYLOAD_THRESHOLD = 230;  // Safe limit (250 - 20 byte margin)
+static constexpr size_t ESPNOW_PAYLOAD_THRESHOLD = 230;  // Safe limit (250 - 20 byte margin)
 
 // Statistics
 static struct {

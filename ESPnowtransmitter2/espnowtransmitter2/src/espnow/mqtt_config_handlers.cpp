@@ -8,6 +8,9 @@
 #include <mqtt_manager.h>
 #include <Arduino.h>
 #include <cstring>
+#include <esp32common/config/timing_config.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 namespace TxMqttConfigHandlers {
 
@@ -91,7 +94,7 @@ void handle_mqtt_config_update(const espnow_queue_msg_t& msg, uint8_t* receiver_
         LOG_INFO("MQTT_CFG", "Applying configuration (hot-reload)");
         MqttConfigManager::applyConfig();
 
-        delay(1000);
+        vTaskDelay(pdMS_TO_TICKS(TimingConfig::SETTINGS_UPDATE_DELAY_MS));
 
         send_mqtt_config_ack(receiver_mac, true, "Config saved and applied");
     } else {

@@ -232,13 +232,15 @@ private:
     uint32_t state_enter_time_{0};
     uint32_t last_connection_attempt_{0};
     uint32_t initialization_time_{0};
-    
-    // Exponential backoff
-    uint32_t current_retry_delay_{5000};  // Start at 5 seconds
+
     static constexpr uint32_t INITIAL_RETRY_DELAY_MS = 5000;
     static constexpr uint32_t MAX_RETRY_DELAY_MS = 300000;  // 5 minutes max
     static constexpr float RETRY_BACKOFF_MULTIPLIER = 1.5f;
     static constexpr uint32_t CONNECTION_TIMEOUT_MS = 10000;  // 10 second timeout
+    static constexpr size_t PAYLOAD_BUFFER_SIZE = 384;
+    
+    // Exponential backoff
+    uint32_t current_retry_delay_{INITIAL_RETRY_DELAY_MS};  // Start at 5 seconds
     
     // Statistics
     uint32_t total_connections_{0};
@@ -248,6 +250,6 @@ private:
     // Legacy connection flag (for backwards compatibility)
     volatile bool connected_{false};
     
-    char payload_buffer_[384];
+    char payload_buffer_[PAYLOAD_BUFFER_SIZE];
     int event_log_subscribers_{0};  // Track number of clients subscribing to event logs
 };

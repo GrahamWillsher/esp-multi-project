@@ -311,7 +311,6 @@ esp_err_t network_config_handler(httpd_req_t *req) {
 )rawliteral";
 
     String script = R"rawliteral(
-        let isAPMode = false;
         let initialNetworkConfig = {};
         
         // All fields to track for changes
@@ -344,13 +343,19 @@ esp_err_t network_config_handler(httpd_req_t *req) {
         function updateSaveButtonText(changedCount) {
             const saveButton = document.getElementById('saveNetworkBtn');
             if (changedCount === 0) {
-                saveButton.textContent = 'Nothing to Save';
-                saveButton.style.backgroundColor = '#6c757d';
-                saveButton.disabled = true;
+                SaveOperation.setButtonState(saveButton, {
+                    text: 'Nothing to Save',
+                    backgroundColor: '#6c757d',
+                    disabled: true,
+                    cursor: 'not-allowed'
+                });
             } else {
-                saveButton.textContent = `Save ${changedCount} Changed Setting${changedCount > 1 ? 's' : ''}`;
-                saveButton.style.backgroundColor = '#4CAF50';
-                saveButton.disabled = false;
+                SaveOperation.setButtonState(saveButton, {
+                    text: `Save ${changedCount} Changed Setting${changedCount > 1 ? 's' : ''}`,
+                    backgroundColor: '#4CAF50',
+                    disabled: false,
+                    cursor: 'pointer'
+                });
             }
         }
         
@@ -359,13 +364,6 @@ esp_err_t network_config_handler(httpd_req_t *req) {
             fetch('/api/get_receiver_network')
                 .then(response => response.json())
                 .then(data => {
-                    // Check if in AP mode
-                    isAPMode = data.is_ap_mode || false;
-                    const apWarning = document.getElementById('apModeWarning');
-                    if (apWarning) {
-                        apWarning.style.display = isAPMode ? 'block' : 'none';
-                    }
-                    
                     // Populate WiFi credentials
                     document.getElementById('wifiMac').value = data.wifi_mac || 'N/A';
                     document.getElementById('hostname').value = data.hostname || '';
@@ -531,20 +529,23 @@ esp_err_t network_config_handler(httpd_req_t *req) {
         // Save network configuration
         async function saveNetworkConfig() {
             const btn = document.getElementById('saveNetworkBtn');
-            const originalText = btn.textContent;
-            
-            btn.disabled = true;
-            btn.textContent = 'Saving...';
-            btn.style.backgroundColor = '#FF9800';
+            const restoreButtonState = () => {
+                updateSaveButtonText(countNetworkChanges());
+            };
+
+            SaveOperation.setButtonState(btn, {
+                text: 'Saving...',
+                backgroundColor: '#FF9800',
+                disabled: true,
+                cursor: 'not-allowed'
+            });
             
             try {
                 // Validate SSID
                 const ssid = document.getElementById('ssid').value.trim();
                 if (!ssid) {
                     alert('SSID is required');
-                    btn.disabled = false;
-                    btn.textContent = originalText;
-                    btn.style.backgroundColor = '#4CAF50';
+                    restoreButtonState();
                     return;
                 }
                 
@@ -552,9 +553,7 @@ esp_err_t network_config_handler(httpd_req_t *req) {
                 const password = document.getElementById('password').value;
                 if (password.length > 0 && password.length < 8) {
                     alert('Password must be at least 8 characters for WPA2 security');
-                    btn.disabled = false;
-                    btn.textContent = originalText;
-                    btn.style.backgroundColor = '#4CAF50';
+                    restoreButtonState();
                     return;
                 }
                 
@@ -591,9 +590,7 @@ esp_err_t network_config_handler(httpd_req_t *req) {
                     const allOctets = [...config.static_ip, ...config.gateway, ...config.subnet];
                     if (allOctets.some(octet => isNaN(octet) || octet < 0 || octet > 255)) {
                         alert('All IP address fields must be numbers between 0 and 255');
-                        btn.disabled = false;
-                        btn.textContent = originalText;
-                        btn.style.backgroundColor = '#4CAF50';
+                        restoreButtonState();
                         return;
                     }
                     
@@ -631,8 +628,12 @@ esp_err_t network_config_handler(httpd_req_t *req) {
                 const data = await response.json();
                 
                 if (data.success) {
-                    btn.textContent = '✓ Saved! Device will reboot...';
-                    btn.style.backgroundColor = '#28a745';
+                    SaveOperation.setButtonState(btn, {
+                        text: '✓ Saved! Device will reboot...',
+                        backgroundColor: '#28a745',
+                        disabled: true,
+                        cursor: 'not-allowed'
+                    });
                     
                     // Show reboot notice and start countdown
                     document.getElementById('rebootNotice').style.display = 'block';
@@ -649,27 +650,13 @@ esp_err_t network_config_handler(httpd_req_t *req) {
                         }
                     }, 1000);
                 } else {
-                    btn.textContent = '✗ Save Failed';
-                    btn.style.backgroundColor = '#dc3545';
                     alert('Failed to save configuration: ' + (data.error || 'Unknown error'));
-                    
-                    setTimeout(() => {
-                        btn.disabled = false;
-                        btn.textContent = originalText;
-                        btn.style.backgroundColor = '#4CAF50';
-                    }, 2000);
+                    SaveOperation.showError(btn, '✗ Save Failed', restoreButtonState, 2000);
                 }
             } catch (err) {
                 console.error('Save failed:', err);
-                btn.textContent = '✗ Save Failed';
-                btn.style.backgroundColor = '#dc3545';
                 alert('Failed to save configuration. Please try again.');
-                
-                setTimeout(() => {
-                    btn.disabled = false;
-                    btn.textContent = originalText;
-                    btn.style.backgroundColor = '#4CAF50';
-                }, 2000);
+                SaveOperation.showError(btn, '✗ Save Failed', restoreButtonState, 2000);
             }
         }
         

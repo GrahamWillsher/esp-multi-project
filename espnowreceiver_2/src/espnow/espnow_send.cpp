@@ -106,119 +106,67 @@ bool send_debug_level_control(uint8_t level) {
         return false;
     }
 }
-bool send_component_type_selection(uint8_t battery_type, uint8_t inverter_type) {
-    // Check if transmitter is connected
-    if (RxStateMachine::instance().message_state() != RxStateMachine::MessageState::VALID) {
-        LOG_WARN("ESP-NOW", "Transmitter not connected - cannot send component type selection");
-        return false;
-    }
-    
-    // Double-check MAC is not zero (defensive check)
-    bool mac_is_zero = true;
-    for (int i = 0; i < 6; i++) {
-        if (ESPNow::transmitter_mac[i] != 0) {
-            mac_is_zero = false;
-            break;
-        }
-    }
-    
-    if (mac_is_zero) {
-        LOG_WARN("ESP-NOW", "Transmitter MAC not registered - cannot send component type selection");
-        return false;
-    }
-    
-    // Build component_config_msg_t
-    component_config_msg_t packet;
-    packet.type = msg_component_config;
-    packet.battery_type = battery_type;
-    packet.inverter_type = inverter_type;
-    packet.bms_type = 0;                  // Keep unchanged (transmitter manages its own BMS)
-    packet.secondary_bms_type = 0;        // Keep unchanged
-    packet.charger_type = 0;              // Keep unchanged
-    packet.shunt_type = 0;                // Keep unchanged
-    packet.multi_battery_enabled = 0;     // Keep unchanged
-    packet.config_version = 0;            // Version 0 indicates receiver-initiated update
-    
-    // Calculate checksum (simple sum of all bytes except checksum)
-    packet.checksum = 0;
-    uint8_t* data = (uint8_t*)&packet;
-    for (size_t i = 0; i < sizeof(packet) - sizeof(packet.checksum); i++) {
-        packet.checksum += data[i];
-    }
-    
-    // Send via ESP-NOW
-    esp_err_t result = esp_now_send(ESPNow::transmitter_mac, (uint8_t*)&packet, sizeof(packet));
-    
-    if (result == ESP_OK) {
-        LOG_DEBUG("ESP-NOW", "Component type selection sent: battery_type=%d, inverter_type=%d to %02X:%02X:%02X:%02X:%02X:%02X",
-                     battery_type, inverter_type,
-                     ESPNow::transmitter_mac[0], ESPNow::transmitter_mac[1], ESPNow::transmitter_mac[2],
-                     ESPNow::transmitter_mac[3], ESPNow::transmitter_mac[4], ESPNow::transmitter_mac[5]);
-        return true;
-    } else {
-        LOG_ERROR("ESP-NOW", "Failed to send component type selection: %s", esp_err_to_name(result));
-        return false;
-    }
-}
 
-bool send_component_interface_selection(uint8_t battery_interface, uint8_t inverter_interface) {
-    // Validate interfaces
-    if (battery_interface > 5) {
+bool send_component_apply_request(uint32_t request_id,
+                                  uint8_t apply_mask,
+                                  uint8_t battery_type,
+                                  uint8_t inverter_type,
+                                  uint8_t battery_interface,
+                                  uint8_t inverter_interface) {
+    if (apply_mask == 0) {
+        LOG_ERROR("ESP-NOW", "Invalid component apply request: apply_mask is 0");
+        return false;
+    }
+
+    if ((apply_mask & component_apply_battery_interface) && battery_interface > 5) {
         LOG_ERROR("ESP-NOW", "Invalid battery interface: %d (must be 0-5)", battery_interface);
         return false;
     }
-    
-    if (inverter_interface > 5) {
+
+    if ((apply_mask & component_apply_inverter_interface) && inverter_interface > 5) {
         LOG_ERROR("ESP-NOW", "Invalid inverter interface: %d (must be 0-5)", inverter_interface);
         return false;
     }
-    
-    // Check if transmitter is connected
+
     if (RxStateMachine::instance().message_state() != RxStateMachine::MessageState::VALID) {
-        LOG_WARN("ESP-NOW", "Transmitter not connected - cannot send component interface selection");
+        LOG_WARN("ESP-NOW", "Transmitter not connected - cannot send component apply request");
         return false;
     }
-    
-    // Double-check MAC is not zero (defensive check)
-    bool mac_is_zero = true;
-    for (int i = 0; i < 6; i++) {
-        if (ESPNow::transmitter_mac[i] != 0) {
-            mac_is_zero = false;
-            break;
-        }
-    }
-    
-    if (mac_is_zero) {
-        LOG_WARN("ESP-NOW", "Transmitter MAC not registered - cannot send component interface selection");
+
+    if (!has_transmitter_mac()) {
+        LOG_WARN("ESP-NOW", "Transmitter MAC not registered - cannot send component apply request");
         return false;
     }
-    
-    // Build component_interface_msg_t
-    component_interface_msg_t packet;
-    packet.type = msg_component_interface;
+
+    component_apply_request_t packet{};
+    packet.type = msg_component_apply_request;
+    packet.request_id = request_id;
+    packet.apply_mask = apply_mask;
+    packet.battery_type = battery_type;
+    packet.inverter_type = inverter_type;
     packet.battery_interface = battery_interface;
     packet.inverter_interface = inverter_interface;
-    
-    // Calculate checksum (simple sum of all bytes except checksum)
     packet.checksum = 0;
-    uint8_t* data = (uint8_t*)&packet;
-    for (size_t i = 0; i < sizeof(component_interface_msg_t) - sizeof(packet.checksum); i++) {
-        packet.checksum += data[i];
+
+    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&packet);
+    for (size_t i = 0; i < sizeof(component_apply_request_t) - sizeof(packet.checksum); ++i) {
+        packet.checksum += bytes[i];
     }
-    
-    // Send via ESP-NOW
-    esp_err_t result = esp_now_send(ESPNow::transmitter_mac, (uint8_t*)&packet, sizeof(packet));
-    
+
+    const esp_err_t result = esp_now_send(ESPNow::transmitter_mac, reinterpret_cast<const uint8_t*>(&packet), sizeof(packet));
     if (result == ESP_OK) {
-        LOG_DEBUG("ESP-NOW", "Component interface selection sent: battery_if=%d, inverter_if=%d to %02X:%02X:%02X:%02X:%02X:%02X",
-                     battery_interface, inverter_interface,
-                     ESPNow::transmitter_mac[0], ESPNow::transmitter_mac[1], ESPNow::transmitter_mac[2],
-                     ESPNow::transmitter_mac[3], ESPNow::transmitter_mac[4], ESPNow::transmitter_mac[5]);
+        LOG_INFO("ESP-NOW", "Component apply request sent: request_id=%lu mask=0x%02X batt=%u inv=%u batt_if=%u inv_if=%u",
+                 static_cast<unsigned long>(request_id),
+                 static_cast<unsigned>(apply_mask),
+                 static_cast<unsigned>(battery_type),
+                 static_cast<unsigned>(inverter_type),
+                 static_cast<unsigned>(battery_interface),
+                 static_cast<unsigned>(inverter_interface));
         return true;
-    } else {
-        LOG_ERROR("ESP-NOW", "Failed to send component interface selection: %s", esp_err_to_name(result));
-        return false;
     }
+
+    LOG_ERROR("ESP-NOW", "Failed to send component apply request: %s", esp_err_to_name(result));
+    return false;
 }
 
 bool send_test_data_mode_control(uint8_t mode) {

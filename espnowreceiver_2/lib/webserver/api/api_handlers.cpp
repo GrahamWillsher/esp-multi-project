@@ -1,5 +1,6 @@
 #include "api_handlers.h"
 
+#include "api_response_utils.h"
 #include "api_control_handlers.h"
 #include "api_debug_handlers.h"
 #include "api_led_handlers.h"
@@ -11,10 +12,7 @@
 #include "api_type_selection_handlers.h"
 
 static esp_err_t notfound_handler(httpd_req_t *req) {
-    httpd_resp_set_status(req, "404 Not Found");
-    httpd_resp_set_type(req, "text/plain");
-    httpd_resp_sendstr(req, "Endpoint not found");
-    return ESP_OK;
+    return ApiResponseUtils::send_error_with_status(req, "404 Not Found", "Endpoint not found");
 }
 
 int register_all_api_handlers(httpd_handle_t server) {

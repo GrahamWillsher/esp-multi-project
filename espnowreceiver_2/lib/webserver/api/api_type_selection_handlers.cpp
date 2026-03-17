@@ -1,11 +1,16 @@
 #include "api_type_selection_handlers.h"
 
+#include "api_response_utils.h"
+#include "../utils/http_json_utils.h"
+
 #include <esp32common/logging/logging_config.h>
 #include "../../receiver_config/receiver_config_manager.h"
 #include "../../src/espnow/espnow_send.h"
+#include "../../src/espnow/component_apply_tracker.h"
 #include "../../src/espnow/type_catalog_cache.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <esp_system.h>
 #include <algorithm>
 #include <cstring>
 
@@ -54,6 +59,162 @@ static String generate_sorted_type_json(TypeEntry* types, size_t count) {
     return json;
 }
 
+static const char* component_apply_state_to_string(ComponentApplyTracker::State state) {
+    switch (state) {
+        case ComponentApplyTracker::State::idle: return "idle";
+        case ComponentApplyTracker::State::pending: return "pending";
+        case ComponentApplyTracker::State::persisted: return "persisted";
+        case ComponentApplyTracker::State::ready_for_reboot: return "ready_for_reboot";
+        case ComponentApplyTracker::State::failed: return "failed";
+        case ComponentApplyTracker::State::timed_out: return "timed_out";
+        default: return "unknown";
+    }
+}
+
+static esp_err_t api_component_apply_handler(httpd_req_t *req) {
+    char content[256] = {0};
+    int ret = httpd_req_recv(req, content, sizeof(content) - 1);
+
+    if (ret <= 0) {
+        return ApiResponseUtils::send_jsonf(req, "{\"success\":false,\"error\":\"No data received\"}");
+    }
+
+    StaticJsonDocument<256> doc;
+    DeserializationError error = deserializeJson(doc, content);
+    if (error) {
+        return ApiResponseUtils::send_jsonf(req, "{\"success\":false,\"error\":\"Invalid JSON format\"}");
+    }
+
+    const int apply_mask = doc["apply_mask"] | 0;
+    if (apply_mask <= 0 || apply_mask > 0x0F) {
+        return ApiResponseUtils::send_jsonf(req, "{\"success\":false,\"error\":\"apply_mask must be 1-15\"}");
+    }
+
+    const uint8_t mask = static_cast<uint8_t>(apply_mask);
+    const uint8_t battery_type = static_cast<uint8_t>((doc["battery_type"] | ReceiverNetworkConfig::getBatteryType()));
+    const uint8_t inverter_type = static_cast<uint8_t>((doc["inverter_type"] | ReceiverNetworkConfig::getInverterType()));
+    const uint8_t battery_interface = static_cast<uint8_t>((doc["battery_interface"] | ReceiverNetworkConfig::getBatteryInterface()));
+    const uint8_t inverter_interface = static_cast<uint8_t>((doc["inverter_interface"] | ReceiverNetworkConfig::getInverterInterface()));
+
+    if ((mask & component_apply_battery_interface) && battery_interface > 5) {
+        return ApiResponseUtils::send_jsonf(req, "{\"success\":false,\"error\":\"Battery interface must be 0-5\"}");
+    }
+
+    if ((mask & component_apply_inverter_interface) && inverter_interface > 5) {
+        return ApiResponseUtils::send_jsonf(req, "{\"success\":false,\"error\":\"Inverter interface must be 0-5\"}");
+    }
+
+    const uint32_t request_id = static_cast<uint32_t>(esp_random() ^ millis());
+
+    if (!ComponentApplyTracker::start_transaction(request_id, mask, battery_type, inverter_type, battery_interface, inverter_interface)) {
+        return ApiResponseUtils::send_jsonf(req, "{\"success\":false,\"error\":\"Failed to start apply transaction\"}");
+    }
+
+    if (!send_component_apply_request(request_id, mask, battery_type, inverter_type, battery_interface, inverter_interface)) {
+        ComponentApplyTracker::mark_failed(request_id, "Failed to send apply request to transmitter");
+        return ApiResponseUtils::send_jsonf(req, "{\"success\":false,\"error\":\"Failed to send apply request to transmitter\"}");
+    }
+
+    if (mask & component_apply_battery_type) {
+        ReceiverNetworkConfig::setBatteryType(battery_type);
+    }
+    if (mask & component_apply_inverter_type) {
+        ReceiverNetworkConfig::setInverterType(inverter_type);
+    }
+    if (mask & component_apply_battery_interface) {
+        ReceiverNetworkConfig::setBatteryInterface(battery_interface);
+    }
+    if (mask & component_apply_inverter_interface) {
+        ReceiverNetworkConfig::setInverterInterface(inverter_interface);
+    }
+
+    return ApiResponseUtils::send_jsonf(req,
+                                        "{\"success\":true,\"request_id\":%lu,\"state\":\"pending\",\"message\":\"Apply request dispatched\"}",
+                                        static_cast<unsigned long>(request_id));
+}
+
+static esp_err_t api_component_apply_status_handler(httpd_req_t *req) {
+    uint32_t requested_id = 0;
+    bool has_requested_id = false;
+
+    char query[96] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        char value[32] = {0};
+        if (httpd_query_key_value(query, "request_id", value, sizeof(value)) == ESP_OK) {
+            requested_id = static_cast<uint32_t>(strtoul(value, nullptr, 10));
+            has_requested_id = (requested_id != 0);
+        }
+    }
+
+    ComponentApplyTracker::Snapshot snapshot = ComponentApplyTracker::get_snapshot();
+
+    const bool request_mismatch = has_requested_id && snapshot.request_id != requested_id;
+    const bool in_progress = (!request_mismatch) &&
+                             (snapshot.state == ComponentApplyTracker::State::pending ||
+                              snapshot.state == ComponentApplyTracker::State::persisted);
+    const bool last_success = (!request_mismatch) && snapshot.success;
+
+    if (request_mismatch) {
+        LOG_WARN("COMP_APPLY_STATUS",
+                 "Request mismatch: requested=%lu snapshot=%lu state=%s",
+                 static_cast<unsigned long>(requested_id),
+                 static_cast<unsigned long>(snapshot.request_id),
+                 component_apply_state_to_string(snapshot.state));
+    }
+
+    StaticJsonDocument<512> doc;
+    doc["success"] = true;
+    doc["in_progress"] = in_progress;
+    doc["last_success"] = last_success;
+    doc["request_match"] = !request_mismatch;
+
+    if (request_mismatch) {
+        doc["request_id"] = requested_id;
+        doc["state"] = "pending";
+        doc["ready_for_reboot"] = false;
+        doc["message"] = "Waiting for matching apply transaction";
+
+        String json;
+        json.reserve(192);
+        serializeJson(doc, json);
+
+        return ApiResponseUtils::send_json_no_cache(req, json.c_str());
+    }
+
+    doc["request_id"] = snapshot.request_id;
+    doc["state"] = component_apply_state_to_string(snapshot.state);
+    doc["started_ms"] = snapshot.started_ms;
+    doc["updated_ms"] = snapshot.updated_ms;
+    doc["apply_mask"] = snapshot.apply_mask;
+    doc["persisted_mask"] = snapshot.persisted_mask;
+    const bool persisted_complete = (snapshot.persisted_mask == snapshot.apply_mask);
+    const bool reboot_gate_ready = snapshot.success &&
+                                   snapshot.reboot_required &&
+                                   snapshot.ready_for_reboot &&
+                                   persisted_complete;
+    doc["persisted_complete"] = persisted_complete;
+    doc["ack_success"] = snapshot.success;
+    doc["reboot_required"] = snapshot.reboot_required;
+    doc["ack_ready_for_reboot"] = snapshot.ready_for_reboot;
+    doc["ready_for_reboot"] = reboot_gate_ready;
+    doc["battery_type"] = snapshot.battery_type;
+    doc["inverter_type"] = snapshot.inverter_type;
+    doc["battery_interface"] = snapshot.battery_interface;
+    doc["inverter_interface"] = snapshot.inverter_interface;
+    doc["settings_version"] = snapshot.settings_version;
+    doc["last_error"] = (snapshot.state == ComponentApplyTracker::State::failed ||
+                           snapshot.state == ComponentApplyTracker::State::timed_out)
+                              ? snapshot.message
+                              : "";
+    doc["message"] = snapshot.message;
+
+    String json;
+    json.reserve(384);
+    serializeJson(doc, json);
+
+    return ApiResponseUtils::send_json_no_cache(req, json.c_str());
+}
+
 static esp_err_t api_get_battery_types_handler(httpd_req_t *req) {
     // Heap-allocate: 128 * 49 bytes = 6 KB, too large for the httpd task stack
     auto* cache_entries = new TypeCatalogCache::TypeEntry[128];
@@ -66,10 +227,7 @@ static esp_err_t api_get_battery_types_handler(httpd_req_t *req) {
     if (count == 0) {
         delete[] cache_entries;
         send_battery_types_request();
-        const char* loading = "{\"types\":[],\"loading\":true}";
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, loading, strlen(loading));
-        return ESP_OK;
+        return HttpJsonUtils::send_json(req, "{\"types\":[],\"loading\":true}");
     }
 
     // response_entries.name pointers point into cache_entries — keep cache_entries alive
@@ -88,9 +246,7 @@ static esp_err_t api_get_battery_types_handler(httpd_req_t *req) {
     String json_response = generate_sorted_type_json(response_entries, count);
     delete[] response_entries;
     delete[] cache_entries;  // safe: JSON string has already copied the name data
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json_response.c_str(), json_response.length());
-    return ESP_OK;
+    return HttpJsonUtils::send_json(req, json_response.c_str());
 }
 
 static esp_err_t api_get_inverter_types_handler(httpd_req_t *req) {
@@ -105,10 +261,7 @@ static esp_err_t api_get_inverter_types_handler(httpd_req_t *req) {
     if (count == 0) {
         delete[] cache_entries;
         send_inverter_types_request();
-        const char* loading = "{\"types\":[],\"loading\":true}";
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, loading, strlen(loading));
-        return ESP_OK;
+        return HttpJsonUtils::send_json(req, "{\"types\":[],\"loading\":true}");
     }
 
     // response_entries.name pointers point into cache_entries — keep cache_entries alive
@@ -127,114 +280,22 @@ static esp_err_t api_get_inverter_types_handler(httpd_req_t *req) {
     String json_response = generate_sorted_type_json(response_entries, count);
     delete[] response_entries;
     delete[] cache_entries;  // safe: JSON string has already copied the name data
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json_response.c_str(), json_response.length());
-    return ESP_OK;
+    return HttpJsonUtils::send_json(req, json_response.c_str());
 }
 
 static esp_err_t api_get_selected_types_handler(httpd_req_t *req) {
-    char json[128];
     uint8_t battery_type = ReceiverNetworkConfig::getBatteryType();
     uint8_t inverter_type = ReceiverNetworkConfig::getInverterType();
 
-    snprintf(json, sizeof(json),
-             "{\"battery_type\":%d,\"inverter_type\":%d}",
-             battery_type, inverter_type);
-
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json, strlen(json));
-    return ESP_OK;
-}
-
-static esp_err_t api_set_battery_type_handler(httpd_req_t *req) {
-    char content[100] = {0};
-    int ret = httpd_req_recv(req, content, sizeof(content) - 1);
-
-    if (ret <= 0) {
-        const char* json = "{\"success\":false,\"error\":\"No data received\"}";
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
-    }
-
-    StaticJsonDocument<128> doc;
-    DeserializationError error = deserializeJson(doc, content);
-    if (error || !doc.containsKey("type")) {
-        const char* json = "{\"success\":false,\"error\":\"Invalid JSON format\"}";
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
-    }
-
-    int type = doc["type"];
-    if (type < 0 || type > 255) {
-        const char* json = "{\"success\":false,\"error\":\"Type must be 0-255\"}";
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
-    }
-
-    ReceiverNetworkConfig::setBatteryType((uint8_t)type);
-
-    if (send_component_type_selection((uint8_t)type, ReceiverNetworkConfig::getInverterType())) {
-        LOG_INFO("API", "Battery type %d sent to transmitter via ESP-NOW", type);
-    } else {
-        LOG_WARN("API", "Could not send battery type to transmitter (may be offline)");
-    }
-
-    const char* json = "{\"success\":true,\"message\":\"Battery type updated\"}";
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json, strlen(json));
-    return ESP_OK;
-}
-
-static esp_err_t api_set_inverter_type_handler(httpd_req_t *req) {
-    char content[100] = {0};
-    int ret = httpd_req_recv(req, content, sizeof(content) - 1);
-
-    if (ret <= 0) {
-        const char* json = "{\"success\":false,\"error\":\"No data received\"}";
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
-    }
-
-    StaticJsonDocument<128> doc;
-    DeserializationError error = deserializeJson(doc, content);
-    if (error || !doc.containsKey("type")) {
-        const char* json = "{\"success\":false,\"error\":\"Invalid JSON format\"}";
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
-    }
-
-    int type = doc["type"];
-    if (type < 0 || type > 255) {
-        const char* json = "{\"success\":false,\"error\":\"Type must be 0-255\"}";
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
-    }
-
-    ReceiverNetworkConfig::setInverterType((uint8_t)type);
-
-    if (send_component_type_selection(ReceiverNetworkConfig::getBatteryType(), (uint8_t)type)) {
-        LOG_INFO("API", "Inverter type %d sent to transmitter via ESP-NOW", type);
-    } else {
-        LOG_WARN("API", "Could not send inverter type to transmitter (may be offline)");
-    }
-
-    const char* json = "{\"success\":true,\"message\":\"Inverter type updated\"}";
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json, strlen(json));
-    return ESP_OK;
+    return ApiResponseUtils::send_jsonf(req,
+                                        "{\"battery_type\":%d,\"inverter_type\":%d}",
+                                        battery_type,
+                                        inverter_type);
 }
 
 static esp_err_t api_get_battery_interfaces_handler(httpd_req_t *req) {
     String json_response = generate_sorted_type_json(battery_interfaces, sizeof(battery_interfaces) / sizeof(TypeEntry));
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json_response.c_str(), json_response.length());
-    return ESP_OK;
+    return HttpJsonUtils::send_json(req, json_response.c_str());
 }
 
 static esp_err_t api_get_inverter_interfaces_handler(httpd_req_t *req) {
@@ -249,10 +310,7 @@ static esp_err_t api_get_inverter_interfaces_handler(httpd_req_t *req) {
     if (count == 0) {
         delete[] cache_entries;
         send_inverter_interfaces_request();
-        const char* loading = "{\"types\":[],\"loading\":true}";
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, loading, strlen(loading));
-        return ESP_OK;
+        return HttpJsonUtils::send_json(req, "{\"types\":[],\"loading\":true}");
     }
 
     auto* response_entries = new TypeEntry[count];
@@ -271,107 +329,17 @@ static esp_err_t api_get_inverter_interfaces_handler(httpd_req_t *req) {
     delete[] response_entries;
     delete[] cache_entries;
 
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json_response.c_str(), json_response.length());
-    return ESP_OK;
+    return HttpJsonUtils::send_json(req, json_response.c_str());
 }
 
 static esp_err_t api_get_selected_interfaces_handler(httpd_req_t *req) {
-    char json[128];
     uint8_t battery_interface = ReceiverNetworkConfig::getBatteryInterface();
     uint8_t inverter_interface = ReceiverNetworkConfig::getInverterInterface();
 
-    snprintf(json, sizeof(json),
-             "{\"battery_interface\":%d,\"inverter_interface\":%d}",
-             battery_interface, inverter_interface);
-
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json, strlen(json));
-    return ESP_OK;
-}
-
-static esp_err_t api_set_battery_interface_handler(httpd_req_t *req) {
-    char content[100] = {0};
-    int ret = httpd_req_recv(req, content, sizeof(content) - 1);
-
-    if (ret <= 0) {
-        const char* json = "{\"success\":false,\"error\":\"No data received\"}";
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
-    }
-
-    StaticJsonDocument<128> doc;
-    DeserializationError error = deserializeJson(doc, content);
-    if (error || !doc.containsKey("interface")) {
-        const char* json = "{\"success\":false,\"error\":\"Invalid JSON format\"}";
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
-    }
-
-    int interface = doc["interface"];
-    if (interface < 0 || interface > 5) {
-        const char* json = "{\"success\":false,\"error\":\"Interface must be 0-5\"}";
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
-    }
-
-    ReceiverNetworkConfig::setBatteryInterface((uint8_t)interface);
-
-    if (send_component_interface_selection(ReceiverNetworkConfig::getBatteryInterface(), ReceiverNetworkConfig::getInverterInterface())) {
-        LOG_INFO("API", "Battery interface %d sent to transmitter via ESP-NOW", interface);
-    } else {
-        LOG_WARN("API", "Could not send battery interface to transmitter (may be offline)");
-    }
-
-    const char* json = "{\"success\":true,\"message\":\"Battery interface updated\"}";
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json, strlen(json));
-    return ESP_OK;
-}
-
-static esp_err_t api_set_inverter_interface_handler(httpd_req_t *req) {
-    char content[100] = {0};
-    int ret = httpd_req_recv(req, content, sizeof(content) - 1);
-
-    if (ret <= 0) {
-        const char* json = "{\"success\":false,\"error\":\"No data received\"}";
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
-    }
-
-    StaticJsonDocument<128> doc;
-    DeserializationError error = deserializeJson(doc, content);
-    if (error || !doc.containsKey("interface")) {
-        const char* json = "{\"success\":false,\"error\":\"Invalid JSON format\"}";
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
-    }
-
-    int interface = doc["interface"];
-    if (interface < 0 || interface > 5) {
-        const char* json = "{\"success\":false,\"error\":\"Interface must be 0-5\"}";
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json, strlen(json));
-        return ESP_OK;
-    }
-
-    ReceiverNetworkConfig::setInverterInterface((uint8_t)interface);
-
-    if (send_component_interface_selection(ReceiverNetworkConfig::getBatteryInterface(), (uint8_t)interface)) {
-        LOG_INFO("API", "Inverter interface %d sent to transmitter via ESP-NOW", interface);
-    } else {
-        LOG_WARN("API", "Could not send inverter interface to transmitter (may be offline)");
-    }
-
-    const char* json = "{\"success\":true,\"message\":\"Inverter interface updated\"}";
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json, strlen(json));
-    return ESP_OK;
+    return ApiResponseUtils::send_jsonf(req,
+                                        "{\"battery_interface\":%d,\"inverter_interface\":%d}",
+                                        battery_interface,
+                                        inverter_interface);
 }
 
 } // namespace
@@ -383,13 +351,11 @@ int register_type_selection_api_handlers(httpd_handle_t server) {
         {.uri = "/api/get_battery_types", .method = HTTP_GET, .handler = api_get_battery_types_handler, .user_ctx = NULL},
         {.uri = "/api/get_inverter_types", .method = HTTP_GET, .handler = api_get_inverter_types_handler, .user_ctx = NULL},
         {.uri = "/api/get_selected_types", .method = HTTP_GET, .handler = api_get_selected_types_handler, .user_ctx = NULL},
-        {.uri = "/api/set_battery_type", .method = HTTP_POST, .handler = api_set_battery_type_handler, .user_ctx = NULL},
-        {.uri = "/api/set_inverter_type", .method = HTTP_POST, .handler = api_set_inverter_type_handler, .user_ctx = NULL},
         {.uri = "/api/get_battery_interfaces", .method = HTTP_GET, .handler = api_get_battery_interfaces_handler, .user_ctx = NULL},
         {.uri = "/api/get_inverter_interfaces", .method = HTTP_GET, .handler = api_get_inverter_interfaces_handler, .user_ctx = NULL},
         {.uri = "/api/get_selected_interfaces", .method = HTTP_GET, .handler = api_get_selected_interfaces_handler, .user_ctx = NULL},
-        {.uri = "/api/set_battery_interface", .method = HTTP_POST, .handler = api_set_battery_interface_handler, .user_ctx = NULL},
-        {.uri = "/api/set_inverter_interface", .method = HTTP_POST, .handler = api_set_inverter_interface_handler, .user_ctx = NULL}
+        {.uri = "/api/component_apply", .method = HTTP_POST, .handler = api_component_apply_handler, .user_ctx = NULL},
+        {.uri = "/api/component_apply_status", .method = HTTP_GET, .handler = api_component_apply_status_handler, .user_ctx = NULL}
     };
 
     for (size_t i = 0; i < sizeof(handlers) / sizeof(httpd_uri_t); ++i) {

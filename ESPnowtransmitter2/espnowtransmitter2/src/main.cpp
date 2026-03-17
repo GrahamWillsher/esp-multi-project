@@ -16,13 +16,11 @@
  */
 
 #include <Arduino.h>
-#include <WiFi.h>
-#include <esp_wifi.h>
-#include <ETH.h>
+#include <WiFi.h>           // Direct use: WiFi.mode/disconnect/config/macAddress
 #include <espnow_transmitter.h>
 #include <espnow_send_utils.h>
 #include <ethernet_utilities.h>
-#include <firmware_version.h>
+#include <firmware_version.h>  // DEVICE_NAME, PROTOCOL_VERSION, FW_VERSION_*
 #include <firmware_metadata.h>
 
 // Configuration
@@ -33,7 +31,7 @@
 #include <esp32common/config/timing_config.h>
 
 // Network managers
-#include "network/ethernet_manager.h"
+#include "network/ethernet_manager.h"  // Provides ETH.h transitively
 
 // Queue management
 #include "queue/espnow_queue_manager.h"
@@ -79,9 +77,6 @@
 #include "battery/battery_manager.h"
 #endif
 
-// MQTT Logger
-#include <mqtt_logger.h>
-
 // Queue handles (exported for espnow_transmitter library ISR callback)
 // These reference the queues managed by EspnowQueueManager
 QueueHandle_t espnow_message_queue = nullptr;
@@ -89,8 +84,8 @@ QueueHandle_t espnow_discovery_queue = nullptr;
 QueueHandle_t espnow_rx_queue = nullptr;
 void setup() {
     // Initialize serial
-    Serial.begin(115200);
-    delay(TimingConfig::SERIAL_INIT_DELAY_MS);
+    Serial.begin(hardware::SERIAL_BAUD_RATE);
+    vTaskDelay(pdMS_TO_TICKS(TimingConfig::SERIAL_INIT_DELAY_MS));
     LOG_INFO("MAIN", "\n=== ESP-NOW Transmitter (Modular) ===");
     
     // Initialize hardware abstraction layer (GPIO configuration for Waveshare HAT)
@@ -123,7 +118,7 @@ void setup() {
     WiFi.disconnect();
     // CRITICAL: Explicitly clear WiFi IP to force routing via Ethernet
     WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
-    delay(TimingConfig::WIFI_RADIO_STABILIZATION_MS);  // Let WiFi radio stabilize
+    vTaskDelay(pdMS_TO_TICKS(TimingConfig::WIFI_RADIO_STABILIZATION_MS));  // Let WiFi radio stabilize
     // SECTION 11 ARCHITECTURE: Transmitter-active channel hopping
     // No need to force channel - active hopping will discover receiver's channel
     // 1s per channel (13s max) vs 6s per channel (78s max) in Section 10
@@ -204,7 +199,7 @@ void setup() {
     // Start message handler (highest priority - processes incoming messages)
     // MUST start BEFORE passive scanning so it can process PROBE messages from receiver!
     EspnowMessageHandler::instance().start_rx_task(espnow_message_queue);
-    delay(TimingConfig::COMPONENT_INIT_DELAY_MS);  // Let RX task initialize
+    vTaskDelay(pdMS_TO_TICKS(TimingConfig::COMPONENT_INIT_DELAY_MS));  // Let RX task initialize
     
     // PHASE B: Initialize channel manager (BEFORE connection manager)
     LOG_INFO("CHANNEL", "Initializing channel manager...");
@@ -221,7 +216,7 @@ void setup() {
     
     // Enable auto-reconnect and set timeout
     EspNowConnectionManager::instance().set_auto_reconnect(true);
-    EspNowConnectionManager::instance().set_connecting_timeout_ms(30000);  // 30s timeout
+    EspNowConnectionManager::instance().set_connecting_timeout_ms(timing::ESPNOW_CONNECTING_TIMEOUT_MS);
     
     // Initialize transmitter connection handler (registers state callbacks)
     TransmitterConnectionHandler::instance().init();
@@ -406,7 +401,7 @@ void setup() {
     }
     
     // Delay before starting network time utilities
-    delay(TimingConfig::POST_INIT_DELAY_MS);
+    vTaskDelay(pdMS_TO_TICKS(TimingConfig::POST_INIT_DELAY_MS));
     
     // Initialize and start network time utilities (NTP sync + connectivity monitoring)
     if (init_ethernet_utilities()) {
@@ -449,7 +444,7 @@ void loop() {
     // ✅ NEW: Update Ethernet state machine (check timeouts, recovery transitions)
     static uint32_t last_eth_update = 0;
     uint32_t now = millis();
-    if (now - last_eth_update > 1000) {
+    if (now - last_eth_update > timing::ETH_STATE_MACHINE_UPDATE_INTERVAL_MS) {
         EthernetManager::instance().update_state_machine();
         last_eth_update = now;
     }
@@ -464,7 +459,7 @@ void loop() {
     static uint32_t last_can_stats = 0;
     
     // Phase 4a: Periodic CAN statistics (every 10 seconds)
-    if (now - last_can_stats > 10000) {
+    if (now - last_can_stats > timing::CAN_STATS_LOG_INTERVAL_MS) {
         if (CANDriver::instance().is_ready()) {
             LOG_INFO("CAN", "Stats: RX=%u, TX=%u, Errors=%u, BMS=%s",
                      CANDriver::instance().get_rx_count(),
@@ -477,7 +472,7 @@ void loop() {
 #endif
     
     // Periodic state validation (every 30 seconds) - Phase 2
-    if (now - last_state_validation > 30000) {
+    if (now - last_state_validation > timing::STATE_VALIDATION_INTERVAL_MS) {
         if (!DiscoveryTask::instance().validate_state()) {
             LOG_WARN("MAIN", "State validation failed - triggering self-healing restart");
             DiscoveryTask::instance().restart();
@@ -501,14 +496,14 @@ void loop() {
     HeartbeatManager::instance().tick();
     
     // Metrics reporting (every 5 minutes) - Phase 3
-    if (now - last_metrics_report > 300000) {
+    if (now - last_metrics_report > timing::METRICS_REPORT_INTERVAL_MS) {
         DiscoveryTask::instance().get_metrics().log_summary();
         last_metrics_report = now;
     }
     
     // Peer state audit (every 2 minutes, if debug enabled) - Phase 2
     #if LOG_LEVEL >= LOG_LEVEL_DEBUG
-    if (now - last_peer_audit > 120000) {
+    if (now - last_peer_audit > timing::PEER_AUDIT_INTERVAL_MS) {
         DiscoveryTask::instance().audit_peer_state();
         last_peer_audit = now;
     }

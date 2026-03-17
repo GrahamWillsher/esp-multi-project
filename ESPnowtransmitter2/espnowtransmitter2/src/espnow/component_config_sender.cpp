@@ -6,6 +6,7 @@
 #include "component_config_sender.h"
 #include "../system_settings.h"
 #include "../config/logging_config.h"
+#include "../config/task_config.h"
 #include <mqtt_logger.h>
 #include <esp32common/espnow/common.h>
 #include <espnow_send_utils.h>
@@ -69,9 +70,9 @@ void ComponentConfigSender::start_periodic_sender() {
   xTaskCreate(
     periodic_task_impl,
     "comp_cfg_send",
-    3072,  // Stack size
+    task_config::STACK_SIZE_COMP_CFG_SENDER,
     this,
-    2,     // Priority
+    task_config::PRIORITY_NORMAL,
     &task_handle_
   );
 }
@@ -97,7 +98,7 @@ void ComponentConfigSender::periodic_task_impl(void* parameter) {
   ComponentConfigSender* sender = static_cast<ComponentConfigSender*>(parameter);
   
   TickType_t last_send = xTaskGetTickCount();
-  const TickType_t interval = pdMS_TO_TICKS(5000);  // 5 seconds
+  const TickType_t interval = pdMS_TO_TICKS(timing::COMP_CFG_SEND_INTERVAL_MS);
   
   while (true) {
     // Check if immediate send is needed due to config change
@@ -115,6 +116,6 @@ void ComponentConfigSender::periodic_task_impl(void* parameter) {
     }
     
     // Sleep for 500ms before checking again
-    vTaskDelay(pdMS_TO_TICKS(500));
+    vTaskDelay(pdMS_TO_TICKS(timing::COMP_CFG_POLL_INTERVAL_MS));
   }
 }

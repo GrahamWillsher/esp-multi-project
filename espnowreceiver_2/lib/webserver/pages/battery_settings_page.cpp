@@ -300,7 +300,7 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
                 const element = document.getElementById(mapping.id);
                 if (element && initialValues[mapping.id] !== element.value) {
                     console.log('Changed: ' + mapping.field + ' from ' + initialValues[mapping.id] + ' to ' + element.value);
-                    
+
                     changedSettings.push({
                         id: mapping.id,
                         field: mapping.field,
@@ -309,258 +309,126 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
                     });
                 }
             });
+
             const typeSelect = document.getElementById('batteryType');
             const batteryTypeChanged = typeSelect && initialValues['batteryType'] !== typeSelect.value;
             const interfaceSelect = document.getElementById('batteryInterface');
             const batteryInterfaceChanged = interfaceSelect && initialValues['batteryInterface'] !== interfaceSelect.value;
             console.log('Total changed settings: ' + changedSettings.length + ', batteryTypeChanged=' + batteryTypeChanged);
-            
+
             if (changedSettings.length === 0 && !batteryTypeChanged && !batteryInterfaceChanged) {
                 console.log('No changed settings to save');
                 return;
             }
-            
-            // Show confirmation if battery type changed (requires transmitter reboot)
-            if (batteryTypeChanged || batteryInterfaceChanged) {
-                const selectedName = typeSelect.options[typeSelect.selectedIndex].text;
-                const interfaceName = interfaceSelect.options[interfaceSelect.selectedIndex].text;
-                const confirmed = confirm(
-                    '⚠️ TRANSMITTER REBOOT REQUIRED\\n\\n' +
-                    (batteryTypeChanged ? ('Changing the battery type to "' + selectedName + '" will reboot the transmitter to apply changes.\n\n') : '') +
-                    (batteryInterfaceChanged ? ('Changing the battery interface to "' + interfaceName + '" will reboot the transmitter to apply changes.\n\n') : '') +
-                    'This will temporarily interrupt data transmission (approximately 30 seconds).\\n\\n' +
-                    'Do you want to continue?'
-                );
-                
-                if (!confirmed) {
-                    console.log('Battery type change cancelled by user');
-                    return;
-                }
-            }
-            
+
             const saveButton = document.getElementById('saveButton');
-            console.log('Changed settings:', changedSettings);
-            
-            let savedCount = 0;
-            let failedCount = 0;
-
             const pendingSaves = [...changedSettings];
-            if (batteryTypeChanged) {
-                pendingSaves.push({
-                    kind: 'batteryType',
-                    id: 'batteryType',
-                    value: typeSelect.value,
-                    name: typeSelect.options[typeSelect.selectedIndex].text
-                });
-            }
-            if (batteryInterfaceChanged) {
-                pendingSaves.push({
-                    kind: 'batteryInterface',
-                    id: 'batteryInterface',
-                    value: interfaceSelect.value,
-                    name: interfaceSelect.options[interfaceSelect.selectedIndex].text
-                });
-            }
-            
-            // Save each changed setting sequentially with a small delay
-            function saveNext(index) {
-                if (index >= pendingSaves.length) {
-                    // All done - update initial values for successfully saved settings
-                    if (failedCount === 0) {
-                        changedSettings.forEach(s => {
-                            initialValues[s.id] = s.value;
-                        });
-                        if (batteryTypeChanged) {
-                            initialValues['batteryType'] = typeSelect.value;
-                        }
-                        if (batteryInterfaceChanged) {
-                            initialValues['batteryInterface'] = interfaceSelect.value;
-                        }
+            const componentApplyPending = batteryTypeChanged || batteryInterfaceChanged;
 
-                        if (batteryTypeChanged || batteryInterfaceChanged) {
-                            TransmitterReboot.run({
-                                countdownSeconds: TransmitterReboot.COUNTDOWN_SECONDS,
-                                updateCountdown: (seconds) => {
-                                    saveButton.disabled = true;
-                                    saveButton.style.cursor = 'not-allowed';
-                                    saveButton.style.backgroundColor = '#ff9800';
-                                    saveButton.textContent = `Reboot in ${seconds}s...`;
-                                },
-                                onCommandStart: () => {
-                                    saveButton.textContent = 'Sending reboot command...';
-                                },
-                                onSuccess: () => {
-                                    saveButton.textContent = '✓ Reboot command sent';
-                                    saveButton.style.backgroundColor = '#28a745';
-                                },
-                                onFailure: () => {
-                                    saveButton.textContent = '✗ Reboot failed';
-                                    saveButton.style.backgroundColor = '#dc3545';
-                                    setTimeout(() => {
-                                        updateButtonText(getChangedCount());
-                                    }, 3000);
-                                },
-                                onError: (error) => {
-                                    console.error('Reboot request failed:', error);
-                                    saveButton.textContent = '✗ Reboot request error';
-                                    saveButton.style.backgroundColor = '#dc3545';
-                                    setTimeout(() => {
-                                        updateButtonText(getChangedCount());
-                                    }, 3000);
-                                }
-                            });
-                        } else {
-                            saveButton.textContent = '✓ All Saved!';
-                            saveButton.style.backgroundColor = '#28a745';
-                            setTimeout(() => {
-                                updateButtonText(getChangedCount());
-                            }, 3000);
-                        }
-                    } else {
-                        saveButton.textContent = '⚠ ' + failedCount + ' Failed';
-                        saveButton.style.backgroundColor = '#dc3545';
-                        setTimeout(() => {
-                            const remainingCount = pendingSaves.length - savedCount;
-                            updateButtonText(remainingCount);
-                        }, 3000);
-                    }
-                    return;
-                }
-                
-                // Update button text with current progress
-                saveButton.textContent = 'Saving ' + (index + 1) + ' of ' + pendingSaves.length + '...';
-                
-                const setting = pendingSaves[index];
-                if (setting.kind === 'batteryType') {
-                    const typeId = parseInt(setting.value);
-                    console.log('Sending to API: battery type=' + typeId + ' (' + setting.name + ')');
+            SaveOperation.runSequential({
+                items: pendingSaves,
+                saveButton: saveButton,
+                onItemStart: (setting, index, total, button) => {
+                    SaveOperation.setButtonState(button, {
+                        text: 'Saving ' + (index + 1) + ' of ' + total + '...',
+                        backgroundColor: '#ff9800',
+                        disabled: true,
+                        cursor: 'not-allowed'
+                    });
+                },
+                executeItem: (setting) => {
+                    const fieldId = BATTERY_FIELDS[setting.field];
+                    const isFloat = FLOAT_FIELDS.includes(setting.field);
+                    const value = isFloat ? parseFloat(setting.value) : parseInt(setting.value);
 
-                    fetch('/api/set_battery_type', {
+                    console.log('Sending to API: field=' + setting.field + ' (id=' + fieldId + '), value=' + value + ' (' + (isFloat ? 'float' : 'int') + ')');
+
+                    const savePromise = fetch('/api/save_setting', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({type: typeId})
-                    })
-                        .then(response => response.json())
-                        .then(data => {
-                            if (data.success) {
-                                savedCount++;
-                                console.log('Battery type saved successfully');
-                            } else {
-                                failedCount++;
-                                console.error('Failed to save battery type:', data.error);
-                                alert('ERROR saving battery type: ' + data.error);
-                            }
-                            setTimeout(() => saveNext(index + 1), 100);
+                        body: JSON.stringify({
+                            category: 0,
+                            field: fieldId,
+                            value: value
                         })
-                        .catch(error => {
-                            failedCount++;
-                            console.error('Error saving battery type:', error);
-                            alert('ERROR saving battery type: ' + error.message + '\n\nPlease check transmitter connection and try again.');
-                            saveButton.textContent = '✗ Save Failed!';
-                            saveButton.style.backgroundColor = '#dc3545';
-                            setTimeout(() => {
-                                const remainingCount = pendingSaves.length - index;
-                                updateButtonText(remainingCount);
-                            }, 3000);
-                        });
-                    return;
-                }
+                    }).then(response => response.json());
 
-                if (setting.kind === 'batteryInterface') {
-                    const interfaceId = parseInt(setting.value);
-                    console.log('Sending to API: battery interface=' + interfaceId + ' (' + setting.name + ')');
+                    const timeoutPromise = new Promise((_, reject) =>
+                        setTimeout(() => reject(new Error('Timeout after 5 seconds')), 5000)
+                    );
 
-                    fetch('/api/set_battery_interface', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({interface: interfaceId})
-                    })
-                        .then(response => response.json())
-                        .then(data => {
-                            if (data.success) {
-                                savedCount++;
-                                console.log('Battery interface saved successfully');
-                            } else {
-                                failedCount++;
-                                console.error('Failed to save battery interface:', data.error);
-                                alert('ERROR saving battery interface: ' + data.error);
-                            }
-                            setTimeout(() => saveNext(index + 1), 100);
-                        })
-                        .catch(error => {
-                            failedCount++;
-                            console.error('Error saving battery interface:', error);
-                            alert('ERROR saving battery interface: ' + error.message + '\n\nPlease check transmitter connection and try again.');
-                            saveButton.textContent = '✗ Save Failed!';
-                            saveButton.style.backgroundColor = '#dc3545';
-                            setTimeout(() => {
-                                const remainingCount = pendingSaves.length - index;
-                                updateButtonText(remainingCount);
-                            }, 3000);
-                        });
-                    return;
-                }
-
-                const fieldId = BATTERY_FIELDS[setting.field];
-                
-                // Determine if this field uses float or integer
-                const isFloat = FLOAT_FIELDS.includes(setting.field);
-                const value = isFloat ? parseFloat(setting.value) : parseInt(setting.value);
-                
-                console.log('Sending to API: field=' + setting.field + ' (id=' + fieldId + '), value=' + value + ' (' + (isFloat ? 'float' : 'int') + ')');
-                
-                // Send to API with 5-second timeout
-                const savePromise = fetch('/api/save_setting', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        category: 0,  // BATTERY category
-                        field: fieldId,
-                        value: value
-                    })
-                });
-                
-                const timeoutPromise = new Promise((_, reject) => 
-                    setTimeout(() => reject(new Error('Timeout after 5 seconds')), 5000)
-                );
-                
-                Promise.race([savePromise, timeoutPromise])
-                .then(response => response.json())
-                .then(data => {
+                    return Promise.race([savePromise, timeoutPromise]);
+                },
+                onItemSuccess: (setting, data) => {
                     console.log('API response:', data);
-                    console.log('Success:', data.success);
-                    console.log('Message:', data.message);
-                    if (data.success) {
-                        savedCount++;
-                        console.log('Saved ' + setting.field + ': ' + setting.oldValue + ' → ' + setting.value);
-                    } else {
-                        failedCount++;
-                        console.error('Failed to save ' + setting.field + ': ' + data.message);
-                        console.error('Full response:', data);
-                        alert('ERROR saving ' + setting.field + ': ' + data.message);
-                    }
-                    // Save next setting after short delay
-                    setTimeout(() => saveNext(index + 1), 100);
-                })
-                .catch(error => {
-                    failedCount++;
+                    console.log('Saved ' + setting.field + ': ' + setting.oldValue + ' → ' + setting.value);
+                },
+                onItemFailure: (setting, data) => {
+                    console.error('Failed to save ' + setting.field + ': ' + data.message);
+                    console.error('Full response:', data);
+                    alert('ERROR saving ' + setting.field + ': ' + (data.message || 'Unknown error'));
+                },
+                onError: (setting, error) => {
                     console.error('FETCH ERROR for ' + setting.field + ':', error);
                     console.error('Error name:', error.name);
                     console.error('Error message:', error.message);
                     if (error.stack) console.error('Error stack:', error.stack);
-                    alert('ERROR saving ' + setting.field + ': ' + error.message + '\\n\\nPlease check transmitter connection and try again.');
-                    // Stop on first failure to avoid cascading errors
-                    saveButton.textContent = '✗ Save Failed!';
-                    saveButton.style.backgroundColor = '#dc3545';
-                    setTimeout(() => {
-                        const remainingCount = pendingSaves.length - index;
-                        updateButtonText(remainingCount);
+                    alert('ERROR saving ' + setting.field + ': ' + error.message + '\n\nPlease check transmitter connection and try again.');
+                    SaveOperation.showError(saveButton, '✗ Save Failed!', () => {
+                        updateButtonText(getChangedCount());
                     }, 3000);
-                });
-            }
-            
-            // Start saving from first changed setting
-            saveNext(0);
+                },
+                onComplete: ({ successCount, failureCount, totalCount }) => {
+                    if (failureCount > 0) {
+                        SaveOperation.showError(saveButton, '⚠ ' + failureCount + ' Failed', () => {
+                            const remainingCount = totalCount - successCount;
+                            updateButtonText(remainingCount);
+                        }, 3000);
+                        return;
+                    }
+
+                    changedSettings.forEach(s => {
+                        initialValues[s.id] = s.value;
+                    });
+
+                    if (componentApplyPending) {
+                        let applyMask = 0;
+                        if (batteryTypeChanged) applyMask |= 0x01;
+                        if (batteryInterfaceChanged) applyMask |= 0x04;
+
+                        SaveOperation.runComponentApply({
+                            payload: {
+                                apply_mask: applyMask,
+                                battery_type: parseInt(typeSelect.value),
+                                battery_interface: parseInt(interfaceSelect.value)
+                            },
+                            saveButton: saveButton,
+                            onReadyForReboot: () => {
+                                if (batteryTypeChanged) {
+                                    initialValues['batteryType'] = typeSelect.value;
+                                }
+                                if (batteryInterfaceChanged) {
+                                    initialValues['batteryInterface'] = interfaceSelect.value;
+                                }
+                            },
+                            restoreButton: () => {
+                                updateButtonText(getChangedCount());
+                            },
+                            onRequestError: (error) => {
+                                console.error('Component apply failed:', error);
+                                SaveOperation.showError(saveButton, '✗ Save Failed', () => {
+                                    updateButtonText(getChangedCount());
+                                }, 3000);
+                            }
+                        });
+                        return;
+                    }
+
+                    SaveOperation.showSuccess(saveButton, '✓ All Saved!', () => {
+                        updateButtonText(getChangedCount());
+                    }, 3000);
+                }
+            });
         }
         
         // Phase 3.1: Battery Type Selection

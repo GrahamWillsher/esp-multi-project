@@ -4,6 +4,8 @@
 **Project:** ESP32-S3 LVGL Image Display with Fade Animation  
 **Status:** ✅ Research Complete - Root Cause Identified - Solutions Provided  
 
+**Project Architecture Master:** [PROJECT_ARCHITECTURE_MASTER.md](PROJECT_ARCHITECTURE_MASTER.md)
+
 ---
 
 ## 📚 Documentation Files Created

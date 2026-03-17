@@ -15,20 +15,21 @@ uint8_t get_last_debug_level();
  */
 bool send_debug_level_control(uint8_t level);
 /**
- * @brief Send component type selection (battery and inverter types) to transmitter via ESP-NOW
- * @param battery_type Battery profile type (0-31, 29=PYLON_BATTERY default)
- * @param inverter_type Inverter type (0-21, 0=NONE default)
+ * @brief Send batched component apply request (types/interfaces) with correlation ID
+ * @param request_id Receiver-generated request ID
+ * @param apply_mask Bitmask of fields to apply (component_apply_mask_t)
+ * @param battery_type Desired battery type
+ * @param inverter_type Desired inverter type
+ * @param battery_interface Desired battery interface
+ * @param inverter_interface Desired inverter interface
  * @return true if sent successfully, false otherwise
  */
-bool send_component_type_selection(uint8_t battery_type, uint8_t inverter_type);
-
-/**
- * @brief Send component interface selection (battery and inverter interfaces) to transmitter via ESP-NOW
- * @param battery_interface Battery comm interface (0-5)
- * @param inverter_interface Inverter comm interface (0-5)
- * @return true if sent successfully, false otherwise
- */
-bool send_component_interface_selection(uint8_t battery_interface, uint8_t inverter_interface);
+bool send_component_apply_request(uint32_t request_id,
+								  uint8_t apply_mask,
+								  uint8_t battery_type,
+								  uint8_t inverter_type,
+								  uint8_t battery_interface,
+								  uint8_t inverter_interface);
 
 /**
  * @brief Send event logs subscription control to transmitter via ESP-NOW

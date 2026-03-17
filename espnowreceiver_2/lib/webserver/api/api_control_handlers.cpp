@@ -1,6 +1,8 @@
 #include "api_control_handlers.h"
 
+#include "api_response_utils.h"
 #include "../utils/transmitter_manager.h"
+#include "../utils/http_json_utils.h"
 #include "../logging.h"
 
 #include <Arduino.h>
@@ -11,34 +13,52 @@
 #include <esp_now.h>
 #include <esp32common/espnow/common.h>
 
+namespace ESPNow {
+    extern uint8_t transmitter_mac[6];
+}
+
 esp_err_t api_reboot_handler(httpd_req_t *req) {
-    char json[192];
+    const uint8_t* target_mac = nullptr;
+    const char* mac_source = "none";
 
     if (TransmitterManager::isMACKnown()) {
-        reboot_t reboot_msg = { msg_reboot };
-        esp_err_t result = esp_now_send(TransmitterManager::getMAC(), (const uint8_t*)&reboot_msg, sizeof(reboot_msg));
-        if (result == ESP_OK) {
-            LOG_INFO("REBOOT: Sent command to transmitter");
-            snprintf(json, sizeof(json), "{\"success\":true,\"message\":\"Reboot command sent\"}");
-        } else {
-            LOG_ERROR("REBOOT: Failed to send command: %s", esp_err_to_name(result));
-            snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"%s\"}", esp_err_to_name(result));
-        }
+        target_mac = TransmitterManager::getMAC();
+        mac_source = "TransmitterManager";
     } else {
-        LOG_WARN("REBOOT: Transmitter MAC unknown, cannot send command");
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"Transmitter MAC unknown\"}");
+        bool has_espnow_mac = false;
+        for (int i = 0; i < 6; ++i) {
+            if (ESPNow::transmitter_mac[i] != 0) {
+                has_espnow_mac = true;
+                break;
+            }
+        }
+        if (has_espnow_mac) {
+            target_mac = ESPNow::transmitter_mac;
+            mac_source = "ESPNow::transmitter_mac";
+        }
     }
 
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json, strlen(json));
-    return ESP_OK;
+    if (target_mac != nullptr) {
+        reboot_t reboot_msg = { msg_reboot };
+        esp_err_t result = esp_now_send(target_mac, (const uint8_t*)&reboot_msg, sizeof(reboot_msg));
+        if (result == ESP_OK) {
+            LOG_INFO("REBOOT: Sent command to transmitter via %s", mac_source);
+            return ApiResponseUtils::send_jsonf(req,
+                                                "{\"success\":true,\"message\":\"Reboot command sent\",\"source\":\"%s\"}",
+                                                mac_source);
+        } else {
+            LOG_ERROR("REBOOT: Failed to send command: %s", esp_err_to_name(result));
+            return ApiResponseUtils::send_error_message(req, esp_err_to_name(result));
+        }
+    } else {
+        LOG_WARN("REBOOT: Transmitter MAC unknown in both caches, cannot send command");
+        return ApiResponseUtils::send_error_message(req, "Transmitter MAC unknown");
+    }
 }
 
 esp_err_t api_transmitter_ota_status_handler(httpd_req_t *req) {
     if (!TransmitterManager::isIPKnown()) {
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, "{\"success\":false,\"message\":\"Transmitter IP unknown\"}");
-        return ESP_OK;
+        return ApiResponseUtils::send_error_message(req, "Transmitter IP unknown");
     }
 
     const String status_url = TransmitterManager::getURL() + "/api/ota_status";
@@ -54,9 +74,7 @@ esp_err_t api_transmitter_ota_status_handler(httpd_req_t *req) {
         StaticJsonDocument<256> doc;
         DeserializationError err = deserializeJson(doc, body);
         if (err) {
-            httpd_resp_set_type(req, "application/json");
-            httpd_resp_sendstr(req, "{\"success\":false,\"message\":\"Invalid OTA status JSON\"}");
-            return ESP_OK;
+            return ApiResponseUtils::send_error_message(req, "Invalid OTA status JSON");
         }
 
         bool in_progress = doc["in_progress"] | false;
@@ -81,18 +99,11 @@ esp_err_t api_transmitter_ota_status_handler(httpd_req_t *req) {
         String json;
         json.reserve(160);
         serializeJson(out_doc, json);
-
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, json.c_str(), json.length());
-        return ESP_OK;
+        return HttpJsonUtils::send_json(req, json.c_str());
     }
 
     http.end();
-    char err_json[96];
-    snprintf(err_json, sizeof(err_json), "{\"success\":false,\"message\":\"Status HTTP error: %d\"}", code);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, err_json, strlen(err_json));
-    return ESP_OK;
+    return ApiResponseUtils::send_jsonf(req, "{\"success\":false,\"message\":\"Status HTTP error: %d\"}", code);
 }
 
 esp_err_t api_ota_upload_handler(httpd_req_t *req) {
@@ -105,15 +116,11 @@ esp_err_t api_ota_upload_handler(httpd_req_t *req) {
     LOG_INFO("OTA: Content-Type: %s (%s mode)", has_content_type ? content_type : "<none>", is_raw_upload ? "raw/stream" : "unsupported");
 
     if (!is_raw_upload) {
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, "{\"success\":false,\"message\":\"Unsupported upload type. Use raw application/octet-stream\"}");
-        return ESP_OK;
+        return ApiResponseUtils::send_error_message(req, "Unsupported upload type. Use raw application/octet-stream");
     }
 
     if (!TransmitterManager::isIPKnown()) {
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, "{\"success\":false,\"message\":\"Transmitter IP unknown\"}");
-        return ESP_OK;
+        return ApiResponseUtils::send_error_message(req, "Transmitter IP unknown");
     }
 
     const size_t firmware_size = remaining;
@@ -130,9 +137,7 @@ esp_err_t api_ota_upload_handler(httpd_req_t *req) {
     tx_client.setTimeout(60000);
 
     if (!tx_client.connect(tx_ip, 80)) {
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, "{\"success\":false,\"message\":\"Failed to connect to transmitter OTA server\"}");
-        return ESP_OK;
+        return ApiResponseUtils::send_error_message(req, "Failed to connect to transmitter OTA server");
     }
 
     tx_client.print("POST /ota_upload HTTP/1.1\r\n");
@@ -153,17 +158,13 @@ esp_err_t api_ota_upload_handler(httpd_req_t *req) {
             if (read_len == HTTPD_SOCK_ERR_TIMEOUT) continue;
 
             tx_client.stop();
-            httpd_resp_set_type(req, "application/json");
-            httpd_resp_sendstr(req, "{\"success\":false,\"message\":\"Upload receive failed during streaming\"}");
-            return ESP_FAIL;
+            return ApiResponseUtils::send_error_message(req, "Upload receive failed during streaming");
         }
 
         size_t sent = tx_client.write((const uint8_t*)buf, read_len);
         if (sent != (size_t)read_len) {
             tx_client.stop();
-            httpd_resp_set_type(req, "application/json");
-            httpd_resp_sendstr(req, "{\"success\":false,\"message\":\"Failed to forward OTA chunk to transmitter\"}");
-            return ESP_FAIL;
+            return ApiResponseUtils::send_error_message(req, "Failed to forward OTA chunk to transmitter");
         }
 
         remaining -= read_len;
@@ -177,9 +178,7 @@ esp_err_t api_ota_upload_handler(httpd_req_t *req) {
 
     if (!tx_client.available()) {
         tx_client.stop();
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, "{\"success\":false,\"message\":\"No response from transmitter after streaming OTA\"}");
-        return ESP_OK;
+        return ApiResponseUtils::send_error_message(req, "No response from transmitter after streaming OTA");
     }
 
     String status_line = tx_client.readStringUntil('\n');
@@ -211,8 +210,7 @@ esp_err_t api_ota_upload_handler(httpd_req_t *req) {
     LOG_INFO("OTA: Streamed %u bytes to transmitter, HTTP status=%d", (unsigned)total_forwarded, status_code);
 
     if (status_code == 200) {
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, "{\"success\":true,\"message\":\"Firmware streamed to transmitter\",\"status\":\"forwarded\"}");
+        return HttpJsonUtils::send_json(req, "{\"success\":true,\"message\":\"Firmware streamed to transmitter\",\"status\":\"forwarded\"}");
     } else {
         body.replace("\"", "'");
         StaticJsonDocument<768> out_doc;
@@ -224,9 +222,6 @@ esp_err_t api_ota_upload_handler(httpd_req_t *req) {
         String err_json;
         err_json.reserve(256 + body.length());
         serializeJson(out_doc, err_json);
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, err_json.c_str(), err_json.length());
+        return HttpJsonUtils::send_json(req, err_json.c_str());
     }
-
-    return ESP_OK;
 }

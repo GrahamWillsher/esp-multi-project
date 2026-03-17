@@ -1,5 +1,7 @@
 #include "message_handler.h"
 
+#include "component_catalog_handlers.h"
+
 #include "discovery_task.h"
 #include "version_beacon_manager.h"
 #include "tx_send_guard.h"
@@ -116,6 +118,13 @@ void EspnowMessageHandler::setup_message_routes() {
     router.register_route(msg_component_interface,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             static_cast<EspnowMessageHandler*>(ctx)->handle_component_interface(*msg);
+        },
+        0xFF, this);
+
+    // Batched component apply request handler (receiver → transmitter)
+    router.register_route(msg_component_apply_request,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            TxComponentCatalogHandlers::handle_component_apply_request(*msg);
         },
         0xFF, this);
 

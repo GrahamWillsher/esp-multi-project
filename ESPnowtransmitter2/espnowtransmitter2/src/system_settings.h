@@ -64,48 +64,35 @@
 // ============================================================================
 
 // Primary battery: Pylon (Type 29) - LiFePO4 common baseline
-#define DEFAULT_BMS_TYPE 29  // BatteryType::PYLON_BATTERY
-#define DEFAULT_BATTERY_PROFILE_TYPE DEFAULT_BMS_TYPE
+namespace defaults {
+  // Device type selections
+  constexpr uint8_t DEFAULT_BMS_TYPE = 29;                        // BatteryType::PYLON_BATTERY
+  constexpr uint8_t DEFAULT_BATTERY_PROFILE_TYPE = DEFAULT_BMS_TYPE;
+  constexpr uint8_t DEFAULT_INVERTER_TYPE = 0;                    // InverterType::NONE
+  constexpr uint8_t DEFAULT_CHARGER_TYPE = 0;                     // ChargerType::NONE
+  constexpr uint8_t DEFAULT_SHUNT_TYPE = 0;                       // ShuntTypeEnum::NONE
+  constexpr bool    DEFAULT_MULTI_BATTERY_ENABLED = false;        // Multi-battery not used in Phase 1
 
-// Phase 1: Monitoring only - no inverter/charger/shunt
-#define DEFAULT_INVERTER_TYPE 0  // InverterType::NONE
-#define DEFAULT_CHARGER_TYPE 0   // ChargerType::NONE
-#define DEFAULT_SHUNT_TYPE 0     // ShuntTypeEnum::NONE
+  // Voltage limits (millivolts)
+  constexpr uint32_t DEFAULT_PACK_MAX_VOLTAGE_MV = 500000;        // 500V - typical 400V pack with headroom
+  constexpr uint32_t DEFAULT_PACK_MIN_VOLTAGE_MV = 300000;        // 300V - minimum pack voltage
+  constexpr uint16_t DEFAULT_CELL_MAX_VOLTAGE_MV = 4300;          // 4.3V - LiFePO4 typical max
+  constexpr uint16_t DEFAULT_CELL_MIN_VOLTAGE_MV = 2700;          // 2.7V - LiFePO4 typical min
 
-// Multi-battery not used in Phase 1
-#define DEFAULT_MULTI_BATTERY_ENABLED 0
+  // Current limits (deciAmperes = 0.1A units)
+  constexpr uint16_t DEFAULT_MAX_CHARGE_CURRENT_DA = 300;         // 30.0A max charge
+  constexpr uint16_t DEFAULT_MAX_DISCHARGE_CURRENT_DA = 300;      // 30.0A max discharge
 
-// ============================================================================
-// VOLTAGE LIMITS (in millivolts)
-// ============================================================================
+  // Temperature limits (deciCelsius = 0.1°C units)
+  constexpr int16_t DEFAULT_MAX_TEMP_DC = 550;                    // 55.0°C maximum operating temperature
+  constexpr int16_t DEFAULT_MIN_TEMP_DC = -50;                    // -5.0°C minimum operating temperature
 
-#define DEFAULT_PACK_MAX_VOLTAGE_MV 500000      // 500V - typical 400V pack with headroom
-#define DEFAULT_PACK_MIN_VOLTAGE_MV 300000      // 300V - minimum pack voltage
-#define DEFAULT_CELL_MAX_VOLTAGE_MV 4300        // 4.3V - LiFePO4 typical max
-#define DEFAULT_CELL_MIN_VOLTAGE_MV 2700        // 2.7V - LiFePO4 typical min
-
-// ============================================================================
-// CURRENT LIMITS (in deciAmperes, i.e., units of 0.1A)
-// ============================================================================
-
-#define DEFAULT_MAX_CHARGE_CURRENT_DA 300       // 30.0A max charge
-#define DEFAULT_MAX_DISCHARGE_CURRENT_DA 300    // 30.0A max discharge
-
-// ============================================================================
-// TEMPERATURE LIMITS (in deciCelsius, i.e., units of 0.1°C)
-// ============================================================================
-
-#define DEFAULT_MAX_TEMP_DC 550                 // 55.0°C maximum operating temperature
-#define DEFAULT_MIN_TEMP_DC -50                 // -5.0°C minimum operating temperature
-
-// ============================================================================
-// UPDATE RATES (in milliseconds)
-// ============================================================================
-
-#define DEFAULT_ESPNOW_UPDATE_RATE_MS 100       // Snapshot every 100ms to receiver
-#define DEFAULT_DISPLAY_REFRESH_RATE_MS 500     // Receiver display update every 500ms
-#define DEFAULT_MQTT_PUBLISH_RATE_MS 5000       // MQTT publish every 5 seconds (if enabled)
-#define DEFAULT_BMS_PROCESS_RATE_MS 100         // Process BMS data every 100ms
+  // Update rates (milliseconds)
+  constexpr uint16_t DEFAULT_ESPNOW_UPDATE_RATE_MS = 100;         // Snapshot every 100ms to receiver
+  constexpr uint16_t DEFAULT_DISPLAY_REFRESH_RATE_MS = 500;       // Receiver display update every 500ms
+  constexpr uint16_t DEFAULT_MQTT_PUBLISH_RATE_MS = 5000;         // MQTT publish every 5 seconds (if enabled)
+  constexpr uint16_t DEFAULT_BMS_PROCESS_RATE_MS = 100;           // Process BMS data every 100ms
+} // namespace defaults
 
 // ============================================================================
 // SYSTEM SETTINGS MANAGER CLASS
@@ -327,32 +314,32 @@ class SystemSettings {
   uint8_t config_version_ = CONFIG_VERSION;
   
   // Component types
-  uint8_t bms_type_ = DEFAULT_BMS_TYPE;
-  uint8_t battery_profile_type_ = DEFAULT_BATTERY_PROFILE_TYPE;
+  uint8_t bms_type_ = defaults::DEFAULT_BMS_TYPE;
+  uint8_t battery_profile_type_ = defaults::DEFAULT_BATTERY_PROFILE_TYPE;
   uint8_t secondary_bms_type_ = 0;  // NONE
-  uint8_t inverter_type_ = DEFAULT_INVERTER_TYPE;
-  uint8_t charger_type_ = DEFAULT_CHARGER_TYPE;
-  uint8_t shunt_type_ = DEFAULT_SHUNT_TYPE;
+  uint8_t inverter_type_ = defaults::DEFAULT_INVERTER_TYPE;
+  uint8_t charger_type_ = defaults::DEFAULT_CHARGER_TYPE;
+  uint8_t shunt_type_ = defaults::DEFAULT_SHUNT_TYPE;
   
-  bool multi_battery_enabled_ = DEFAULT_MULTI_BATTERY_ENABLED;
+  bool multi_battery_enabled_ = defaults::DEFAULT_MULTI_BATTERY_ENABLED;
   
   // Voltage limits
-  uint32_t max_voltage_mv_ = DEFAULT_PACK_MAX_VOLTAGE_MV;
-  uint32_t min_voltage_mv_ = DEFAULT_PACK_MIN_VOLTAGE_MV;
+  uint32_t max_voltage_mv_ = defaults::DEFAULT_PACK_MAX_VOLTAGE_MV;
+  uint32_t min_voltage_mv_ = defaults::DEFAULT_PACK_MIN_VOLTAGE_MV;
   
   // Current limits (deciAmperes)
-  uint16_t max_charge_current_da_ = DEFAULT_MAX_CHARGE_CURRENT_DA;
-  uint16_t max_discharge_current_da_ = DEFAULT_MAX_DISCHARGE_CURRENT_DA;
+  uint16_t max_charge_current_da_ = defaults::DEFAULT_MAX_CHARGE_CURRENT_DA;
+  uint16_t max_discharge_current_da_ = defaults::DEFAULT_MAX_DISCHARGE_CURRENT_DA;
   
   // Temperature limits (deciCelsius)
-  int16_t max_temp_dc_ = DEFAULT_MAX_TEMP_DC;
-  int16_t min_temp_dc_ = DEFAULT_MIN_TEMP_DC;
+  int16_t max_temp_dc_ = defaults::DEFAULT_MAX_TEMP_DC;
+  int16_t min_temp_dc_ = defaults::DEFAULT_MIN_TEMP_DC;
   
   // Update rates
-  uint16_t espnow_update_rate_ms_ = DEFAULT_ESPNOW_UPDATE_RATE_MS;
-  uint16_t display_refresh_rate_ms_ = DEFAULT_DISPLAY_REFRESH_RATE_MS;
-  uint16_t mqtt_publish_rate_ms_ = DEFAULT_MQTT_PUBLISH_RATE_MS;
-  uint16_t bms_process_rate_ms_ = DEFAULT_BMS_PROCESS_RATE_MS;
+  uint16_t espnow_update_rate_ms_ = defaults::DEFAULT_ESPNOW_UPDATE_RATE_MS;
+  uint16_t display_refresh_rate_ms_ = defaults::DEFAULT_DISPLAY_REFRESH_RATE_MS;
+  uint16_t mqtt_publish_rate_ms_ = defaults::DEFAULT_MQTT_PUBLISH_RATE_MS;
+  uint16_t bms_process_rate_ms_ = defaults::DEFAULT_BMS_PROCESS_RATE_MS;
   
   // Helper: Write single setting to NVS
   bool nvs_write_u8(const char* key, uint8_t value);

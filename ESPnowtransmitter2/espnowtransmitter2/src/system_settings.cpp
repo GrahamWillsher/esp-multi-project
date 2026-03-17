@@ -83,31 +83,31 @@ bool SystemSettings::load_from_nvs() {
   }
   
   // Load component types
-  nvs_read_u8(NVS_BATTERY_TYPE_KEY, bms_type_, DEFAULT_BMS_TYPE);
-  nvs_read_u8(NVS_BATTERY_PROFILE_KEY, battery_profile_type_, DEFAULT_BATTERY_PROFILE_TYPE);
-  nvs_read_u8(NVS_INVERTER_TYPE_KEY, inverter_type_, DEFAULT_INVERTER_TYPE);
-  nvs_read_u8(NVS_CHARGER_TYPE_KEY, charger_type_, DEFAULT_CHARGER_TYPE);
-  nvs_read_u8(NVS_SHUNT_TYPE_KEY, shunt_type_, DEFAULT_SHUNT_TYPE);
+  nvs_read_u8(NVS_BATTERY_TYPE_KEY, bms_type_, defaults::DEFAULT_BMS_TYPE);
+  nvs_read_u8(NVS_BATTERY_PROFILE_KEY, battery_profile_type_, defaults::DEFAULT_BATTERY_PROFILE_TYPE);
+  nvs_read_u8(NVS_INVERTER_TYPE_KEY, inverter_type_, defaults::DEFAULT_INVERTER_TYPE);
+  nvs_read_u8(NVS_CHARGER_TYPE_KEY, charger_type_, defaults::DEFAULT_CHARGER_TYPE);
+  nvs_read_u8(NVS_SHUNT_TYPE_KEY, shunt_type_, defaults::DEFAULT_SHUNT_TYPE);
   
   // Load multi-battery flag
-  uint8_t multi_bat_u8 = DEFAULT_MULTI_BATTERY_ENABLED;
-  nvs_read_u8(NVS_MULTI_BATTERY_KEY, multi_bat_u8, DEFAULT_MULTI_BATTERY_ENABLED);
+  uint8_t multi_bat_u8 = defaults::DEFAULT_MULTI_BATTERY_ENABLED ? 1u : 0u;
+  nvs_read_u8(NVS_MULTI_BATTERY_KEY, multi_bat_u8, static_cast<uint8_t>(defaults::DEFAULT_MULTI_BATTERY_ENABLED));
   multi_battery_enabled_ = (multi_bat_u8 != 0);
   
   // Load voltage limits
-  nvs_read_u32(NVS_MAX_VOLTAGE_KEY, max_voltage_mv_, DEFAULT_PACK_MAX_VOLTAGE_MV);
-  nvs_read_u32(NVS_MIN_VOLTAGE_KEY, min_voltage_mv_, DEFAULT_PACK_MIN_VOLTAGE_MV);
+  nvs_read_u32(NVS_MAX_VOLTAGE_KEY, max_voltage_mv_, defaults::DEFAULT_PACK_MAX_VOLTAGE_MV);
+  nvs_read_u32(NVS_MIN_VOLTAGE_KEY, min_voltage_mv_, defaults::DEFAULT_PACK_MIN_VOLTAGE_MV);
   
   // Load current limits
-  nvs_read_u16(NVS_MAX_CURRENT_KEY, max_charge_current_da_, DEFAULT_MAX_CHARGE_CURRENT_DA);
+  nvs_read_u16(NVS_MAX_CURRENT_KEY, max_charge_current_da_, defaults::DEFAULT_MAX_CHARGE_CURRENT_DA);
   max_discharge_current_da_ = max_charge_current_da_;  // Use same for both in Phase 1
   
   // Load temperature limits
-  nvs_read_i16(NVS_MAX_TEMP_KEY, max_temp_dc_, DEFAULT_MAX_TEMP_DC);
-  nvs_read_i16(NVS_MIN_TEMP_KEY, min_temp_dc_, DEFAULT_MIN_TEMP_DC);
+  nvs_read_i16(NVS_MAX_TEMP_KEY, max_temp_dc_, defaults::DEFAULT_MAX_TEMP_DC);
+  nvs_read_i16(NVS_MIN_TEMP_KEY, min_temp_dc_, defaults::DEFAULT_MIN_TEMP_DC);
   
   // Load update rate
-  nvs_read_u16(NVS_UPDATE_RATE_KEY, espnow_update_rate_ms_, DEFAULT_ESPNOW_UPDATE_RATE_MS);
+  nvs_read_u16(NVS_UPDATE_RATE_KEY, espnow_update_rate_ms_, defaults::DEFAULT_ESPNOW_UPDATE_RATE_MS);
 
   bool corrected_invalid_selection = false;
   if (!contains_battery_type(bms_type_)) {
@@ -195,25 +195,25 @@ bool SystemSettings::save_to_nvs() {
 bool SystemSettings::reset_to_defaults() {
   LOG_INFO("SETTINGS", "Resetting to factory defaults...");
   
-  bms_type_ = DEFAULT_BMS_TYPE;
-  battery_profile_type_ = DEFAULT_BATTERY_PROFILE_TYPE;
+  bms_type_ = defaults::DEFAULT_BMS_TYPE;
+  battery_profile_type_ = defaults::DEFAULT_BATTERY_PROFILE_TYPE;
   secondary_bms_type_ = 0;  // NONE
-  inverter_type_ = DEFAULT_INVERTER_TYPE;
-  charger_type_ = DEFAULT_CHARGER_TYPE;
-  shunt_type_ = DEFAULT_SHUNT_TYPE;
-  multi_battery_enabled_ = DEFAULT_MULTI_BATTERY_ENABLED;
+  inverter_type_ = defaults::DEFAULT_INVERTER_TYPE;
+  charger_type_ = defaults::DEFAULT_CHARGER_TYPE;
+  shunt_type_ = defaults::DEFAULT_SHUNT_TYPE;
+  multi_battery_enabled_ = defaults::DEFAULT_MULTI_BATTERY_ENABLED;
   
-  max_voltage_mv_ = DEFAULT_PACK_MAX_VOLTAGE_MV;
-  min_voltage_mv_ = DEFAULT_PACK_MIN_VOLTAGE_MV;
-  max_charge_current_da_ = DEFAULT_MAX_CHARGE_CURRENT_DA;
-  max_discharge_current_da_ = DEFAULT_MAX_DISCHARGE_CURRENT_DA;
-  max_temp_dc_ = DEFAULT_MAX_TEMP_DC;
-  min_temp_dc_ = DEFAULT_MIN_TEMP_DC;
+  max_voltage_mv_ = defaults::DEFAULT_PACK_MAX_VOLTAGE_MV;
+  min_voltage_mv_ = defaults::DEFAULT_PACK_MIN_VOLTAGE_MV;
+  max_charge_current_da_ = defaults::DEFAULT_MAX_CHARGE_CURRENT_DA;
+  max_discharge_current_da_ = defaults::DEFAULT_MAX_DISCHARGE_CURRENT_DA;
+  max_temp_dc_ = defaults::DEFAULT_MAX_TEMP_DC;
+  min_temp_dc_ = defaults::DEFAULT_MIN_TEMP_DC;
   
-  espnow_update_rate_ms_ = DEFAULT_ESPNOW_UPDATE_RATE_MS;
-  display_refresh_rate_ms_ = DEFAULT_DISPLAY_REFRESH_RATE_MS;
-  mqtt_publish_rate_ms_ = DEFAULT_MQTT_PUBLISH_RATE_MS;
-  bms_process_rate_ms_ = DEFAULT_BMS_PROCESS_RATE_MS;
+  espnow_update_rate_ms_ = defaults::DEFAULT_ESPNOW_UPDATE_RATE_MS;
+  display_refresh_rate_ms_ = defaults::DEFAULT_DISPLAY_REFRESH_RATE_MS;
+  mqtt_publish_rate_ms_ = defaults::DEFAULT_MQTT_PUBLISH_RATE_MS;
+  bms_process_rate_ms_ = defaults::DEFAULT_BMS_PROCESS_RATE_MS;
   
   config_version_ = CONFIG_VERSION;
   

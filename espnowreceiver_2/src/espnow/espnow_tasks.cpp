@@ -3,6 +3,7 @@
 #include "rx_heartbeat_manager.h"
 #include "rx_state_machine.h"
 #include "espnow_send.h"
+#include "component_apply_tracker.h"
 #include "type_catalog_cache.h"
 #include <esp32common/espnow/connection_manager.h>
 #include "battery_handlers.h"  // Phase 1: Battery Emulator data handlers
@@ -97,6 +98,7 @@ void handle_packet_unknown(const espnow_queue_msg_t* msg, uint8_t subtype);
 // Phase 2: Settings message handlers
 void handle_settings_update_ack(const espnow_queue_msg_t* msg);
 void handle_settings_changed(const espnow_queue_msg_t* msg);
+void handle_component_apply_ack_message(const espnow_queue_msg_t* msg);
 static void request_category_refresh(const uint8_t* mac, uint8_t category, const char* reason);
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -317,6 +319,12 @@ void setup_message_routes() {
     router.register_route(msg_settings_changed,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             handle_settings_changed(msg);
+        },
+        0xFF, nullptr);
+
+    router.register_route(msg_component_apply_ack,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            handle_component_apply_ack_message(msg);
         },
         0xFF, nullptr);
     
@@ -999,6 +1007,38 @@ void handle_packet_cell_info(const espnow_queue_msg_t* msg) {
     if (EspnowPacketUtils::get_packet_info(msg, info)) {
         EspnowPacketUtils::print_packet_info(info, "CELL_INFO");
     }
+}
+
+void handle_component_apply_ack_message(const espnow_queue_msg_t* msg) {
+    if (msg->len < (int)sizeof(component_apply_ack_t)) {
+        LOG_WARN(kLogTag, "Component apply ACK too short: %d bytes", msg->len);
+        return;
+    }
+
+    const component_apply_ack_t* ack = reinterpret_cast<const component_apply_ack_t*>(msg->data);
+
+    uint16_t calculated = 0;
+    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(ack);
+    for (size_t i = 0; i < sizeof(component_apply_ack_t) - sizeof(ack->checksum); ++i) {
+        calculated += bytes[i];
+    }
+
+    if (calculated != ack->checksum) {
+        LOG_WARN(kLogTag, "Component apply ACK checksum mismatch: calc=%u recv=%u", calculated, ack->checksum);
+        return;
+    }
+
+    LOG_INFO(kLogTag,
+             "Component apply ACK: request_id=%lu success=%u reboot_required=%u ready=%u mask=0x%02X persisted=0x%02X msg=%s",
+             static_cast<unsigned long>(ack->request_id),
+             static_cast<unsigned>(ack->success),
+             static_cast<unsigned>(ack->reboot_required),
+             static_cast<unsigned>(ack->ready_for_reboot),
+             static_cast<unsigned>(ack->apply_mask),
+             static_cast<unsigned>(ack->persisted_mask),
+             ack->message);
+
+    ComponentApplyTracker::on_ack(*ack);
 }
 
 void handle_packet_unknown(const espnow_queue_msg_t* msg, uint8_t subtype) {

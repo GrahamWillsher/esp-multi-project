@@ -18,8 +18,8 @@ static bool g_enabled = false;
 static TestState g_state;
 static TestConfig g_config;
 static unsigned long g_last_update_ms = 0;
-static const float TARGET_PACK_VOLTAGE = 345.6f;  // 96 cells × 3.6V nominal
-static const uint16_t NOMINAL_CELL_VOLTAGE = 3600;  // 3.6V in mV
+static constexpr float TARGET_PACK_VOLTAGE = 345.6f;  // 96 cells × 3.6V nominal
+static constexpr uint16_t NOMINAL_CELL_VOLTAGE = 3600;  // 3.6V in mV
 
 // ============================================================================
 // Forward Declarations

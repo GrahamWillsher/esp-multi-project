@@ -8,6 +8,9 @@
 #include <Arduino.h>
 #include <Preferences.h>
 #include <mqtt_logger.h>
+#include <esp32common/config/timing_config.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 namespace {
 
@@ -54,7 +57,7 @@ void handle_reboot(const espnow_queue_msg_t& msg) {
 
     MqttManager::instance().disconnect();
 
-    delay(1000);
+    vTaskDelay(pdMS_TO_TICKS(TimingConfig::REBOOT_DELAY_MS));
     ESP.restart();
 }
 
