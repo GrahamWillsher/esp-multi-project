@@ -1,8 +1,8 @@
 # ESP-NOW Receiver: Project Architecture Master Document
 
 **Scope**: Receiver-side runtime architecture for ESP-NOW data ingestion, UI display, web API/control, and configuration orchestration.  
-**Version**: 1.0 (Current Workspace Baseline)  
-**Date**: March 17, 2026  
+**Version**: 1.1 (Current Workspace Baseline)  
+**Date**: March 20, 2026  
 **Device**: LilyGo T-Display-S3 (Receiver)  
 **Status**: Active development baseline (build passing in current workspace)
 
@@ -15,8 +15,10 @@
 3. [Core Systems](#core-systems)
 4. [Current Codebase Snapshot (Mar 2026)](#current-codebase-snapshot-mar-2026)
 5. [Technical References](#technical-references)
-6. [Build, Flash, and Validation](#build-flash-and-validation)
-7. [Cross-Project References](#cross-project-references)
+6. [Hardware, HAL, and Pin Layout](#hardware-hal-and-pin-layout)
+7. [Timing, NVS, Metadata, and Memory](#timing-nvs-metadata-and-memory)
+8. [Build, Flash, and Validation](#build-flash-and-validation)
+9. [Cross-Project References](#cross-project-references)
 
 ---
 
@@ -92,7 +94,6 @@ Provide a resilient receiver that:
 Primary implementation files:
 
 - `src/espnow/rx_state_machine.*`
-- `src/espnow/receiver_connection_manager.*`
 - `src/espnow/rx_connection_handler.*`
 - `src/espnow/rx_heartbeat_manager.*`
 - `src/espnow/espnow_callbacks.*`
@@ -155,7 +156,66 @@ Notes:
 
 - MQTT subscription enhancements and data-source tagging are implemented in current codebase lineage.
 
+### 6) Inter-device versioning and heartbeat contracts
+
+Primary references:
+
+- `../esp32common/firmware_version.h`
+- `../esp32common/docs/ESP-NOW_Communication_Architecture.md`
+- `../esp32common/docs/ESPNOW_HEARTBEAT.md`
+- `src/espnow/rx_heartbeat_manager.cpp`
+- `src/espnow/handlers/system_status_handler.cpp`
+
+Notes:
+
+- Receiver validates and consumes transmitter state/messages under the shared protocol contract.
+- Heartbeat and connection health are coordinated by the receiver RX state machine plus heartbeat manager.
+
 ---
+
+## Hardware, HAL, and Pin Layout
+
+Primary files:
+
+- `src/hal/hardware_config.h`
+- `src/hal/tft_espi_user_setup.h`
+- `src/display/tft_impl/tft_display.cpp`
+
+Board summary:
+
+- Board: LilyGo T-Display-S3
+- Display: ST7789, 8-bit parallel interface
+- PSRAM-capable ESP32-S3 configuration enabled in `platformio.ini` (`BOARD_HAS_PSRAM`)
+
+---
+
+## Timing, NVS, Metadata, and Memory
+
+Timing/NTP:
+
+- Receiver no longer owns a standalone SNTP manager; legacy `src/time/time_sync_manager.cpp` is obsolete by design.
+- Operational timing now follows ESP-NOW/runtime workflows and shared timing constants where needed.
+
+NVS:
+
+- Receiver configuration persistence paths are implemented via:
+  - `lib/receiver_config/receiver_config_manager.h`
+  - `lib/webserver/utils/receiver_config_manager.cpp`
+  - `lib/webserver/utils/transmitter_nvs_persistence.cpp`
+
+Firmware metadata and `.bin` identity:
+
+- Metadata structure embedded in `.rodata` via `../esp32common/firmware_metadata/firmware_metadata.h`
+- Build-time metadata/version naming: `../esp32common/scripts/version_firmware.py`
+
+Memory/PSRAM:
+
+- Receiver environments define PSRAM-enabled build flags in `platformio.ini`.
+- Display and web subsystems are structured to avoid large transient allocations in hot paths.
+
+Project rules reference:
+
+- `../esp32common/docs/project guidlines.md`
 
 ## Current Codebase Snapshot (Mar 2026)
 
@@ -166,6 +226,7 @@ Top-level runtime anchors:
 - `src/state/*`
 - `src/espnow/*`
 - `src/display/*`
+- `src/hal/*`
 - `lib/webserver/*`
 
 High-value review and migration records:
@@ -186,6 +247,7 @@ High-value review and migration records:
 - [DISPLAY_ARCHITECTURE_SUMMARY.md](DISPLAY_ARCHITECTURE_SUMMARY.md)
 - [EVENT_LOGS_ARCHITECTURE_DIAGRAMS.md](EVENT_LOGS_ARCHITECTURE_DIAGRAMS.md)
 - [MQTT_SUBSCRIPTION_ENHANCEMENTS.md](MQTT_SUBSCRIPTION_ENHANCEMENTS.md)
+- [START_HERE.md](START_HERE.md)
 - [RECEIVER_FULL_CODE_REVIEW_2026_03_16.md](RECEIVER_FULL_CODE_REVIEW_2026_03_16.md)
 - [RECEIVER_COMMON_CODE_REVIEW_2026_03_17.md](RECEIVER_COMMON_CODE_REVIEW_2026_03_17.md)
 

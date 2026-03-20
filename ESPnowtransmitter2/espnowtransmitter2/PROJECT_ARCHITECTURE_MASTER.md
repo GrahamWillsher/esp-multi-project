@@ -3,9 +3,9 @@
 **Attribution**: This work is completely based on Dala the Great’s Battery Emulator: https://github.com/dalathegreat/Battery-Emulator
 **Scope**: The goal is to split that project into two devices — one for control and one for display — with communication between them. If the display device stops working, it does not interfere with the main control device.
 
-**Version**: 1.2 (Current Workspace Baseline)  
-**Date**: March 17, 2026  
-**Device**: Olimex ESP32-POE-ISO (Transmitter)  
+**Version**: 1.3 (Current Workspace Baseline)  
+**Date**: March 20, 2026  
+**Device**: Olimex ESP32-POE2 (Transmitter)  
 **Status**: Active development baseline (build passing in current workspace)
 
 ---
@@ -32,7 +32,7 @@ Build a **real-time battery monitoring and control system** that transmits CAN b
 
 ### Hardware
 
-- **Transmitter**: Olimex ESP32-POE-ISO
+- **Transmitter**: Olimex ESP32-POE2
   - Wired Ethernet (MII interface with LAN8720 PHY)
   - Wireless ESP-NOW (IEEE 802.15.4 - same radio as WiFi, different protocol)
   - CAN bus interface (for battery data)
@@ -67,6 +67,55 @@ Primary active modules now align to this structure:
 
 Receiver companion architecture reference: `../../espnowreceiver_2/PROJECT_ARCHITECTURE_MASTER.md`.
 
+### Architecture Currency Addendum (Verified Mar 20, 2026)
+
+This addendum is the current authoritative map for structure and operation.
+
+1. **ESP-NOW communications and state machines**
+  - `src/espnow/tx_state_machine.cpp`
+  - `src/espnow/tx_connection_handler.cpp`
+  - `src/espnow/discovery_task.cpp`
+  - `src/espnow/transmission_task.cpp`
+  - `src/espnow/heartbeat_manager.cpp`
+  - shared transport/protocol plumbing: `../../esp32common/espnow_common_utils/*`
+
+2. **MQTT communications**
+  - `src/network/mqtt_manager.cpp`
+  - `src/network/mqtt_task.cpp`
+  - shared logging behavior: `../../esp32common/docs/MQTT_LOGGER_IMPLEMENTATION.md`
+
+3. **Inter-device compatibility (versioning, heartbeat, OTA auth)**
+  - version/protocol constants: `../../esp32common/firmware_version.h`
+  - heartbeat protocol reference: `../../esp32common/docs/ESPNOW_HEARTBEAT.md`
+  - OTA auth/session utilities: `../../esp32common/webserver_common_utils/include/webserver_common_utils/ota_auth_utils.h`, `../../esp32common/webserver_common_utils/include/webserver_common_utils/ota_session_utils.h`
+  - transmitter OTA runtime/HTTP server: `src/network/ota_manager.cpp`
+
+4. **NTP and timing**
+  - shared timing constants: `../../esp32common/config/timing_config.h`
+  - transmitter time sync façade: `src/network/time_manager.cpp`
+  - Ethernet-driven service lifecycle: `src/network/service_supervisor.cpp`
+
+5. **NVS and persistent settings**
+  - system settings persistence: `src/settings/settings_manager.cpp`
+  - battery emulator persisted configuration: `src/battery_emulator/communication/nvm/comm_nvm.cpp`
+
+6. **Firmware metadata and `.bin` content identity**
+  - metadata structure embedded in `.rodata`: `../../esp32common/firmware_metadata/firmware_metadata.h`
+  - pre/post build metadata injection and versioned filenames: `../../esp32common/scripts/version_firmware.py`
+
+7. **Pin layout and HAL**
+  - board pin constants: `src/config/hardware_config.h`
+  - detailed pin conflict analysis: `CAN_ETHERNET_GPIO_CONFLICT_ANALYSIS.md`
+  - battery emulator HAL integration: `src/battery_emulator/devboard/hal/*`
+
+8. **PSRAM/runtime memory**
+  - board config: `platformio.ini` (`board = esp32-poe2`, WROVER-E)
+  - OTA HTTP path stack hardening to prevent canary faults: `src/network/ota_manager.cpp`
+
+9. **Governance and coding standards**
+  - project rules and coding standards: `../../esp32common/docs/project guidlines.md`
+  - cross-device OTA guardrail checklist: `../../esp32common/OTA_CROSS_DEVICE_COMPATIBILITY_CHECKLIST.md`
+
 ---
 
 ## Architecture Overview
@@ -75,7 +124,7 @@ Receiver companion architecture reference: `../../espnowreceiver_2/PROJECT_ARCHI
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    ESP32-POE-ISO (Transmitter)             │
+│                    ESP32-POE2 (Transmitter)                │
 ├─────────────────────────────────────────────────────────────┤
 │                                                              │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
@@ -198,7 +247,7 @@ if (EthernetManager::instance().is_link_present()) {
 **Reference**: [TRANSMITTER_STATE_MACHINE_IMPLEMENTATION.md](TRANSMITTER_STATE_MACHINE_IMPLEMENTATION.md)
 
 **Implementation**:
-- Files: `src/espnow/connection_manager.cpp`, `src/espnow/discovery_task.cpp`
+- Files: `src/espnow/tx_connection_handler.cpp`, `src/espnow/tx_state_machine.cpp`, `src/espnow/discovery_task.cpp`
 - Transmitter states: 17 (channel locking requires state granularity)
 - Receiver states: 10 (passive role, simplified)
 - Cache: EnhancedCache (dual storage: transient + state)
@@ -536,9 +585,8 @@ After the first production build, prioritize these enhancements:
 ### Build Command
 
 ```bash
-pio run -e esp32_poe_iso  # Compile
-pio run -e esp32_poe_iso --upload  # Compile + Flash
-pio device monitor  # Serial monitor
+pio run -e olimex_esp32_poe2  # Compile
+pio run -e olimex_esp32_poe2 -t upload -t monitor  # Compile + Flash + Monitor
 ```
 
 ---
