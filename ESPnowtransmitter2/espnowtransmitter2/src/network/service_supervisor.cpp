@@ -5,6 +5,7 @@
 #include "network/mqtt_manager.h"
 #include "network/ota_manager.h"
 #include "config/logging_config.h"
+#include <ethernet_utilities.h>
 
 ServiceSupervisor& ServiceSupervisor::instance() {
     static ServiceSupervisor instance;
@@ -34,6 +35,15 @@ void ServiceSupervisor::handle_ethernet_connected() {
     }
 
     LOG_INFO("SERVICE_SUPERVISOR", "Ethernet connected - starting dependent services");
+
+    if (init_ethernet_utilities()) {
+        if (!start_ethernet_utilities_task()) {
+            LOG_WARN("SERVICE_SUPERVISOR", "Failed to start NTP/network utilities task");
+        }
+    } else {
+        LOG_WARN("SERVICE_SUPERVISOR", "Failed to initialize NTP/network utilities");
+    }
+
     OtaManager::instance().init_http_server();
 
     if (config::features::MQTT_ENABLED) {
@@ -50,6 +60,9 @@ void ServiceSupervisor::handle_ethernet_disconnected() {
     }
 
     LOG_WARN("SERVICE_SUPERVISOR", "Ethernet disconnected - stopping dependent services");
+
+    stop_ethernet_utilities_task();
+
     OtaManager::instance().stop_http_server();
 
     if (config::features::MQTT_ENABLED) {

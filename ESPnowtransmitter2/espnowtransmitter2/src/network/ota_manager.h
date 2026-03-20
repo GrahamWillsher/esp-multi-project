@@ -139,10 +139,20 @@ private:
      */
     bool validate_ota_auth_headers(httpd_req_t* req);
 
+    /**
+     * @brief Update OTA commit-state telemetry.
+     */
+    void set_commit_state(const char* state, const char* detail = nullptr);
+
     httpd_handle_t http_server_{nullptr};
     volatile bool ota_in_progress_{false};
     volatile bool ota_ready_for_reboot_{false};
     bool ota_last_success_{false};
+    uint32_t ota_txn_id_{0};
+    uint32_t ota_state_since_ms_{0};
+    uint32_t ota_last_update_ms_{0};
+    char ota_commit_state_[32] = "idle";
+    char ota_commit_detail_[96] = "idle";
     char ota_last_error_[96] = {0};
 
     OtaSessionUtils::Session ota_session_;

@@ -50,7 +50,6 @@ extern LogLevel current_log_level;
 #if COMPILE_LOG_LEVEL >= LOG_WARN
     #if LOG_USE_MQTT
         #define LOG_WARN(tag, fmt, ...) if (current_log_level >= LOG_WARN) { \
-            Serial.printf("[WARN][%s] " fmt "\n", tag, ##__VA_ARGS__); \
             MQTT_LOG_WARNING(tag, fmt, ##__VA_ARGS__); \
         }
     #else
@@ -65,7 +64,6 @@ extern LogLevel current_log_level;
 #if COMPILE_LOG_LEVEL >= LOG_INFO
     #if LOG_USE_MQTT
         #define LOG_INFO(tag, fmt, ...) if (current_log_level >= LOG_INFO) { \
-            Serial.printf("[INFO][%s] " fmt "\n", tag, ##__VA_ARGS__); \
             MQTT_LOG_INFO(tag, fmt, ##__VA_ARGS__); \
         }
     #else
@@ -80,7 +78,6 @@ extern LogLevel current_log_level;
 #if COMPILE_LOG_LEVEL >= LOG_DEBUG
     #if LOG_USE_MQTT
         #define LOG_DEBUG(tag, fmt, ...) if (current_log_level >= LOG_DEBUG) { \
-            Serial.printf("[DEBUG][%s] " fmt "\n", tag, ##__VA_ARGS__); \
             MQTT_LOG_DEBUG(tag, fmt, ##__VA_ARGS__); \
         }
     #else
@@ -95,7 +92,6 @@ extern LogLevel current_log_level;
 #if COMPILE_LOG_LEVEL >= LOG_TRACE
     #if LOG_USE_MQTT
         #define LOG_TRACE(tag, fmt, ...) if (current_log_level >= LOG_TRACE) { \
-            Serial.printf("[TRACE][%s] " fmt "\n", tag, ##__VA_ARGS__); \
             MQTT_LOG_DEBUG(tag, fmt, ##__VA_ARGS__); \
         }
     #else

@@ -409,6 +409,11 @@ void DiscoveryMetrics::log_summary() const {
 // ============================================================================
 
 void DiscoveryTask::start_active_channel_hopping() {
+    if (active_hopping_running_ && task_handle_ != nullptr) {
+        LOG_WARN("DISCOVERY", "Active channel hopping already running - duplicate start ignored");
+        return;
+    }
+
     LOG_INFO("DISCOVERY", "Starting ACTIVE channel hopping (Section 11 - transmitter-active mode)");
     LOG_INFO("DISCOVERY", "Transmitter will broadcast PROBE on each channel (1s/channel, 13s max)");
     
@@ -425,7 +430,9 @@ void DiscoveryTask::start_active_channel_hopping() {
     
     if (task_handle_ == nullptr) {
         LOG_ERROR("DISCOVERY", "Failed to create active channel hopping task!");
+        active_hopping_running_ = false;
     } else {
+        active_hopping_running_ = true;
         LOG_INFO("DISCOVERY", "Active hopping task started on Core 1 (Priority %d)", task_config::PRIORITY_LOW);
     }
 }
@@ -649,8 +656,11 @@ void DiscoveryTask::active_channel_hopping_task(void* parameter) {
             
             // Send initial version beacon with current config versions
             // This allows receiver to request any config sections it doesn't have cached
-            VersionBeaconManager::instance().send_version_beacon(true);
-            LOG_INFO("DISCOVERY", "✓ Initial version beacon sent to receiver");
+            if (VersionBeaconManager::instance().send_version_beacon(true)) {
+                LOG_INFO("DISCOVERY", "✓ Initial version beacon sent to receiver");
+            } else {
+                LOG_WARN("DISCOVERY", "Initial version beacon send failed (will retry via periodic beacons)");
+            }
             
             discovery_complete = true;  // Mark complete
             break;  // Exit scan loop
@@ -664,8 +674,10 @@ void DiscoveryTask::active_channel_hopping_task(void* parameter) {
     LOG_INFO("DISCOVERY", "✓ Active channel hopping complete - receiver connected");
     LOG_INFO("DISCOVERY", "Total scan attempts: %d", scan_attempt);
     LOG_INFO("DISCOVERY", "Discovery time: ~%d seconds", scan_attempt * 13);
-    
-    // Task can exit - connection is now established
-    // Keep-alive will be handled by separate manager
-    vTaskSuspend(NULL);  // Suspend task (not delete - may want to restart later)
+
+    // Task can exit - connection is now established. Clear handles/flags so future
+    // reconnection attempts can start a fresh task without duplication.
+    self->active_hopping_running_ = false;
+    self->task_handle_ = nullptr;
+    vTaskDelete(nullptr);
 }

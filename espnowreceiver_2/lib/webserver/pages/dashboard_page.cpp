@@ -74,7 +74,7 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
     <div style='display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin: 30px 0;'>
         
         <!-- Transmitter Device Card -->
-        <a href='/transmitter' style='text-decoration: none;'>
+        <a href='/transmitter' style='text-decoration: none;' title='Click to manage'>
             <div class='info-box' style='cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; border-left: 5px solid #2196F3;'>
                 <div onmouseover='this.parentElement.style.transform="translateY(-5px)"; this.parentElement.style.boxShadow="0 8px 20px rgba(0,0,0,0.3)";' 
                      onmouseout='this.parentElement.style.transform="translateY(0)"; this.parentElement.style.boxShadow="0 4px 6px rgba(0,0,0,0.2)";'>
@@ -121,16 +121,12 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
     content += R"rawliteral(</span>
                         </div>
                     </div>
-                    
-                    <div style='text-align: center; margin-top: 20px; padding: 12px; background: #2196F3; border-radius: 5px; color: white; font-weight: bold;'>
-                        Click to Manage →
-                    </div>
                 </div>
             </div>
         </a>
         
         <!-- Receiver Device Card -->
-        <a href='/receiver/config' style='text-decoration: none;'>
+        <a href='/receiver/config' style='text-decoration: none;' title='Click to manage'>
             <div class='info-box' style='cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; border-left: 5px solid #4CAF50;'>
                 <div onmouseover='this.parentElement.style.transform="translateY(-5px)"; this.parentElement.style.boxShadow="0 8px 20px rgba(0,0,0,0.3)";' 
                      onmouseout='this.parentElement.style.transform="translateY(0)"; this.parentElement.style.boxShadow="0 4px 6px rgba(0,0,0,0.2)";'>
@@ -171,82 +167,69 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
     content += R"rawliteral(</span>
                         </div>
                     </div>
-                    
-                    <div style='text-align: center; margin-top: 20px; padding: 12px; background: #4CAF50; border-radius: 5px; color: white; font-weight: bold;'>
-                        Click to Manage →
-                    </div>
                 </div>
             </div>
         </a>
         
     </div>
     
-    <!-- ESP-NOW Link Visualization -->
-    <div style='text-align: center; margin: 20px 0; padding: 15px; background: rgba(0,0,0,0.3); border-radius: 8px;'>
-        <span style='color: #FFD700; font-size: 14px; font-weight: bold;'>ESP-NOW Communication: </span>
-        <span id='espnowLink' style='font-weight: bold; color: )rawliteral";
-    content += tx_status_color;
-    content += R"rawliteral(;'>)rawliteral";
-    content += (tx_connected ? "📡 Active" : "⚠️ Waiting for connection");
-    content += R"rawliteral(</span>
-    </div>
 
-    
+
     <!-- Battery Emulator Specifications -->
     <div class='info-box' style='margin: 20px 0;'>
         <h3 style='margin: 0 0 20px 0; color: #4CAF50;'>🔋 Battery Emulator Specifications</h3>
         <p style='color: #888; font-size: 14px; margin: 0 0 15px 0;'>View static configuration data received via MQTT from transmitter</p>
-        <div style='display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 15px;'>
+        <div style='display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px;'>
             <a href='/battery_settings.html' style='text-decoration: none;'>
-                <div style='padding: 15px; background: rgba(76,175,80,0.1); border: 2px solid #4CAF50; border-radius: 8px; text-align: center; cursor: pointer; transition: all 0.2s;'
+                <div style='padding: 10px; background: rgba(76,175,80,0.1); border: 2px solid #4CAF50; border-radius: 8px; text-align: center; cursor: pointer; transition: all 0.2s;'
                      onmouseover='this.style.background="rgba(76,175,80,0.2)"; this.style.transform="translateY(-3px)";'
                      onmouseout='this.style.background="rgba(76,175,80,0.1)"; this.style.transform="translateY(0)";'>
-                    <span style='font-size: 32px;'>🔋</span>
-                    <div style='margin-top: 10px; color: #4CAF50; font-weight: bold;'>Battery</div>
-                    <div style='font-size: 11px; color: #888; margin-top: 5px;'>Cell chemistry, limits</div>
+                    <span style='font-size: 26px;'>🔋</span>
+                    <div style='margin-top: 6px; color: #4CAF50; font-weight: bold; font-size: 14px;'>Battery</div>
+                    <div style='font-size: 10px; color: #888; margin-top: 4px;'>Cell chemistry, limits</div>
                 </div>
             </a>
             <a href='/inverter_settings.html' style='text-decoration: none;'>
-                <div style='padding: 15px; background: rgba(33,150,243,0.1); border: 2px solid #2196F3; border-radius: 8px; text-align: center; cursor: pointer; transition: all 0.2s;'
+                <div style='padding: 10px; background: rgba(33,150,243,0.1); border: 2px solid #2196F3; border-radius: 8px; text-align: center; cursor: pointer; transition: all 0.2s;'
                      onmouseover='this.style.background="rgba(33,150,243,0.2)"; this.style.transform="translateY(-3px)";'
                      onmouseout='this.style.background="rgba(33,150,243,0.1)"; this.style.transform="translateY(0)";'>
-                    <span style='font-size: 32px;'>⚡</span>
-                    <div style='margin-top: 10px; color: #2196F3; font-weight: bold;'>Inverter</div>
-                    <div style='font-size: 11px; color: #888; margin-top: 5px;'>Power limits, AC specs</div>
+                    <span style='font-size: 26px;'>⚡</span>
+                    <div style='margin-top: 6px; color: #2196F3; font-weight: bold; font-size: 14px;'>Inverter</div>
+                    <div style='font-size: 10px; color: #888; margin-top: 4px;'>Power limits, AC specs</div>
                 </div>
             </a>
             <a href='/charger_settings.html' style='text-decoration: none;'>
-                <div style='padding: 15px; background: rgba(255,193,7,0.1); border: 2px solid #FFC107; border-radius: 8px; text-align: center; cursor: pointer; transition: all 0.2s;'
+                <div style='padding: 10px; background: rgba(255,193,7,0.1); border: 2px solid #FFC107; border-radius: 8px; text-align: center; cursor: pointer; transition: all 0.2s;'
                      onmouseover='this.style.background="rgba(255,193,7,0.2)"; this.style.transform="translateY(-3px)";'
                      onmouseout='this.style.background="rgba(255,193,7,0.1)"; this.style.transform="translateY(0)";'>
-                    <span style='font-size: 32px;'>🔌</span>
-                    <div style='margin-top: 10px; color: #FFC107; font-weight: bold;'>Charger</div>
-                    <div style='font-size: 11px; color: #888; margin-top: 5px;'>Charge rates, limits</div>
+                    <span style='font-size: 26px;'>🔌</span>
+                    <div style='margin-top: 6px; color: #FFC107; font-weight: bold; font-size: 14px;'>Charger</div>
+                    <div style='font-size: 10px; color: #888; margin-top: 4px;'>Charge rates, limits</div>
                 </div>
             </a>
             <a href='/system_settings.html' style='text-decoration: none;'>
-                <div style='padding: 15px; background: rgba(156,39,176,0.1); border: 2px solid #9C27B0; border-radius: 8px; text-align: center; cursor: pointer; transition: all 0.2s;'
+                <div style='padding: 10px; background: rgba(156,39,176,0.1); border: 2px solid #9C27B0; border-radius: 8px; text-align: center; cursor: pointer; transition: all 0.2s;'
                      onmouseover='this.style.background="rgba(156,39,176,0.2)"; this.style.transform="translateY(-3px)";'
                      onmouseout='this.style.background="rgba(156,39,176,0.1)"; this.style.transform="translateY(0)";'>
-                    <span style='font-size: 32px;'>⚙️</span>
-                    <div style='margin-top: 10px; color: #9C27B0; font-weight: bold;'>System</div>
-                    <div style='font-size: 11px; color: #888; margin-top: 5px;'>Capabilities, safety</div>
+                    <span style='font-size: 26px;'>⚙️</span>
+                    <div style='margin-top: 6px; color: #9C27B0; font-weight: bold; font-size: 14px;'>System</div>
+                    <div style='font-size: 10px; color: #888; margin-top: 4px;'>Capabilities, safety</div>
                 </div>
             </a>
             <a href='/cellmonitor' style='text-decoration: none;'>
-                <div style='padding: 15px; background: rgba(0,188,212,0.1); border: 2px solid #00BCD4; border-radius: 8px; text-align: center; cursor: pointer; transition: all 0.2s;'
+                <div style='padding: 10px; background: rgba(0,188,212,0.1); border: 2px solid #00BCD4; border-radius: 8px; text-align: center; cursor: pointer; transition: all 0.2s;'
                      onmouseover='this.style.background="rgba(0,188,212,0.2)"; this.style.transform="translateY(-3px)";'
                      onmouseout='this.style.background="rgba(0,188,212,0.1)"; this.style.transform="translateY(0)";'>
-                    <span style='font-size: 32px;'>🧪</span>
-                    <div style='margin-top: 10px; color: #00BCD4; font-weight: bold;'>Cell Monitor</div>
-                    <div style='font-size: 11px; color: #888; margin-top: 5px;'>Cell voltages</div>
+                    <span style='font-size: 26px;'>🧪</span>
+                    <div style='margin-top: 6px; color: #00BCD4; font-weight: bold; font-size: 14px;'>Cell Monitor</div>
+                    <div style='font-size: 10px; color: #888; margin-top: 4px;'>Cell voltages</div>
                 </div>
             </a>
         </div>
     </div>
     
     <!-- Transmitter Time & Uptime Display -->
-    <div style='margin: 20px 0; padding: 15px; background: rgba(0,0,0,0.3); border-radius: 8px;'>
+    <div class='info-box' style='margin: 20px 0;'>
         <h3 style='margin: 0 0 15px 0; color: #2196F3;'>⏰ Transmitter Time & Uptime</h3>
         <div style='display: grid; grid-template-columns: 1fr 1fr; gap: 15px;'>
             <div>
@@ -443,7 +426,6 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
                 if (data.transmitter) {
                     const tx = data.transmitter;
                     const statusEl = document.getElementById('txStatus');
-                    const linkEl = document.getElementById('espnowLink');
                     const txIPEl = document.getElementById('txIP');
                     const txIPModeEl = document.getElementById('txIPMode');
                     const txVersionEl = document.getElementById('txVersion');
@@ -470,8 +452,6 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
                     } else {
                         statusEl.textContent = 'Disconnected';
                         statusEl.style.color = '#ff6b35';
-                        linkEl.textContent = '⚠️ Waiting for connection';
-                        linkEl.style.color = '#ff6b35';
                     }
                 }
                 

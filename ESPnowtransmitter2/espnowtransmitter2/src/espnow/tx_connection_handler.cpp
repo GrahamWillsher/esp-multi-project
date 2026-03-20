@@ -142,6 +142,14 @@ void TransmitterConnectionHandler::start_discovery_hopping_only() {
 }
 
 void TransmitterConnectionHandler::on_ack_received(const uint8_t* receiver_mac, uint8_t channel) {
+    if (EspNowConnectionManager::instance().is_connected() &&
+        receiver_mac &&
+        memcmp(receiver_mac_, receiver_mac, sizeof(receiver_mac_)) == 0 &&
+        receiver_channel_ == channel) {
+        LOG_DEBUG("TX_CONN", "ACK for already-connected peer on channel %u - ignoring duplicate PEER_FOUND", channel);
+        return;
+    }
+
     if (receiver_mac) {
         memcpy(receiver_mac_, receiver_mac, sizeof(receiver_mac_));
     }

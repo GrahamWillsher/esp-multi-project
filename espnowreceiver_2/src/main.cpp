@@ -38,6 +38,7 @@
 #include <espnow_discovery.h>  // Common ESP-NOW discovery component
 #include <firmware_version.h>
 #include <firmware_metadata.h>  // Embed firmware metadata in binary
+#include <runtime_common_utils/ota_boot_guard.h>
 
 // ═══════════════════════════════════════════════════════════════════════
 // Globals
@@ -231,6 +232,8 @@ void setup() {
     LOG_INFO("MAIN", "========================================");
     Serial.flush();
 
+    OtaBootGuard::begin("RX_BOOT_GUARD");
+
     // Initialize TFT display, backlight and display system
     init_display();
     LOG_INFO("MAIN", "Display system initialized");
@@ -399,6 +402,23 @@ void setup() {
     LOG_DEBUG("MAIN", "ESP-NOW callbacks registered");
     
     transition_to_state(SystemState::WAITING_FOR_TRANSMITTER);
+
+    if (OtaBootGuard::is_pending_verification()) {
+        const bool heap_ok = ESP.getFreeHeap() > 32768;
+        const bool mutex_ok = (RTOS::tft_mutex != nullptr);
+        const bool espnow_queue_ok = (ESPNow::queue != nullptr);
+
+        if (heap_ok && mutex_ok && espnow_queue_ok) {
+            OtaBootGuard::confirm_running_app("receiver setup health gate passed");
+            LOG_INFO("BOOT_GUARD", "Receiver app confirmed valid after setup health gate");
+        } else {
+            LOG_ERROR("BOOT_GUARD", "Setup health gate failed (heap_ok=%d, mutex_ok=%d, espnow_queue_ok=%d); triggering rollback",
+                      heap_ok ? 1 : 0,
+                      mutex_ok ? 1 : 0,
+                      espnow_queue_ok ? 1 : 0);
+            OtaBootGuard::trigger_rollback_and_reboot("receiver setup health gate failed");
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════

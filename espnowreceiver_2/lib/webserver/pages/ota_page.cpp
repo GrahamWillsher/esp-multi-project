@@ -116,6 +116,43 @@ static esp_err_t ota_handler(httpd_req_t *req) {
             return { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3]) };
         }
 
+        function normalizeDeviceType(value) {
+            return String(value || '').trim().toUpperCase();
+        }
+
+        function validateUploadSelection(device, metadata) {
+            if (!metadata || !metadata.valid) {
+                // Legacy images without embedded metadata are allowed for backward compatibility.
+                return { ok: true, warning: 'Legacy firmware (no metadata). Compatibility checks are limited.' };
+            }
+
+            const expectedType = (device === 'Receiver') ? 'RECEIVER' : 'TRANSMITTER';
+            const actualType = normalizeDeviceType(metadata.device);
+            if (actualType && actualType !== expectedType) {
+                return {
+                    ok: false,
+                    reason: 'Selected firmware targets ' + actualType + ', but this upload path requires ' + expectedType + '.'
+                };
+            }
+
+            const fileVer = parseVersion(metadata.version);
+            if (!fileVer) {
+                return { ok: true };
+            }
+
+            // Keep receiver/transmitter protocol majors aligned.
+            const peerVersion = (device === 'Receiver') ? transmitterVersionForCompat : receiverVersionForCompat;
+            const peerVer = parseVersion(peerVersion);
+            if (peerVer && fileVer.major !== peerVer.major) {
+                return {
+                    ok: false,
+                    reason: 'Firmware major ' + fileVer.major + ' is incompatible with peer major ' + peerVer.major + '. Update both devices to same major.'
+                };
+            }
+
+            return { ok: true };
+        }
+
         let receiverVersionForCompat = null;
         let transmitterVersionForCompat = null;
 
@@ -195,6 +232,211 @@ static esp_err_t ota_handler(httpd_req_t *req) {
                 reader.readAsArrayBuffer(file);
             });
         }
+
+        async function computeFileSha256(file) {
+            const buffer = await file.arrayBuffer();
+
+            // Preferred path: native WebCrypto (fast)
+            if (window.crypto && window.crypto.subtle) {
+                const digest = await window.crypto.subtle.digest('SHA-256', buffer);
+                const bytes = new Uint8Array(digest);
+                let hex = '';
+                for (let i = 0; i < bytes.length; i++) {
+                    hex += bytes[i].toString(16).padStart(2, '0');
+                }
+                return hex;
+            }
+
+            // Fallback path for non-secure HTTP contexts where WebCrypto is unavailable.
+            // Pure-JS SHA-256 implementation (single-shot over Uint8Array).
+            const bytes = new Uint8Array(buffer);
+            const K = [
+                0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+                0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+                0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+                0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+                0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+                0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+                0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+                0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+            ];
+
+            const rotr = (x, n) => (x >>> n) | (x << (32 - n));
+            const ch = (x, y, z) => (x & y) ^ (~x & z);
+            const maj = (x, y, z) => (x & y) ^ (x & z) ^ (y & z);
+            const bsig0 = x => rotr(x, 2) ^ rotr(x, 13) ^ rotr(x, 22);
+            const bsig1 = x => rotr(x, 6) ^ rotr(x, 11) ^ rotr(x, 25);
+            const ssig0 = x => rotr(x, 7) ^ rotr(x, 18) ^ (x >>> 3);
+            const ssig1 = x => rotr(x, 17) ^ rotr(x, 19) ^ (x >>> 10);
+
+            const bitLenHi = (bytes.length / 0x20000000) >>> 0;
+            const bitLenLo = (bytes.length << 3) >>> 0;
+
+            const padLen = ((bytes.length + 9 + 63) & ~63);
+            const msg = new Uint8Array(padLen);
+            msg.set(bytes);
+            msg[bytes.length] = 0x80;
+            msg[padLen - 8] = (bitLenHi >>> 24) & 0xff;
+            msg[padLen - 7] = (bitLenHi >>> 16) & 0xff;
+            msg[padLen - 6] = (bitLenHi >>> 8) & 0xff;
+            msg[padLen - 5] = bitLenHi & 0xff;
+            msg[padLen - 4] = (bitLenLo >>> 24) & 0xff;
+            msg[padLen - 3] = (bitLenLo >>> 16) & 0xff;
+            msg[padLen - 2] = (bitLenLo >>> 8) & 0xff;
+            msg[padLen - 1] = bitLenLo & 0xff;
+
+            let h0 = 0x6a09e667, h1 = 0xbb67ae85, h2 = 0x3c6ef372, h3 = 0xa54ff53a;
+            let h4 = 0x510e527f, h5 = 0x9b05688c, h6 = 0x1f83d9ab, h7 = 0x5be0cd19;
+            const w = new Uint32Array(64);
+
+            for (let i = 0; i < msg.length; i += 64) {
+                for (let t = 0; t < 16; t++) {
+                    const j = i + (t * 4);
+                    w[t] = ((msg[j] << 24) | (msg[j + 1] << 16) | (msg[j + 2] << 8) | msg[j + 3]) >>> 0;
+                }
+                for (let t = 16; t < 64; t++) {
+                    w[t] = (ssig1(w[t - 2]) + w[t - 7] + ssig0(w[t - 15]) + w[t - 16]) >>> 0;
+                }
+
+                let a = h0, b = h1, c = h2, d = h3, e = h4, f = h5, g = h6, h = h7;
+                for (let t = 0; t < 64; t++) {
+                    const t1 = (h + bsig1(e) + ch(e, f, g) + K[t] + w[t]) >>> 0;
+                    const t2 = (bsig0(a) + maj(a, b, c)) >>> 0;
+                    h = g; g = f; f = e; e = (d + t1) >>> 0;
+                    d = c; c = b; b = a; a = (t1 + t2) >>> 0;
+                }
+
+                h0 = (h0 + a) >>> 0; h1 = (h1 + b) >>> 0; h2 = (h2 + c) >>> 0; h3 = (h3 + d) >>> 0;
+                h4 = (h4 + e) >>> 0; h5 = (h5 + f) >>> 0; h6 = (h6 + g) >>> 0; h7 = (h7 + h) >>> 0;
+            }
+
+            const toHex8 = n => n.toString(16).padStart(8, '0');
+            let hex = '';
+            hex += toHex8(h0) + toHex8(h1) + toHex8(h2) + toHex8(h3) +
+                   toHex8(h4) + toHex8(h5) + toHex8(h6) + toHex8(h7);
+            return hex;
+        }
+
+        function startCommitVerification(statusDiv, uploadBtn, expectedTxnId) {
+            let attempts = 0;
+            const maxAttempts = 90; // ~3 minutes at 2s interval
+            const pollMs = 2000;
+            let graceAttempts = 0;        // count of successful (status.success===true) responses
+            const txnMismatchGrace = 5;   // tolerate txn=0 for first N successful replies (stale state drain)
+            let lastKnownCommitState = '';
+            let lastKnownCommitDetail = '';
+            let everReachable = false;
+
+            const stateLabels = {
+                'boot_pending_validation': 'Boot guard running health checks...',
+                'prepared_waiting_reboot': 'Firmware staged — waiting for reboot...',
+                'prepare_upload':          'Receiving firmware image...',
+                'prepare_writing':         'Writing firmware to flash...',
+                'idle':                    'Transmitter online, awaiting OTA state...',
+                'unknown':                 'Awaiting state from transmitter...'
+            };
+
+            const verificationInterval = setInterval(function() {
+                attempts++;
+
+                fetch('/api/transmitter_ota_status')
+                    .then(resp => resp.json())
+                    .then(status => {
+                        if (!status.success) {
+                            return;
+                        }
+
+                        everReachable = true;
+                        graceAttempts++;
+
+                        const currentTxn = Number(status.ota_txn_id || 0);
+                        const commitState = status.commit_state || 'unknown';
+                        const commitDetail = status.commit_detail || '';
+                        lastKnownCommitState = commitState;
+                        lastKnownCommitDetail = commitDetail;
+
+                        // After the grace period: if txn is 0 and state is idle/unknown, the
+                        // transmitter came back on the old firmware (auto-rollback with no explicit state).
+                        if (expectedTxnId && graceAttempts > txnMismatchGrace) {
+                            if (currentTxn === 0 && (commitState === 'idle' || commitState === 'unknown')) {
+                                clearInterval(verificationInterval);
+                                statusDiv.innerHTML = '❌ OTA rollback: Transmitter reverted to previous firmware (OTA transaction not found after reboot)';
+                                uploadBtn.disabled = false;
+                                uploadBtn.style.cursor = 'pointer';
+                                uploadBtn.style.backgroundColor = '#ff6b35';
+                                uploadBtn.innerText = 'Retry Upload';
+                                return;
+                            }
+                        }
+
+                        // Within grace window: skip stale/mismatched txn responses.
+                        if (expectedTxnId && currentTxn && currentTxn !== expectedTxnId) {
+                            return;
+                        }
+
+                        if (status.boot_guard_passed || commitState === 'committed_validated') {
+                            clearInterval(verificationInterval);
+                            const detailSuffix = commitDetail ? ('<br><span style="color:#888;font-size:12px;">' + commitDetail + '</span>') : '';
+                            statusDiv.innerHTML = '✅ OTA committed successfully. Transmitter validated new firmware.' + detailSuffix;
+                            uploadBtn.disabled = false;
+                            uploadBtn.style.cursor = 'pointer';
+                            uploadBtn.style.backgroundColor = '#4CAF50';
+                            uploadBtn.innerText = 'Upload Complete';
+                            return;
+                        }
+
+                        // Explicit rollback states + boot guard error all terminate monitoring.
+                        if (commitState.indexOf('rollback') >= 0 || commitState === 'boot_guard_error') {
+                            clearInterval(verificationInterval);
+                            const isBootErr = (commitState === 'boot_guard_error');
+                            const reason = status.rollback_reason || commitDetail
+                                || (isBootErr ? 'Boot guard health check failed' : 'Unknown rollback reason');
+                            statusDiv.innerHTML = '❌ OTA ' + (isBootErr ? 'boot guard error' : 'rollback detected') + ': ' + reason;
+                            uploadBtn.disabled = false;
+                            uploadBtn.style.cursor = 'pointer';
+                            uploadBtn.style.backgroundColor = '#ff6b35';
+                            uploadBtn.innerText = 'Retry Upload';
+                            return;
+                        }
+
+                        const label = stateLabels[commitState] || ('State: ' + commitState);
+                        statusDiv.innerHTML = '⏳ Waiting for transmitter validation...<br>'
+                            + '<span style="color:#888;font-size:12px;">' + label
+                            + (commitDetail ? (' — ' + commitDetail) : '') + '</span>';
+                    })
+                    .catch(() => {
+                        // Expected during the reboot window — transmitter will be briefly offline.
+                        if (attempts <= 15) {
+                            statusDiv.innerHTML = '⏳ Waiting for transmitter to come back online...'
+                                + '<br><span style="color:#888;font-size:12px;">(' + (attempts * 2) + 's elapsed)</span>';
+                        }
+                    });
+
+                if (attempts >= maxAttempts) {
+                    clearInterval(verificationInterval);
+                    const totalSecs = maxAttempts * pollMs / 1000;
+                    let timeoutMsg;
+                    if (!everReachable) {
+                        timeoutMsg = '❌ Timeout: Transmitter did not come back after reboot ('
+                            + totalSecs + 's). Check device power and network connectivity.';
+                    } else if (lastKnownCommitState === 'boot_pending_validation') {
+                        timeoutMsg = '❌ Timeout: Transmitter boot guard has not resolved after ' + totalSecs + 's.'
+                            + ' Device may be in a boot loop.'
+                            + (lastKnownCommitDetail ? ' (' + lastKnownCommitDetail + ')' : '');
+                    } else if (lastKnownCommitState) {
+                        timeoutMsg = '❌ Timeout: Transmitter stuck in state \'' + lastKnownCommitState + '\' after ' + totalSecs + 's.'
+                            + (lastKnownCommitDetail ? ' (' + lastKnownCommitDetail + ')' : '');
+                    } else {
+                        timeoutMsg = '❌ Timeout waiting for transmitter post-reboot validation (' + totalSecs + 's)';
+                    }
+                    statusDiv.innerHTML = timeoutMsg;
+                    uploadBtn.disabled = false;
+                    uploadBtn.style.cursor = 'pointer';
+                    uploadBtn.style.backgroundColor = '#ff6b35';
+                    uploadBtn.innerText = 'Retry Upload';
+                }
+            }, pollMs);
+        }
         
         function setupDeviceUpload(device) {
             const fileInput = document.getElementById('firmwareFile' + device);
@@ -205,6 +447,7 @@ static esp_err_t ota_handler(httpd_req_t *req) {
             const progressBarText = document.getElementById('progressText' + device);
             
             let selectedFile = null;
+            let selectedMetadata = null;
             
             // Handle file selection
             fileInput.addEventListener('change', async function(e) {
@@ -215,17 +458,32 @@ static esp_err_t ota_handler(httpd_req_t *req) {
                     // Extract metadata from file
                     try {
                         const metadata = await extractMetadataFromFile(selectedFile);
+                        selectedMetadata = metadata;
                         if (metadata.valid) {
                             statusDiv.innerHTML = '📄 ' + selectedFile.name + ' (' + sizeMB + ' MB) → ' +
                                                   '<span style="color: #4CAF50;">● v' + 
                                                   metadata.version + '</span> ' +
                                                   '<span style="color: #888; font-size: 12px;">(Built: ' + 
                                                   metadata.build_date + ')</span>';
+
+                            const preflight = validateUploadSelection(device, metadata);
+                            if (!preflight.ok) {
+                                statusDiv.innerHTML += '<br><span style="color:#ff6b35;">❌ ' + preflight.reason + '</span>';
+                                uploadBtn.disabled = true;
+                                uploadBtn.style.backgroundColor = '#666';
+                                uploadBtn.innerText = 'Incompatible Firmware';
+                                return;
+                            }
+
+                            if (preflight.warning) {
+                                statusDiv.innerHTML += '<br><span style="color:#FFD700;">⚠️ ' + preflight.warning + '</span>';
+                            }
                         } else {
                             statusDiv.innerHTML = '📄 ' + selectedFile.name + ' (' + sizeMB + ' MB) → ' +
                                                   '<span style="color: #FFD700;">* No metadata (legacy firmware)</span>';
                         }
                     } catch (err) {
+                        selectedMetadata = null;
                         statusDiv.innerHTML = '📄 ' + selectedFile.name + ' (' + sizeMB + ' MB)';
                     }
                     
@@ -242,9 +500,30 @@ static esp_err_t ota_handler(httpd_req_t *req) {
             });
             
             // Handle upload button
-            uploadBtn.addEventListener('click', function() {
+            uploadBtn.addEventListener('click', async function() {
                 if (!selectedFile) {
                     fileInput.click();
+                    return;
+                }
+
+                const preflight = validateUploadSelection(device, selectedMetadata);
+                if (!preflight.ok) {
+                    statusDiv.innerHTML = '❌ ' + preflight.reason;
+                    uploadBtn.disabled = false;
+                    uploadBtn.style.backgroundColor = '#ff6b35';
+                    uploadBtn.innerText = 'Retry Upload';
+                    return;
+                }
+
+                let imageSha256 = '';
+                try {
+                    statusDiv.innerHTML = '🔐 Computing firmware hash...';
+                    imageSha256 = await computeFileSha256(selectedFile);
+                } catch (err) {
+                    statusDiv.innerHTML = '❌ Unable to compute firmware hash: ' + err.message;
+                    uploadBtn.disabled = false;
+                    uploadBtn.style.backgroundColor = '#ff6b35';
+                    uploadBtn.innerText = 'Retry Upload';
                     return;
                 }
                 
@@ -254,10 +533,6 @@ static esp_err_t ota_handler(httpd_req_t *req) {
                 progressFill.style.width = '0%';
                 progressBarText.innerText = '0%';
                 
-                // Create FormData and upload
-                const formData = new FormData();
-                formData.append('firmware', selectedFile);
-
                 const xhr = new XMLHttpRequest();
                 
                 // Upload progress
@@ -300,6 +575,7 @@ static esp_err_t ota_handler(httpd_req_t *req) {
                                             .then(status => {
                                                 if (status.success && status.ready_for_reboot) {
                                                     clearInterval(statusPollInterval);
+                                                    const expectedTxnId = Number(status.ota_txn_id || 0);
 
                                                     TransmitterReboot.run({
                                                         countdownSeconds: TransmitterReboot.COUNTDOWN_SECONDS,
@@ -318,11 +594,12 @@ static esp_err_t ota_handler(httpd_req_t *req) {
                                                             uploadBtn.innerText = 'Sending reboot command...';
                                                         },
                                                         onSuccess: () => {
-                                                            statusDiv.innerHTML = '';
+                                                            statusDiv.innerHTML = '✅ Reboot command sent. Waiting for transmitter to come back and validate...';
                                                             uploadBtn.disabled = true;
                                                             uploadBtn.style.cursor = 'not-allowed';
                                                             uploadBtn.style.backgroundColor = '#28a745';
                                                             uploadBtn.innerText = '✓ Reboot command sent';
+                                                            startCommitVerification(statusDiv, uploadBtn, expectedTxnId);
                                                         },
                                                         onFailure: (message) => {
                                                             statusDiv.innerHTML = '❌ OTA uploaded, but reboot command failed: ' + (message || 'Unknown error');
@@ -407,14 +684,10 @@ static esp_err_t ota_handler(httpd_req_t *req) {
                 // Choose endpoint based on device
                 const endpoint = (device === 'Receiver') ? '/api/ota_upload_receiver' : '/api/ota_upload';
                 xhr.open('POST', endpoint);
-                if (device === 'Receiver') {
-                    // Receiver self-OTA path expects multipart form upload
-                    xhr.send(formData);
-                } else {
-                    // Transmitter OTA forwarding path uses raw binary upload
-                    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-                    xhr.send(selectedFile);
-                }
+                // Both receiver self-OTA and transmitter forwarding now use raw binary uploads.
+                xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+                xhr.setRequestHeader('X-OTA-Image-SHA256', imageSha256);
+                xhr.send(selectedFile);
             });
         }
         

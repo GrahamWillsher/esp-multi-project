@@ -51,7 +51,8 @@ static const httpd_uri_t kCoreApiHandlers[] = {
     {.uri = "/api/system_metrics", .method = HTTP_GET, .handler = api_system_metrics_handler, .user_ctx = NULL},
     {.uri = "/api/get_led_runtime_status", .method = HTTP_GET, .handler = api_get_led_runtime_status_handler, .user_ctx = NULL},
     {.uri = "/api/resync_led_state", .method = HTTP_POST, .handler = api_resync_led_state_handler, .user_ctx = NULL},
-    {.uri = "/api/ota_upload", .method = HTTP_POST, .handler = api_ota_upload_handler, .user_ctx = NULL}
+    {.uri = "/api/ota_upload", .method = HTTP_POST, .handler = api_ota_upload_handler, .user_ctx = NULL},
+    {.uri = "/api/ota_upload_receiver", .method = HTTP_POST, .handler = api_ota_upload_receiver_handler, .user_ctx = NULL}
 };
 }
 

@@ -111,6 +111,7 @@ private:
     uint8_t restart_failure_count_{0};
     bool restart_requested_{false};
     bool restart_in_progress_{false};
+    bool active_hopping_running_{false};
     uint32_t restart_next_retry_ms_{0};
     uint32_t restart_window_start_ms_{0};
     DiscoveryMetrics metrics_;

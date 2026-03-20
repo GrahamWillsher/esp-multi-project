@@ -92,12 +92,13 @@ uint32_t VersionBeaconManager::get_config_version(config_section_t section) {
     }
 }
 
-void VersionBeaconManager::send_version_beacon(bool force) {
+bool VersionBeaconManager::send_version_beacon(bool force) {
     uint32_t now = millis();
+    bool send_success = false;
     
     // Rate limiting (except for forced beacons)
     if (!force && now - last_beacon_ms_ < MIN_BEACON_INTERVAL_MS) {
-        return;
+        return false;
     }
     
     // Update current runtime state
@@ -106,7 +107,7 @@ void VersionBeaconManager::send_version_beacon(bool force) {
     
     // Check if anything changed (unless forced)
     if (!force && !has_runtime_state_changed()) {
-        return;  // No changes, skip beacon
+        return false;  // No changes, skip beacon
     }
     
     // Build version beacon
@@ -160,8 +161,10 @@ void VersionBeaconManager::send_version_beacon(bool force) {
                      beacon.metadata_config_version,
                      beacon.mqtt_connected ? "CONN" : "DISC",
                      beacon.ethernet_connected ? "UP" : "DOWN");
+            send_success = true;
         } else {
             LOG_ERROR("VERSION_BEACON", "Send failed: %s", esp_err_to_name(result));
+            send_success = false;
         }
     }
     
@@ -170,6 +173,7 @@ void VersionBeaconManager::send_version_beacon(bool force) {
     prev_ethernet_connected_ = ethernet_connected_;
     
     last_beacon_ms_ = now;
+    return send_success;
 }
 
 void VersionBeaconManager::send_config_section(config_section_t section, const uint8_t* receiver_mac) {

@@ -64,8 +64,9 @@ public:
     /**
      * @brief Send version beacon to receiver (can be called directly when needed)
      * @param force If true, send even if no runtime state changed
+        * @return true if beacon was sent successfully, false if send was skipped/failed
      */
-    void send_version_beacon(bool force = false);
+        bool send_version_beacon(bool force = false);
     
 private:
     VersionBeaconManager() = default;

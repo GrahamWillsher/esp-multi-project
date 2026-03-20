@@ -17,11 +17,12 @@
 
 #include <Arduino.h>
 #include <WiFi.h>           // Direct use: WiFi.mode/disconnect/config/macAddress
+#include <ETH.h>
 #include <espnow_transmitter.h>
 #include <espnow_send_utils.h>
-#include <ethernet_utilities.h>
 #include <firmware_version.h>  // DEVICE_NAME, PROTOCOL_VERSION, FW_VERSION_*
 #include <firmware_metadata.h>
+#include <runtime_common_utils/ota_boot_guard.h>
 
 // Configuration
 #include "config/hardware_config.h"
@@ -112,6 +113,8 @@ static void bootstrap_hardware() {
 
     LOG_INFO("MAIN", "Device: %s", DEVICE_NAME);
     LOG_INFO("MAIN", "Protocol Version: %d", PROTOCOL_VERSION);
+
+    OtaBootGuard::begin("TX_BOOT_GUARD");
 }
 
 // --- Phase 2: Persistence / Config ------------------------------------------
@@ -400,21 +403,10 @@ static void bootstrap_tasks() {
 }
 
 // --- Phase 8: Post-start network services -----------------------------------
-// Start NTP/time utilities, TimeManager, and VersionBeacon after a short
-// stabilisation delay to allow Ethernet DHCP to complete.
+// Start time/view services that are independent of direct Ethernet callback
+// ownership (NTP utilities are now owned by ServiceSupervisor lifecycle).
 static void bootstrap_network_services() {
     vTaskDelay(pdMS_TO_TICKS(TimingConfig::POST_INIT_DELAY_MS));
-
-    if (init_ethernet_utilities()) {
-        LOG_INFO("TIME", "Network time utilities initialized");
-        if (start_ethernet_utilities_task()) {
-            LOG_DEBUG("TIME", "Background NTP sync task started");
-        } else {
-            LOG_WARN("TIME", "Failed to start NTP sync task");
-        }
-    } else {
-        LOG_WARN("TIME", "Failed to initialize network time utilities");
-    }
 
     LOG_INFO("TIME", "Initializing TimeManager for time sync...");
     TimeManager::instance().init("pool.ntp.org");
@@ -444,6 +436,23 @@ void setup() {
         kBootstrapPhases,
         sizeof(kBootstrapPhases) / sizeof(kBootstrapPhases[0])
     );
+
+    if (OtaBootGuard::is_pending_verification()) {
+        const bool heap_ok = ESP.getFreeHeap() > 32768;
+        const bool ethernet_not_fatal = EthernetManager::instance().get_state() != EthernetConnectionState::ERROR_STATE;
+        const bool espnow_queue_ready = RuntimeContext::instance().espnow_message_queue() != nullptr;
+
+        if (heap_ok && ethernet_not_fatal && espnow_queue_ready) {
+            OtaBootGuard::confirm_running_app("transmitter setup health gate passed");
+            LOG_INFO("BOOT_GUARD", "Transmitter app confirmed valid after setup health gate");
+        } else {
+            LOG_ERROR("BOOT_GUARD", "Setup health gate failed (heap_ok=%d, ethernet_not_fatal=%d, espnow_queue_ready=%d); triggering rollback",
+                      heap_ok ? 1 : 0,
+                      ethernet_not_fatal ? 1 : 0,
+                      espnow_queue_ready ? 1 : 0);
+            OtaBootGuard::trigger_rollback_and_reboot("transmitter setup health gate failed");
+        }
+    }
 
     LOG_INFO("MAIN", "Setup complete! All 8 bootstrap phases done.");
     LOG_INFO("MAIN", "=================================");

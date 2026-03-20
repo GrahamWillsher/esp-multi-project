@@ -13,26 +13,49 @@
 #include <esp_system.h>
 #include <esp_ota_ops.h>
 #include <firmware_metadata.h>
+#include <firmware_compatibility_policy.h>
 #include <firmware_version.h>
+#include <runtime_common_utils/ota_boot_guard.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
+#include <mbedtls/sha256.h>
 #include <lwip/sockets.h>
 #include <lwip/inet.h>
 #include <algorithm>
 #include <vector>
 #include <cstring>
-#include <cctype>
 
 OtaManager& OtaManager::instance() {
     static OtaManager instance;
     return instance;
 }
 
+void OtaManager::set_commit_state(const char* state, const char* detail) {
+    if (state && state[0] != '\0') {
+        strlcpy(ota_commit_state_, state, sizeof(ota_commit_state_));
+    }
+
+    if (detail && detail[0] != '\0') {
+        strlcpy(ota_commit_detail_, detail, sizeof(ota_commit_detail_));
+    }
+
+    const uint32_t now_ms = millis();
+    ota_last_update_ms_ = now_ms;
+    ota_state_since_ms_ = now_ms;
+}
+
 namespace {
 constexpr int HTTP_STATUS_PAYLOAD_TOO_LARGE = 413;
 constexpr int HTTP_STATUS_REQUEST_TIMEOUT = 408;
 constexpr int HTTP_STATUS_UNSUPPORTED_MEDIA_TYPE = 415;
+constexpr int HTTP_STATUS_SERVICE_UNAVAILABLE = 503;
 constexpr int HTTP_STATUS_TOO_MANY_REQUESTS = 429;
 constexpr int OTA_UPLOAD_MAX_RECV_TIMEOUTS = 60;
+constexpr size_t OTA_PSK_MIN_LENGTH = 32;
+constexpr const char* OTA_PSK_PLACEHOLDER = "CHANGE_ME_OTA_PSK_32B_MIN";
+constexpr const char* OTA_PSK_NVS_NAMESPACE = "security";
+constexpr const char* OTA_PSK_NVS_KEY = "ota_psk";
+constexpr size_t OTA_IMAGE_SHA256_HEX_LEN = 64;
 
 constexpr uint8_t OTA_AUTH_MAX_FAILURES_PER_WINDOW = 5;
 constexpr uint32_t OTA_AUTH_FAILURE_WINDOW_MS = 60000;
@@ -62,6 +85,8 @@ const char* http_status_text(int status_code) {
             return "413 Payload Too Large";
         case HTTP_STATUS_UNSUPPORTED_MEDIA_TYPE:
             return "415 Unsupported Media Type";
+        case HTTP_STATUS_SERVICE_UNAVAILABLE:
+            return "503 Service Unavailable";
         case HTTP_STATUS_TOO_MANY_REQUESTS:
             return "429 Too Many Requests";
         case HTTPD_404_NOT_FOUND:
@@ -433,6 +458,102 @@ bool header_has_token_ci(const char* header_value, const char* expected_token) {
 
     return false;
 }
+
+bool is_placeholder_psk(const char* value) {
+    return value && strcmp(value, OTA_PSK_PLACEHOLDER) == 0;
+}
+
+bool is_hex_sha256(const char* value) {
+    if (!value) {
+        return false;
+    }
+
+    size_t len = 0;
+    while (value[len] != '\0') {
+        const char ch = value[len];
+        const bool is_hex = (ch >= '0' && ch <= '9') ||
+                            (ch >= 'a' && ch <= 'f') ||
+                            (ch >= 'A' && ch <= 'F');
+        if (!is_hex) {
+            return false;
+        }
+        ++len;
+    }
+    return len == OTA_IMAGE_SHA256_HEX_LEN;
+}
+
+void generate_random_psk_hex(char* out, size_t out_len) {
+    if (!out || out_len < 65) {
+        return;
+    }
+
+    // 32 random bytes => 64 hex chars.
+    for (size_t i = 0; i < 32; ++i) {
+        const uint8_t r = static_cast<uint8_t>(esp_random() & 0xFF);
+        (void)snprintf(&out[i * 2], 3, "%02x", r);
+    }
+    out[64] = '\0';
+}
+
+bool load_ota_psk(char* out_psk, size_t out_psk_len, bool* out_is_provisioned) {
+    if (!out_psk || out_psk_len < 2) {
+        return false;
+    }
+
+    out_psk[0] = '\0';
+    if (out_is_provisioned) {
+        *out_is_provisioned = false;
+    }
+
+    Preferences prefs;
+    if (!prefs.begin(OTA_PSK_NVS_NAMESPACE, false)) {
+        return false;
+    }
+
+    const String nvs_psk = prefs.getString(OTA_PSK_NVS_KEY, "");
+    if (nvs_psk.length() >= OTA_PSK_MIN_LENGTH) {
+        strlcpy(out_psk, nvs_psk.c_str(), out_psk_len);
+        if (out_is_provisioned) {
+            *out_is_provisioned = true;
+        }
+        prefs.end();
+        return true;
+    }
+
+    // If a strong build-time PSK is configured, persist it once into NVS.
+    if (config::security::OTA_PSK &&
+        strlen(config::security::OTA_PSK) >= OTA_PSK_MIN_LENGTH &&
+        !is_placeholder_psk(config::security::OTA_PSK)) {
+        prefs.putString(OTA_PSK_NVS_KEY, config::security::OTA_PSK);
+        strlcpy(out_psk, config::security::OTA_PSK, out_psk_len);
+        if (out_is_provisioned) {
+            *out_is_provisioned = true;
+        }
+        prefs.end();
+        return true;
+    }
+
+    // First-boot auto-provision path: generate a per-device random PSK and persist.
+    char generated_psk[65] = {0};
+    generate_random_psk_hex(generated_psk, sizeof(generated_psk));
+    if (generated_psk[0] == '\0') {
+        prefs.end();
+        return false;
+    }
+
+    if (prefs.putString(OTA_PSK_NVS_KEY, generated_psk) == 0) {
+        prefs.end();
+        return false;
+    }
+
+    strlcpy(out_psk, generated_psk, out_psk_len);
+    if (out_is_provisioned) {
+        *out_is_provisioned = true;
+    }
+    LOG_WARN("HTTP_OTA", "Auto-provisioned OTA PSK in NVS namespace '%s'", OTA_PSK_NVS_NAMESPACE);
+    prefs.end();
+    return true;
+}
 }
 
 bool OtaManager::arm_ota_session() {
@@ -481,6 +602,15 @@ bool OtaManager::arm_ota_session_from_control_plane(const uint8_t* requester_mac
 }
 
 bool OtaManager::validate_ota_auth_headers(httpd_req_t* req) {
+    char ota_psk[96] = {0};
+    if (!load_ota_psk(ota_psk, sizeof(ota_psk), nullptr)) {
+        send_json_error(req,
+                        HTTP_STATUS_SERVICE_UNAVAILABLE,
+                        "OTA secret not provisioned",
+                        "Set security/ota_psk in NVS (min 32 chars) before OTA");
+        return false;
+    }
+
     char client_ip[24] = "unknown";
     const bool has_client_ip = get_request_client_ip(req, client_ip, sizeof(client_ip));
     const uint32_t now_ms = millis();
@@ -537,7 +667,7 @@ bool OtaManager::validate_ota_auth_headers(httpd_req_t* req) {
         nonce,
         expires,
         signature,
-        config::security::OTA_PSK,
+        ota_psk,
         static_cast<uint32_t>(ESP.getEfuseMac() & 0xFFFFFFFFUL),
         now_ms);
 
@@ -612,6 +742,15 @@ bool OtaManager::validate_ota_auth_headers(httpd_req_t* req) {
 esp_err_t OtaManager::ota_arm_handler(httpd_req_t *req) {
     auto& mgr = instance();
 
+    char ota_psk[96] = {0};
+    if (!load_ota_psk(ota_psk, sizeof(ota_psk), nullptr)) {
+        send_json_error(req,
+                        HTTP_STATUS_SERVICE_UNAVAILABLE,
+                        "OTA secret not provisioned",
+                        "Set security/ota_psk in NVS (min 32 chars) before OTA");
+        return ESP_FAIL;
+    }
+
     char client_ip[24] = "unknown";
     (void)get_request_client_ip(req, client_ip, sizeof(client_ip));
 
@@ -644,7 +783,7 @@ esp_err_t OtaManager::ota_arm_handler(httpd_req_t *req) {
 
     char sig[65] = {0};
     if (!mgr.ota_session_.compute_signature(
-            config::security::OTA_PSK,
+            ota_psk,
             static_cast<uint32_t>(ESP.getEfuseMac() & 0xFFFFFFFFUL),
             sig,
             sizeof(sig))) {
@@ -681,6 +820,19 @@ esp_err_t OtaManager::ota_arm_handler(httpd_req_t *req) {
 
 esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
     auto& mgr = instance();
+
+    char expected_sha256_hex[OTA_IMAGE_SHA256_HEX_LEN + 1] = {0};
+    if (!OtaAuthUtils::get_header_value(req,
+                                        "X-OTA-Image-SHA256",
+                                        expected_sha256_hex,
+                                        sizeof(expected_sha256_hex)) ||
+        !is_hex_sha256(expected_sha256_hex)) {
+        send_json_error(req,
+                        HTTPD_400_BAD_REQUEST,
+                        "Missing or invalid X-OTA-Image-SHA256 header",
+                        "Provide lowercase/uppercase 64-char SHA-256 hex for firmware image");
+        return ESP_FAIL;
+    }
 
     char client_ip[24] = "unknown";
     (void)get_request_client_ip(req, client_ip, sizeof(client_ip));
@@ -730,18 +882,32 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
         return ESP_FAIL;
     }
 
+    mbedtls_sha256_context sha_ctx;
+    mbedtls_sha256_init(&sha_ctx);
+    bool sha_ctx_active = false;
+
     auto fail_ota = [&](int status_code, const char* message) -> esp_err_t {
+        if (sha_ctx_active) {
+            mbedtls_sha256_free(&sha_ctx);
+            sha_ctx_active = false;
+        }
         free(buf);
         send_json_error(req, status_code, message);
         mgr.ota_in_progress_ = false;
+        mgr.set_commit_state("prepare_failed", message);
         return ESP_FAIL;
     };
 
     auto fail_ota_with_update_abort = [&](int status_code, const char* message) -> esp_err_t {
+        if (sha_ctx_active) {
+            mbedtls_sha256_free(&sha_ctx);
+            sha_ctx_active = false;
+        }
         Update.abort();
         free(buf);
         send_json_error(req, status_code, message);
         mgr.ota_in_progress_ = false;
+        mgr.set_commit_state("prepare_failed", message);
         return ESP_FAIL;
     };
 
@@ -750,6 +916,15 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
     size_t total_written = 0;
     size_t last_reported = 0;
     int timeout_count = 0;
+    FirmwareCompatibilityPolicy::MetadataScan metadata_scan;
+
+    if (mbedtls_sha256_starts_ret(&sha_ctx, 0) != 0) {
+        send_json_error(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to initialize image hash");
+        mbedtls_sha256_free(&sha_ctx);
+        free(buf);
+        return ESP_FAIL;
+    }
+    sha_ctx_active = true;
     
     LOG_INFO("HTTP_OTA", "=== OTA START ===");
     LOG_INFO("HTTP_OTA", "OTA upload source IP: %s", client_ip);
@@ -761,6 +936,8 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
     mgr.ota_in_progress_ = true;
     mgr.ota_ready_for_reboot_ = false;
     mgr.ota_last_success_ = false;
+    mgr.ota_txn_id_ = static_cast<uint32_t>(esp_random());
+    mgr.set_commit_state("prepare_upload", "receiving firmware image");
     strncpy(mgr.ota_last_error_, "", sizeof(mgr.ota_last_error_) - 1);
     mgr.ota_last_error_[sizeof(mgr.ota_last_error_) - 1] = '\0';
     
@@ -772,6 +949,7 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
         mgr.ota_last_error_[sizeof(mgr.ota_last_error_) - 1] = '\0';
         return fail_ota(HTTPD_500_INTERNAL_SERVER_ERROR, "Update begin failed");
     }
+    mgr.set_commit_state("prepare_writing", "streaming firmware to inactive slot");
     LOG_INFO("HTTP_OTA", "Update.begin OK");
     
     // Receive and write firmware data
@@ -808,6 +986,16 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
             mgr.ota_last_error_[sizeof(mgr.ota_last_error_) - 1] = '\0';
             return fail_ota_with_update_abort(HTTPD_500_INTERNAL_SERVER_ERROR, "Write failed");
         }
+
+        if (mbedtls_sha256_update_ret(&sha_ctx,
+                                      reinterpret_cast<const unsigned char*>(buf),
+                                      static_cast<size_t>(recv_len)) != 0) {
+            strncpy(mgr.ota_last_error_, "Image hash update failed", sizeof(mgr.ota_last_error_) - 1);
+            mgr.ota_last_error_[sizeof(mgr.ota_last_error_) - 1] = '\0';
+            return fail_ota_with_update_abort(HTTPD_500_INTERNAL_SERVER_ERROR, "Image hash update failed");
+        }
+
+        metadata_scan.consume(reinterpret_cast<const uint8_t*>(buf), static_cast<size_t>(recv_len));
         
         remaining -= recv_len;
         total_written += (size_t)recv_len;
@@ -821,6 +1009,76 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
     }
 
     LOG_INFO("HTTP_OTA", "Receive loop complete: written=%u bytes, expected=%u bytes", (unsigned)total_written, (unsigned)expected_size);
+
+    unsigned char computed_sha[32] = {0};
+    if (mbedtls_sha256_finish_ret(&sha_ctx, computed_sha) != 0) {
+        strncpy(mgr.ota_last_error_, "Image hash finalize failed", sizeof(mgr.ota_last_error_) - 1);
+        mgr.ota_last_error_[sizeof(mgr.ota_last_error_) - 1] = '\0';
+        return fail_ota_with_update_abort(HTTPD_500_INTERNAL_SERVER_ERROR, "Image hash finalize failed");
+    }
+    mbedtls_sha256_free(&sha_ctx);
+    sha_ctx_active = false;
+
+    char computed_sha_hex[OTA_IMAGE_SHA256_HEX_LEN + 1] = {0};
+    for (size_t index = 0; index < sizeof(computed_sha); ++index) {
+        (void)snprintf(&computed_sha_hex[index * 2], 3, "%02x", computed_sha[index]);
+    }
+
+    if (strcasecmp(computed_sha_hex, expected_sha256_hex) != 0) {
+        LOG_ERROR("HTTP_OTA", "Image SHA-256 mismatch: expected=%s computed=%s", expected_sha256_hex, computed_sha_hex);
+        strncpy(mgr.ota_last_error_, "Image hash verification failed", sizeof(mgr.ota_last_error_) - 1);
+        mgr.ota_last_error_[sizeof(mgr.ota_last_error_) - 1] = '\0';
+        return fail_ota_with_update_abort(HTTPD_400_BAD_REQUEST, "Image hash verification failed");
+    }
+
+    const auto compatibility = FirmwareCompatibilityPolicy::validate_scan(
+        metadata_scan,
+        "TRANSMITTER",
+        static_cast<uint8_t>(FW_VERSION_MAJOR));
+
+    if (!compatibility.allowed) {
+        const char* reject_message = "Firmware compatibility policy rejected image";
+        const char* user_message = reject_message;
+
+        switch (compatibility.code) {
+            case FirmwareCompatibilityPolicy::ValidationCode::InvalidMetadataStructure:
+                reject_message = "Invalid firmware metadata";
+                user_message = "Invalid firmware metadata structure";
+                break;
+            case FirmwareCompatibilityPolicy::ValidationCode::DeviceTypeMismatch:
+                reject_message = "Firmware target mismatch";
+                user_message = "Firmware target mismatch (expected TRANSMITTER)";
+                break;
+            case FirmwareCompatibilityPolicy::ValidationCode::MajorVersionIncompatible:
+                reject_message = "Firmware major version incompatible";
+                user_message = "Firmware major version incompatible with running transmitter";
+                break;
+            case FirmwareCompatibilityPolicy::ValidationCode::MinimumCompatibleMajorIncompatible:
+                reject_message = "Firmware minimum compatible major requirement not met";
+                user_message = "Firmware requires newer transmitter major compatibility";
+                break;
+            default:
+                break;
+        }
+
+        LOG_ERROR("HTTP_OTA",
+                  "Compatibility reject code=%s device=%s image_major=%u min_compat_major=%u running_major=%u",
+                  FirmwareCompatibilityPolicy::validation_code_to_string(compatibility.code),
+                  compatibility.normalized_device_type,
+                  static_cast<unsigned>(compatibility.image_major),
+                  static_cast<unsigned>(compatibility.image_min_compatible_major),
+                  static_cast<unsigned>(FW_VERSION_MAJOR));
+
+        strncpy(mgr.ota_last_error_, reject_message, sizeof(mgr.ota_last_error_) - 1);
+        mgr.ota_last_error_[sizeof(mgr.ota_last_error_) - 1] = '\0';
+        return fail_ota_with_update_abort(HTTPD_400_BAD_REQUEST, user_message);
+    }
+
+    if (compatibility.code == FirmwareCompatibilityPolicy::ValidationCode::LegacyAllowed) {
+        LOG_WARN("HTTP_OTA", "%s", compatibility.message);
+    }
+
+    LOG_INFO("HTTP_OTA", "Image SHA-256 verified successfully");
     LOG_INFO("HTTP_OTA", "Calling Update.end(true)...");
     
     // Finalize update
@@ -832,13 +1090,15 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
         mgr.ota_ready_for_reboot_ = true;
         mgr.ota_last_success_ = true;
         mgr.ota_session_.deactivate();
+        mgr.set_commit_state("prepared_waiting_reboot", "firmware staged; awaiting reboot command");
 
-        StaticJsonDocument<192> ok_doc;
+        StaticJsonDocument<224> ok_doc;
         ok_doc["success"] = true;
         ok_doc["code"] = 200;
         ok_doc["message"] = "OTA applied. Waiting for reboot command";
         ok_doc["ready_for_reboot"] = true;
-        char ok_json[192];
+        ok_doc["ota_txn_id"] = mgr.ota_txn_id_;
+        char ok_json[224];
         const size_t ok_json_len = serializeJson(ok_doc, ok_json, sizeof(ok_json));
         httpd_resp_set_type(req, "application/json");
         httpd_resp_set_hdr(req, "Cache-Control", "no-store");
@@ -854,6 +1114,7 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
         send_json_error(req, HTTPD_500_INTERNAL_SERVER_ERROR, Update.errorString());
         mgr.ota_in_progress_ = false;
         mgr.ota_session_.deactivate();
+        mgr.set_commit_state("prepare_failed", Update.errorString());
         return ESP_FAIL;
     }
 }
@@ -878,8 +1139,11 @@ esp_err_t OtaManager::health_handler(httpd_req_t *req) {
     const bool eth_ready = EthernetManager::instance().is_fully_ready();
     const bool mqtt_connected = MqttManager::instance().is_connected();
     const bool espnow_connected = EspNowConnectionManager::instance().is_connected();
+    bool ota_psk_provisioned = false;
+    char psk_tmp[96] = {0};
+    const bool ota_psk_available = load_ota_psk(psk_tmp, sizeof(psk_tmp), &ota_psk_provisioned);
 
-    StaticJsonDocument<384> doc;
+    StaticJsonDocument<512> doc;
     doc["success"] = true;
     doc["status"] = "ok";
     doc["uptime_ms"] = static_cast<unsigned long>(millis());
@@ -891,8 +1155,16 @@ esp_err_t OtaManager::health_handler(httpd_req_t *req) {
     doc["espnow_connected"] = espnow_connected;
     doc["ota_in_progress"] = ota.ota_in_progress_;
     doc["ota_ready_for_reboot"] = ota.ota_ready_for_reboot_;
+    doc["ota_commit_state"] = ota.ota_commit_state_;
+    doc["ota_commit_detail"] = ota.ota_commit_detail_;
+    doc["ota_psk_available"] = ota_psk_available;
+    doc["ota_psk_provisioned"] = ota_psk_provisioned;
+    doc["boot_guard_state"] = OtaBootGuard::state_string();
+    doc["boot_guard_reason"] = OtaBootGuard::last_reason();
+    doc["rollback_pending"] = OtaBootGuard::is_pending_verification();
+    doc["boot_guard_passed"] = (OtaBootGuard::state() == OtaBootGuard::State::Confirmed);
 
-    char json[384];
+    char json[512];
     const size_t json_len = serializeJson(doc, json, sizeof(json));
     if (json_len == 0 || json_len >= sizeof(json)) {
         return send_json_error(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Health JSON formatting error");
@@ -1021,11 +1293,45 @@ esp_err_t OtaManager::ota_status_handler(httpd_req_t *req) {
 
     // Build via ArduinoJson so last_error and session fields are properly escaped
     // regardless of what characters the Update library places in the error string.
-    StaticJsonDocument<512> doc;
+    bool ota_psk_provisioned = false;
+    char psk_tmp[96] = {0};
+    const bool ota_psk_available = load_ota_psk(psk_tmp, sizeof(psk_tmp), &ota_psk_provisioned);
+    const bool rollback_pending = OtaBootGuard::is_pending_verification();
+    const bool boot_guard_passed = (OtaBootGuard::state() == OtaBootGuard::State::Confirmed);
+    const char* boot_guard_state = OtaBootGuard::state_string();
+    const char* rollback_reason = OtaBootGuard::last_reason();
+
+    const char* commit_state = mgr.ota_commit_state_;
+    const char* commit_detail = mgr.ota_commit_detail_;
+
+    if (!mgr.ota_in_progress_ && !mgr.ota_ready_for_reboot_) {
+        if (boot_guard_passed && mgr.ota_txn_id_ != 0) {
+            commit_state = "committed_validated";
+            commit_detail = "boot guard passed and app confirmed";
+        } else if (rollback_pending) {
+            commit_state = "boot_pending_validation";
+            commit_detail = "app rebooted; waiting for boot guard health gate";
+        } else if (strcmp(boot_guard_state, "rollback_triggered") == 0) {
+            commit_state = "rollback_triggered";
+            commit_detail = rollback_reason;
+        } else if (strcmp(boot_guard_state, "error") == 0) {
+            commit_state = "boot_guard_error";
+            commit_detail = rollback_reason;
+        }
+    }
+
+    StaticJsonDocument<896> doc;
     doc["success"] = true;
     doc["in_progress"] = mgr.ota_in_progress_;
     doc["ready_for_reboot"] = mgr.ota_ready_for_reboot_;
     doc["last_success"] = mgr.ota_last_success_;
+    doc["ota_txn_id"] = mgr.ota_txn_id_;
+    doc["commit_state"] = commit_state;
+    doc["commit_detail"] = commit_detail;
+    doc["state_since_ms"] = mgr.ota_state_since_ms_;
+    doc["last_update_ms"] = mgr.ota_last_update_ms_;
+    doc["ota_psk_available"] = ota_psk_available;
+    doc["ota_psk_provisioned"] = ota_psk_provisioned;
     doc["last_error"] = mgr.ota_last_error_;
     doc["auth_required"] = true;
     doc["session_active"] = mgr.ota_session_.is_active();
@@ -1038,7 +1344,26 @@ esp_err_t OtaManager::ota_status_handler(httpd_req_t *req) {
         ? mgr.ota_session_.attempts_remaining()
         : 0;
 
-    char json[512];
+    // Provide upload signature in status so control-plane OTA_START can be followed
+    // by a direct /api/ota_status challenge fetch (without requiring /api/ota_arm).
+    char status_sig[65] = {0};
+    bool status_sig_ok = false;
+    if (mgr.ota_session_.is_active() && ota_psk_available) {
+        status_sig_ok = mgr.ota_session_.compute_signature(
+            psk_tmp,
+            static_cast<uint32_t>(ESP.getEfuseMac() & 0xFFFFFFFFUL),
+            status_sig,
+            sizeof(status_sig));
+    }
+    doc["signature"] = status_sig_ok ? status_sig : "";
+    doc["signature_available"] = status_sig_ok;
+
+    doc["boot_guard_state"] = boot_guard_state;
+    doc["rollback_pending"] = rollback_pending;
+    doc["boot_guard_passed"] = boot_guard_passed;
+    doc["rollback_reason"] = rollback_reason;
+
+    char json[896];
     const size_t json_len = serializeJson(doc, json, sizeof(json));
     if (json_len == 0 || json_len >= sizeof(json)) {
         send_json_error(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Status JSON formatting error");
