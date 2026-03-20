@@ -122,49 +122,56 @@ This addendum is the current authoritative map for structure and operation.
 
 ### System Diagram
 
+Each physical interface feeds only its own dedicated subsystem.
+WiFi → ESP-NOW only. Ethernet → IP networking only. CAN → battery data only.
+
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    ESP32-POE2 (Transmitter)                │
-├─────────────────────────────────────────────────────────────┤
-│                                                              │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
-│  │    CAN Bus   │  │   WiFi/BLE   │  │  Ethernet    │     │
-│  │   (HS-SPI)   │  │   (2.4 GHz)  │  │   (MII)      │     │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘     │
-│         │                 │                  │              │
-│         │                 │      ┌───────────┴────┐         │
-│         │                 │      │                │         │
-│  ┌──────▼───────┐  ┌──────▼─────▼──────┐  ┌──────▼────┐    │
-│  │  CANDriver   │  │  EthernetManager  │  │ RadioInit │    │
-│  │  (Battery)   │  │  (9-State Machine)│  │(WiFi STA) │    │
-│  └──────┬───────┘  └──────┬────────────┘  └──────┬─────┘    │
-│         │                 │                      │          │
-│         │    ┌────────────┼──────────────┐       │          │
-│         │    │            │              │       │          │
-│  ┌──────▼────▼────┐  ┌────▼──────┐  ┌───▼───┐   │          │
-│  │EnhancedCache   │  │ Services  │  │Tasks  │   │          │
-│  │(Dual Storage)  │  │ (NTP/OTA) │  │(MQTT) │   │          │
-│  └────────┬───────┘  └────┬──────┘  └───┬───┘   │          │
-│           │               │              │       │          │
-│  ┌────────▼───────────────▼──────────────▼───┐   │          │
-│  │      FreeRTOS Task Scheduler              │   │          │
-│  │  (Core 0: Main Loop / Core 1: TX)         │   │          │
-│  └────────┬────────────────────────────────┬─┘   │          │
-│           │                                │     │          │
-│  ┌────────▼──────┐           ┌─────────────▼──┐  │          │
-│  │ ESP-NOW Radio │           │ CAN Interface  │  │          │
-│  └────────┬──────┘           └─────────────┬──┘  │          │
-│           │                                │     │          │
-│  ┌────────▼──────────────────────────────┘     │          │
-│  │              Wireless/CAN Outputs          │          │
-│  └─────────────────────────────────────────────┘          │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-         │                                    │
-         ▼                                    ▼
-    [LilyGo Receiver]                    [MQTT Broker]
-    (Display)                            (Cloud)
+┌──────────────────────────────────────────────────────────────────────┐
+│                       ESP32-POE2 (Transmitter)                       │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  ┌──────────────┐  ┌───────────────────────┐  ┌──────────────────┐  │
+│  │   CAN Bus    │  │      WiFi Radio       │  │    Ethernet      │  │
+│  │  (HS-SPI /   │  │   *** ESP-NOW ONLY    │  │   (MII /         │  │
+│  │   MCP2515)   │  │   No IP · No DHCP     │  │   LAN8720 PHY)   │  │
+│  └──────┬───────┘  └──────────┬────────────┘  └────────┬─────────┘  │
+│         │                     │                         │            │
+│         ▼                     ▼                         ▼            │
+│  ┌──────────────┐  ┌───────────────────────┐  ┌──────────────────┐  │
+│  │  CANDriver   │  │      RadioInit        │  │ EthernetManager  │  │
+│  │  (battery    │  │  STA mode · no IP     │  │  (9-state FSM ·  │  │
+│  │  emulator    │  │  ESP-NOW only         │  │  cable/IP/ready) │  │
+│  │  parsing)    │  └──────────┬────────────┘  └────────┬─────────┘  │
+│  └──────┬───────┘             │                         │            │
+│         │                     ▼                         ▼            │
+│         │          ┌───────────────────────┐  ┌──────────────────┐  │
+│         │          │    ESP-NOW Layer      │  │   IP Services    │  │
+│         │          │  tx_connection_       │  │  MQTT · NTP      │  │
+│         │          │  handler.cpp /        │  │  OTA · HTTP      │  │
+│         │          │  tx_state_machine.cpp │  │  (Ethernet only) │  │
+│         │          └──────────┬────────────┘  └────────┬─────────┘  │
+│         │                     │                         │            │
+│         ▼                     ▼                         ▼            │
+│  ┌──────────────────────────────────────────────────────────────┐    │
+│  │                       EnhancedCache                          │    │
+│  │                (Dual storage · PSRAM-backed)                 │    │
+│  └───────────────────────────┬──────────────────────────────────┘    │
+│                              │                                       │
+│  ┌───────────────────────────▼────────────────────────────────────┐  │
+│  │                   FreeRTOS Task Scheduler                      │  │
+│  │        Core 0: Main loop / CAN processing / Health checks      │  │
+│  │        Core 1: TX / ESP-NOW dispatch                           │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+            │                                           │
+            ▼                                           ▼
+      [LilyGo Receiver]                           [MQTT Broker]
+      (via ESP-NOW · WiFi radio)                   (via Ethernet · IP)
 ```
+
+> **WiFi** is configured in STA mode with no IP address and is used **exclusively** for ESP-NOW radio.
+> **Ethernet** (LAN8720 PHY, MII) is the sole IP networking path for MQTT, NTP, OTA, and HTTP.
 
 ### Layered Architecture
 
