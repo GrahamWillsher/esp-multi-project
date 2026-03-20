@@ -72,9 +72,7 @@ void TransmissionTask::task_impl(void* parameter) {
     
     TickType_t last_wake_time = xTaskGetTickCount();
     const TickType_t interval_ticks = pdMS_TO_TICKS(TRANSMIT_INTERVAL_MS);
-    
-    // State machine update counter (update every 10 iterations = 1s)
-    uint32_t sm_update_counter = 0;
+    uint32_t last_cleanup_ms = millis();
     
     while (true) {
         vTaskDelayUntil(&last_wake_time, interval_ticks);
@@ -98,8 +96,12 @@ void TransmissionTask::task_impl(void* parameter) {
             self->transmit_next_state();
         }
         
-        // Periodic cleanup: Remove acked transient entries (FIFO)
-        EnhancedCache::instance().cleanup_acked_transient();
+        // Periodic cleanup: Remove ACKed/expired transient entries every 10 seconds
+        uint32_t now = millis();
+        if (now - last_cleanup_ms >= CLEANUP_INTERVAL_MS) {
+            EnhancedCache::instance().cleanup_acked_transient();
+            last_cleanup_ms = now;
+        }
     }
 }
 

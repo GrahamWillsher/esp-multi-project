@@ -16,7 +16,7 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
     )rawliteral";
     
     // Add navigation buttons
-    content += "    " + generate_nav_buttons("/battery_settings");
+    content += "    " + generate_nav_buttons("/transmitter/battery");
     
     content += R"rawliteral(
     
@@ -548,7 +548,7 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
         }
     )rawliteral";
 
-    String html = generatePage("ESP-NOW Receiver - Battery Settings", content, "", script);
+    String html = renderPage("ESP-NOW Receiver - Battery Settings", content, PageRenderOptions("", script));
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, html.c_str(), html.length());
     return ESP_OK;

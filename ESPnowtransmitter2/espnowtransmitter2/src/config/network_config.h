@@ -32,6 +32,15 @@ namespace config {
             const char* ota{"espnow/transmitter/ota"};        // Topic for OTA commands
         } topics;
     };
+
+    // OTA authentication/security configuration
+    namespace security {
+        // Pre-shared key used for OTA session signature verification.
+        // Must match receiver-side signer and should be rotated during provisioning.
+        constexpr const char* OTA_PSK = "CHANGE_ME_OTA_PSK_32B_MIN";
+        constexpr uint32_t OTA_SESSION_TTL_MS = 120000;      // 120 seconds
+        constexpr uint8_t OTA_SESSION_MAX_ATTEMPTS = 3;
+    }
     
     // Static function to get MQTT config (avoids inline variable warning)
     static inline const MqttConfig& get_mqtt_config() {

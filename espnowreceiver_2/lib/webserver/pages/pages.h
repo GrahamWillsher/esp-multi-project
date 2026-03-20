@@ -18,6 +18,7 @@
 
 // Receiver pages
 #include "systeminfo_page.h"         // Now at /receiver/config
+#include "network_config_page.h"     // Now at /receiver/network
 
 // Battery Emulator Spec Pages (Phase 3)
 #include "battery_specs_display_page.h"    // Battery specs from MQTT

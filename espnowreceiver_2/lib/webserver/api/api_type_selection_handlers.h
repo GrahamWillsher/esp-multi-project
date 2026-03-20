@@ -8,3 +8,8 @@
  * @return Number of handlers successfully registered
  */
 int register_type_selection_api_handlers(httpd_handle_t server);
+
+/**
+ * @brief Number of type-selection API handlers expected to register.
+ */
+int expected_type_selection_api_handlers();

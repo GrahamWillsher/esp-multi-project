@@ -13,7 +13,7 @@ void on_espnow_sent(const uint8_t *mac, esp_now_send_status_t status) {
 }
 
 void on_data_recv(const uint8_t *mac, const uint8_t *data, int len) {
-    // MINIMAL ISR WORK - just validate and queue the raw message
+    // MINIMAL CALLBACK WORK - just validate and queue the raw message
     if (!data || len < 1 || len > 250) return;
 
     ESPNow::rx_callback_count++;
@@ -25,9 +25,8 @@ void on_data_recv(const uint8_t *mac, const uint8_t *data, int len) {
     queue_msg.len = len;
     queue_msg.timestamp = millis();
     
-    // Queue message for processing (non-blocking, from ISR context)
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    if (xQueueSendFromISR(ESPNow::queue, &queue_msg, &xHigherPriorityTaskWoken) != pdTRUE) {
+    // Queue message for processing (non-blocking, callback runs in Wi-Fi task context)
+    if (xQueueSend(ESPNow::queue, &queue_msg, 0) != pdTRUE) {
         // Queue full - message dropped
         ESPNow::rx_queue_drop_count++;
         static uint32_t last_drop_log_ms = 0;
@@ -37,12 +36,9 @@ void on_data_recv(const uint8_t *mac, const uint8_t *data, int len) {
             Serial.println("[ESP-NOW] RX queue full - message dropped");
         }
     } else {
-        UBaseType_t waiting = uxQueueMessagesWaitingFromISR(ESPNow::queue);
+        UBaseType_t waiting = uxQueueMessagesWaiting(ESPNow::queue);
         if (waiting > ESPNow::rx_queue_high_watermark) {
             ESPNow::rx_queue_high_watermark = waiting;
         }
     }
-    
-    // Yield to higher priority task if woken
-    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }

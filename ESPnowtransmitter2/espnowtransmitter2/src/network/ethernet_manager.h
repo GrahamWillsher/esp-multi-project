@@ -183,34 +183,27 @@ public:
      * @return Link speed (100, 10, 0 if not connected)
      */
     int get_link_speed() const;
+
+    /** @brief Get configured static IP (saved config) */
+    IPAddress get_static_ip() const { return static_ip_; }
+
+    /** @brief Get configured static gateway (saved config) */
+    IPAddress get_static_gateway() const { return static_gateway_; }
+
+    /** @brief Get configured static subnet (saved config) */
+    IPAddress get_static_subnet_mask() const { return static_subnet_; }
+
+    /** @brief Get configured static primary DNS (saved config) */
+    IPAddress get_static_dns_primary() const { return static_dns_primary_; }
+
+    /** @brief Get configured static secondary DNS (saved config) */
+    IPAddress get_static_dns_secondary() const { return static_dns_secondary_; }
+
+    /** @brief Get network configuration version */
+    uint32_t get_network_config_version() const { return network_config_version_; }
     
     // =========================================================================
-    // CamelCase Compatibility Methods (for legacy code)
-    // =========================================================================
-    
-    /** @brief Compatibility wrapper - see get_local_ip() */
-    IPAddress getStaticIP() const { return static_ip_; }
-    
-    /** @brief Compatibility wrapper - see get_gateway_ip() */
-    IPAddress getGateway() const { return get_gateway_ip(); }
-    
-    /** @brief Compatibility wrapper - see get_subnet_mask() */
-    IPAddress getSubnetMask() const { return get_subnet_mask(); }
-    
-    /** @brief Compatibility wrapper - see get_dns_ip() */
-    IPAddress getDNSPrimary() const { return get_dns_ip(); }
-    
-    /** @brief Compatibility wrapper - returns secondary DNS (same as primary) */
-    IPAddress getDNSSecondary() const { return get_dns_ip(); }
-    
-    /** @brief Compatibility wrapper - see is_static_ip() */
-    bool isStaticIP() const { return is_static_ip(); }
-    
-    /** @brief Compatibility wrapper - get config version number */
-    uint32_t getNetworkConfigVersion() const { return network_config_version_; }
-    
-    // =========================================================================
-    // Network Configuration Methods (both snake_case and camelCase)
+    // Network Configuration Methods
     // =========================================================================
     
     /**
@@ -230,20 +223,6 @@ public:
      * @return true if IP conflict detected, false if safe to use
      */
     bool checkIPConflict(const uint8_t ip[4]);
-    
-    /**
-     * @brief Compatibility wrapper - save network config with camelCase
-     * @param use_static True for static IP, false for DHCP
-     * @param ip Static IP address (4 bytes)
-     * @param gateway Gateway IP (4 bytes)
-     * @param subnet Subnet mask (4 bytes)
-     * @param dns_primary Primary DNS (4 bytes)
-     * @param dns_secondary Secondary DNS (4 bytes)
-     * @return true if saved successfully
-     */
-    bool saveNetworkConfig(bool use_static, const uint8_t ip[4],
-                          const uint8_t gateway[4], const uint8_t subnet[4],
-                          const uint8_t dns_primary[4], const uint8_t dns_secondary[4]);
     
     // =========================================================================
     // Metrics & Diagnostics
@@ -341,12 +320,6 @@ public:
                             const uint8_t gateway[4], const uint8_t subnet[4],
                             const uint8_t dns_primary[4], const uint8_t dns_secondary[4]);
     
-    /**
-     * @brief Load network configuration (camelCase wrapper)
-     * @return true if config loaded, false if using defaults
-     */
-    bool loadNetworkConfig();
-    
 private:
     EthernetManager();
     ~EthernetManager();
@@ -361,7 +334,9 @@ private:
     uint32_t state_enter_time_ms_ = 0;
     uint32_t last_link_time_ms_ = 0;
     uint32_t last_ip_time_ms_ = 0;
-    
+    bool recovery_active_this_outage_ = false;  // Per-outage gate: prevents lifetime counter from blocking LINK_LOST→RECOVERING
+    uint32_t last_ip_wait_log_ms_ = 0;          // Delta-time throttle for IP_ACQUIRING progress log
+
     // Metrics
     EthernetStateMetrics metrics_;
     

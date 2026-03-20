@@ -25,23 +25,6 @@ struct WebserverRuntimeMetrics {
     uint32_t init_failures;
 };
 
-// Mock/Stub class for BatteryEmulatorSettingsStore
-// This replaces the full NVM settings store since we'll get data via ESP-NOW
-class MockSettingsStore {
-public:
-    String getString(const char* key, const char* defaultValue = "") {
-        return String(defaultValue);
-    }
-    
-    uint32_t getUInt(const char* key, uint32_t defaultValue = 0) {
-        return defaultValue;
-    }
-    
-    bool getBool(const char* key, bool defaultValue = false) {
-        return defaultValue;
-    }
-};
-
 /**
  * @brief Initialize webserver for ESP-NOW receiver
  * Sets up modular page handlers, API endpoints, and utilities

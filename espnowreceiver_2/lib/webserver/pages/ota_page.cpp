@@ -55,26 +55,20 @@ static esp_err_t ota_handler(httpd_req_t *req) {
             📁 Select firmware file (.bin)
         </div>
         
-        <div style='margin: 20px auto; max-width: 500px;'>
-            <input type='file' id='firmwareFileReceiver' accept='.bin' 
-                   style='display: block; margin: 20px auto; padding: 10px; font-size: 16px; cursor: pointer;'>
-         </div>
+        <input type='file' id='firmwareFileReceiver' accept='.bin' style='display:none;'>
+
+        <button id='uploadBtnReceiver' class='button'
+            style='background-color: #666; font-size: 20px; font-weight: bold; width: 340px; height: 72px; padding: 0 14px; line-height: 1.2; box-sizing: border-box; white-space: pre-line; word-break: break-word; text-align: center; display: inline-flex; align-items: center; justify-content: center;'>Select File First</button>
         
-        <button id='uploadBtnReceiver' class='button' disabled 
-                style='background-color: #666; font-size: 18px; padding: 15px 30px;'>
-            Select File First
-        </button>
+        <div id='progressBarReceiver' style='display:none; width:340px; height:72px; background:#333; border-radius:4px; position:relative; overflow:hidden; margin:0 auto;'>
+            <div id='progressFillReceiver' style='height:100%; width:0%; background:#4CAF50; transition:width 0.15s ease;'></div>
+            <div id='progressTextReceiver' style='position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); color:#fff; font-size:20px; font-weight:bold;'>0%</div>
+        </div>
         
         <div style='margin-top: 15px; color: #FFD700; font-size: 14px;'>
             ⚠️ Device will reboot automatically after update
         </div>
         
-        <div id='progressReceiver' style='margin-top: 20px; display: none;'>
-            <div style='background-color: #333; border-radius: 5px; overflow: hidden;'>
-                <div id='progressBarReceiver' style='background-color: #4CAF50; height: 30px; width: 0%; transition: width 0.3s;'></div>
-            </div>
-            <div id='progressTextReceiver' style='margin-top: 10px; color: #FFD700;'>0%</div>
-        </div>
     </div>
     
     <!-- Transmitter OTA Section -->
@@ -84,26 +78,20 @@ static esp_err_t ota_handler(httpd_req_t *req) {
             📁 Select firmware file (.bin)
         </div>
         
-        <div style='margin: 20px auto; max-width: 500px;'>
-            <input type='file' id='firmwareFileTransmitter' accept='.bin' 
-                   style='display: block; margin: 20px auto; padding: 10px; font-size: 16px; cursor: pointer;'>
-         </div>
+        <input type='file' id='firmwareFileTransmitter' accept='.bin' style='display:none;'>
+
+        <button id='uploadBtnTransmitter' class='button'
+            style='background-color: #666; font-size: 20px; font-weight: bold; width: 340px; height: 72px; padding: 0 14px; line-height: 1.2; box-sizing: border-box; white-space: pre-line; word-break: break-word; text-align: center; display: inline-flex; align-items: center; justify-content: center;'>Select File First</button>
         
-        <button id='uploadBtnTransmitter' class='button' disabled 
-                style='background-color: #666; font-size: 18px; padding: 15px 30px;'>
-            Select File First
-        </button>
+        <div id='progressBarTransmitter' style='display:none; width:340px; height:72px; background:#333; border-radius:4px; position:relative; overflow:hidden; margin:0 auto;'>
+            <div id='progressFillTransmitter' style='height:100%; width:0%; background:#4CAF50; transition:width 0.15s ease;'></div>
+            <div id='progressTextTransmitter' style='position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); color:#fff; font-size:20px; font-weight:bold;'>0%</div>
+        </div>
         
         <div style='margin-top: 15px; color: #FFD700; font-size: 14px;'>
             The transmitter will receive and install the firmware via HTTP
         </div>
         
-        <div id='progressTransmitter' style='margin-top: 20px; display: none;'>
-            <div style='background-color: #333; border-radius: 5px; overflow: hidden;'>
-                <div id='progressBarTransmitter' style='background-color: #4CAF50; height: 30px; width: 0%; transition: width 0.3s;'></div>
-            </div>
-            <div id='progressTextTransmitter' style='margin-top: 10px; color: #FFD700;'>0%</div>
-        </div>
     </div>
 )rawliteral";
 
@@ -212,9 +200,9 @@ static esp_err_t ota_handler(httpd_req_t *req) {
             const fileInput = document.getElementById('firmwareFile' + device);
             const uploadBtn = document.getElementById('uploadBtn' + device);
             const statusDiv = document.getElementById('status' + device);
-            const progressDiv = document.getElementById('progress' + device);
-            const progressBar = document.getElementById('progressBar' + device);
-            const progressText = document.getElementById('progressText' + device);
+            const progressBarDiv = document.getElementById('progressBar' + device);
+            const progressFill = document.getElementById('progressFill' + device);
+            const progressBarText = document.getElementById('progressText' + device);
             
             let selectedFile = null;
             
@@ -229,7 +217,7 @@ static esp_err_t ota_handler(httpd_req_t *req) {
                         const metadata = await extractMetadataFromFile(selectedFile);
                         if (metadata.valid) {
                             statusDiv.innerHTML = '📄 ' + selectedFile.name + ' (' + sizeMB + ' MB) → ' +
-                                                  '<span style="color: #4CAF50;">● ' + metadata.device + ' v' + 
+                                                  '<span style="color: #4CAF50;">● v' + 
                                                   metadata.version + '</span> ' +
                                                   '<span style="color: #888; font-size: 12px;">(Built: ' + 
                                                   metadata.build_date + ')</span>';
@@ -243,11 +231,11 @@ static esp_err_t ota_handler(httpd_req_t *req) {
                     
                     uploadBtn.disabled = false;
                     uploadBtn.style.backgroundColor = '#ff6b35';
-                    uploadBtn.innerText = 'Upload and Update ' + device;
+                    uploadBtn.innerText = 'Upload Firmware';
                 } else {
                     selectedFile = null;
                     statusDiv.innerHTML = '📁 Select firmware file (.bin)';
-                    uploadBtn.disabled = true;
+                    uploadBtn.disabled = false;
                     uploadBtn.style.backgroundColor = '#666';
                     uploadBtn.innerText = 'Select File First';
                 }
@@ -256,17 +244,15 @@ static esp_err_t ota_handler(httpd_req_t *req) {
             // Handle upload button
             uploadBtn.addEventListener('click', function() {
                 if (!selectedFile) {
-                    alert('Please select a firmware file first');
+                    fileInput.click();
                     return;
                 }
                 
                 console.log('Starting ' + device + ' OTA upload...');
-                uploadBtn.disabled = true;
-                uploadBtn.style.backgroundColor = '#666';
-                uploadBtn.innerText = 'Uploading...';
-                
-                // Show progress bar
-                progressDiv.style.display = 'block';
+                uploadBtn.style.display = 'none';
+                progressBarDiv.style.display = 'block';
+                progressFill.style.width = '0%';
+                progressBarText.innerText = '0%';
                 
                 // Create FormData and upload
                 const formData = new FormData();
@@ -278,8 +264,8 @@ static esp_err_t ota_handler(httpd_req_t *req) {
                 xhr.upload.addEventListener('progress', function(e) {
                     if (e.lengthComputable) {
                         const percent = Math.round((e.loaded / e.total) * 100);
-                        progressBar.style.width = percent + '%';
-                        progressText.innerText = percent + '% uploaded';
+                        progressFill.style.width = percent + '%';
+                        progressBarText.innerText = percent + '%';
                     }
                 });
                 
@@ -291,11 +277,17 @@ static esp_err_t ota_handler(httpd_req_t *req) {
                             if (response.success) {
                                 if (device === 'Receiver') {
                                     statusDiv.innerHTML = '✅ Firmware uploaded! Device is rebooting...<br><br>Please wait 30 seconds and reload the page.';
-                                    progressBar.style.backgroundColor = '#4CAF50';
+                                    progressBarDiv.style.display = 'none';
+                                    uploadBtn.style.display = '';
+                                    uploadBtn.innerText = 'Upload complete\nRebooting...';
+                                    uploadBtn.style.backgroundColor = '#4CAF50';
                                     // Don't redirect - receiver is rebooting
                                 } else {
                                     statusDiv.innerHTML = '✅ Firmware uploaded to transmitter.<br><br>Verifying OTA readiness...';
-                                    progressBar.style.backgroundColor = '#4CAF50';
+                                    progressBarDiv.style.display = 'none';
+                                    uploadBtn.style.display = '';
+                                    uploadBtn.innerText = 'Upload complete\nVerifying OTA...';
+                                    uploadBtn.style.backgroundColor = '#4CAF50';
 
                                     let statusPollAttempts = 0;
                                     const maxStatusPollAttempts = 40; // 40s
@@ -312,23 +304,37 @@ static esp_err_t ota_handler(httpd_req_t *req) {
                                                     TransmitterReboot.run({
                                                         countdownSeconds: TransmitterReboot.COUNTDOWN_SECONDS,
                                                         updateCountdown: (seconds) => {
-                                                            statusDiv.innerHTML = '✅ OTA verified on transmitter.<br><br>Reboot command in <span id="countdown' + device + '">' + seconds + '</span> seconds...';
+                                                            statusDiv.innerHTML = '✅ OTA verified on transmitter.';
+                                                            uploadBtn.disabled = true;
+                                                            uploadBtn.style.cursor = 'not-allowed';
+                                                            uploadBtn.style.backgroundColor = '#ff9800';
+                                                            uploadBtn.innerText = 'Reboot in ' + seconds + 's...';
                                                         },
                                                         onCommandStart: () => {
                                                             statusDiv.innerHTML = '✅ Sending reboot command to transmitter...';
+                                                            uploadBtn.disabled = true;
+                                                            uploadBtn.style.cursor = 'not-allowed';
+                                                            uploadBtn.style.backgroundColor = '#ff9800';
+                                                            uploadBtn.innerText = 'Sending reboot command...';
                                                         },
                                                         onSuccess: () => {
-                                                            statusDiv.innerHTML = '✅ Reboot command sent.<br><br>Redirecting...';
+                                                            statusDiv.innerHTML = '';
+                                                            uploadBtn.disabled = true;
+                                                            uploadBtn.style.cursor = 'not-allowed';
+                                                            uploadBtn.style.backgroundColor = '#28a745';
+                                                            uploadBtn.innerText = '✓ Reboot command sent';
                                                         },
                                                         onFailure: (message) => {
                                                             statusDiv.innerHTML = '❌ OTA uploaded, but reboot command failed: ' + (message || 'Unknown error');
                                                             uploadBtn.disabled = false;
+                                                            uploadBtn.style.cursor = 'pointer';
                                                             uploadBtn.style.backgroundColor = '#ff6b35';
                                                             uploadBtn.innerText = 'Retry Upload';
                                                         },
                                                         onError: (err) => {
                                                             statusDiv.innerHTML = '❌ OTA uploaded, but reboot request error: ' + err.message;
                                                             uploadBtn.disabled = false;
+                                                            uploadBtn.style.cursor = 'pointer';
                                                             uploadBtn.style.backgroundColor = '#ff6b35';
                                                             uploadBtn.innerText = 'Retry Upload';
                                                         }
@@ -338,6 +344,12 @@ static esp_err_t ota_handler(httpd_req_t *req) {
                                                 } else if (status.success && !status.in_progress && !status.ready_for_reboot && status.last_success === false) {
                                                     clearInterval(statusPollInterval);
                                                     statusDiv.innerHTML = '❌ Transmitter OTA failed: ' + (status.last_error || 'Unknown error');
+                                                    uploadBtn.disabled = false;
+                                                    uploadBtn.style.backgroundColor = '#ff6b35';
+                                                    uploadBtn.innerText = 'Retry Upload';
+                                                } else if (!status.success) {
+                                                    clearInterval(statusPollInterval);
+                                                    statusDiv.innerHTML = '❌ Unable to verify transmitter OTA: ' + (status.message || status.detail || 'Unknown status error');
                                                     uploadBtn.disabled = false;
                                                     uploadBtn.style.backgroundColor = '#ff6b35';
                                                     uploadBtn.innerText = 'Retry Upload';
@@ -358,20 +370,24 @@ static esp_err_t ota_handler(httpd_req_t *req) {
                                 }
                             } else {
                                 statusDiv.innerHTML = '❌ Failed: ' + response.message;
-                                progressBar.style.backgroundColor = '#ff6b35';
+                                progressBarDiv.style.display = 'none';
+                                uploadBtn.style.display = '';
                                 uploadBtn.disabled = false;
                                 uploadBtn.style.backgroundColor = '#ff6b35';
                                 uploadBtn.innerText = 'Retry Upload';
                             }
                         } catch (e) {
                             statusDiv.innerHTML = '❌ Error parsing response';
+                            progressBarDiv.style.display = 'none';
+                            uploadBtn.style.display = '';
                             uploadBtn.disabled = false;
                             uploadBtn.style.backgroundColor = '#ff6b35';
                             uploadBtn.innerText = 'Retry Upload';
                         }
                     } else {
                         statusDiv.innerHTML = '❌ Upload failed: HTTP ' + xhr.status;
-                        progressBar.style.backgroundColor = '#ff6b35';
+                        progressBarDiv.style.display = 'none';
+                        uploadBtn.style.display = '';
                         uploadBtn.disabled = false;
                         uploadBtn.style.backgroundColor = '#ff6b35';
                         uploadBtn.innerText = 'Retry Upload';
@@ -381,7 +397,8 @@ static esp_err_t ota_handler(httpd_req_t *req) {
                 // Upload error
                 xhr.addEventListener('error', function() {
                     statusDiv.innerHTML = '❌ Network error during upload';
-                    progressBar.style.backgroundColor = '#ff6b35';
+                    progressBarDiv.style.display = 'none';
+                    uploadBtn.style.display = '';
                     uploadBtn.disabled = false;
                     uploadBtn.style.backgroundColor = '#ff6b35';
                     uploadBtn.innerText = 'Retry Upload';
@@ -534,7 +551,7 @@ static esp_err_t ota_handler(httpd_req_t *req) {
         };
     )rawliteral";
 
-    String html = generatePage("ESP-NOW Receiver - OTA Update", content, "", script);
+    String html = renderPage("ESP-NOW Receiver - OTA Update", content, PageRenderOptions("", script));
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, html.c_str(), html.length());
     return ESP_OK;

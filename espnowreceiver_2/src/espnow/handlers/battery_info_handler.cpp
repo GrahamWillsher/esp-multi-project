@@ -36,12 +36,7 @@ void handle_battery_info(const espnow_queue_msg_t* msg) {
     emu.led_mode = data->led_mode;
     TransmitterManager::storeBatteryEmulatorSettings(emu);
 
-    BatteryData::total_capacity_Wh = data->capacity_wh;
-    BatteryData::max_design_voltage_V = data->max_voltage_mv / 1000;
-    BatteryData::min_design_voltage_V = data->min_voltage_mv / 1000;
-    BatteryData::number_of_cells = data->cell_count;
-    BatteryData::chemistry = data->chemistry;
-    BatteryData::info_received = true;
+    BatteryData::update_battery_info(*data, settings.version);
 
     const char* chemistry_str[] = {"NCA", "NMC", "LFP", "LTO"};
     LOG_INFO("BATTERY", "Battery Settings: %dWh, %d-%dmV, %.1f/%.1fA, SOC:%d-%d%%, %dS %s, LED mode:%u",

@@ -1,15 +1,17 @@
 #include "sse_notifier.h"
 #include <Arduino.h>
 
+#include "../logging.h"
+
 EventGroupHandle_t SSENotifier::event_group = nullptr;
 
 void SSENotifier::init() {
     if (event_group == nullptr) {
         event_group = xEventGroupCreate();
         if (event_group != nullptr) {
-            Serial.println("[SSE] Event group created");
+            LOG_INFO("[SSE] Event group created");
         } else {
-            Serial.println("[SSE] ERROR: Failed to create event group");
+            LOG_ERROR("[SSE] Failed to create event group");
         }
     }
 }
@@ -52,8 +54,4 @@ bool SSENotifier::waitForCellDataUpdate(TickType_t timeout_ms) {
     );
 
     return (bits & CELL_DATA_UPDATED_BIT) != 0;
-}
-
-EventGroupHandle_t SSENotifier::getEventGroup() {
-    return event_group;
 }

@@ -76,6 +76,30 @@ bool read_file_to_buffer(const char* path, uint8_t*& out_buffer, size_t& out_siz
     return true;
 }
 
+float gamma_map_brightness(uint8_t logical_brightness) {
+    if (logical_brightness <= Display::LayoutSpec::Backlight::PWM_MIN) {
+        return static_cast<float>(Display::LayoutSpec::Backlight::PWM_MIN);
+    }
+
+    if (logical_brightness >= Display::LayoutSpec::Backlight::PWM_MAX) {
+        return static_cast<float>(Display::LayoutSpec::Backlight::PWM_MAX);
+    }
+
+    const float normalized = static_cast<float>(logical_brightness) /
+                             static_cast<float>(Display::LayoutSpec::Backlight::PWM_MAX);
+    float gamma_mapped = std::pow(normalized, Display::LayoutSpec::Backlight::GAMMA);
+
+    // Soft-knee near full brightness to avoid a visible last-step jump on this panel.
+    // Blend from gamma curve toward linear in the top 10% range.
+    constexpr float TOP_KNEE_START = 0.90f;
+    if (normalized > TOP_KNEE_START) {
+        const float t = (normalized - TOP_KNEE_START) / (1.0f - TOP_KNEE_START);
+        gamma_mapped = (gamma_mapped * (1.0f - t)) + (normalized * t);
+    }
+
+    return gamma_mapped * static_cast<float>(Display::LayoutSpec::Backlight::PWM_MAX);
+}
+
 }  // namespace
 
 namespace Display {
@@ -248,11 +272,37 @@ void TftDisplay::show_fatal_error(const char* component, const char* message) {
 
 void TftDisplay::set_backlight(uint8_t brightness) {
     current_backlight_ = brightness;
+
+    // Gamma map to perceived-linear brightness, then apply temporal dithering
+    // so fractional PWM values become smoother over successive frames.
+    const float mapped_pwm = gamma_map_brightness(brightness);
+    int32_t pwm_base = static_cast<int32_t>(mapped_pwm);
+    float frac = mapped_pwm - static_cast<float>(pwm_base);
+
+    if (brightness == Display::LayoutSpec::Backlight::PWM_MIN ||
+        brightness == Display::LayoutSpec::Backlight::PWM_MAX) {
+        backlight_dither_error_ = 0.0f;
+    } else {
+        backlight_dither_error_ += frac;
+        if (backlight_dither_error_ >= 1.0f && pwm_base < Display::LayoutSpec::Backlight::PWM_MAX) {
+            pwm_base += 1;
+            backlight_dither_error_ -= 1.0f;
+        }
+    }
+
+    if (pwm_base < Display::LayoutSpec::Backlight::PWM_MIN) {
+        pwm_base = Display::LayoutSpec::Backlight::PWM_MIN;
+    }
+    if (pwm_base > Display::LayoutSpec::Backlight::PWM_MAX) {
+        pwm_base = Display::LayoutSpec::Backlight::PWM_MAX;
+    }
+
+    const uint8_t pwm_brightness = static_cast<uint8_t>(pwm_base);
     
     #if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5,0,0)
-    ledcWrite(HardwareConfig::BACKLIGHT_PWM_CHANNEL, brightness);
+    ledcWrite(HardwareConfig::BACKLIGHT_PWM_CHANNEL, pwm_brightness);
     #else
-    ledcWrite(HardwareConfig::GPIO_BACKLIGHT, brightness);
+    ledcWrite(HardwareConfig::GPIO_BACKLIGHT, pwm_brightness);
     #endif
 
     log_backlight_if_significant(brightness, last_backlight_logged_);
@@ -282,28 +332,26 @@ void TftDisplay::animate_backlight(uint8_t target, uint32_t duration_ms) {
 
     LOG_DEBUG("TFT", "Animating backlight to %u over %u ms", target, duration_ms);
 
-    // Calculate steps for smooth animation (~16ms per frame = ~60 FPS)
-    const uint32_t frame_time = LayoutSpec::Timing::ANIMATION_FRAME_TIME_MS;
-    const uint32_t steps = (duration_ms + frame_time - 1) / frame_time;
+    const uint8_t start = current_backlight_;
+    const uint32_t transitions = static_cast<uint32_t>(std::abs((int)target - (int)start));
+    if (transitions == 0) {
+        set_backlight(target);
+        return;
+    }
 
-    // IMPORTANT: Capture start brightness once.
-    // Re-reading current_backlight_ every iteration causes non-linear progression
-    // and visible jump in the final segment.
-    const int32_t start = current_backlight_;
-    const int32_t delta = (int32_t)target - start;
+    // Use exact 1-count brightness transitions for deterministic fade shape.
+    // For full-range fade (0->255), transitions=255 and delay≈duration/255.
+    const uint32_t step_delay_ms = std::max<uint32_t>(1, (duration_ms + (transitions / 2U)) / transitions);
+    const int step_dir = (target > start) ? 1 : -1;
 
-    for (uint32_t i = 0; i <= steps; i++) {
-        // Integer interpolation with rounding for stable monotonic fade.
-        int32_t brightness_i = start + (delta * (int32_t)i + (int32_t)(steps / 2)) / (int32_t)steps;
-        if (brightness_i < 0) brightness_i = 0;
-        if (brightness_i > 255) brightness_i = 255;
-        const uint8_t brightness = (uint8_t)brightness_i;
+    for (uint32_t i = 0; i < transitions; i++) {
+        const int next = static_cast<int>(current_backlight_) + step_dir;
+        set_backlight(static_cast<uint8_t>(next));
+        smart_delay(step_delay_ms);
+    }
 
-        set_backlight(brightness);
-
-        if (i < steps) {
-            smart_delay(frame_time);
-        }
+    if (current_backlight_ != target) {
+        set_backlight(target);
     }
 }
 
@@ -525,20 +573,11 @@ void TftDisplay::draw_soc(float soc_percent) {
     soc_text_buffer_[sizeof(soc_text_buffer_) - 1] = '\0';
 }
 
-void TftDisplay::init_power_bar_state(int& bar_char_width,
-                                    int& max_bars_per_side,
-                                    uint16_t* gradient_green,
-                                    uint16_t* gradient_red) {
-    set_text_style_power_bar();
-    bar_char_width = tft.textWidth("-");
-
-    max_bars_per_side = (Display::SCREEN_WIDTH / 2) / bar_char_width;
-    if (max_bars_per_side > LayoutSpec::PowerBar::MAX_BARS_PER_SIDE) {
-        max_bars_per_side = LayoutSpec::PowerBar::MAX_BARS_PER_SIDE;
-    }
-
-    pre_calculate_color_gradient(TFT_BLUE, TFT_GREEN, max_bars_per_side - 1, gradient_green);
-    pre_calculate_color_gradient(TFT_BLUE, TFT_RED, max_bars_per_side - 1, gradient_red);
+void TftDisplay::init_power_bar_state() {
+    // Gradient index 0 = nearest to centre (blue), index N-1 = outermost.
+    const int steps = LayoutSpec::PowerBar::SEGMENTS_PER_SIDE - 1;
+    pre_calculate_color_gradient(TFT_BLUE, TFT_GREEN, steps, power_bar_gradient_green_);
+    pre_calculate_color_gradient(TFT_BLUE, TFT_RED,   steps, power_bar_gradient_red_);
 }
 
 int TftDisplay::calculate_power_bar_count(int32_t clamped_power,
@@ -563,82 +602,67 @@ bool TftDisplay::should_pulse_animate(int signed_bars,
 
 void TftDisplay::draw_power_bars(int bars,
                                  bool charging,
-                                 int center_x,
-                                 int bar_y,
-                                 int bar_char_width,
                                  const uint16_t* gradient_green,
                                  const uint16_t* gradient_red,
                                  int ripple_pos) {
+    namespace PB = LayoutSpec::PowerBar;
+
+    // Centre segment is always blue.
+    tft.fillRect(PB::segment_x(PB::CENTER_SEGMENT_INDEX), PB::SEGMENT_Y_PX,
+                 PB::SEGMENT_W_PX, PB::SEGMENT_H_PX, TFT_BLUE);
+
+    // Side segments: i=0 is nearest to centre, i=bars-1 is outermost.
     for (int i = 0; i < bars; i++) {
-        const int bar_x = charging
-            ? (center_x - i * bar_char_width)
-            : (center_x + i * bar_char_width);
+        const int seg_idx = charging
+            ? (PB::CENTER_SEGMENT_INDEX - 1 - i)
+            : (PB::CENTER_SEGMENT_INDEX + 1 + i);
 
-        const uint16_t bar_color = charging ? gradient_green[i] : gradient_red[i];
-        const uint16_t display_color = (ripple_pos >= 0 && i == ripple_pos)
-            ? ((bar_color >> 1) & 0x7BEF)
-            : bar_color;
+        const uint16_t base_color = charging ? gradient_green[i] : gradient_red[i];
+        const uint16_t color = (ripple_pos >= 0 && i == ripple_pos)
+            ? ((base_color >> 1) & 0x7BEFu)
+            : base_color;
 
-        tft.setTextColor(display_color, Display::tft_background);
-        tft.drawString("-", bar_x, bar_y);
+        tft.fillRect(PB::segment_x(seg_idx), PB::SEGMENT_Y_PX,
+                     PB::SEGMENT_W_PX, PB::SEGMENT_H_PX, color);
     }
 }
 
 void TftDisplay::clear_power_bar_residuals(int bars,
                                            bool charging,
-                                           int previous_signed_bars,
-                                           int center_x,
-                                           int bar_y,
-                                           int bar_char_width) {
-    const int previous_abs = std::abs(previous_signed_bars);
-    const bool previous_negative = previous_signed_bars < 0;
+                                           int previous_signed_bars) {
+    namespace PB = LayoutSpec::PowerBar;
 
-    if (charging) {
-        // Clear right side if previously discharging.
-        if (previous_abs > 0 && !previous_negative) {
-            clear_rect(center_x,
-                       bar_y - LayoutSpec::PowerBar::BAR_CLEAR_TOP_OFFSET,
-                       previous_abs * bar_char_width,
-                       LayoutSpec::PowerBar::BAR_CLEAR_HEIGHT);
-        }
+    const int prev_abs     = std::abs(previous_signed_bars);
+    const bool prev_charging = (previous_signed_bars < 0);
 
-        // Clear extra left bars if charging power decreased.
-        if (previous_negative && bars < previous_abs) {
-            clear_rect(center_x - previous_abs * bar_char_width,
-                       bar_y - LayoutSpec::PowerBar::BAR_CLEAR_TOP_OFFSET,
-                       (previous_abs - bars) * bar_char_width,
-                       LayoutSpec::PowerBar::BAR_CLEAR_HEIGHT);
-        }
-    } else {
-        // Clear left side if previously charging.
-        if (previous_abs > 0 && previous_negative) {
-            clear_rect(center_x - previous_abs * bar_char_width,
-                       bar_y - LayoutSpec::PowerBar::BAR_CLEAR_TOP_OFFSET,
-                       previous_abs * bar_char_width,
-                       LayoutSpec::PowerBar::BAR_CLEAR_HEIGHT);
-        }
+    if (prev_abs == 0) return;  // nothing was drawn before
 
-        // Clear extra right bars if discharging power decreased.
-        if (!previous_negative && bars < previous_abs) {
-            clear_rect(center_x + bars * bar_char_width,
-                       bar_y - LayoutSpec::PowerBar::BAR_CLEAR_TOP_OFFSET,
-                       (previous_abs - bars) * bar_char_width,
-                       LayoutSpec::PowerBar::BAR_CLEAR_HEIGHT);
+    if (prev_charging != charging) {
+        // Direction changed — clear the entire previous side.
+        for (int i = 0; i < prev_abs; i++) {
+            const int seg_idx = prev_charging
+                ? (PB::CENTER_SEGMENT_INDEX - 1 - i)
+                : (PB::CENTER_SEGMENT_INDEX + 1 + i);
+            tft.fillRect(PB::segment_x(seg_idx), PB::SEGMENT_Y_PX,
+                         PB::SEGMENT_W_PX, PB::SEGMENT_H_PX, Display::tft_background);
+        }
+    } else if (bars < prev_abs) {
+        // Same direction but fewer bars — clear the excess segments only.
+        for (int i = bars; i < prev_abs; i++) {
+            const int seg_idx = charging
+                ? (PB::CENTER_SEGMENT_INDEX - 1 - i)
+                : (PB::CENTER_SEGMENT_INDEX + 1 + i);
+            tft.fillRect(PB::segment_x(seg_idx), PB::SEGMENT_Y_PX,
+                         PB::SEGMENT_W_PX, PB::SEGMENT_H_PX, Display::tft_background);
         }
     }
+    // bars >= prev_abs same direction: new bars cover all old ones — nothing to clear.
 }
 
-void TftDisplay::draw_zero_power_marker(int center_x,
-                                        int bar_y,
-                                        int max_bars_per_side,
-                                        int bar_char_width) {
-    clear_rect(center_x - (max_bars_per_side * bar_char_width),
-               bar_y - LayoutSpec::PowerBar::BAR_CLEAR_TOP_OFFSET,
-               max_bars_per_side * 2 * bar_char_width,
-               LayoutSpec::PowerBar::BAR_CLEAR_HEIGHT);
-
-    tft.setTextColor(TFT_BLUE, Display::tft_background);
-    tft.drawString("-", center_x, bar_y);
+void TftDisplay::draw_zero_power_marker() {
+    namespace PB = LayoutSpec::PowerBar;
+    tft.fillRect(PB::segment_x(PB::CENTER_SEGMENT_INDEX), PB::SEGMENT_Y_PX,
+                 PB::SEGMENT_W_PX, PB::SEGMENT_H_PX, TFT_BLUE);
 }
 
 void TftDisplay::draw_power_text_if_changed(int32_t power_w,
@@ -710,64 +734,41 @@ void TftDisplay::clear_rect(int x, int y, int w, int h, uint16_t color) {
 
 void TftDisplay::draw_power(int32_t power_w) {
     if (!power_bar_initialized_) {
-        init_power_bar_state(
-            power_bar_char_width_,
-            power_bar_max_bars_per_side_,
-            power_bar_gradient_green_,
-            power_bar_gradient_red_
-        );
+        init_power_bar_state();
         power_bar_initialized_ = true;
     }
 
-    const int center_x = Display::SCREEN_WIDTH / 2;
-    const int bar_y = LayoutSpec::PowerBar::BAR_Y;
-    const int text_y = LayoutSpec::PowerBar::TEXT_Y;
+    const int text_y      = LayoutSpec::PowerBar::TEXT_Y;
     const int32_t max_power = LayoutSpec::PowerBar::MAX_POWER_W;
+    const int max_bars    = LayoutSpec::PowerBar::SEGMENTS_PER_SIDE;
 
     int32_t clamped_power = power_w;
     if (clamped_power < -max_power) clamped_power = -max_power;
-    if (clamped_power > max_power) clamped_power = max_power;
-    const int bars = calculate_power_bar_count(clamped_power, power_bar_max_bars_per_side_, max_power);
-    const bool charging = (clamped_power < 0);
-    const int signed_bars = charging ? -bars : bars;
-
-    set_text_style_power_bar();
+    if (clamped_power > max_power)  clamped_power = max_power;
+    const int  bars       = calculate_power_bar_count(clamped_power, max_bars, max_power);
+    const bool charging   = (clamped_power < 0);
+    const int  signed_bars = charging ? -bars : bars;
 
     const bool pulse = (bars > 0) && should_pulse_animate(signed_bars, power_bar_previous_signed_bars_);
     if (pulse) {
         for (int ripple_pos = 0; ripple_pos <= bars; ripple_pos++) {
-            draw_power_bars(bars,
-                            charging,
-                            center_x,
-                            bar_y,
-                            power_bar_char_width_,
-                            power_bar_gradient_green_,
-                            power_bar_gradient_red_,
+            draw_power_bars(bars, charging,
+                            power_bar_gradient_green_, power_bar_gradient_red_,
                             (ripple_pos < bars) ? ripple_pos : -1);
             if (ripple_pos < bars) {
                 smart_delay(LayoutSpec::Timing::POWER_BAR_PULSE_DELAY_MS);
             }
         }
     } else if (bars == 0) {
-        draw_zero_power_marker(center_x, bar_y, power_bar_max_bars_per_side_, power_bar_char_width_);
+        clear_power_bar_residuals(0, charging, power_bar_previous_signed_bars_);
+        draw_zero_power_marker();
     } else {
-        draw_power_bars(bars,
-                        charging,
-                        center_x,
-                        bar_y,
-                        power_bar_char_width_,
-                        power_bar_gradient_green_,
-                        power_bar_gradient_red_);
-        clear_power_bar_residuals(bars,
-                                  charging,
-                                  power_bar_previous_signed_bars_,
-                                  center_x,
-                                  bar_y,
-                                  power_bar_char_width_);
+        clear_power_bar_residuals(bars, charging, power_bar_previous_signed_bars_);
+        draw_power_bars(bars, charging, power_bar_gradient_green_, power_bar_gradient_red_);
     }
 
     power_bar_previous_signed_bars_ = signed_bars;
-    draw_power_text_if_changed(power_w, center_x, text_y, power_bar_last_power_text_);
+    draw_power_text_if_changed(power_w, Display::SCREEN_WIDTH / 2, text_y, power_bar_last_power_text_);
 }
 
 } // namespace Display

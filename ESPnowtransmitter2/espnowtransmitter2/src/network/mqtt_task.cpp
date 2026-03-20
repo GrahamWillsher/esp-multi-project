@@ -139,15 +139,11 @@ void task_mqtt_loop(void* parameter) {
         if (is_connected_now && (now - last_cell_publish > timing::MQTT_CELL_PUBLISH_INTERVAL_MS)) {
             last_cell_publish = now;
             
-            Serial.println("[MQTT_TASK_DEBUG] Calling publish_cell_data()...");
-            // Publish cell voltages and balancing status (routes via transmission selector)
+            // Publish cell voltages and balancing status via MQTT
             if (MqttManager::instance().publish_cell_data()) {
-                auto result = TransmissionSelector::get_last_result();
-                LOG_DEBUG("MQTT", "✓ Cell data published to transmitter/BE/cell_data via %s (%u bytes)", 
-                          result.method, result.payload_size);
-                Serial.println("[MQTT_TASK_DEBUG] ✓ publish_cell_data() returned true");
+                LOG_DEBUG("MQTT", "✓ Cell data published to transmitter/BE/cell_data");
             } else {
-                Serial.println("[MQTT_TASK_DEBUG] ✗ publish_cell_data() returned false");
+                LOG_DEBUG("MQTT", "Cell data publish skipped/failed");
             }
         }
 

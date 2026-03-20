@@ -68,13 +68,6 @@ void EspnowMessageHandler::start_rx_task(QueueHandle_t queue) {
     }
 }
 
-void EspnowMessageHandler::init() {
-    // Tx connection/device state transitions are owned by TransmitterConnectionHandler.
-    // Keep init() for symmetry and future extension, but avoid registering a duplicate
-    // callback here because it causes duplicate CONNECTED/IDLE transitions in TxStateMachine.
-    LOG_DEBUG("MSG_HANDLER", "Tx state transitions owned by tx_connection_handler");
-}
-
 void EspnowMessageHandler::rx_task_impl(void* parameter) {
     QueueHandle_t queue = (QueueHandle_t)parameter;
     auto& handler = instance();
@@ -113,67 +106,6 @@ void EspnowMessageHandler::handle_reboot(const espnow_queue_msg_t& msg) {
 
 void EspnowMessageHandler::handle_ota_start(const espnow_queue_msg_t& msg) {
     TxControlHandlers::handle_ota_start(msg);
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// Helper function: Send IP configuration to receiver
-// Called automatically when Ethernet connects
-// ═══════════════════════════════════════════════════════════════════════
-
-void send_ip_to_receiver() {
-    if (!EthernetManager::instance().is_connected()) return;
-    
-    // Check if receiver is connected
-    if (!EspNowConnectionManager::instance().is_connected()) {
-        LOG_DEBUG("ETH", "Receiver not connected yet, will send IP later");
-        return;
-    }
-    
-    // Get receiver MAC from connection manager
-    const uint8_t* peer_mac = EspNowConnectionManager::instance().get_peer_mac();
-    
-    // Check if receiver peer exists
-    if (!esp_now_is_peer_exist(peer_mac)) {
-        LOG_DEBUG("ETH", "Receiver peer not registered, skipping IP send");
-        return;
-    }
-    
-    IPAddress local_ip = EthernetManager::instance().get_local_ip();
-    IPAddress gateway = EthernetManager::instance().get_gateway_ip();
-    IPAddress subnet = EthernetManager::instance().get_subnet_mask();
-    
-    // Create proper espnow_packet_t structure
-    espnow_packet_t packet;
-    packet.type = msg_packet;
-    packet.subtype = subtype_network_config;
-    packet.seq = esp_random();
-    packet.frag_index = 0;
-    packet.frag_total = 1;
-    packet.payload_len = 12;  // IP[4] + Gateway[4] + Subnet[4]
-    
-    // Pack IP address bytes into payload
-    for (int i = 0; i < 4; i++) {
-        packet.payload[i] = local_ip[i];       // IP at offset 0
-        packet.payload[4 + i] = gateway[i];    // Gateway at offset 4
-        packet.payload[8 + i] = subnet[i];     // Subnet at offset 8
-    }
-    
-    // Calculate checksum
-    packet.checksum = EspnowPacketUtils::calculate_checksum(packet.payload, packet.payload_len);
-    
-    // Send IP data via ESP-NOW
-    esp_err_t result = TxSendGuard::send_to_receiver_guarded(
-        peer_mac,
-        (const uint8_t*)&packet,
-        sizeof(packet),
-        "eth_ip_push"
-    );
-    
-    if (result == ESP_OK) {
-        LOG_INFO("ETH", "Sent IP configuration to receiver: %s", local_ip.toString().c_str());
-    } else {
-        LOG_WARN("ETH", "Failed to send IP to receiver: %s", esp_err_to_name(result));
-    }
 }
 
 void EspnowMessageHandler::handle_debug_control(const espnow_queue_msg_t& msg) {

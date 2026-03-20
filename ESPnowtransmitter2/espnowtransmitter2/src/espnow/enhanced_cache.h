@@ -10,7 +10,7 @@
  * @brief Section 11 Enhanced Cache - Dual Storage (Transient + State)
  * 
  * CRITICAL ARCHITECTURE:
- * - Transient data (battery readings): FIFO queue (250 entries), delete after ACK
+ * - Transient data (battery readings): FIFO queue (386 entries), delete after ACK or sent TTL expiry
  * - State data (IP, MQTT, settings): Versioned slots, NEVER delete
  * - TX-only NVS persistence for state data
  * - Non-blocking for Battery Emulator control code (< 100µs writes)
@@ -120,7 +120,7 @@ struct CacheStats {
  * @brief Enhanced cache with dual storage model
  * 
  * ARCHITECTURE:
- * - Transient queue: 250 entries (FIFO, dual battery support: 2×96 cells)
+ * - Transient queue: 386 entries (FIFO, dual battery support: 2×96 cells)
  * - State slots: Fixed versioned slots (network, MQTT, battery)
  * - Non-blocking: 10ms mutex timeout (doesn't block Battery Emulator)
  * - Thread-safe: FreeRTOS mutex protection
@@ -158,12 +158,6 @@ public:
     bool add_transient(const espnow_payload_t& data);
     
     /**
-     * @brief Peek next unsent transient entry (non-destructive)
-     * @return Pointer to entry or nullptr if none
-     */
-    TransientEntry* peek_next_transient();
-    
-    /**
      * @brief Peek next unsent transient entry (non-destructive, const-safe)
      * @param entry Output parameter for entry data
      * @return true if entry found, false if queue empty
@@ -181,7 +175,11 @@ public:
     void mark_transient_acked(uint32_t seq);
     
     /**
-     * @brief Remove all acknowledged transient entries (cleanup task)
+     * @brief Remove acknowledged/expired transient entries from queue head (cleanup task)
+     *
+     * Expiry rule: sent entries older than TRANSIENT_SENT_TTL_MS are removed even if
+     * never ACKed, preventing long-term queue saturation.
+     *
      * @return Number of entries removed
      */
     size_t cleanup_acked_transient();
@@ -284,8 +282,9 @@ private:
     // STORAGE (Dual Model)
     // ═══════════════════════════════════════════════════════════════════════
     
-    static constexpr size_t TRANSIENT_QUEUE_SIZE = 250;  // Dual battery: 192 cells + headroom
-    static constexpr uint32_t MUTEX_TIMEOUT_MS = 10;     // Non-blocking timeout
+    static constexpr size_t TRANSIENT_QUEUE_SIZE = 386;        // Selected operational headroom
+    static constexpr uint32_t MUTEX_TIMEOUT_MS = 10;           // Non-blocking timeout
+    static constexpr uint32_t TRANSIENT_SENT_TTL_MS = 60000;   // 60s TTL for sent entries
     
     // Transient data (FIFO circular buffer)
     TransientEntry transient_queue_[TRANSIENT_QUEUE_SIZE];

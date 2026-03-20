@@ -39,77 +39,144 @@ void DiscoveryTask::start() {
 }
 
 void DiscoveryTask::restart() {
-    TxStateMachine::instance().set_state(TxStateMachine::ConnectionState::RECONNECTING, "discovery restart");
-    LOG_INFO("DISCOVERY", "═══ RESTART INITIATED (Attempt %d/%d) ═══", 
-             restart_failure_count_ + 1, MAX_RESTART_FAILURES);
-    
+    TxStateMachine::instance().set_state(TxStateMachine::ConnectionState::RECONNECTING, "discovery restart requested");
+
     // CRITICAL: Check if we have a valid channel to restart on
+    // g_lock_channel: Written by ESP-NOW ISR when channel is locked during discovery.
+    // Safe to read here (uint8_t atomic on ESP32); 0 means no valid channel yet.
     if (g_lock_channel == 0) {
         LOG_ERROR("DISCOVERY", "Cannot restart - no valid channel (g_lock_channel=0)");
         LOG_INFO("DISCOVERY", "This indicates initial discovery has not completed yet");
         LOG_INFO("DISCOVERY", "Keep-alive manager should not trigger restart before discovery completes");
         return;  // Abort restart - let active hopping continue
     }
-    
-    uint32_t restart_start_time = millis();
+
+    if (!restart_requested_) {
+        restart_window_start_ms_ = millis();
+        restart_next_retry_ms_ = 0;
+        restart_failure_count_ = 0;
+        restart_requested_ = true;
+    }
+
+    if (restart_in_progress_) {
+        LOG_WARN("DISCOVERY", "Restart already in progress - request coalesced");
+        return;
+    }
+
+    if ((int32_t)(millis() - restart_next_retry_ms_) >= 0) {
+        (void)attempt_restart_once();
+    } else {
+        LOG_INFO("DISCOVERY", "Restart queued, next attempt in %lums", restart_next_retry_ms_ - millis());
+    }
+}
+
+bool DiscoveryTask::attempt_restart_once() {
+    if (!restart_requested_) {
+        return false;
+    }
+
+    restart_in_progress_ = true;
+    transition_to(RecoveryState::RESTART_IN_PROGRESS);
+
+    LOG_INFO("DISCOVERY", "═══ RESTART ATTEMPT %d/%d ═══",
+             restart_failure_count_ + 1, MAX_RESTART_FAILURES);
+
+    const uint32_t restart_start_time = millis();
     metrics_.total_restarts++;
-    
+
     // STEP 1: Remove ALL ESP-NOW peers for guaranteed clean slate
     cleanup_all_peers();
-    
+
     // STEP 2: Force channel lock and verify
+    // g_lock_channel: ISR-written locked channel from earlier discovery phase.
+    // Used to restore WiFi to the known receiver channel after recovery.
     if (!force_and_verify_channel(g_lock_channel)) {
         restart_failure_count_++;
         metrics_.failed_restarts++;
-        
+
         if (restart_failure_count_ >= MAX_RESTART_FAILURES) {
-            LOG_ERROR("DISCOVERY", "✗ Maximum restart failures reached (%d) - system needs attention", 
+            LOG_ERROR("DISCOVERY", "✗ Maximum restart failures reached (%d) - system needs attention",
                      MAX_RESTART_FAILURES);
             TxStateMachine::instance().set_state(TxStateMachine::ConnectionState::FAILED, "max discovery restart failures");
             transition_to(RecoveryState::PERSISTENT_FAILURE);
-            restart_failure_count_ = 0;  // Reset for next cycle
-            return;
+            restart_in_progress_ = false;
+            return false;
         }
-        
-        // Exponential backoff before retry (centralized in TX state machine)
-        uint32_t backoff_ms = TxStateMachine::instance().next_backoff_ms();
-        LOG_WARN("DISCOVERY", "Restart failed, retrying in %dms", backoff_ms);
-        delay(backoff_ms);
-        
-        restart();  // Recursive retry
-        return;
+
+        const uint32_t backoff_ms = TxStateMachine::instance().next_backoff_ms();
+        LOG_WARN("DISCOVERY", "Restart attempt failed, scheduling retry in %lums", backoff_ms);
+        schedule_restart_retry(backoff_ms);
+        transition_to(RecoveryState::RESTART_FAILED);
+        restart_in_progress_ = false;
+        return false;
     }
-    
+
     // STEP 3: Restart discovery task with clean state
     EspnowDiscovery::instance().restart();
     task_handle_ = EspnowDiscovery::instance().get_task_handle();
-    
+
     // Give new task time to stabilize
     delay(TimingConfig::RESTART_STABILIZATION_DELAY_MS);
-    
+
     // STEP 4: Final verification
     uint8_t verify_ch = 0;
     wifi_second_chan_t second;
     esp_wifi_get_channel(&verify_ch, &second);
-    
+
+    // g_lock_channel: ISR-written value — verify that WiFi actually locked to it.
     if (verify_ch != g_lock_channel) {
         LOG_ERROR("DISCOVERY", "✗ Post-restart channel mismatch: %d != %d", verify_ch, g_lock_channel);
         metrics_.failed_restarts++;
-        return;
+        restart_failure_count_++;
+
+        if (restart_failure_count_ >= MAX_RESTART_FAILURES) {
+            LOG_ERROR("DISCOVERY", "✗ Maximum restart failures reached (%d) after post-restart verification",
+                     MAX_RESTART_FAILURES);
+            TxStateMachine::instance().set_state(TxStateMachine::ConnectionState::FAILED, "post-restart verification failed");
+            transition_to(RecoveryState::PERSISTENT_FAILURE);
+            restart_in_progress_ = false;
+            return false;
+        }
+
+        const uint32_t backoff_ms = TxStateMachine::instance().next_backoff_ms();
+        LOG_WARN("DISCOVERY", "Post-restart verification failed, scheduling retry in %lums", backoff_ms);
+        schedule_restart_retry(backoff_ms);
+        transition_to(RecoveryState::RESTART_FAILED);
+        restart_in_progress_ = false;
+        return false;
     }
-    
+
     // Success!
-    restart_failure_count_ = 0;
-    consecutive_failures_ = 0;
     TxStateMachine::instance().reset_backoff();
     metrics_.successful_restarts++;
     metrics_.last_restart_timestamp = millis();
-    
-    uint32_t restart_duration = millis() - restart_start_time;
-    LOG_INFO("DISCOVERY", "✓ Restart complete in %dms (channel: %d, clean state)", 
+
+    const uint32_t restart_duration = millis() - restart_start_time;
+    const uint32_t total_downtime = (restart_window_start_ms_ > 0)
+        ? (millis() - restart_window_start_ms_)
+        : restart_duration;
+    if (total_downtime > metrics_.longest_downtime_ms) {
+        metrics_.longest_downtime_ms = total_downtime;
+    }
+
+    LOG_INFO("DISCOVERY", "✓ Restart complete in %dms (channel: %d, clean state)",
              restart_duration, verify_ch);
-    
+
+    clear_restart_request();
     transition_to(RecoveryState::NORMAL);
+    restart_in_progress_ = false;
+    return true;
+}
+
+void DiscoveryTask::schedule_restart_retry(uint32_t delay_ms) {
+    restart_next_retry_ms_ = millis() + delay_ms;
+}
+
+void DiscoveryTask::clear_restart_request() {
+    restart_requested_ = false;
+    restart_failure_count_ = 0;
+    restart_next_retry_ms_ = 0;
+    restart_window_start_ms_ = 0;
 }
 
 void DiscoveryTask::cleanup_all_peers() {
@@ -185,6 +252,7 @@ bool DiscoveryTask::validate_state() {
     wifi_second_chan_t second;
     esp_wifi_get_channel(&current_ch, &second);
     
+    // g_lock_channel: ISR-written locked channel — validate WiFi is still on it.
     if (current_ch != g_lock_channel) {
         LOG_ERROR("DISCOVERY", "State validation failed: channel mismatch (%d != %d)", 
                   current_ch, g_lock_channel);
@@ -270,18 +338,14 @@ void DiscoveryTask::audit_peer_state() {
 
 void DiscoveryTask::update_recovery() {
     uint32_t time_in_state = millis() - state_entry_time_;
+    const uint32_t now = millis();
     
     switch (recovery_state_) {
         case RecoveryState::RESTART_FAILED:
-            if (time_in_state > TimingConfig::RECOVERY_RETRY_DELAY_MS) {  // Wait 5s before retry
-                if (consecutive_failures_ < 5) {
-                    LOG_INFO("RECOVERY", "Retrying restart (attempt %d/5)", consecutive_failures_ + 1);
-                    consecutive_failures_++;
-                    restart();
-                } else {
-                    LOG_ERROR("RECOVERY", "Maximum consecutive failures - escalating to persistent failure");
-                    transition_to(RecoveryState::PERSISTENT_FAILURE);
-                }
+            if (restart_requested_ && !restart_in_progress_ &&
+                (int32_t)(now - restart_next_retry_ms_) >= 0) {
+                LOG_INFO("RECOVERY", "Retrying scheduled restart attempt");
+                (void)attempt_restart_once();
             }
             break;
             
@@ -295,6 +359,10 @@ void DiscoveryTask::update_recovery() {
             break;
             
         default:
+            if (restart_requested_ && !restart_in_progress_ &&
+                (int32_t)(now - restart_next_retry_ms_) >= 0) {
+                (void)attempt_restart_once();
+            }
             break;
     }
 }
@@ -431,8 +499,12 @@ bool DiscoveryTask::active_channel_hop_scan(uint8_t* discovered_channel) {
     const uint32_t TRANSMIT_DURATION_MS = TimingConfig::TRANSMIT_DURATION_PER_CHANNEL_MS;
     const uint32_t PROBE_INTERVAL_MS = TimingConfig::PROBE_INTERVAL_MS;
     
-    volatile bool ack_received = false;
-    volatile uint8_t ack_channel = 0;
+    // ack_received / ack_channel are task-local: they are set after dequeuing from
+    // espnow_discovery_queue (not written by the ISR directly). All ISR concurrency
+    // is handled by the FreeRTOS queue. `volatile` is not needed here; these are
+    // ordinary locals whose lifetime is entirely within this task's stack frame.
+    bool ack_received = false;
+    uint8_t ack_channel = 0;
     uint8_t ack_mac[6] = {0};
     
     // Scan channels starting from start_index, wrapping around to scan all channels

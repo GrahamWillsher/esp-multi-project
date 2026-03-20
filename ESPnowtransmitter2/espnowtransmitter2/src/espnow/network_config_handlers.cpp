@@ -1,32 +1,24 @@
 #include "network_config_handlers.h"
 
+#include "config_handler_common.h"
 #include "tx_send_guard.h"
 #include "../network/ethernet_manager.h"
 #include "../config/logging_config.h"
 
-#include <esp32common/espnow/connection_manager.h>
-#include <espnow_peer_manager.h>
 #include <Arduino.h>
 #include <cstring>
 
 namespace TxNetworkConfigHandlers {
 
 void handle_network_config_request(const espnow_queue_msg_t& msg, uint8_t* receiver_mac) {
-    if (msg.len < (int)sizeof(network_config_request_t)) {
-        LOG_ERROR("NET_CFG", "Invalid request message size: %d bytes", msg.len);
+    if (!TxConfigHandlerCommon::validate_connected_message(
+            msg,
+            sizeof(network_config_request_t),
+            "NET_CFG",
+            "network config request",
+            receiver_mac)) {
         return;
     }
-
-    auto& conn_mgr = EspNowConnectionManager::instance();
-    auto state = conn_mgr.get_state();
-
-    if (state != EspNowConnectionState::CONNECTED) {
-        LOG_WARN("NET_CFG", "Cannot respond to network config request - receiver state is %u (need CONNECTED)",
-                 (uint8_t)state);
-        return;
-    }
-
-    memcpy(receiver_mac, msg.mac, 6);
 
     LOG_INFO("NET_CFG", "Received network config request from receiver");
 
@@ -34,23 +26,16 @@ void handle_network_config_request(const espnow_queue_msg_t& msg, uint8_t* recei
 }
 
 void handle_network_config_update(const espnow_queue_msg_t& msg, uint8_t* receiver_mac, QueueHandle_t network_config_queue) {
-    if (msg.len < (int)sizeof(network_config_update_t)) {
-        LOG_ERROR("NET_CFG", "Invalid message size: %d bytes", msg.len);
-        return;
-    }
-
-    auto& conn_mgr = EspNowConnectionManager::instance();
-    auto state = conn_mgr.get_state();
-
-    if (state != EspNowConnectionState::CONNECTED) {
-        LOG_WARN("NET_CFG", "Cannot respond to network config update - receiver state is %u (need CONNECTED)",
-                 (uint8_t)state);
+    if (!TxConfigHandlerCommon::validate_connected_message(
+            msg,
+            sizeof(network_config_update_t),
+            "NET_CFG",
+            "network config update",
+            receiver_mac)) {
         return;
     }
 
     const network_config_update_t* config = reinterpret_cast<const network_config_update_t*>(msg.data);
-
-    memcpy(receiver_mac, msg.mac, 6);
 
     LOG_INFO("NET_CFG", "Received network config update:");
     LOG_INFO("NET_CFG", "  Mode: %s", config->use_static_ip ? "Static" : "DHCP");
@@ -90,7 +75,7 @@ void send_network_config_ack(const uint8_t* receiver_mac, bool success, const ch
 
     ack.type = msg_network_config_ack;
     ack.success = success ? 1 : 0;
-    ack.use_static_ip = eth.isStaticIP() ? 1 : 0;
+    ack.use_static_ip = eth.is_static_ip() ? 1 : 0;
 
     IPAddress current_ip = eth.get_local_ip();
     IPAddress current_gateway = eth.get_gateway_ip();
@@ -111,11 +96,11 @@ void send_network_config_ack(const uint8_t* receiver_mac, bool success, const ch
     ack.current_subnet[2] = current_subnet[2];
     ack.current_subnet[3] = current_subnet[3];
 
-    IPAddress static_ip = eth.getStaticIP();
-    IPAddress static_gateway = eth.getGateway();
-    IPAddress static_subnet = eth.getSubnetMask();
-    IPAddress static_dns_primary = eth.getDNSPrimary();
-    IPAddress static_dns_secondary = eth.getDNSSecondary();
+    IPAddress static_ip = eth.get_static_ip();
+    IPAddress static_gateway = eth.get_static_gateway();
+    IPAddress static_subnet = eth.get_static_subnet_mask();
+    IPAddress static_dns_primary = eth.get_static_dns_primary();
+    IPAddress static_dns_secondary = eth.get_static_dns_secondary();
 
     ack.static_ip[0] = static_ip[0];
     ack.static_ip[1] = static_ip[1];
@@ -142,17 +127,13 @@ void send_network_config_ack(const uint8_t* receiver_mac, bool success, const ch
     ack.static_dns_secondary[2] = static_dns_secondary[2];
     ack.static_dns_secondary[3] = static_dns_secondary[3];
 
-    ack.config_version = eth.getNetworkConfigVersion();
+    ack.config_version = eth.get_network_config_version();
 
     strncpy(ack.message, message, sizeof(ack.message) - 1);
     ack.message[sizeof(ack.message) - 1] = '\0';
 
-    if (!EspnowPeerManager::is_peer_registered(receiver_mac)) {
-        LOG_WARN("NET_CFG", "Receiver not registered as peer, adding now");
-        if (!EspnowPeerManager::add_peer(receiver_mac)) {
-            LOG_ERROR("NET_CFG", "Failed to add receiver as peer");
-            return;
-        }
+    if (!TxConfigHandlerCommon::ensure_peer_registered(receiver_mac, "NET_CFG")) {
+        return;
     }
 
     esp_err_t result = TxSendGuard::send_to_receiver_guarded(
@@ -226,8 +207,8 @@ void process_network_config_update(const espnow_queue_msg_t& msg) {
         }
     }
 
-    if (eth.saveNetworkConfig(config->use_static_ip, config->ip, config->gateway,
-                              config->subnet, config->dns_primary, config->dns_secondary)) {
+    if (eth.save_network_config(config->use_static_ip, config->ip, config->gateway,
+                                config->subnet, config->dns_primary, config->dns_secondary)) {
         LOG_INFO("NET_CFG", "✓ Configuration saved to NVS");
         send_network_config_ack(msg.mac, true, "OK - reboot required");
     } else {

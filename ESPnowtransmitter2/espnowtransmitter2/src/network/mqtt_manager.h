@@ -59,9 +59,8 @@ public:
     void update();
     
     /**
-     * @brief Attempt connection to MQTT broker (DEPRECATED - use update() instead)
+     * @brief Attempt connection via state-machine path (legacy compatibility wrapper)
      * @return true if connected successfully, false otherwise
-     * @deprecated Use update() for state machine management
      */
     bool connect();
     
@@ -223,6 +222,13 @@ private:
      * @param new_state Target state
      */
     void transition_to(MqttState new_state);
+
+    /**
+     * @brief Ensure reusable MQTT publish buffer exists with at least required bytes
+     * @param required_bytes Minimum required payload buffer size
+     * @return true if buffer ready, false on allocation failure
+     */
+    bool ensure_publish_buffer(size_t required_bytes);
     
     WiFiClient eth_client_;
     PubSubClient client_;
@@ -251,5 +257,7 @@ private:
     volatile bool connected_{false};
     
     char payload_buffer_[PAYLOAD_BUFFER_SIZE];
+    char* publish_buffer_{nullptr};
+    size_t publish_buffer_capacity_{0};
     int event_log_subscribers_{0};  // Track number of clients subscribing to event logs
 };

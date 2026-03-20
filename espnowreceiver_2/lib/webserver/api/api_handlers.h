@@ -10,4 +10,9 @@
  */
 int register_all_api_handlers(httpd_handle_t server);
 
+/**
+ * @brief Number of API handlers expected to be registered.
+ */
+int expected_all_api_handlers();
+
 #endif // API_HANDLERS_H

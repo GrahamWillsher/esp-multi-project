@@ -4,7 +4,6 @@
  */
 
 #include "display_led.h"
-#include "display_manager.h"
 #include "../helpers.h"
 
 #ifdef USE_LVGL
@@ -108,8 +107,7 @@ void flash_led(LEDColor color, uint32_t cycle_duration_ms) {
 #ifdef USE_LVGL
         apply_led_color_rgb565(gradient[step]);
 #else
-        auto* driver = Display::DisplayManager::get_driver();
-        driver->fill_circle(LED_X_POSITION, LED_Y_POSITION, LED_RADIUS, gradient[step]);
+        tft.fillCircle(LED_X_POSITION, LED_Y_POSITION, LED_RADIUS, gradient[step]);
 #endif
         if (step > 0) {  // Don't delay after final frame
             smart_delay(fade_in_step_ms);
@@ -124,8 +122,7 @@ void flash_led(LEDColor color, uint32_t cycle_duration_ms) {
 #ifdef USE_LVGL
         apply_led_color_rgb565(gradient[step]);
 #else
-        auto* driver = Display::DisplayManager::get_driver();
-        driver->fill_circle(LED_X_POSITION, LED_Y_POSITION, LED_RADIUS, gradient[step]);
+        tft.fillCircle(LED_X_POSITION, LED_Y_POSITION, LED_RADIUS, gradient[step]);
 #endif
         if (step < LED_FADE_STEPS) {  // Don't delay after final frame
             smart_delay(fade_out_step_ms);
@@ -151,8 +148,7 @@ void clear_led() {
 #ifdef USE_LVGL
     apply_led_color_rgb565(Display::tft_background);
 #else
-    auto* driver = Display::DisplayManager::get_driver();
-    driver->fill_circle(LED_X_POSITION, LED_Y_POSITION, LED_RADIUS, Display::tft_background);
+    tft.fillCircle(LED_X_POSITION, LED_Y_POSITION, LED_RADIUS, Display::tft_background);
 #endif
 }
 
@@ -170,8 +166,7 @@ void set_led(LEDColor color) {
 #ifdef USE_LVGL
         apply_led_color_rgb565(led_colors[color]);
 #else
-        auto* driver = Display::DisplayManager::get_driver();
-        driver->fill_circle(LED_X_POSITION, LED_Y_POSITION, LED_RADIUS, led_colors[color]);
+        tft.fillCircle(LED_X_POSITION, LED_Y_POSITION, LED_RADIUS, led_colors[color]);
 #endif
     }
 }

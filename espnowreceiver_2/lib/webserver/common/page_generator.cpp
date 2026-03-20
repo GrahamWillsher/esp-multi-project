@@ -347,6 +347,9 @@ window.ComponentApplyCoordinator = window.ComponentApplyCoordinator || {
                     } else if (status.success && !status.in_progress && !status.ready_for_reboot && status.last_success === false) {
                         clearInterval(statusPollInterval);
                         markError('✗ Save Failed');
+                    } else if (!status.success) {
+                        clearInterval(statusPollInterval);
+                        markError(status.message || '✗ Status check failed');
                     } else {
                         if (saveButton) {
                             saveButton.textContent = (status.message || 'Waiting for transmitter confirmation...');
@@ -367,13 +370,13 @@ window.ComponentApplyCoordinator = window.ComponentApplyCoordinator || {
 )rawliteral";
 
 // Generate standard HTML page with common template
-String generatePage(const String& title, const String& content, const String& extraStyles, const String& script) {
+String renderPage(const String& title, const String& content, const PageRenderOptions& options) {
     String html = "<!DOCTYPE html><html><head>";
     html += "<meta charset='utf-8'>";
     html += "<title>" + title + "</title>";
     html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
-    html += "<style>" + String(COMMON_STYLES) + extraStyles + "</style>";
-    html += "<script>" + String(COMMON_SCRIPT_HELPERS) + script + "</script>";
+    html += "<style>" + String(COMMON_STYLES) + options.extra_styles + "</style>";
+    html += "<script>" + String(COMMON_SCRIPT_HELPERS) + options.script + "</script>";
     html += "</head><body>";
     html += content;
     html += "</body></html>";

@@ -1,7 +1,8 @@
 #include "api_led_handlers.h"
 
+#include "api_response_utils.h"
 #include "../utils/transmitter_manager.h"
-#include "../utils/http_json_utils.h"
+#include <webserver_common_utils/http_json_utils.h>
 
 #include <esp_now.h>
 #include <esp32common/espnow/common.h>
@@ -70,11 +71,8 @@ esp_err_t api_get_led_runtime_status_handler(httpd_req_t *req) {
 }
 
 esp_err_t api_resync_led_state_handler(httpd_req_t *req) {
-    char json[256];
-
     if (!TransmitterManager::isMACKnown()) {
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"Transmitter MAC unknown\"}");
-        return HttpJsonUtils::send_json(req, json);
+        return ApiResponseUtils::send_transmitter_mac_unknown(req);
     }
 
     config_section_request_t request;
@@ -89,10 +87,8 @@ esp_err_t api_resync_led_state_handler(httpd_req_t *req) {
     );
 
     if (result == ESP_OK) {
-        snprintf(json, sizeof(json), "{\"success\":true,\"message\":\"Battery section resync requested\"}");
+        return ApiResponseUtils::send_success_message(req, "Battery section resync requested");
     } else {
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"ESP-NOW send failed: %s\"}", esp_err_to_name(result));
+        return ApiResponseUtils::send_jsonf(req, "{\"success\":false,\"message\":\"ESP-NOW send failed: %s\"}", esp_err_to_name(result));
     }
-
-    return HttpJsonUtils::send_json(req, json);
 }

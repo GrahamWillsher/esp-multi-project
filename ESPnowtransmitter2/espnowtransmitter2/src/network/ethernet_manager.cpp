@@ -10,14 +10,9 @@
 // ============================================================================
 // SINGLETON
 // ============================================================================
-
-static EthernetManager* g_ethernet_manager_instance = nullptr;
-
 EthernetManager& EthernetManager::instance() {
-    if (g_ethernet_manager_instance == nullptr) {
-        g_ethernet_manager_instance = new EthernetManager();
-    }
-    return *g_ethernet_manager_instance;
+    static EthernetManager instance;
+    return instance;
 }
 
 EthernetManager::EthernetManager() {
@@ -149,8 +144,7 @@ void EthernetManager::event_handler(WiFiEvent_t event) {
                 }
                 if (mgr.current_state_ == EthernetConnectionState::LINK_LOST ||
                     mgr.current_state_ == EthernetConnectionState::RECOVERING) {
-                    LOG_INFO("ETH_EVENT", "Cable reconnected!");
-                    mgr.metrics_.recoveries_attempted++;
+                    LOG_INFO("ETH_EVENT", "Cable reconnected after outage");
                 }
 
                 mgr.last_link_time_ms_ = millis();
@@ -176,6 +170,7 @@ void EthernetManager::event_handler(WiFiEvent_t event) {
                 if (prior_state == EthernetConnectionState::LINK_LOST ||
                     prior_state == EthernetConnectionState::RECOVERING) {
                     mgr.metrics_.recoveries_successful++;
+                    mgr.recovery_active_this_outage_ = false;  // Clear per-outage gate on successful recovery
                 }
                 LOG_INFO("ETH_EVENT", "✓ ETHERNET FULLY READY (link + IP + gateway)");
                 mgr.trigger_connected_callbacks();
@@ -194,6 +189,7 @@ void EthernetManager::event_handler(WiFiEvent_t event) {
             if (mgr.current_state_ >= EthernetConnectionState::LINK_ACQUIRING &&
                 mgr.current_state_ <= EthernetConnectionState::CONNECTED) {
                 mgr.network_config_applied_ = false;
+                mgr.recovery_active_this_outage_ = false;  // Reset per-outage gate for this new outage
                 mgr.set_state(EthernetConnectionState::LINK_LOST);
                 mgr.metrics_.link_flaps++;
                 LOG_WARN("ETH_EVENT", "Waiting for cable to be reconnected...");
@@ -224,10 +220,11 @@ void EthernetManager::update_state_machine() {
     if (current_state_ == EthernetConnectionState::LINK_LOST) {
         // Check if we should move to RECOVERING
         uint32_t age = get_state_age_ms();
-        if (age > timing::ETH_STATE_MACHINE_UPDATE_INTERVAL_MS && metrics_.recoveries_attempted == 0) {
-            // Immediately move to RECOVERING after 1 second
+        if (age > timing::ETH_STATE_MACHINE_UPDATE_INTERVAL_MS && !recovery_active_this_outage_) {
+            // Move to RECOVERING after 1 second (gated per-outage, not on lifetime counter)
             set_state(EthernetConnectionState::RECOVERING);
             metrics_.recoveries_attempted++;
+            recovery_active_this_outage_ = true;
             LOG_INFO("ETH", "Starting recovery sequence...");
         }
     }
@@ -262,8 +259,12 @@ void EthernetManager::check_state_timeout() {
             if (age > IP_ACQUIRING_TIMEOUT_MS) {
                 LOG_ERROR("ETH_TIMEOUT", "IP acquiring timeout - DHCP server may be down (%lu ms)", age);
                 set_state(EthernetConnectionState::ERROR_STATE);
-            } else if (age % timing::ANNOUNCEMENT_INTERVAL_MS == 0) {
-                LOG_INFO("ETH_TIMEOUT", "Still waiting for IP... (%lu ms)", age);
+            } else {
+                uint32_t now = millis();
+                if (now - last_ip_wait_log_ms_ >= timing::ANNOUNCEMENT_INTERVAL_MS) {
+                    last_ip_wait_log_ms_ = now;
+                    LOG_INFO("ETH_TIMEOUT", "Still waiting for IP... (%lu ms)", age);
+                }
             }
             break;
             
@@ -353,7 +354,7 @@ bool EthernetManager::apply_network_config() {
     return true;
 }
 
-bool EthernetManager::loadNetworkConfig() {
+bool EthernetManager::load_network_config() {
     Preferences prefs;
     if (!prefs.begin("network", true)) {  // true = read-only
         LOG_WARN("NET_CFG", "Failed to open NVS namespace 'network' - using DHCP");
@@ -399,7 +400,7 @@ bool EthernetManager::loadNetworkConfig() {
     return true;
 }
 
-bool EthernetManager::saveNetworkConfig(bool use_static, const uint8_t ip[4],
+bool EthernetManager::save_network_config(bool use_static, const uint8_t ip[4],
                                         const uint8_t gateway[4], const uint8_t subnet[4],
                                         const uint8_t dns_primary[4], const uint8_t dns_secondary[4]) {
     Preferences prefs;
@@ -518,16 +519,3 @@ bool EthernetManager::checkIPConflict(const uint8_t ip[4]) {
     return false;  // No conflict detected (but could exist offline)
 }
 
-// ============================================================================
-// Snake_case wrapper implementations
-// ============================================================================
-
-bool EthernetManager::load_network_config() {
-    return loadNetworkConfig();
-}
-
-bool EthernetManager::save_network_config(bool use_static, const uint8_t ip[4],
-                                         const uint8_t gateway[4], const uint8_t subnet[4],
-                                         const uint8_t dns_primary[4], const uint8_t dns_secondary[4]) {
-    return saveNetworkConfig(use_static, ip, gateway, subnet, dns_primary, dns_secondary);
-}

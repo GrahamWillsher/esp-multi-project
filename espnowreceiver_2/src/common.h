@@ -67,11 +67,6 @@ namespace Display {
 
 // ESP-NOW State
 namespace ESPNow {
-    // Received data (accessed via RxStateMachine, not volatile)
-    extern uint8_t received_soc;            // Cached by RxStateMachine
-    extern int32_t received_power;          // Cached by RxStateMachine
-    extern uint32_t received_voltage_mv;    // Cached by RxStateMachine
-    
     // LED indicator state
     extern LEDColor current_led_color;
     extern LEDEffect current_led_effect;

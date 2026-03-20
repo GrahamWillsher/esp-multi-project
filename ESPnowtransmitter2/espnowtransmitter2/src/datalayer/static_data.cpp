@@ -7,6 +7,17 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 
+namespace {
+constexpr bool ENABLE_SERIALIZE_DEBUG_LOGS = false;
+
+template <typename... Args>
+inline void serialize_debug_printf(const char* format, Args... args) {
+    if (ENABLE_SERIALIZE_DEBUG_LOGS) {
+        Serial.printf(format, args...);
+    }
+}
+}  // namespace
+
 namespace StaticData {
 
 // Global instances with default values
@@ -141,10 +152,10 @@ size_t serialize_cell_data(char* buffer, size_t buffer_size) {
     uint16_t cell_count = datalayer.battery.info.number_of_cells;
     
     // DEBUG: Log what we're getting
-    Serial.printf("[SERIALIZE_DEBUG] cell_count from datalayer: %u\n", cell_count);
-    Serial.printf("[SERIALIZE_DEBUG] cell_voltages_mV[0]: %u\n", datalayer.battery.status.cell_voltages_mV[0]);
-    Serial.printf("[SERIALIZE_DEBUG] cell_voltages_mV[95]: %u\n", datalayer.battery.status.cell_voltages_mV[95]);
-    Serial.printf("[SERIALIZE_DEBUG] cell_voltages_mV[107]: %u\n", datalayer.battery.status.cell_voltages_mV[107]);
+    serialize_debug_printf("[SERIALIZE_DEBUG] cell_count from datalayer: %u\n", cell_count);
+    serialize_debug_printf("[SERIALIZE_DEBUG] cell_voltages_mV[0]: %u\n", datalayer.battery.status.cell_voltages_mV[0]);
+    serialize_debug_printf("[SERIALIZE_DEBUG] cell_voltages_mV[95]: %u\n", datalayer.battery.status.cell_voltages_mV[95]);
+    serialize_debug_printf("[SERIALIZE_DEBUG] cell_voltages_mV[107]: %u\n", datalayer.battery.status.cell_voltages_mV[107]);
     
     // Check if we have valid cell data (at least one non-zero voltage)
     bool has_real_data = false;
@@ -155,7 +166,7 @@ size_t serialize_cell_data(char* buffer, size_t buffer_size) {
         }
     }
     
-    Serial.printf("[SERIALIZE_DEBUG] has_real_data: %s\n", has_real_data ? "true" : "false");
+    serialize_debug_printf("[SERIALIZE_DEBUG] has_real_data: %s\n", has_real_data ? "true" : "false");
     
     // Check if test mode is enabled - this controls data path selection
     bool test_mode_active = TestDataConfig::is_enabled();
@@ -165,7 +176,7 @@ size_t serialize_cell_data(char* buffer, size_t buffer_size) {
     // ═══════════════════════════════════════════════════════════════════════
     if (test_mode_active && cell_count > 0) {
         const char* data_source = "dummy";
-        Serial.printf("[SERIALIZE_DEBUG] Test mode ACTIVE - generating dummy data\n");
+        serialize_debug_printf("[SERIALIZE_DEBUG] Test mode ACTIVE - generating dummy data\n");
         // Generate realistic dummy voltages (3750-3900 mV for ~3.85V average)
         static uint16_t dummy_voltages[MAX_AMOUNT_CELLS] = {0};
         static bool dummy_balancing[MAX_AMOUNT_CELLS] = {false};
@@ -228,7 +239,7 @@ size_t serialize_cell_data(char* buffer, size_t buffer_size) {
     // PATH 2: REAL DATA - Use actual datalayer values
     // ═══════════════════════════════════════════════════════════════════════
     
-    Serial.printf("[SERIALIZE_DEBUG] Test mode OFF - using real data\n");
+    serialize_debug_printf("[SERIALIZE_DEBUG] Test mode OFF - using real data\n");
     
     // Determine data source tag based on data availability and freshness
     const char* data_source = "live";
@@ -236,7 +247,7 @@ size_t serialize_cell_data(char* buffer, size_t buffer_size) {
     if (!has_real_data) {
         // No valid cell data available
         data_source = "live_simulated";
-        Serial.printf("[SERIALIZE_DEBUG] No real data available - tagged as live_simulated\n");
+        serialize_debug_printf("[SERIALIZE_DEBUG] No real data available - tagged as live_simulated\n");
     } else {
         // Check CAN data freshness using CAN_battery_still_alive counter
         // Counter starts at 60 and decrements every second when no CAN messages received
@@ -245,13 +256,13 @@ size_t serialize_cell_data(char* buffer, size_t buffer_size) {
         if (datalayer.battery.status.CAN_battery_still_alive < CAN_STALE_THRESHOLD) {
             // CAN data is stale - this is simulated
             data_source = "live_simulated";
-            Serial.printf("[SERIALIZE_DEBUG] CAN data stale (counter=%u) - tagged as live_simulated\n",
-                         datalayer.battery.status.CAN_battery_still_alive);
+            serialize_debug_printf("[SERIALIZE_DEBUG] CAN data stale (counter=%u) - tagged as live_simulated\n",
+                                   datalayer.battery.status.CAN_battery_still_alive);
         } else {
             // Fresh CAN data
             data_source = "live";
-            Serial.printf("[SERIALIZE_DEBUG] CAN data fresh (counter=%u) - tagged as live\n",
-                         datalayer.battery.status.CAN_battery_still_alive);
+            serialize_debug_printf("[SERIALIZE_DEBUG] CAN data fresh (counter=%u) - tagged as live\n",
+                                   datalayer.battery.status.CAN_battery_still_alive);
         }
     }
 
@@ -295,9 +306,9 @@ size_t serialize_cell_data(char* buffer, size_t buffer_size) {
     doc["data_source"] = data_source;
     
     // Debug: Log what we're serializing
-    Serial.printf("[SERIALIZE_DEBUG] About to serialize with data_source='%s'\n", data_source);
-    Serial.printf("[SERIALIZE_DEBUG] JSON document capacity: %u bytes, memory usage: %u bytes\n", 
-                 doc.capacity(), doc.memoryUsage());
+    serialize_debug_printf("[SERIALIZE_DEBUG] About to serialize with data_source='%s'\n", data_source);
+    serialize_debug_printf("[SERIALIZE_DEBUG] JSON document capacity: %u bytes, memory usage: %u bytes\n", 
+                           doc.capacity(), doc.memoryUsage());
     
     size_t result = serializeJson(doc, buffer, buffer_size);
     
@@ -307,9 +318,9 @@ size_t serialize_cell_data(char* buffer, size_t buffer_size) {
     }
     
     // Debug: Log the serialized JSON (first/last 200 chars)
-    Serial.printf("[SERIALIZE_DEBUG] Serialized %u bytes (first 200): %.200s\n", result, buffer);
+    serialize_debug_printf("[SERIALIZE_DEBUG] Serialized %u bytes (first 200): %.200s\n", result, buffer);
     if (result > 200) {
-        Serial.printf("[SERIALIZE_DEBUG] Last 100 chars: %s\n", buffer + result - 100);
+        serialize_debug_printf("[SERIALIZE_DEBUG] Last 100 chars: %s\n", buffer + result - 100);
     }
     
     return result;

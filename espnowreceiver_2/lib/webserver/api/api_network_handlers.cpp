@@ -1,7 +1,9 @@
 #include "api_network_handlers.h"
 
+#include "api_request_utils.h"
+#include "api_response_utils.h"
 #include "../utils/transmitter_manager.h"
-#include "../utils/http_json_utils.h"
+#include <webserver_common_utils/http_json_utils.h>
 #include "../logging.h"
 #include "../../receiver_config/receiver_config_manager.h"
 
@@ -11,27 +13,6 @@
 #include <esp_now.h>
 #include <esp32common/espnow/common.h>
 #include <cstring>
-
-static bool parse_ip_string(const char* ip_str, uint8_t out[4]) {
-    if (!ip_str || ip_str[0] == '\0') {
-        return false;
-    }
-
-    int a = 0, b = 0, c = 0, d = 0;
-    if (sscanf(ip_str, "%d.%d.%d.%d", &a, &b, &c, &d) != 4) {
-        return false;
-    }
-
-    if (a < 0 || a > 255 || b < 0 || b > 255 || c < 0 || c > 255 || d < 0 || d > 255) {
-        return false;
-    }
-
-    out[0] = static_cast<uint8_t>(a);
-    out[1] = static_cast<uint8_t>(b);
-    out[2] = static_cast<uint8_t>(c);
-    out[3] = static_cast<uint8_t>(d);
-    return true;
-}
 
 esp_err_t api_get_receiver_network_handler(httpd_req_t *req) {
     char json[1024];
@@ -107,21 +88,16 @@ esp_err_t api_get_receiver_network_handler(httpd_req_t *req) {
 }
 
 esp_err_t api_save_receiver_network_handler(httpd_req_t *req) {
-    char json[256];
     char buf[512];
+    static const uint8_t kDefaultDnsPrimary[4] = {8, 8, 8, 8};
+    static const uint8_t kDefaultDnsSecondary[4] = {8, 8, 4, 4};
 
     LOG_INFO("API: save_receiver_network called, content_len=%d", req->content_len);
 
-    const char* read_error = nullptr;
-    if (!HttpJsonUtils::read_request_body(req, buf, sizeof(buf), nullptr, &read_error)) {
-        return HttpJsonUtils::send_json_error(req, read_error);
-    }
-
     StaticJsonDocument<512> doc;
-    DeserializationError error = deserializeJson(doc, buf);
-    if (error) {
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"JSON parse error\"}");
-        return HttpJsonUtils::send_json(req, json);
+    esp_err_t response_error = ESP_OK;
+    if (!ApiRequestUtils::read_json_body_or_respond(req, buf, sizeof(buf), doc, &response_error)) {
+        return response_error;
     }
 
     const char* hostname = doc["hostname"] | "";
@@ -136,8 +112,7 @@ esp_err_t api_save_receiver_network_handler(httpd_req_t *req) {
     const char* mqtt_password = doc["mqtt_password"] | "";
 
     if (!ssid || ssid[0] == '\0') {
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"SSID is required\"}");
-        return HttpJsonUtils::send_json(req, json);
+        return ApiResponseUtils::send_error_message(req, "SSID is required");
     }
 
     const char* password_to_save = password;
@@ -159,24 +134,19 @@ esp_err_t api_save_receiver_network_handler(httpd_req_t *req) {
         const char* dns1_str = doc["dns_primary"] | "";
         const char* dns2_str = doc["dns_secondary"] | "";
 
-        if (!parse_ip_string(ip_str, ip) || !parse_ip_string(gateway_str, gateway) || !parse_ip_string(subnet_str, subnet)) {
-            snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"Invalid static IP configuration\"}");
-            return HttpJsonUtils::send_json(req, json);
+        if (!ApiRequestUtils::parse_ipv4(ip_str, ip) ||
+            !ApiRequestUtils::parse_ipv4(gateway_str, gateway) ||
+            !ApiRequestUtils::parse_ipv4(subnet_str, subnet)) {
+            return ApiResponseUtils::send_error_message(req, "Invalid static IP configuration");
         }
 
-        if (!parse_ip_string(dns1_str, dns_primary)) {
-            dns_primary[0] = 8; dns_primary[1] = 8; dns_primary[2] = 8; dns_primary[3] = 8;
-        }
-
-        if (!parse_ip_string(dns2_str, dns_secondary)) {
-            dns_secondary[0] = 8; dns_secondary[1] = 8; dns_secondary[2] = 4; dns_secondary[3] = 4;
-        }
+        ApiRequestUtils::parse_ipv4_or_default(dns1_str, dns_primary, kDefaultDnsPrimary);
+        ApiRequestUtils::parse_ipv4_or_default(dns2_str, dns_secondary, kDefaultDnsSecondary);
     }
 
     if (mqtt_enabled && mqtt_server_str && mqtt_server_str[0] != '\0') {
-        if (!parse_ip_string(mqtt_server_str, mqtt_server)) {
-            snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"Invalid MQTT server IP\"}");
-            return HttpJsonUtils::send_json(req, json);
+        if (!ApiRequestUtils::parse_ipv4(mqtt_server_str, mqtt_server)) {
+            return ApiResponseUtils::send_error_message(req, "Invalid MQTT server IP");
         }
     }
 
@@ -198,12 +168,10 @@ esp_err_t api_save_receiver_network_handler(httpd_req_t *req) {
     );
 
     if (saved) {
-        snprintf(json, sizeof(json), "{\"success\":true,\"message\":\"Receiver network config saved\"}");
+        return ApiResponseUtils::send_success_message(req, "Receiver network config saved");
     } else {
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"Failed to save receiver config\"}");
+        return ApiResponseUtils::send_error_message(req, "Failed to save receiver config");
     }
-
-    return HttpJsonUtils::send_json(req, json);
 }
 
 esp_err_t api_get_network_config_handler(httpd_req_t *req) {
@@ -276,31 +244,22 @@ esp_err_t api_get_network_config_handler(httpd_req_t *req) {
 }
 
 esp_err_t api_save_network_config_handler(httpd_req_t *req) {
-    Serial.println("\n===== API SAVE NETWORK CONFIG CALLED =====");
-
-    char json[256];
     char buf[512];
+    static const uint8_t kDefaultDnsPrimary[4] = {8, 8, 8, 8};
+    static const uint8_t kDefaultDnsSecondary[4] = {8, 8, 4, 4};
 
     LOG_INFO("API: save_network_config called, content_len=%d", req->content_len);
 
-    const char* read_error = nullptr;
-    if (!HttpJsonUtils::read_request_body(req, buf, sizeof(buf), nullptr, &read_error)) {
-        return HttpJsonUtils::send_json_error(req, read_error);
+    StaticJsonDocument<512> doc;
+    esp_err_t response_error = ESP_OK;
+    if (!ApiRequestUtils::read_json_body_or_respond(req, buf, sizeof(buf), doc, &response_error)) {
+        return response_error;
     }
 
-    Serial.printf("Received JSON: %s\n", buf);
     LOG_INFO("API: Received network config JSON: %s", buf);
 
-    StaticJsonDocument<512> doc;
-    DeserializationError error = deserializeJson(doc, buf);
-    if (error) {
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"JSON parse error\"}");
-        return HttpJsonUtils::send_json(req, json);
-    }
-
     if (!TransmitterManager::isMACKnown()) {
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"Transmitter MAC unknown\"}");
-        return HttpJsonUtils::send_json(req, json);
+        return ApiResponseUtils::send_transmitter_mac_unknown(req);
     }
 
     network_config_update_t msg;
@@ -310,22 +269,19 @@ esp_err_t api_save_network_config_handler(httpd_req_t *req) {
     msg.use_static_ip = doc["use_static_ip"].as<bool>() ? 1 : 0;
 
     if (msg.use_static_ip) {
-         const char* ip_str = doc["ip"] | "";
-         const char* gateway_str = doc["gateway"] | "";
-         const char* subnet_str = doc["subnet"] | "";
-         const char* dns1_str = doc["dns_primary"] | "8.8.8.8";
-         const char* dns2_str = doc["dns_secondary"] | "8.8.4.4";
+          const char* ip_str = doc["ip"] | "";
+          const char* gateway_str = doc["gateway"] | "";
+          const char* subnet_str = doc["subnet"] | "";
+          const char* dns1_str = doc["dns_primary"] | "8.8.8.8";
+          const char* dns2_str = doc["dns_secondary"] | "8.8.4.4";
 
-         sscanf(ip_str, "%hhu.%hhu.%hhu.%hhu",
-               &msg.ip[0], &msg.ip[1], &msg.ip[2], &msg.ip[3]);
-         sscanf(gateway_str, "%hhu.%hhu.%hhu.%hhu",
-               &msg.gateway[0], &msg.gateway[1], &msg.gateway[2], &msg.gateway[3]);
-         sscanf(subnet_str, "%hhu.%hhu.%hhu.%hhu",
-               &msg.subnet[0], &msg.subnet[1], &msg.subnet[2], &msg.subnet[3]);
-         sscanf(dns1_str, "%hhu.%hhu.%hhu.%hhu",
-               &msg.dns_primary[0], &msg.dns_primary[1], &msg.dns_primary[2], &msg.dns_primary[3]);
-         sscanf(dns2_str, "%hhu.%hhu.%hhu.%hhu",
-               &msg.dns_secondary[0], &msg.dns_secondary[1], &msg.dns_secondary[2], &msg.dns_secondary[3]);
+          if (!ApiRequestUtils::parse_ipv4(ip_str, msg.ip) ||
+            !ApiRequestUtils::parse_ipv4(gateway_str, msg.gateway) ||
+            !ApiRequestUtils::parse_ipv4(subnet_str, msg.subnet)) {
+            return ApiResponseUtils::send_error_message(req, "Invalid static IP configuration");
+          }
+          ApiRequestUtils::parse_ipv4_or_default(dns1_str, msg.dns_primary, kDefaultDnsPrimary);
+          ApiRequestUtils::parse_ipv4_or_default(dns2_str, msg.dns_secondary, kDefaultDnsSecondary);
 
         LOG_INFO("API: Sending static IP config: %d.%d.%d.%d",
                  msg.ip[0], msg.ip[1], msg.ip[2], msg.ip[3]);
@@ -339,20 +295,16 @@ esp_err_t api_save_network_config_handler(httpd_req_t *req) {
     esp_err_t result = esp_now_send(TransmitterManager::getMAC(), (const uint8_t*)&msg, sizeof(msg));
     if (result == ESP_OK) {
         LOG_INFO("API: ✓ Network config sent to transmitter");
-        snprintf(json, sizeof(json),
-                 "{\"success\":true,\"message\":\"Network config sent - awaiting transmitter response\"}");
+        return ApiResponseUtils::send_success_message(req, "Network config sent - awaiting transmitter response");
     } else {
         LOG_ERROR("API: ✗ ESP-NOW send FAILED: %s", esp_err_to_name(result));
-        snprintf(json, sizeof(json),
-                 "{\"success\":false,\"message\":\"ESP-NOW send failed: %s\"}",
-                 esp_err_to_name(result));
+        return ApiResponseUtils::send_jsonf(req,
+                                            "{\"success\":false,\"message\":\"ESP-NOW send failed: %s\"}",
+                                            esp_err_to_name(result));
     }
-
-    return HttpJsonUtils::send_json(req, json);
 }
 
 esp_err_t api_get_mqtt_config_handler(httpd_req_t *req) {
-    Serial.println("\n===== API GET MQTT CONFIG CALLED =====");
     char json[512];
 
     if (!TransmitterManager::isMqttConfigKnown()) {
@@ -386,31 +338,20 @@ esp_err_t api_get_mqtt_config_handler(httpd_req_t *req) {
 }
 
 esp_err_t api_save_mqtt_config_handler(httpd_req_t *req) {
-    Serial.println("\n===== API SAVE MQTT CONFIG CALLED =====");
-
-    char json[256];
     char buf[512];
 
     LOG_INFO("API: save_mqtt_config called, content_len=%d", req->content_len);
 
-    const char* read_error = nullptr;
-    if (!HttpJsonUtils::read_request_body(req, buf, sizeof(buf), nullptr, &read_error)) {
-        return HttpJsonUtils::send_json_error(req, read_error);
+    StaticJsonDocument<512> doc;
+    esp_err_t response_error = ESP_OK;
+    if (!ApiRequestUtils::read_json_body_or_respond(req, buf, sizeof(buf), doc, &response_error)) {
+        return response_error;
     }
 
-    Serial.printf("Received JSON: %s\n", buf);
     LOG_INFO("API: Received MQTT config JSON: %s", buf);
 
-    StaticJsonDocument<512> doc;
-    DeserializationError error = deserializeJson(doc, buf);
-    if (error) {
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"JSON parse error\"}");
-        return HttpJsonUtils::send_json(req, json);
-    }
-
     if (!TransmitterManager::isMACKnown()) {
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"Transmitter MAC unknown\"}");
-        return HttpJsonUtils::send_json(req, json);
+        return ApiResponseUtils::send_transmitter_mac_unknown(req);
     }
 
     mqtt_config_update_t msg;
@@ -419,19 +360,24 @@ esp_err_t api_save_mqtt_config_handler(httpd_req_t *req) {
 
     msg.enabled = doc["enabled"].as<bool>() ? 1 : 0;
 
-        const char* server_str = doc["server"] | "";
-        sscanf(server_str, "%hhu.%hhu.%hhu.%hhu",
-           &msg.server[0], &msg.server[1], &msg.server[2], &msg.server[3]);
+    const char* server_str = doc["server"] | "";
+    if (server_str[0] == '\0') {
+        if (msg.enabled) {
+            return ApiResponseUtils::send_error_message(req, "MQTT server IP is required");
+        }
+    } else if (!ApiRequestUtils::parse_ipv4(server_str, msg.server)) {
+        return ApiResponseUtils::send_error_message(req, "Invalid MQTT server IP");
+    }
 
     msg.port = doc["port"].as<uint16_t>();
 
-        const char* username = doc["username"] | "";
-        const char* password = doc["password"] | "";
-        const char* client_id = doc["client_id"] | "espnow_transmitter";
+    const char* username = doc["username"] | "";
+    const char* password = doc["password"] | "";
+    const char* client_id = doc["client_id"] | "espnow_transmitter";
 
-        strncpy(msg.username, username, sizeof(msg.username) - 1);
-        strncpy(msg.password, password, sizeof(msg.password) - 1);
-        strncpy(msg.client_id, client_id, sizeof(msg.client_id) - 1);
+    strncpy(msg.username, username, sizeof(msg.username) - 1);
+    strncpy(msg.password, password, sizeof(msg.password) - 1);
+    strncpy(msg.client_id, client_id, sizeof(msg.client_id) - 1);
 
     msg.config_version = 0;
     msg.checksum = 0;
@@ -444,14 +390,11 @@ esp_err_t api_save_mqtt_config_handler(httpd_req_t *req) {
     esp_err_t result = esp_now_send(TransmitterManager::getMAC(), (const uint8_t*)&msg, sizeof(msg));
     if (result == ESP_OK) {
         LOG_INFO("API: ✓ MQTT config sent to transmitter");
-        snprintf(json, sizeof(json),
-                 "{\"success\":true,\"message\":\"MQTT config sent - awaiting transmitter response\"}");
+        return ApiResponseUtils::send_success_message(req, "MQTT config sent - awaiting transmitter response");
     } else {
         LOG_ERROR("API: ✗ ESP-NOW send FAILED: %s", esp_err_to_name(result));
-        snprintf(json, sizeof(json),
-                 "{\"success\":false,\"message\":\"ESP-NOW send failed: %s\"}",
-                 esp_err_to_name(result));
+        return ApiResponseUtils::send_jsonf(req,
+                                            "{\"success\":false,\"message\":\"ESP-NOW send failed: %s\"}",
+                                            esp_err_to_name(result));
     }
-
-    return HttpJsonUtils::send_json(req, json);
 }

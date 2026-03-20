@@ -326,7 +326,7 @@ static esp_err_t transmitter_hub_handler(httpd_req_t *req) {
     </script>
     )rawliteral";
     
-    String page = generatePage("Transmitter Hub", content, "/transmitter");
+    String page = renderPage("Transmitter Hub", content);
     return httpd_resp_send(req, page.c_str(), page.length());
 }
 

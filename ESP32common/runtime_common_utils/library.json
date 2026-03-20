@@ -1,0 +1,11 @@
+{
+  "name": "runtime_common_utils",
+  "version": "1.0.0",
+  "description": "Shared runtime/bootstrap helper implementations",
+  "frameworks": "arduino",
+  "platforms": "espressif32",
+  "build": {
+    "includeDir": "include",
+    "srcDir": "src"
+  }
+}

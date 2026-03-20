@@ -1,7 +1,9 @@
 #include "api_settings_handlers.h"
 
+#include "api_request_utils.h"
+#include "api_response_utils.h"
 #include "../utils/transmitter_manager.h"
-#include "../utils/http_json_utils.h"
+#include <webserver_common_utils/http_json_utils.h>
 #include "../logging.h"
 
 #include <Arduino.h>
@@ -9,17 +11,6 @@
 #include <esp_now.h>
 #include <esp32common/espnow/common.h>
 #include <cstring>
-
-esp_err_t api_set_data_source_handler(httpd_req_t *req) {
-    char buf[128];
-    const char* read_error = nullptr;
-    if (!HttpJsonUtils::read_request_body(req, buf, sizeof(buf), nullptr, &read_error)) {
-        return HttpJsonUtils::send_json_error(req, read_error);
-    }
-
-    const char* json = "{\"success\":true,\"message\":\"Receiver always uses MQTT data from transmitter\"}\n";
-    return HttpJsonUtils::send_json(req, json);
-}
 
 esp_err_t api_get_battery_settings_handler(httpd_req_t *req) {
     char json[512];
@@ -75,35 +66,26 @@ esp_err_t api_get_battery_settings_handler(httpd_req_t *req) {
 }
 
 esp_err_t api_save_setting_handler(httpd_req_t *req) {
-    Serial.println("\n\n===== API SAVE SETTING CALLED =====");
-    Serial.flush();
-
-    char json[256];
     char buf[512];
 
-    Serial.printf("Content length: %d\n", req->content_len);
+    LOG_INFO("API: ===== API SAVE SETTING CALLED =====");
     LOG_INFO("API: save_setting called, content_len=%d", req->content_len);
 
-    const char* read_error = nullptr;
-    if (!HttpJsonUtils::read_request_body(req, buf, sizeof(buf), nullptr, &read_error)) {
-        LOG_ERROR("API: %s", read_error);
-        return HttpJsonUtils::send_json_error(req, read_error);
+    StaticJsonDocument<256> doc;
+    esp_err_t response_error = ESP_OK;
+    const char* parse_error = nullptr;
+    if (!ApiRequestUtils::read_json_body_or_respond(req, buf, sizeof(buf), doc, &response_error, &parse_error)) {
+        if (parse_error) {
+            LOG_ERROR("API: JSON parse error: %s", parse_error);
+        }
+        return response_error;
     }
 
     LOG_INFO("API: Received JSON: %s", buf);
 
-    StaticJsonDocument<256> doc;
-    DeserializationError error = deserializeJson(doc, buf);
-    if (error) {
-        LOG_ERROR("API: JSON parse error: %s", error.c_str());
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"JSON parse error: %s\"}", error.c_str());
-        return HttpJsonUtils::send_json(req, json);
-    }
-
     if (!doc.containsKey("category") || !doc.containsKey("field") || !doc.containsKey("value")) {
         LOG_ERROR("API: Missing required fields in JSON");
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"Missing required fields (category, field, value)\"}");
-        return HttpJsonUtils::send_json(req, json);
+        return ApiResponseUtils::send_error_message(req, "Missing required fields (category, field, value)");
     }
 
     uint8_t category = doc["category"];
@@ -132,9 +114,7 @@ esp_err_t api_save_setting_handler(httpd_req_t *req) {
         LOG_INFO("API: Value type=string, value=%s", msg.value_string);
     } else {
         LOG_ERROR("API: Unsupported value type in save_setting request");
-        snprintf(json, sizeof(json),
-                 "{\"success\":false,\"code\":\"invalid_value_type\",\"message\":\"Unsupported value type for field update\"}");
-        return HttpJsonUtils::send_json(req, json);
+        return ApiResponseUtils::send_error_message(req, "Unsupported value type for field update");
     }
 
     msg.checksum = 0;
@@ -148,8 +128,7 @@ esp_err_t api_save_setting_handler(httpd_req_t *req) {
 
     if (!TransmitterManager::isMACKnown()) {
         LOG_ERROR("API: Transmitter not connected");
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"Transmitter not connected\"}");
-        return HttpJsonUtils::send_json(req, json);
+        return ApiResponseUtils::send_error_message(req, "Transmitter not connected");
     }
 
     LOG_INFO("API: Sending to transmitter MAC: %s", TransmitterManager::getMACString().c_str());
@@ -212,12 +191,10 @@ esp_err_t api_save_setting_handler(httpd_req_t *req) {
             }
             TransmitterManager::storeContactorSettings(contactor);
         }
-        snprintf(json, sizeof(json), "{\"success\":true,\"message\":\"Setting sent to transmitter\"}");
+        return ApiResponseUtils::send_success_message(req, "Setting sent to transmitter");
     } else {
         LOG_ERROR("API: ✗ ESP-NOW send FAILED: %s (0x%x)", esp_err_to_name(result), result);
         LOG_ERROR("API: Failed details - category=%d, field=%d, msg_size=%d", category, field, sizeof(msg));
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"ESP-NOW send failed: %s\"}", esp_err_to_name(result));
+        return ApiResponseUtils::send_jsonf(req, "{\"success\":false,\"message\":\"ESP-NOW send failed: %s\"}", esp_err_to_name(result));
     }
-
-    return HttpJsonUtils::send_json(req, json);
 }

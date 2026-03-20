@@ -1,10 +1,13 @@
 #include "api_telemetry_handlers.h"
 #include "api_sse_handlers.h"
+#include "webserver_metrics.h"
 #include "../webserver.h"
 
 #include "../utils/transmitter_manager.h"
-#include "../utils/http_json_utils.h"
+#include "../utils/cell_data_cache.h"
+#include <webserver_common_utils/http_json_utils.h>
 #include "../utils/receiver_config_manager.h"
+#include "../utils/telemetry_snapshot_utils.h"
 #include "../logging.h"
 
 #include <Arduino.h>
@@ -24,126 +27,17 @@ extern volatile int32_t& g_test_power;
 extern volatile uint32_t& g_test_voltage_mv;
 
 namespace ESPNow {
-extern uint8_t received_soc;
-extern int32_t received_power;
-extern uint32_t received_voltage_mv;
 extern QueueHandle_t queue;
 extern volatile uint32_t rx_callback_count;
 extern volatile uint32_t rx_queue_drop_count;
 extern volatile uint32_t rx_queue_high_watermark;
 }
 
-namespace {
-enum HttpHandlerMetricId : uint8_t {
-    HM_DATA = 0,
-    HM_GET_RECEIVER_INFO,
-    HM_MONITOR,
-    HM_GET_DATA_SOURCE,
-    HM_CELL_DATA,
-    HM_DASHBOARD_DATA,
-    HM_TRANSMITTER_IP,
-    HM_VERSION,
-    HM_FIRMWARE_INFO,
-    HM_TRANSMITTER_METADATA,
-    HM_TRANSMITTER_HEALTH,
-    HM_STATIC_SPECS,
-    HM_BATTERY_SPECS,
-    HM_INVERTER_SPECS,
-    HM_GET_EVENT_LOGS,
-    HM_SYSTEM_METRICS,
-    HM_COUNT
-};
-
-struct HttpHandlerMetrics {
-    volatile uint32_t calls = 0;
-    volatile uint32_t last_ms = 0;
-    volatile uint32_t max_ms = 0;
-    volatile uint64_t total_ms = 0;
-};
-
-HttpHandlerMetrics g_http_handler_metrics[HM_COUNT];
-const char* const k_http_handler_names[HM_COUNT] = {
-    "api_data",
-    "api_get_receiver_info",
-    "api_monitor",
-    "api_get_data_source",
-    "api_cell_data",
-    "api_dashboard_data",
-    "api_transmitter_ip",
-    "api_version",
-    "api_firmware_info",
-    "api_transmitter_metadata",
-    "api_transmitter_health",
-    "api_static_specs",
-    "api_battery_specs",
-    "api_inverter_specs",
-    "api_get_event_logs",
-    "api_system_metrics"
-};
-
-struct EventLogProxyMetrics {
-    volatile uint32_t total_requests = 0;
-    volatile uint32_t total_success = 0;
-    volatile uint32_t total_timeouts = 0;
-    volatile uint32_t total_http_errors = 0;
-    volatile int32_t last_http_code = 0;
-    volatile uint32_t last_latency_ms = 0;
-    volatile uint64_t total_latency_ms = 0;
-};
-
-EventLogProxyMetrics g_event_log_proxy_metrics;
-portMUX_TYPE g_metrics_mux = portMUX_INITIALIZER_UNLOCKED;
-
-void recordHttpHandlerLatency(HttpHandlerMetricId id, uint32_t latency_ms) {
-    if (id >= HM_COUNT) {
-        return;
-    }
-
-    portENTER_CRITICAL(&g_metrics_mux);
-    g_http_handler_metrics[id].calls++;
-    g_http_handler_metrics[id].last_ms = latency_ms;
-    g_http_handler_metrics[id].total_ms += latency_ms;
-    if (latency_ms > g_http_handler_metrics[id].max_ms) {
-        g_http_handler_metrics[id].max_ms = latency_ms;
-    }
-    portEXIT_CRITICAL(&g_metrics_mux);
-}
-
-class HttpHandlerTimer {
-public:
-    explicit HttpHandlerTimer(HttpHandlerMetricId id)
-        : id_(id), start_ms_(millis()) {}
-
-    ~HttpHandlerTimer() {
-        recordHttpHandlerLatency(id_, millis() - start_ms_);
-    }
-
-private:
-    HttpHandlerMetricId id_;
-    uint32_t start_ms_;
-};
-
-void recordEventLogProxyResult(int http_code, uint32_t latency_ms) {
-    portENTER_CRITICAL(&g_metrics_mux);
-    g_event_log_proxy_metrics.total_requests++;
-    g_event_log_proxy_metrics.last_http_code = http_code;
-    g_event_log_proxy_metrics.last_latency_ms = latency_ms;
-
-    if (http_code == 200) {
-        g_event_log_proxy_metrics.total_success++;
-        g_event_log_proxy_metrics.total_latency_ms += latency_ms;
-    } else if (http_code == -11) {
-        g_event_log_proxy_metrics.total_timeouts++;
-    } else {
-        g_event_log_proxy_metrics.total_http_errors++;
-    }
-    portEXIT_CRITICAL(&g_metrics_mux);
-}
-}
+using namespace WebserverMetrics;
 
 esp_err_t api_data_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_DATA);
-    char json[1024];
+    StaticJsonDocument<512> doc;
 
     String ssid = WiFi.SSID();
     String ip = WiFi.localIP().toString();
@@ -161,13 +55,18 @@ esp_err_t api_data_handler(httpd_req_t *req) {
              (uint8_t)(efuseMac >> 24), (uint8_t)(efuseMac >> 16),
              (uint8_t)(efuseMac >> 8), (uint8_t)(efuseMac));
 
-    snprintf(json, sizeof(json),
-             "{\"chipModel\":\"%s\",\"chipRevision\":%d,\"efuseMac\":\"%s\"," \
-             "\"ssid\":\"%s\",\"ip\":\"%s\",\"mac\":\"%s\",\"channel\":%d}",
-             chipModel.c_str(), chipRevision, efuseMacStr,
-             ssid.c_str(), ip.c_str(), mac.c_str(), channel);
+    doc["chipModel"] = chipModel;
+    doc["chipRevision"] = chipRevision;
+    doc["efuseMac"] = efuseMacStr;
+    doc["ssid"] = ssid;
+    doc["ip"] = ip;
+    doc["mac"] = mac;
+    doc["channel"] = channel;
 
-    return HttpJsonUtils::send_json(req, json);
+    String json;
+    json.reserve(256);
+    serializeJson(doc, json);
+    return HttpJsonUtils::send_json(req, json.c_str());
 }
 
 esp_err_t api_get_receiver_info_handler(httpd_req_t *req) {
@@ -178,53 +77,37 @@ esp_err_t api_get_receiver_info_handler(httpd_req_t *req) {
 
 esp_err_t api_monitor_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_MONITOR);
-    char json[512];
+    StaticJsonDocument<192> doc;
     const char* mode = test_mode_enabled ? "simulated" : "live";
-    uint8_t soc = test_mode_enabled ? g_test_soc : ESPNow::received_soc;
-    int32_t power = test_mode_enabled ? g_test_power : ESPNow::received_power;
-    uint32_t voltage_mv = test_mode_enabled ? g_test_voltage_mv : ESPNow::received_voltage_mv;
+    uint8_t soc = 0;
+    int32_t power = 0;
+    uint32_t voltage_mv = 0;
 
-    snprintf(json, sizeof(json),
-             "{\"mode\":\"%s\",\"soc\":%d,\"power\":%ld,\"voltage_mv\":%u,\"voltage_v\":%.1f}",
-             mode, soc, power, voltage_mv, voltage_mv / 1000.0f);
+    if (test_mode_enabled) {
+        soc = g_test_soc;
+        power = g_test_power;
+        voltage_mv = g_test_voltage_mv;
+    } else {
+        TelemetrySnapshotUtils::fill_snapshot_telemetry(soc, power, voltage_mv);
+    }
 
-    return HttpJsonUtils::send_json(req, json);
-}
+    doc["mode"] = mode;
+    doc["soc"] = soc;
+    doc["power"] = power;
+    doc["voltage_mv"] = voltage_mv;
+    doc["voltage_v"] = static_cast<float>(voltage_mv) / 1000.0f;
 
-esp_err_t api_get_data_source_handler(httpd_req_t *req) {
-    HttpHandlerTimer handler_timer(HM_GET_DATA_SOURCE);
-    const char* mode = "live";
-    char json[96];
-    snprintf(json, sizeof(json), "{\"mode\":\"%s\"}", mode);
-    return HttpJsonUtils::send_json(req, json);
+    String json;
+    json.reserve(128);
+    serializeJson(doc, json);
+    return HttpJsonUtils::send_json(req, json.c_str());
 }
 
 esp_err_t api_cell_data_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_CELL_DATA);
-    TransmitterManager::CellDataSnapshot snapshot;
-    if (TransmitterManager::getCellDataSnapshot(snapshot) && snapshot.known) {
-
-        String json = "{\"success\":true,\"mode\":\"live\",\"cells\":[";
-            json.reserve(192 + (snapshot.cell_count * 16));
-        for (uint16_t i = 0; i < snapshot.cell_count; i++) {
-            if (i > 0) json += ",";
-            json += String(snapshot.voltages_mV[i]);
-        }
-        json += "],\"balancing\":[";
-        for (uint16_t i = 0; i < snapshot.cell_count; i++) {
-            if (i > 0) json += ",";
-            json += snapshot.balancing_status[i] ? "true" : "false";
-        }
-        json += "],\"cell_min_voltage_mV\":";
-        json += String(snapshot.min_voltage_mV);
-        json += ",\"cell_max_voltage_mV\":";
-        json += String(snapshot.max_voltage_mV);
-        json += ",\"balancing_active\":";
-        json += snapshot.balancing_active ? "true" : "false";
-        json += ",\"mode\":\"";
-        json += snapshot.data_source;
-        json += "\"}";
-
+    CellDataCache::CellDataSnapshot snapshot;
+    if (CellDataCache::get_cell_data_snapshot(snapshot) && snapshot.known) {
+        String json = TelemetrySnapshotUtils::serialize_cell_data(snapshot);
         return HttpJsonUtils::send_json(req, json.c_str());
     }
 
@@ -234,7 +117,7 @@ esp_err_t api_cell_data_handler(httpd_req_t *req) {
 
 esp_err_t api_dashboard_data_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_DASHBOARD_DATA);
-    char json[2048];
+    StaticJsonDocument<384> doc;
 
     bool tx_connected = TransmitterManager::isTransmitterConnected();
     String tx_ip = TransmitterManager::getIPString();
@@ -250,54 +133,25 @@ esp_err_t api_dashboard_data_handler(httpd_req_t *req) {
         tx_firmware = String(version_str);
     }
 
-    snprintf(json, sizeof(json),
-        "{"
-        "\"transmitter\":{"
-            "\"connected\":%s,"
-            "\"ip\":\"%s\","
-            "\"is_static\":%s,"
-            "\"mac\":\"%s\","
-            "\"firmware\":\"%s\""
-        "},"
-        "\"receiver\":{"
-            "\"is_static\":true"
-        "}"
-        "}",
-        tx_connected ? "true" : "false",
-        tx_ip.c_str(),
-        tx_is_static ? "true" : "false",
-        tx_mac.c_str(),
-        tx_firmware.c_str()
-    );
+    JsonObject transmitter = doc.createNestedObject("transmitter");
+    transmitter["connected"] = tx_connected;
+    transmitter["ip"] = tx_ip;
+    transmitter["is_static"] = tx_is_static;
+    transmitter["mac"] = tx_mac;
+    transmitter["firmware"] = tx_firmware;
 
-    return HttpJsonUtils::send_json(req, json);
-}
+    JsonObject receiver = doc.createNestedObject("receiver");
+    receiver["is_static"] = true;
 
-esp_err_t api_transmitter_ip_handler(httpd_req_t *req) {
-    HttpHandlerTimer handler_timer(HM_TRANSMITTER_IP);
-    char json[512];
-
-    if (TransmitterManager::isIPKnown()) {
-        const uint8_t* ip = TransmitterManager::getIP();
-        const uint8_t* gateway = TransmitterManager::getGateway();
-        const uint8_t* subnet = TransmitterManager::getSubnet();
-
-        snprintf(json, sizeof(json),
-                 "{\"success\":true,\"ip\":\"%d.%d.%d.%d\"," \
-                 "\"gateway\":\"%d.%d.%d.%d\",\"subnet\":\"%d.%d.%d.%d\"}",
-                 ip[0], ip[1], ip[2], ip[3],
-                 gateway[0], gateway[1], gateway[2], gateway[3],
-                 subnet[0], subnet[1], subnet[2], subnet[3]);
-    } else {
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"No IP data received yet\"}");
-    }
-
-    return HttpJsonUtils::send_json(req, json);
+    String json;
+    json.reserve(256);
+    serializeJson(doc, json);
+    return HttpJsonUtils::send_json(req, json.c_str());
 }
 
 esp_err_t api_version_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_VERSION);
-    char json[768];
+    StaticJsonDocument<1024> doc;
 
     const bool receiver_metadata_valid = FirmwareMetadata::isValid(FirmwareMetadata::metadata);
     String receiver_device = "unknown";
@@ -334,43 +188,27 @@ esp_err_t api_version_handler(httpd_req_t *req) {
         transmitter_build_date = String(TransmitterManager::getMetadataBuildDate());
     }
 
-    snprintf(json, sizeof(json),
-             "{"
-             "\"device\":\"%s\","
-             "\"device_type\":\"%s\","
-             "\"version\":\"%s\","
-             "\"version_number\":%u,"
-             "\"build_date\":\"%s\","
-             "\"build_time\":\"%s\","
-             "\"metadata_valid\":%s,"
-             "\"transmitter_version\":\"%s\","
-             "\"transmitter_version_number\":%u,"
-             "\"transmitter_build_date\":\"%s\","
-             "\"transmitter_build_time\":\"%s\","
-             "\"transmitter_compatible\":%s,"
-             "\"transmitter_metadata_valid\":%s,"
-             "\"uptime\":%lu,"
-             "\"heap_free\":%u,"
-             "\"wifi_channel\":%d"
-             "}",
-             receiver_device.c_str(),
-             receiver_device_type.c_str(),
-             receiver_version.c_str(),
-             receiver_version_number,
-             receiver_build_date.c_str(),
-             receiver_build_time.c_str(),
-             receiver_metadata_valid ? "true" : "false",
-             transmitter_version.c_str(),
-             transmitter_version_number,
-             transmitter_build_date.c_str(),
-             transmitter_build_time.c_str(),
-             version_compatible ? "true" : "false",
-             metadata_valid ? "true" : "false",
-             millis() / 1000,
-             ESP.getFreeHeap(),
-             WiFi.channel());
+    doc["device"] = receiver_device;
+    doc["device_type"] = receiver_device_type;
+    doc["version"] = receiver_version;
+    doc["version_number"] = receiver_version_number;
+    doc["build_date"] = receiver_build_date;
+    doc["build_time"] = receiver_build_time;
+    doc["metadata_valid"] = receiver_metadata_valid;
+    doc["transmitter_version"] = transmitter_version;
+    doc["transmitter_version_number"] = transmitter_version_number;
+    doc["transmitter_build_date"] = transmitter_build_date;
+    doc["transmitter_build_time"] = transmitter_build_time;
+    doc["transmitter_compatible"] = version_compatible;
+    doc["transmitter_metadata_valid"] = metadata_valid;
+    doc["uptime"] = millis() / 1000;
+    doc["heap_free"] = ESP.getFreeHeap();
+    doc["wifi_channel"] = WiFi.channel();
 
-    return HttpJsonUtils::send_json(req, json);
+    String json;
+    json.reserve(640);
+    serializeJson(doc, json);
+    return HttpJsonUtils::send_json(req, json.c_str());
 }
 
 esp_err_t api_firmware_info_handler(httpd_req_t *req) {
@@ -433,27 +271,23 @@ esp_err_t api_transmitter_metadata_handler(httpd_req_t *req) {
 
 esp_err_t api_transmitter_health_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_TRANSMITTER_HEALTH);
-    char json[512];
+    StaticJsonDocument<256> doc;
 
     uint64_t uptime_ms = TransmitterManager::getUptimeMs();
     uint64_t unix_time = TransmitterManager::getUnixTime();
     uint8_t time_source = TransmitterManager::getTimeSource();
 
-    snprintf(json, sizeof(json),
-        "{\"success\":true,"
-        "\"uptime_ms\":%llu,"
-        "\"unix_time\":%llu,"
-        "\"time_source\":%u,"
-        "\"mqtt_connected\":%s,"
-        "\"ethernet_connected\":%s}",
-        uptime_ms,
-        unix_time,
-        time_source,
-        TransmitterManager::isMqttConnected() ? "true" : "false",
-        TransmitterManager::isEthernetConnected() ? "true" : "false"
-    );
+    doc["success"] = true;
+    doc["uptime_ms"] = uptime_ms;
+    doc["unix_time"] = unix_time;
+    doc["time_source"] = time_source;
+    doc["mqtt_connected"] = TransmitterManager::isMqttConnected();
+    doc["ethernet_connected"] = TransmitterManager::isEthernetConnected();
 
-    return HttpJsonUtils::send_json(req, json);
+    String json;
+    json.reserve(160);
+    serializeJson(doc, json);
+    return HttpJsonUtils::send_json(req, json.c_str());
 }
 
 esp_err_t api_static_specs_handler(httpd_req_t *req) {
@@ -570,23 +404,8 @@ esp_err_t api_system_metrics_handler(httpd_req_t *req) {
                                     ? static_cast<uint32_t>(uxQueueMessagesWaiting(ESPNow::queue) + uxQueueSpacesAvailable(ESPNow::queue))
                                     : 0;
 
-    uint32_t proxy_total_requests = 0;
-    uint32_t proxy_total_success = 0;
-    uint32_t proxy_total_timeouts = 0;
-    uint32_t proxy_total_http_errors = 0;
-    int32_t proxy_last_http_code = 0;
-    uint32_t proxy_last_latency_ms = 0;
-    uint64_t proxy_total_latency_ms = 0;
-
-    portENTER_CRITICAL(&g_metrics_mux);
-    proxy_total_requests = g_event_log_proxy_metrics.total_requests;
-    proxy_total_success = g_event_log_proxy_metrics.total_success;
-    proxy_total_timeouts = g_event_log_proxy_metrics.total_timeouts;
-    proxy_total_http_errors = g_event_log_proxy_metrics.total_http_errors;
-    proxy_last_http_code = g_event_log_proxy_metrics.last_http_code;
-    proxy_last_latency_ms = g_event_log_proxy_metrics.last_latency_ms;
-    proxy_total_latency_ms = g_event_log_proxy_metrics.total_latency_ms;
-    portEXIT_CRITICAL(&g_metrics_mux);
+    EventLogProxyMetricsSnapshot proxy_metrics{};
+    getEventLogProxyMetrics(proxy_metrics);
 
     doc["success"] = true;
     doc["uptime_s"] = millis() / 1000;
@@ -637,35 +456,25 @@ esp_err_t api_system_metrics_handler(httpd_req_t *req) {
     sse_runtime_json["monitor_max_session_ms"] = sse_runtime.monitor_max_session_ms;
 
     JsonObject event_logs_proxy = doc.createNestedObject("event_logs_proxy");
-    event_logs_proxy["requests"] = proxy_total_requests;
-    event_logs_proxy["success"] = proxy_total_success;
-    event_logs_proxy["timeouts"] = proxy_total_timeouts;
-    event_logs_proxy["http_errors"] = proxy_total_http_errors;
-    event_logs_proxy["last_http_code"] = proxy_last_http_code;
-    event_logs_proxy["last_latency_ms"] = proxy_last_latency_ms;
-    event_logs_proxy["avg_success_latency_ms"] = (proxy_total_success > 0)
-                                                     ? static_cast<uint32_t>(proxy_total_latency_ms / proxy_total_success)
-                                                     : 0;
+    event_logs_proxy["requests"] = proxy_metrics.total_requests;
+    event_logs_proxy["success"] = proxy_metrics.total_success;
+    event_logs_proxy["timeouts"] = proxy_metrics.total_timeouts;
+    event_logs_proxy["http_errors"] = proxy_metrics.total_http_errors;
+    event_logs_proxy["last_http_code"] = proxy_metrics.last_http_code;
+    event_logs_proxy["last_latency_ms"] = proxy_metrics.last_latency_ms;
+    event_logs_proxy["avg_success_latency_ms"] = proxy_metrics.avg_success_latency_ms;
 
     JsonObject http_handlers = doc.createNestedObject("http_handlers");
-    for (uint8_t i = 0; i < HM_COUNT; i++) {
-        uint32_t calls = 0;
-        uint32_t last_ms = 0;
-        uint32_t max_ms = 0;
-        uint64_t total_ms = 0;
+    for (uint8_t i = 0; i < httpHandlerCount(); i++) {
+        HttpHandlerMetricsSnapshot handler_metrics{};
+        const HttpHandlerMetricId metric_id = static_cast<HttpHandlerMetricId>(i);
+        getHttpHandlerMetrics(metric_id, handler_metrics);
 
-        portENTER_CRITICAL(&g_metrics_mux);
-        calls = g_http_handler_metrics[i].calls;
-        last_ms = g_http_handler_metrics[i].last_ms;
-        max_ms = g_http_handler_metrics[i].max_ms;
-        total_ms = g_http_handler_metrics[i].total_ms;
-        portEXIT_CRITICAL(&g_metrics_mux);
-
-        JsonObject h = http_handlers.createNestedObject(k_http_handler_names[i]);
-        h["calls"] = calls;
-        h["last_ms"] = last_ms;
-        h["max_ms"] = max_ms;
-        h["avg_ms"] = (calls > 0) ? static_cast<uint32_t>(total_ms / calls) : 0;
+        JsonObject h = http_handlers.createNestedObject(httpHandlerName(metric_id));
+        h["calls"] = handler_metrics.calls;
+        h["last_ms"] = handler_metrics.last_ms;
+        h["max_ms"] = handler_metrics.max_ms;
+        h["avg_ms"] = handler_metrics.avg_ms;
     }
 
     WebserverRuntimeMetrics webserver_metrics{};

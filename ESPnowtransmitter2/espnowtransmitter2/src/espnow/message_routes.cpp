@@ -17,6 +17,10 @@
 
 void EspnowMessageHandler::setup_message_routes() {
     auto& router = EspnowMessageRouter::instance();
+    auto register_with_context = [&](uint8_t message_type, std::function<void(const espnow_queue_msg_t*, void*)> handler) {
+        router.register_route(message_type, handler, 0xFF, this);
+    };
+
     probe_config_ = {};
     ack_config_ = {};
 
@@ -41,58 +45,50 @@ void EspnowMessageHandler::setup_message_routes() {
     };
 
     // Register standard message handlers
-    router.register_route(msg_probe,
+    register_with_context(msg_probe,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             auto* self = static_cast<EspnowMessageHandler*>(ctx);
             EspnowStandardHandlers::handle_probe(msg, &self->probe_config_);
-        },
-        0xFF, this);
+        });
 
-    router.register_route(msg_ack,
+    register_with_context(msg_ack,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             auto* self = static_cast<EspnowMessageHandler*>(ctx);
             EspnowStandardHandlers::handle_ack(msg, &self->ack_config_);
-        },
-        0xFF, this);
+        });
 
     // Register custom message handlers
-    router.register_route(msg_request_data,
+    register_with_context(msg_request_data,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             static_cast<EspnowMessageHandler*>(ctx)->handle_request_data(*msg);
-        },
-        0xFF, this);
+        });
 
-    router.register_route(msg_abort_data,
+    register_with_context(msg_abort_data,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             static_cast<EspnowMessageHandler*>(ctx)->handle_abort_data(*msg);
-        },
-        0xFF, this);
+        });
 
-    router.register_route(msg_reboot,
+    register_with_context(msg_reboot,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             static_cast<EspnowMessageHandler*>(ctx)->handle_reboot(*msg);
-        },
-        0xFF, this);
+        });
 
-    router.register_route(msg_ota_start,
+    register_with_context(msg_ota_start,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             static_cast<EspnowMessageHandler*>(ctx)->handle_ota_start(*msg);
-        },
-        0xFF, this);
+        });
 
     // Register debug control handler
-    router.register_route(msg_debug_control,
+    register_with_context(msg_debug_control,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             static_cast<EspnowMessageHandler*>(ctx)->handle_debug_control(*msg);
-        },
-        0xFF, this);
+        });
 
     // Register heartbeat ACK handler
-    router.register_route(msg_heartbeat_ack,
+    register_with_context(msg_heartbeat_ack,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             static_cast<EspnowMessageHandler*>(ctx)->handle_heartbeat_ack(*msg);
-        },
-        0xFF, this);
+        });
 
     // Note: Transmitter should NOT receive heartbeats from receiver
     // Heartbeat protocol: Transmitter SENDS, Receiver RECEIVES and ACKs
@@ -101,59 +97,51 @@ void EspnowMessageHandler::setup_message_routes() {
     // We don't register a handler for msg_heartbeat on the transmitter side
 
     // Phase 2: Settings update handler
-    router.register_route(msg_battery_settings_update,
+    register_with_context(msg_battery_settings_update,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             SettingsManager::instance().handle_settings_update(*msg);
-        },
-        0xFF, this);
+        });
 
     // Component configuration update handler (receiver → transmitter)
-    router.register_route(msg_component_config,
+    register_with_context(msg_component_config,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             static_cast<EspnowMessageHandler*>(ctx)->handle_component_config(*msg);
-        },
-        0xFF, this);
+        });
 
     // Component interface update handler (receiver → transmitter)
-    router.register_route(msg_component_interface,
+    register_with_context(msg_component_interface,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             static_cast<EspnowMessageHandler*>(ctx)->handle_component_interface(*msg);
-        },
-        0xFF, this);
+        });
 
     // Batched component apply request handler (receiver → transmitter)
-    router.register_route(msg_component_apply_request,
+    register_with_context(msg_component_apply_request,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             TxComponentCatalogHandlers::handle_component_apply_request(*msg);
-        },
-        0xFF, this);
+        });
 
-    router.register_route(msg_request_battery_types,
+    register_with_context(msg_request_battery_types,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             static_cast<EspnowMessageHandler*>(ctx)->handle_request_battery_types(*msg);
-        },
-        0xFF, this);
+        });
 
-    router.register_route(msg_request_inverter_types,
+    register_with_context(msg_request_inverter_types,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             static_cast<EspnowMessageHandler*>(ctx)->handle_request_inverter_types(*msg);
-        },
-        0xFF, this);
+        });
 
-    router.register_route(msg_request_inverter_interfaces,
+    register_with_context(msg_request_inverter_interfaces,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             static_cast<EspnowMessageHandler*>(ctx)->handle_request_inverter_interfaces(*msg);
-        },
-        0xFF, this);
+        });
 
-    router.register_route(msg_request_type_catalog_versions,
+    register_with_context(msg_request_type_catalog_versions,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             static_cast<EspnowMessageHandler*>(ctx)->handle_request_type_catalog_versions(*msg);
-        },
-        0xFF, this);
+        });
 
     // Event logs subscription control (receiver → transmitter)
-    router.register_route(msg_event_logs_control,
+    register_with_context(msg_event_logs_control,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             if (msg->len >= (int)sizeof(event_logs_control_t)) {
                 const event_logs_control_t* control = reinterpret_cast<const event_logs_control_t*>(msg->data);
@@ -163,53 +151,47 @@ void EspnowMessageHandler::setup_message_routes() {
                     MqttManager::instance().decrement_event_log_subscribers();
                 }
             }
-        },
-        0xFF, this);
+        });
 
     // Network configuration request handler
-    router.register_route(msg_network_config_request,
+    register_with_context(msg_network_config_request,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             static_cast<EspnowMessageHandler*>(ctx)->handle_network_config_request(*msg);
-        },
-        0xFF, this);
+        });
 
     // Network configuration update handler
-    router.register_route(msg_network_config_update,
+    register_with_context(msg_network_config_update,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             static_cast<EspnowMessageHandler*>(ctx)->handle_network_config_update(*msg);
-        },
-        0xFF, this);
+        });
 
     // MQTT configuration request handler
-    router.register_route(msg_mqtt_config_request,
+    register_with_context(msg_mqtt_config_request,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             static_cast<EspnowMessageHandler*>(ctx)->handle_mqtt_config_request(*msg);
-        },
-        0xFF, this);
+        });
 
     // MQTT configuration update handler
-    router.register_route(msg_mqtt_config_update,
+    register_with_context(msg_mqtt_config_update,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             static_cast<EspnowMessageHandler*>(ctx)->handle_mqtt_config_update(*msg);
-        },
-        0xFF, this);
+        });
 
     // =========================================================================
     // PHASE 4: Version-Based Cache Synchronization
     // =========================================================================
 
     // Config section request handler (receiver → transmitter when version mismatch)
-    router.register_route(msg_config_section_request,
+    register_with_context(msg_config_section_request,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             if (msg->len >= (int)sizeof(config_section_request_t)) {
                 const config_section_request_t* request = reinterpret_cast<const config_section_request_t*>(msg->data);
                 VersionBeaconManager::instance().handle_config_request(request, msg->mac);
             }
-        },
-        0xFF, this);
+        });
 
     // Register version exchange message handlers
-    router.register_route(msg_version_announce,
+    register_with_context(msg_version_announce,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             if (msg->len >= (int)sizeof(version_announce_t)) {
                 const version_announce_t* announce = reinterpret_cast<const version_announce_t*>(msg->data);
@@ -225,10 +207,9 @@ void EspnowMessageHandler::setup_message_routes() {
                              rx_major, rx_minor, rx_patch);
                 }
             }
-        },
-        0xFF, this);
+        });
 
-    router.register_route(msg_version_request,
+    register_with_context(msg_version_request,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             if (msg->len >= (int)sizeof(version_request_t)) {
                 // Respond with our version information
@@ -255,10 +236,9 @@ void EspnowMessageHandler::setup_message_routes() {
                     LOG_ERROR("VERSION", "Failed to send VERSION_RESPONSE: %s", esp_err_to_name(result));
                 }
             }
-        },
-        0xFF, this);
+        });
 
-    router.register_route(msg_version_response,
+    register_with_context(msg_version_response,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             if (msg->len >= (int)sizeof(version_response_t)) {
                 const version_response_t* response = reinterpret_cast<const version_response_t*>(msg->data);
@@ -268,8 +248,7 @@ void EspnowMessageHandler::setup_message_routes() {
                          (response->firmware_version / 100) % 100,
                          response->firmware_version % 100);
             }
-        },
-        0xFF, this);
+        });
 
     LOG_DEBUG("MSG_HANDLER", "Registered %d message routes", router.route_count());
 }

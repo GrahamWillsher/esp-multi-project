@@ -91,6 +91,9 @@ private:
     DiscoveryTask& operator=(const DiscoveryTask&) = delete;
     
     // Helper methods
+    bool attempt_restart_once();
+    void schedule_restart_retry(uint32_t delay_ms);
+    void clear_restart_request();
     void cleanup_all_peers();
     bool force_and_verify_channel(uint8_t target_channel);
     void transition_to(RecoveryState new_state);
@@ -106,7 +109,10 @@ private:
     RecoveryState recovery_state_{RecoveryState::NORMAL};
     uint32_t state_entry_time_{0};
     uint8_t restart_failure_count_{0};
-    uint8_t consecutive_failures_{0};
+    bool restart_requested_{false};
+    bool restart_in_progress_{false};
+    uint32_t restart_next_retry_ms_{0};
+    uint32_t restart_window_start_ms_{0};
     DiscoveryMetrics metrics_;
     
     static const uint8_t MAX_RESTART_FAILURES = 3;

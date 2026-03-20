@@ -85,30 +85,28 @@ TransmissionResult transmit_specs(const JsonObject& json_doc, const char* topic)
     // Route based on current mode
     switch (current_mode) {
         case TransmissionMode::ESPNOW_ONLY:
-            // For specs data, actual transmission is handled by mqtt_task via callbacks
-            // Just log that it would use ESP-NOW if available
+            // Route planning only: actual payload transmission is handled elsewhere
             if (EspnowMessageHandler::instance().is_transmission_active()) {
                 result.espnow_sent = true;
-                result.method = "ESP-NOW_READY";
+                result.method = "ESP-NOW_ROUTE";
                 stats.espnow_count++;
-                LOG_DEBUG("TRANSMISSION_SELECTOR", "✓ Specs ready for ESP-NOW (%s)", topic);
+                LOG_DEBUG("TRANSMISSION_SELECTOR", "✓ Specs routed to ESP-NOW (%s)", topic);
             } else {
                 result.method = "FAILED";
-                LOG_WARN("TRANSMISSION_SELECTOR", "✗ ESP-NOW not ready (%s)", topic);
+                LOG_WARN("TRANSMISSION_SELECTOR", "✗ No ESP-NOW route available (%s)", topic);
             }
             break;
             
         case TransmissionMode::MQTT_ONLY:
             if (MqttManager::instance().is_connected()) {
-                // For MQTT, need to publish to appropriate topic
-                // specs are published via their specific MQTT functions
-                result.mqtt_sent = true;  // Assume success (actual publish handled by mqtt_task)
-                result.method = "MQTT";
+                // Route planning only: specs publish is executed by specific MQTT publish functions
+                result.mqtt_sent = true;
+                result.method = "MQTT_ROUTE";
                 stats.mqtt_count++;
-                LOG_DEBUG("TRANSMISSION_SELECTOR", "✓ Specs queued for MQTT (%s)", topic);
+                LOG_DEBUG("TRANSMISSION_SELECTOR", "✓ Specs routed to MQTT (%s)", topic);
             } else {
                 result.method = "BUFFERED";
-                LOG_WARN("TRANSMISSION_SELECTOR", "✗ MQTT unavailable, specs not sent (%s)", topic);
+                LOG_WARN("TRANSMISSION_SELECTOR", "✗ MQTT route unavailable (%s)", topic);
             }
             break;
             
@@ -116,19 +114,19 @@ TransmissionResult transmit_specs(const JsonObject& json_doc, const char* topic)
             // Smart routing: small specs → ESP-NOW ready, large specs → MQTT
             if (should_use_espnow(len) && EspnowMessageHandler::instance().is_transmission_active()) {
                 result.espnow_sent = true;
-                result.method = "ESP-NOW";
+                result.method = "ESP-NOW_ROUTE";
                 stats.espnow_count++;
                 stats.espnow_total_latency_ms += (millis() - start_time);
-                LOG_DEBUG("TRANSMISSION_SELECTOR", "✓ Specs ready for ESP-NOW (SMART) (%s)", topic);
+                LOG_DEBUG("TRANSMISSION_SELECTOR", "✓ Specs routed to ESP-NOW (SMART) (%s)", topic);
             } else if (MqttManager::instance().is_connected()) {
                 result.mqtt_sent = true;
-                result.method = "MQTT";
+                result.method = "MQTT_ROUTE";
                 stats.mqtt_count++;
                 stats.mqtt_total_latency_ms += (millis() - start_time);
-                LOG_DEBUG("TRANSMISSION_SELECTOR", "✓ Specs queued for MQTT (SMART) (%s)", topic);
+                LOG_DEBUG("TRANSMISSION_SELECTOR", "✓ Specs routed to MQTT (SMART) (%s)", topic);
             } else {
                 result.method = "BUFFERED";
-                LOG_WARN("TRANSMISSION_SELECTOR", "✗ No transmission method available (%s)", topic);
+                LOG_WARN("TRANSMISSION_SELECTOR", "✗ No route available (%s)", topic);
             }
             break;
             
@@ -144,15 +142,15 @@ TransmissionResult transmit_specs(const JsonObject& json_doc, const char* topic)
             }
             if (result.espnow_sent && result.mqtt_sent) {
                 stats.redundant_count++;
-                result.method = "BOTH";
-                LOG_DEBUG("TRANSMISSION_SELECTOR", "✓ Specs ready via BOTH (REDUNDANT) (%s)", topic);
+                result.method = "BOTH_ROUTE";
+                LOG_DEBUG("TRANSMISSION_SELECTOR", "✓ Specs routed via BOTH (REDUNDANT) (%s)", topic);
             } else if (result.espnow_sent) {
-                result.method = "ESP-NOW_ONLY";
+                result.method = "ESP-NOW_ROUTE";
             } else if (result.mqtt_sent) {
-                result.method = "MQTT_ONLY";
+                result.method = "MQTT_ROUTE";
             } else {
                 result.method = "FAILED";
-                LOG_WARN("TRANSMISSION_SELECTOR", "✗ REDUNDANT transmission failed (%s)", topic);
+                LOG_WARN("TRANSMISSION_SELECTOR", "✗ REDUNDANT route selection failed (%s)", topic);
             }
             stats.espnow_total_latency_ms += (millis() - start_time);
             stats.mqtt_total_latency_ms += (millis() - start_time);
@@ -172,27 +170,25 @@ TransmissionResult transmit_dynamic_data(int soc, long power, const char* timest
     
     LOG_TRACE("TRANSMISSION_SELECTOR", "Transmitting dynamic data: SOC=%d%%, Power=%ldW", soc, power);
     
-    // Dynamic data always goes via ESP-NOW if available (fastest for frequent updates)
+    // Route planning only: dynamic data prefers ESP-NOW when available
     if (EspnowMessageHandler::instance().is_transmission_active()) {
-        // For dynamic data, use the message handler's efficient method
-        // (smaller payload doesn't need full JSON serialization overhead)
-        result.espnow_sent = true;  // Assuming handler will send it
-        result.method = "ESP-NOW";
+        result.espnow_sent = true;
+        result.method = "ESP-NOW_ROUTE";
         stats.espnow_count++;
         stats.espnow_total_latency_ms += (millis() - start_time);
         result.payload_size = 60;  // Approximate size
-        LOG_TRACE("TRANSMISSION_SELECTOR", "✓ Dynamic data queued for ESP-NOW");
+        LOG_TRACE("TRANSMISSION_SELECTOR", "✓ Dynamic data routed to ESP-NOW");
     } else if (MqttManager::instance().is_connected()) {
-        // Fallback to MQTT if ESP-NOW unavailable
+        // Fallback route to MQTT if ESP-NOW unavailable
         result.mqtt_sent = true;
-        result.method = "MQTT_FALLBACK";
+        result.method = "MQTT_ROUTE";
         stats.mqtt_count++;
         stats.mqtt_total_latency_ms += (millis() - start_time);
         result.payload_size = 60;
-        LOG_DEBUG("TRANSMISSION_SELECTOR", "Dynamic data using MQTT fallback");
+        LOG_DEBUG("TRANSMISSION_SELECTOR", "Dynamic data routed to MQTT fallback");
     } else {
         result.method = "FAILED";
-        LOG_WARN("TRANSMISSION_SELECTOR", "✗ No transmission method for dynamic data");
+        LOG_WARN("TRANSMISSION_SELECTOR", "✗ No route available for dynamic data");
     }
     
     stats.last_result = result;
@@ -217,27 +213,27 @@ TransmissionResult transmit_cell_data(const JsonObject& json_doc) {
         
         if (MqttManager::instance().is_connected()) {
             result.mqtt_sent = true;
-            result.method = "MQTT";
+            result.method = "MQTT_ROUTE";
             stats.mqtt_count++;
             stats.mqtt_total_latency_ms += (millis() - start_time);
-            LOG_DEBUG("TRANSMISSION_SELECTOR", "✓ Cell data sent via MQTT (%u bytes)", len);
+            LOG_DEBUG("TRANSMISSION_SELECTOR", "✓ Cell data routed to MQTT (%u bytes)", len);
         } else {
             // TODO: In production, implement buffering for MQTT reconnection
             result.method = "BUFFERED";
-            LOG_WARN("TRANSMISSION_SELECTOR", "✗ MQTT unavailable, cell data not sent (buffering needed)");
+            LOG_WARN("TRANSMISSION_SELECTOR", "✗ MQTT route unavailable, cell data buffered");
         }
     } else {
         // Small cell payload (shouldn't happen in practice) - use smart routing
         switch (current_mode) {
             case TransmissionMode::ESPNOW_ONLY:
                 result.espnow_sent = EspnowMessageHandler::instance().is_transmission_active();
-                result.method = result.espnow_sent ? "ESP-NOW" : "FAILED";
+                result.method = result.espnow_sent ? "ESP-NOW_ROUTE" : "FAILED";
                 if (result.espnow_sent) stats.espnow_count++;
                 break;
                 
             case TransmissionMode::MQTT_ONLY:
                 result.mqtt_sent = MqttManager::instance().is_connected();
-                result.method = result.mqtt_sent ? "MQTT" : "FAILED";
+                result.method = result.mqtt_sent ? "MQTT_ROUTE" : "FAILED";
                 if (result.mqtt_sent) stats.mqtt_count++;
                 break;
                 
@@ -247,11 +243,11 @@ TransmissionResult transmit_cell_data(const JsonObject& json_doc) {
                 // Prefer MQTT for cell data (even if small) to preserve ESP-NOW bandwidth
                 if (MqttManager::instance().is_connected()) {
                     result.mqtt_sent = true;
-                    result.method = "MQTT";
+                    result.method = "MQTT_ROUTE";
                     stats.mqtt_count++;
                 } else if (EspnowMessageHandler::instance().is_transmission_active()) {
                     result.espnow_sent = true;
-                    result.method = "ESP-NOW_FALLBACK";
+                    result.method = "ESP-NOW_ROUTE";
                     if (result.espnow_sent) stats.espnow_count++;
                 } else {
                     result.method = "FAILED";

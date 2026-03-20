@@ -12,6 +12,7 @@
 #include "../battery_emulator/devboard/utils/led_handler.h"
 #include <firmware_version.h>
 #include <firmware_metadata.h>
+#include <esp32common/espnow/packet_utils.h>
 #include <cstddef>
 
 VersionBeaconManager& VersionBeaconManager::instance() {
@@ -52,7 +53,7 @@ void VersionBeaconManager::notify_config_version_changed(config_section_t sectio
 void VersionBeaconManager::update() {
     uint32_t now = millis();
     
-    // Periodic heartbeat beacon - FORCE send every 15 seconds regardless of changes
+    // Periodic heartbeat beacon - FORCE send every 30 seconds regardless of changes
     // This ensures receiver always has fresh runtime status (MQTT/Ethernet connected state)
     if (now - last_beacon_ms_ >= PERIODIC_INTERVAL_MS) {
         send_version_beacon(true);  // Force send - receiver needs periodic status updates
@@ -75,7 +76,7 @@ uint32_t VersionBeaconManager::get_config_version(config_section_t section) {
             return MqttConfigManager::getConfigVersion();
             
         case config_section_network:
-            return EthernetManager::instance().getNetworkConfigVersion();
+            return EthernetManager::instance().get_network_config_version();
             
         case config_section_battery:
             return SettingsManager::instance().get_battery_settings_version();
@@ -178,7 +179,7 @@ void VersionBeaconManager::send_config_section(config_section_t section, const u
     switch (section) {
         case config_section_mqtt: {
             // Build and send MQTT config ACK message
-            mqtt_config_ack_t mqtt_msg;
+            mqtt_config_ack_t mqtt_msg{};
             mqtt_msg.type = msg_mqtt_config_ack;
             mqtt_msg.success = 1;  // Response to request (not an error)
             mqtt_msg.enabled = MqttConfigManager::isEnabled() ? 1 : 0;
@@ -208,7 +209,7 @@ void VersionBeaconManager::send_config_section(config_section_t section, const u
             strncpy(mqtt_msg.message, "Config sent in response to version mismatch", sizeof(mqtt_msg.message) - 1);
             mqtt_msg.message[sizeof(mqtt_msg.message) - 1] = '\0';
             
-            mqtt_msg.checksum = 0;  // TODO: Calculate checksum if needed
+            mqtt_msg.checksum = EspnowPacketUtils::calculate_message_checksum(&mqtt_msg);
             
             esp_err_t send_result = TxSendGuard::send_to_receiver_guarded(
                 receiver_mac,
@@ -224,7 +225,7 @@ void VersionBeaconManager::send_config_section(config_section_t section, const u
         
         case config_section_network: {
             // Build and send network config ACK message
-            network_config_ack_t net_msg;
+            network_config_ack_t net_msg{};
             net_msg.type = msg_network_config_ack;
             net_msg.success = 1;  // Response to request (not an error)
             
@@ -249,11 +250,11 @@ void VersionBeaconManager::send_config_section(config_section_t section, const u
             net_msg.current_subnet[3] = current_subnet[3];
             
             // Get static IP configuration from EthernetManager
-            IPAddress static_ip = EthernetManager::instance().getStaticIP();
-            IPAddress static_gateway = EthernetManager::instance().getGateway();
-            IPAddress static_subnet = EthernetManager::instance().getSubnetMask();
-            IPAddress static_dns1 = EthernetManager::instance().getDNSPrimary();
-            IPAddress static_dns2 = EthernetManager::instance().getDNSSecondary();
+            IPAddress static_ip = EthernetManager::instance().get_static_ip();
+            IPAddress static_gateway = EthernetManager::instance().get_static_gateway();
+            IPAddress static_subnet = EthernetManager::instance().get_static_subnet_mask();
+            IPAddress static_dns1 = EthernetManager::instance().get_static_dns_primary();
+            IPAddress static_dns2 = EthernetManager::instance().get_static_dns_secondary();
             
             net_msg.static_ip[0] = static_ip[0];
             net_msg.static_ip[1] = static_ip[1];
@@ -280,8 +281,8 @@ void VersionBeaconManager::send_config_section(config_section_t section, const u
             net_msg.static_dns_secondary[2] = static_dns2[2];
             net_msg.static_dns_secondary[3] = static_dns2[3];
             
-            net_msg.use_static_ip = EthernetManager::instance().isStaticIP() ? 1 : 0;
-            net_msg.config_version = EthernetManager::instance().getNetworkConfigVersion();
+            net_msg.use_static_ip = EthernetManager::instance().is_static_ip() ? 1 : 0;
+            net_msg.config_version = EthernetManager::instance().get_network_config_version();
             
             strncpy(net_msg.message, "Config sent in response to version mismatch", sizeof(net_msg.message) - 1);
             net_msg.message[sizeof(net_msg.message) - 1] = '\0';
@@ -301,7 +302,7 @@ void VersionBeaconManager::send_config_section(config_section_t section, const u
         }
         
         case config_section_battery: {
-            battery_settings_full_msg_t settings_msg;
+            battery_settings_full_msg_t settings_msg{};
             settings_msg.type = msg_battery_info;
             settings_msg.capacity_wh = SettingsManager::instance().get_battery_capacity_wh();
             settings_msg.max_voltage_mv = SettingsManager::instance().get_battery_max_voltage_mv();

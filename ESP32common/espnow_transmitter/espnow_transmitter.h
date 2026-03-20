@@ -27,7 +27,7 @@ uint16_t calculate_crc16(const void* data, size_t len);
 bool validate_crc16(const void* data, size_t len);
 bool set_channel(uint8_t ch);
 
-// ESP-NOW callbacks (ISR - only queue data)
+// ESP-NOW callbacks (Wi-Fi task context - keep callback work minimal)
 void on_espnow_recv(const uint8_t *mac_addr, const uint8_t *data, int len);
 void on_data_sent(const uint8_t *mac_addr, esp_now_send_status_t status);
 

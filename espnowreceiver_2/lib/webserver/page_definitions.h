@@ -14,10 +14,10 @@
 // ─────────────────────────────────────────────────────────────────────
 // 
 // STEP 1: Add to PAGE_DEFINITIONS[] array in page_definitions.cpp
-//   { "/mypage", "My Page Name", subtype_events, true }
-//          ^            ^              ^          ^
-//          |            |              |          |
-//          URI       Button text    Subtype   Needs SSE?
+//   { "/mypage", "My Page Name", subtype_events, true, false }
+//          ^            ^              ^          ^      ^
+//          |            |              |          |      |
+//          URI       Button text    Subtype   Needs SSE? Hide from nav?
 //
 // STEP 2: Create handler class in pages/mypage_page.h/cpp
 // STEP 3: Register in init_webserver() (webserver.cpp)
@@ -37,6 +37,7 @@ struct PageInfo {
     const char* name;          // Display name for button
     msg_subtype subtype;       // ESP-NOW subtype for REQUEST_DATA/ABORT_DATA
     bool needs_sse;            // True if page uses Server-Sent Events
+    bool hide_from_nav;        // True if page should not appear in navigation buttons
 };
 
 // Central page registry - all pages defined in one place

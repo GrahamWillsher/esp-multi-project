@@ -675,7 +675,7 @@ esp_err_t network_config_handler(httpd_req_t *req) {
     )rawliteral";
 
     String pageTitle = isAPMode ? "ESP32 Setup" : "Network Configuration";
-    String html = generatePage(pageTitle.c_str(), content, style, script);
+    String html = renderPage(pageTitle.c_str(), content, PageRenderOptions(style, script));
     httpd_resp_set_type(req, "text/html");
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
     httpd_resp_set_hdr(req, "Pragma", "no-cache");

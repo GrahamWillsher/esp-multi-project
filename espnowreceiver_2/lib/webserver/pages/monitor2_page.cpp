@@ -9,7 +9,7 @@ esp_err_t monitor2_handler(httpd_req_t *req) {
     )rawliteral";
     
     // Add navigation buttons
-    content += "    " + generate_nav_buttons("/monitor2");
+    content += "    " + generate_nav_buttons("/transmitter/monitor2");
     
     content += R"rawliteral(
     
@@ -151,7 +151,7 @@ esp_err_t monitor2_handler(httpd_req_t *req) {
         };
     )rawliteral";
 
-    String html = generatePage("ESP-NOW Receiver - Battery Monitor (SSE)", content, extraStyles, script);
+    String html = renderPage("ESP-NOW Receiver - Battery Monitor (SSE)", content, PageRenderOptions(extraStyles, script));
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, html.c_str(), html.length());
     return ESP_OK;

@@ -5,7 +5,7 @@
 #include <ArduinoJson.h>
 
 /**
- * @brief Intelligent transmission method selector for dual ESP-NOW/MQTT support
+ * @brief Intelligent transmission route selector for dual ESP-NOW/MQTT support
  * 
  * Phase 2 Implementation: Smart routing based on payload size and network availability
  * 
@@ -19,7 +19,7 @@
  * 1. ESPNOW_ONLY: Pure ESP-NOW (legacy, backward compatible)
  * 2. MQTT_ONLY: Pure MQTT (for display-only receivers)
  * 3. SMART (default): Route based on payload size
- * 4. REDUNDANT: Send via both methods (doubles overhead but maximum reliability)
+ * 4. REDUNDANT: Route to both methods (doubles overhead but maximum reliability)
  * 
  * Payload Examples:
  * - spec_data (static battery info): 180-250B → ESP-NOW
@@ -42,13 +42,13 @@ enum class TransmissionMode : uint8_t {
 };
 
 /**
- * @brief Transmission result for status tracking
+ * @brief Transmission route planning result for status tracking
  */
 struct TransmissionResult {
-    bool espnow_sent;    // ESP-NOW transmission success
-    bool mqtt_sent;      // MQTT transmission success
+    bool espnow_sent;    // Route selected/available for ESP-NOW (compat field name)
+    bool mqtt_sent;      // Route selected/available for MQTT (compat field name)
     size_t payload_size; // Original payload size in bytes
-    const char* method;  // Method used: "ESP-NOW", "MQTT", "BOTH", "BUFFERED", "FAILED"
+    const char* method;  // Route outcome: "ESP-NOW_ROUTE", "MQTT_ROUTE", "BOTH_ROUTE", "BUFFERED", "FAILED"
 };
 
 /**
@@ -72,19 +72,19 @@ void set_mode(TransmissionMode mode);
 TransmissionMode get_mode();
 
 /**
- * @brief Intelligent transmission for battery spec data (static, small)
+ * @brief Plan transmission route for battery spec data (static, small)
  * 
  * Typical payload: 150-250B (spec_data or spec_data_2)
  * Expected route: ESP-NOW (direct) or MQTT (if ESP-NOW unavailable)
  * 
  * @param json_doc: ArduinoJson document with spec data
  * @param topic: Optional MQTT topic name for logging ("spec_data", "spec_data_2", "battery_specs")
- * @return TransmissionResult with success status and method used
+ * @return TransmissionResult with selected/available route information
  */
 TransmissionResult transmit_specs(const JsonObject& json_doc, const char* topic = nullptr);
 
 /**
- * @brief Intelligent transmission for dynamic data (small, frequent)
+ * @brief Plan transmission route for dynamic data (small, frequent)
  * 
  * Typical payload: 40-60B (SOC, power, timestamp)
  * Expected route: ESP-NOW (always, very small)
@@ -92,19 +92,19 @@ TransmissionResult transmit_specs(const JsonObject& json_doc, const char* topic 
  * @param soc: State of charge percentage (0-100)
  * @param power: Power in watts (signed, negative for discharge)
  * @param timestamp: ISO8601 timestamp string
- * @return TransmissionResult with success status
+ * @return TransmissionResult with selected/available route information
  */
 TransmissionResult transmit_dynamic_data(int soc, long power, const char* timestamp);
 
 /**
- * @brief Intelligent transmission for cell data (large, periodic)
+ * @brief Plan transmission route for cell data (large, periodic)
  * 
  * Typical payload: 711B (96 cell voltages + balancing array)
  * Expected route: MQTT (too large for ESP-NOW 250B limit)
  * Falls back to buffering if MQTT temporarily unavailable
  * 
  * @param json_doc: ArduinoJson document with cell data
- * @return TransmissionResult with success status and method used
+ * @return TransmissionResult with selected/available route information
  */
 TransmissionResult transmit_cell_data(const JsonObject& json_doc);
 
@@ -127,11 +127,11 @@ bool should_use_espnow(size_t payload_size);
 bool are_both_methods_available();
 
 /**
- * @brief Get statistics about transmission method usage
+ * @brief Get statistics about transmission route selections
  * 
- * @param espnow_count: [out] Total ESP-NOW transmissions
- * @param mqtt_count: [out] Total MQTT transmissions
- * @param redundant_count: [out] Messages sent via both methods
+ * @param espnow_count: [out] Total ESP-NOW route selections
+ * @param mqtt_count: [out] Total MQTT route selections
+ * @param redundant_count: [out] Messages routed to both methods
  * @param avg_espnow_latency_ms: [out] Average ESP-NOW transmission time
  * @param avg_mqtt_latency_ms: [out] Average MQTT transmission time
  */

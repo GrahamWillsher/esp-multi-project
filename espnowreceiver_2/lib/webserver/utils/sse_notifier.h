@@ -16,7 +16,6 @@ public:
     static void notifyCellDataUpdated();
     static bool waitForUpdate(TickType_t timeout_ms);
     static bool waitForCellDataUpdate(TickType_t timeout_ms);
-    static EventGroupHandle_t getEventGroup();
 };
 
 #endif

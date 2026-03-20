@@ -16,7 +16,7 @@ static esp_err_t monitor_handler(httpd_req_t *req) {
     )rawliteral";
     
     // Add navigation buttons from central registry
-    content += "    " + generate_nav_buttons("/monitor");
+    content += "    " + generate_nav_buttons("/transmitter/monitor");
     
     content += R"rawliteral(
     
@@ -82,7 +82,7 @@ static esp_err_t monitor_handler(httpd_req_t *req) {
         window.onload = updateData;
     )rawliteral";
 
-    String html = generatePage("ESP-NOW Receiver - Battery Monitor", content, extraStyles, script);
+    String html = renderPage("ESP-NOW Receiver - Battery Monitor", content, PageRenderOptions(extraStyles, script));
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, html.c_str(), html.length());
     return ESP_OK;

@@ -14,43 +14,47 @@ constexpr uint8_t MAX_CONSECUTIVE_FAILURES = 10;
 constexpr uint32_t BASE_BACKOFF_MS = 2000;
 constexpr uint32_t MAX_BACKOFF_MS = 30000;
 
-bool g_recovery_active = false;
-bool g_recovery_triggered = false;
-uint32_t g_last_mismatch_log_ms = 0;
-uint32_t g_last_summary_log_ms = 0;
+struct GuardRuntimeState {
+    bool recovery_active = false;
+    bool recovery_triggered = false;
+    uint32_t last_mismatch_log_ms = 0;
+    uint32_t last_summary_log_ms = 0;
 
-uint8_t g_consecutive_failures = 0;
-uint32_t g_send_paused_until_ms = 0;
+    uint8_t consecutive_failures = 0;
+    uint32_t send_paused_until_ms = 0;
 
-uint32_t g_channel_mismatch_detected = 0;
-uint32_t g_channel_mismatch_recovered_quick = 0;
-uint32_t g_channel_mismatch_reconnect_triggered = 0;
-uint32_t g_espnow_arg_send_failures = 0;
+    uint32_t channel_mismatch_detected = 0;
+    uint32_t channel_mismatch_recovered_quick = 0;
+    uint32_t channel_mismatch_reconnect_triggered = 0;
+    uint32_t espnow_arg_send_failures = 0;
+};
+
+GuardRuntimeState g_state{};
 
 void log_summary_if_due() {
     const uint32_t now = millis();
-    if (now - g_last_summary_log_ms < SUMMARY_LOG_PERIOD_MS) {
+    if (now - g_state.last_summary_log_ms < SUMMARY_LOG_PERIOD_MS) {
         return;
     }
-    g_last_summary_log_ms = now;
+    g_state.last_summary_log_ms = now;
 
     LOG_INFO("TX_SEND_GUARD",
              "summary mismatch=%lu quick_recover=%lu reconnect_triggered=%lu arg_failures=%lu paused=%s",
-             g_channel_mismatch_detected,
-             g_channel_mismatch_recovered_quick,
-             g_channel_mismatch_reconnect_triggered,
-             g_espnow_arg_send_failures,
-             (g_send_paused_until_ms > now) ? "YES" : "NO");
+             g_state.channel_mismatch_detected,
+             g_state.channel_mismatch_recovered_quick,
+             g_state.channel_mismatch_reconnect_triggered,
+             g_state.espnow_arg_send_failures,
+             (g_state.send_paused_until_ms > now) ? "YES" : "NO");
 }
 
 void trigger_recovery_once(const uint8_t* mac, const char* reason) {
-    if (g_recovery_triggered) {
+    if (g_state.recovery_triggered) {
         return;
     }
 
-    g_recovery_active = true;
-    g_recovery_triggered = true;
-    g_channel_mismatch_reconnect_triggered++;
+    g_state.recovery_active = true;
+    g_state.recovery_triggered = true;
+    g_state.channel_mismatch_reconnect_triggered++;
 
     LOG_ERROR("TX_SEND_GUARD", "Channel mismatch recovery triggered: %s", reason);
 
@@ -60,11 +64,11 @@ void trigger_recovery_once(const uint8_t* mac, const char* reason) {
 }
 
 void apply_local_backoff() {
-    if (g_consecutive_failures < MAX_CONSECUTIVE_FAILURES) {
+    if (g_state.consecutive_failures < MAX_CONSECUTIVE_FAILURES) {
         return;
     }
 
-    const uint8_t tier = (g_consecutive_failures / MAX_CONSECUTIVE_FAILURES);
+    const uint8_t tier = (g_state.consecutive_failures / MAX_CONSECUTIVE_FAILURES);
     uint32_t pause_ms = BASE_BACKOFF_MS;
     if (tier > 1) {
         pause_ms <<= (tier - 1);
@@ -73,8 +77,8 @@ void apply_local_backoff() {
         pause_ms = MAX_BACKOFF_MS;
     }
 
-    g_send_paused_until_ms = millis() + pause_ms;
-    LOG_WARN("TX_SEND_GUARD", "Send backoff active for %lu ms (consecutive_failures=%u)", pause_ms, g_consecutive_failures);
+    g_state.send_paused_until_ms = millis() + pause_ms;
+    LOG_WARN("TX_SEND_GUARD", "Send backoff active for %lu ms (consecutive_failures=%u)", pause_ms, g_state.consecutive_failures);
 }
 
 } // namespace
@@ -98,6 +102,8 @@ bool is_peer_channel_coherent(const uint8_t* peer_mac, uint8_t* out_home, uint8_
     if (out_peer) *out_peer = peer_channel;
 
     const bool peer_ok = (peer_channel == 0) || (peer_channel == home_channel);
+    // g_lock_channel: ISR-written channel lock value (uint8_t atomic on ESP32).
+    // 0 means no lock yet (discovery ongoing); non-zero is the locked receiver channel.
     const bool lock_ok = (g_lock_channel == 0) || (home_channel == g_lock_channel);
     return peer_ok && lock_ok;
 }
@@ -110,13 +116,13 @@ esp_err_t send_to_receiver_guarded(const uint8_t* mac, const uint8_t* data, size
     }
 
     const uint32_t now = millis();
-    if (g_send_paused_until_ms > now) {
+    if (g_state.send_paused_until_ms > now) {
         return ESP_ERR_TIMEOUT;
     }
 
-    if (g_send_paused_until_ms != 0 && now >= g_send_paused_until_ms) {
-        g_send_paused_until_ms = 0;
-        g_consecutive_failures = 0;
+    if (g_state.send_paused_until_ms != 0 && now >= g_state.send_paused_until_ms) {
+        g_state.send_paused_until_ms = 0;
+        g_state.consecutive_failures = 0;
         LOG_INFO("TX_SEND_GUARD", "Send backoff window elapsed - resuming sends");
     }
 
@@ -125,10 +131,12 @@ esp_err_t send_to_receiver_guarded(const uint8_t* mac, const uint8_t* data, size
     const bool coherent = is_peer_channel_coherent(mac, &home, &peer);
 
     if (!coherent) {
-        g_channel_mismatch_detected++;
+        g_state.channel_mismatch_detected++;
 
-        if (now - g_last_mismatch_log_ms >= MISMATCH_LOG_THROTTLE_MS) {
-            g_last_mismatch_log_ms = now;
+        if (now - g_state.last_mismatch_log_ms >= MISMATCH_LOG_THROTTLE_MS) {
+            g_state.last_mismatch_log_ms = now;
+            // g_lock_channel: ISR-written channel — included in diagnostics to show
+            // the locked channel value at time of mismatch detection.
             LOG_ERROR("TX_SEND_GUARD", "%s blocked: channel mismatch (home=%u peer=%u lock=%u)",
                       tag ? tag : "send", home, peer, g_lock_channel);
         }
@@ -138,35 +146,35 @@ esp_err_t send_to_receiver_guarded(const uint8_t* mac, const uint8_t* data, size
     }
 
     // Recovery ends only when we are connected again and channel coherent.
-    if (g_recovery_active && EspNowConnectionManager::instance().is_connected()) {
-        g_recovery_active = false;
-        g_recovery_triggered = false;
-        g_channel_mismatch_recovered_quick++;
-        g_consecutive_failures = 0;
-        g_send_paused_until_ms = 0;
+    if (g_state.recovery_active && EspNowConnectionManager::instance().is_connected()) {
+        g_state.recovery_active = false;
+        g_state.recovery_triggered = false;
+        g_state.channel_mismatch_recovered_quick++;
+        g_state.consecutive_failures = 0;
+        g_state.send_paused_until_ms = 0;
         LOG_INFO("TX_SEND_GUARD", "Recovery cleared - channel coherence restored");
     }
 
-    if (g_recovery_active) {
+    if (g_state.recovery_active) {
         return ESP_ERR_INVALID_STATE;
     }
 
     const esp_err_t result = esp_now_send(mac, data, len);
     if (result == ESP_OK) {
-        g_consecutive_failures = 0;
+        g_state.consecutive_failures = 0;
         return ESP_OK;
     }
 
-    g_consecutive_failures++;
+    g_state.consecutive_failures++;
 
     if (result == ESP_ERR_ESPNOW_ARG) {
-        g_espnow_arg_send_failures++;
+        g_state.espnow_arg_send_failures++;
         trigger_recovery_once(mac, "esp_now_send returned ESP_ERR_ESPNOW_ARG");
     }
 
-    if (g_consecutive_failures == 1 || (g_consecutive_failures % 5) == 0) {
+    if (g_state.consecutive_failures == 1 || (g_state.consecutive_failures % 5) == 0) {
         LOG_WARN("TX_SEND_GUARD", "%s send failed: %s (consecutive=%u)",
-                 tag ? tag : "send", esp_err_to_name(result), g_consecutive_failures);
+                 tag ? tag : "send", esp_err_to_name(result), g_state.consecutive_failures);
     }
 
     apply_local_backoff();
@@ -175,18 +183,18 @@ esp_err_t send_to_receiver_guarded(const uint8_t* mac, const uint8_t* data, size
 
 void notify_connection_state(bool connected) {
     if (connected) {
-        if (g_recovery_active || g_recovery_triggered) {
-            g_channel_mismatch_recovered_quick++;
+        if (g_state.recovery_active || g_state.recovery_triggered) {
+            g_state.channel_mismatch_recovered_quick++;
         }
-        g_recovery_active = false;
-        g_recovery_triggered = false;
-        g_consecutive_failures = 0;
-        g_send_paused_until_ms = 0;
+        g_state.recovery_active = false;
+        g_state.recovery_triggered = false;
+        g_state.consecutive_failures = 0;
+        g_state.send_paused_until_ms = 0;
         return;
     }
 
     // Disconnected state keeps recovery guard active until connection is restored.
-    g_recovery_active = true;
+    g_state.recovery_active = true;
 }
 
 } // namespace TxSendGuard

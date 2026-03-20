@@ -1,5 +1,6 @@
 #include "mqtt_client.h"
 #include "../lib/webserver/utils/transmitter_manager.h"
+#include "../lib/webserver/utils/cell_data_cache.h"
 #include "../common.h"
 #include "../espnow/espnow_send.h"
 #include "../espnow/type_catalog_cache.h"
@@ -134,35 +135,31 @@ bool MqttClient::isEnabled() {
 
 void MqttClient::messageCallback(char* topic, uint8_t* payload, unsigned int length) {
     LOG_DEBUG("MQTT", "Message received on topic: %s (%u bytes)", topic, length);
-    
-    // Null-terminate payload for JSON parsing (use PSRAM to free up DRAM)
-    char* json_payload = (char*)ps_malloc(length + 1);
-    if (!json_payload) {
-        LOG_ERROR("MQTT", "Failed to allocate memory for payload in PSRAM");
-        return;
+    const char* json_payload = reinterpret_cast<const char*>(payload);
+
+    struct TopicRoute {
+        const char* topic;
+        void (*handler)(const char*, size_t);
+    };
+
+    static const TopicRoute kTopicRoutes[] = {
+        {"transmitter/BE/spec_data", &MqttClient::handleSpecData},
+        {"transmitter/BE/spec_data_2", &MqttClient::handleSpecData2},
+        {"transmitter/BE/battery_specs", &MqttClient::handleBatterySpecs},
+        {"transmitter/BE/battery_type_catalog", &MqttClient::handleBatteryTypeCatalog},
+        {"transmitter/BE/inverter_type_catalog", &MqttClient::handleInverterTypeCatalog},
+        {"transmitter/BE/cell_data", &MqttClient::handleCellData},
+        {"transmitter/BE/event_logs", &MqttClient::handleEventLogs},
+    };
+
+    for (const auto& route : kTopicRoutes) {
+        if (strcmp(topic, route.topic) == 0) {
+            route.handler(json_payload, length);
+            return;
+        }
     }
-    
-    memcpy(json_payload, payload, length);
-    json_payload[length] = '\0';
-    
-    // Route to appropriate handler based on topic (Phase 1.5: Use transmitter namespace)
-    if (strcmp(topic, "transmitter/BE/spec_data") == 0) {
-        handleSpecData(json_payload, length);
-    } else if (strcmp(topic, "transmitter/BE/spec_data_2") == 0) {
-        handleSpecData2(json_payload, length);
-    } else if (strcmp(topic, "transmitter/BE/battery_specs") == 0) {
-        handleBatterySpecs(json_payload, length);
-    } else if (strcmp(topic, "transmitter/BE/battery_type_catalog") == 0) {
-        handleBatteryTypeCatalog(json_payload, length);
-    } else if (strcmp(topic, "transmitter/BE/inverter_type_catalog") == 0) {
-        handleInverterTypeCatalog(json_payload, length);
-    } else if (strcmp(topic, "transmitter/BE/cell_data") == 0) {
-        handleCellData(json_payload, length);
-    } else if (strcmp(topic, "transmitter/BE/event_logs") == 0) {
-        handleEventLogs(json_payload, length);
-    }
-    
-    free(json_payload);
+
+    LOG_DEBUG("MQTT", "Ignoring message on unhandled topic: %s", topic);
 }
 
 void MqttClient::subscribeToTopics() {
@@ -373,8 +370,9 @@ void MqttClient::handleCellData(const char* json_payload, size_t length) {
         LOG_DEBUG("MQTT", "Data source: %s", doc["data_source"].as<const char*>());
     }
     
-    // Store cell data in TransmitterManager
-    TransmitterManager::storeCellData(doc.as<JsonObject>());
+    // Store cell data in CellDataCache
+    JsonObject cell_obj = doc.as<JsonObject>();
+    CellDataCache::store_cell_data(&cell_obj);
     
     LOG_DEBUG("MQTT", "Stored cell data from transmitter/BE/cell_data");
 }

@@ -327,11 +327,10 @@ private:
 extern QueueHandle_t g_connection_event_queue;
 
 /**
- * @brief Helper function to post event from ISR context
- * 
- * Thread-safe wrapper that uses xQueueSendFromISR internally.
- * Can be called from any context (ISR, task, etc.)
- * 
+ * @brief Helper function to post event from task context
+ *
+ * Uses xQueueSend() and should be used by normal task/thread code.
+ *
  * @param event The event to post
  * @param mac Optional peer MAC address
  * @return true if event queued successfully
@@ -344,6 +343,33 @@ inline bool post_connection_event(EspNowEvent event, const uint8_t* mac = nullpt
     EspNowStateChange change(event, mac);
     change.timestamp = millis();
     
-    BaseType_t result = xQueueSendFromISR(g_connection_event_queue, &change, nullptr);
+    BaseType_t result = xQueueSend(g_connection_event_queue, &change, 0);
+    return result == pdTRUE;
+}
+
+/**
+ * @brief Helper function to post event from ISR context
+ *
+ * Uses xQueueSendFromISR() and should only be used from true ISRs.
+ *
+ * @param event The event to post
+ * @param mac Optional peer MAC address
+ * @param out_higher_priority_task_woken Optional wake flag from FreeRTOS
+ * @return true if event queued successfully
+ */
+inline bool post_connection_event_from_isr(
+    EspNowEvent event,
+    const uint8_t* mac = nullptr,
+    BaseType_t* out_higher_priority_task_woken = nullptr) {
+    if (g_connection_event_queue == nullptr) {
+        return false;  // Not initialized yet
+    }
+
+    EspNowStateChange change(event, mac);
+    change.timestamp = millis();
+
+    BaseType_t result = xQueueSendFromISR(g_connection_event_queue,
+                                          &change,
+                                          out_higher_priority_task_woken);
     return result == pdTRUE;
 }

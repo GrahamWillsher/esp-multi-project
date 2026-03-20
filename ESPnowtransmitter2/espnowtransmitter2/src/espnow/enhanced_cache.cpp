@@ -89,26 +89,6 @@ bool EnhancedCache::add_transient(const espnow_payload_t& data) {
     return add_transient(data, millis(), auto_seq++);
 }
 
-TransientEntry* EnhancedCache::peek_next_transient() {
-    if (xSemaphoreTake(mutex_, pdMS_TO_TICKS(MUTEX_TIMEOUT_MS)) != pdTRUE) {
-        return nullptr;
-    }
-    
-    TransientEntry* result = nullptr;
-    
-    // Find first unsent entry
-    for (size_t i = 0; i < transient_count_; i++) {
-        size_t idx = (transient_read_idx_ + i) % TRANSIENT_QUEUE_SIZE;
-        if (!transient_queue_[idx].sent) {
-            result = &transient_queue_[idx];
-            break;
-        }
-    }
-    
-    xSemaphoreGive(mutex_);
-    return result;
-}
-
 // Const-safe peek_next_transient (output parameter)
 bool EnhancedCache::peek_next_transient(TransientEntry& entry) const {
     if (xSemaphoreTake(mutex_, pdMS_TO_TICKS(MUTEX_TIMEOUT_MS)) != pdTRUE) {
@@ -177,16 +157,21 @@ size_t EnhancedCache::cleanup_acked_transient() {
     }
     
     size_t removed = 0;
+    const uint32_t now = millis();
     
     // Remove from front of queue (FIFO)
     while (transient_count_ > 0) {
-        if (transient_queue_[transient_read_idx_].acked) {
+        const TransientEntry& head = transient_queue_[transient_read_idx_];
+        const bool expired_sent = head.sent && !head.acked &&
+                                  (now - head.timestamp > TRANSIENT_SENT_TTL_MS);
+
+        if (head.acked || expired_sent) {
             // Remove this entry
             transient_read_idx_ = (transient_read_idx_ + 1) % TRANSIENT_QUEUE_SIZE;
             transient_count_--;
             removed++;
         } else {
-            // Stop at first un-acked entry
+            // Stop at first entry that is neither ACKed nor expired
             break;
         }
     }
@@ -196,7 +181,7 @@ size_t EnhancedCache::cleanup_acked_transient() {
     xSemaphoreGive(mutex_);
     
     if (removed > 0) {
-        LOG_DEBUG("CACHE", "Cleaned up %d acked transient entries", removed);
+        LOG_DEBUG("CACHE", "Cleaned up %d transient entries (acked/expired)", removed);
     }
     
     return removed;

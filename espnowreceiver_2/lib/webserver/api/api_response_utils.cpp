@@ -1,11 +1,15 @@
 #include "api_response_utils.h"
 
-#include "../utils/http_json_utils.h"
+#include <webserver_common_utils/http_json_utils.h>
 
 #include <cstdarg>
 #include <cstdio>
 
 namespace ApiResponseUtils {
+
+esp_err_t send_success(httpd_req_t* req) {
+    return HttpJsonUtils::send_json(req, "{\"success\":true}");
+}
 
 esp_err_t send_jsonf(httpd_req_t* req, const char* format, ...) {
     char json[512];
@@ -29,6 +33,14 @@ esp_err_t send_success_message(httpd_req_t* req, const char* message) {
 
 esp_err_t send_error_message(httpd_req_t* req, const char* message) {
     return HttpJsonUtils::send_json_error(req, message);
+}
+
+esp_err_t send_json_parse_error(httpd_req_t* req) {
+    return send_error_message(req, "JSON parse error");
+}
+
+esp_err_t send_transmitter_mac_unknown(httpd_req_t* req) {
+    return send_error_message(req, "Transmitter MAC unknown");
 }
 
 esp_err_t send_error_with_status(httpd_req_t* req, const char* status, const char* message) {

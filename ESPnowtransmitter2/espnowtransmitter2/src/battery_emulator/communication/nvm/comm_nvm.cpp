@@ -241,8 +241,8 @@ void init_stored_settings() {
   }
 
   if (!has_network_config) {
-    if (EthernetManager::instance().saveNetworkConfig(legacy_static_ip_enabled, legacy_ip, legacy_gateway,
-                                                      legacy_subnet, legacy_dns_primary, legacy_dns_secondary)) {
+    if (EthernetManager::instance().save_network_config(legacy_static_ip_enabled, legacy_ip, legacy_gateway,
+                                                        legacy_subnet, legacy_dns_primary, legacy_dns_secondary)) {
       DEBUG_PRINTF("Migrated legacy static IP settings from batterySettings to network namespace\n");
     } else {
       DEBUG_PRINTF("Failed to migrate legacy static IP settings to network namespace\n");

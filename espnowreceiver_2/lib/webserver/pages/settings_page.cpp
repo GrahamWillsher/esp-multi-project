@@ -2,14 +2,13 @@
 #include "../common/page_generator.h"
 #include "../common/nav_buttons.h"
 #include "../utils/transmitter_manager.h"
-#include "../processors/settings_processor.h"
 #include <Arduino.h>
 
 /**
- * @brief Handler for the root "/" settings page
+ * @brief Handler for the transmitter configuration page
  * 
  * This is the most complex page - displays all configuration settings from the transmitter.
- * Features template processing, dynamic visibility controls, and ESP-NOW IP data fetching.
+ * Features API-driven population, dynamic visibility controls, and transmitter config editing.
  */
 static esp_err_t root_handler(httpd_req_t *req) {
     String content = R"rawliteral(
@@ -18,7 +17,7 @@ static esp_err_t root_handler(httpd_req_t *req) {
     )rawliteral";
     
     // Add navigation buttons from central registry
-    content += "    " + generate_nav_buttons("/");
+    content += "    " + generate_nav_buttons("/transmitter/config");
     
     content += R"rawliteral(
     
@@ -145,21 +144,6 @@ static esp_err_t root_handler(httpd_req_t *req) {
         </button>
     </div>
 )rawliteral";
-
-    // Configuration is loaded via template processor - no warning needed
-
-    // Process placeholders
-    int start_pos = 0;
-    while ((start_pos = content.indexOf("%", start_pos)) != -1) {
-        int end_pos = content.indexOf("%", start_pos + 1);
-        if (end_pos == -1) break;
-        
-        String placeholder = content.substring(start_pos + 1, end_pos);
-        String value = settings_processor(placeholder);
-        
-        content = content.substring(0, start_pos) + value + content.substring(end_pos + 1);
-        start_pos += value.length();
-    }
 
     // Add JavaScript to handle conditional visibility and IP data loading
     String script = R"rawliteral(
@@ -1011,7 +995,7 @@ static esp_err_t root_handler(httpd_req_t *req) {
             .catch(err => console.log('Config version not available'));
     )rawliteral";
 
-    String html = generatePage("ESP-NOW Receiver - Settings", content, "", script);
+    String html = renderPage("ESP-NOW Receiver - Settings", content, PageRenderOptions("", script));
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, html.c_str(), html.length());
     return ESP_OK;

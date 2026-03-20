@@ -1,6 +1,8 @@
 #include "api_modular_handlers.h"
 
-#include "../utils/http_json_utils.h"
+#include "api_request_utils.h"
+#include "api_response_utils.h"
+#include <webserver_common_utils/http_json_utils.h>
 #include "../../src/espnow/espnow_send.h"
 #include "../../src/mqtt/mqtt_client.h"
 
@@ -22,19 +24,10 @@ esp_err_t api_get_test_data_mode_handler(httpd_req_t *req) {
 
 esp_err_t api_set_test_data_mode_handler(httpd_req_t *req) {
     char buffer[100];
-    const char* read_error = nullptr;
-
-    if (!HttpJsonUtils::read_request_body(req, buffer, sizeof(buffer), nullptr, &read_error)) {
-        return HttpJsonUtils::send_json_error(req, read_error);
-    }
-
-    DynamicJsonDocument doc(256);
-    DeserializationError error = deserializeJson(doc, buffer);
-
-    if (error) {
-        char response[256];
-        snprintf(response, sizeof(response), "{\"success\":false,\"error\":\"Invalid JSON\"}");
-        return HttpJsonUtils::send_json(req, response);
+    StaticJsonDocument<256> doc;
+    esp_err_t response_error = ESP_OK;
+    if (!ApiRequestUtils::read_json_body_or_respond(req, buffer, sizeof(buffer), doc, &response_error)) {
+        return response_error;
     }
 
     uint8_t mode = 0;
@@ -45,16 +38,12 @@ esp_err_t api_set_test_data_mode_handler(httpd_req_t *req) {
         else if (strcmp(mode_str, "SOC_POWER_ONLY") == 0) mode = 1;
         else if (strcmp(mode_str, "FULL_BATTERY_DATA") == 0) mode = 2;
         else {
-            char response[256];
-            snprintf(response, sizeof(response), "{\"success\":false,\"error\":\"Invalid mode string\"}");
-            return HttpJsonUtils::send_json(req, response);
+            return ApiResponseUtils::send_error_message(req, "Invalid mode string");
         }
     } else if (doc["mode"].is<int>()) {
         mode = doc["mode"].as<int>();
         if (mode > 2) {
-            char response[256];
-            snprintf(response, sizeof(response), "{\"success\":false,\"error\":\"Invalid mode number (0-2)\"}");
-            return HttpJsonUtils::send_json(req, response);
+            return ApiResponseUtils::send_error_message(req, "Invalid mode number (0-2)");
         }
     }
 
@@ -67,22 +56,15 @@ esp_err_t api_set_test_data_mode_handler(httpd_req_t *req) {
         return HttpJsonUtils::send_json(req, response);
     }
 
-    char response[256];
-    snprintf(response, sizeof(response),
-             "{\"success\":false,\"error\":\"Failed to send command to transmitter\"}");
-    return HttpJsonUtils::send_json(req, response);
+    return ApiResponseUtils::send_error_message(req, "Failed to send command to transmitter");
 }
 
 esp_err_t api_event_logs_subscribe_handler(httpd_req_t *req) {
     MqttClient::incrementEventLogSubscribers();
-
-    const char* response = "{\"success\":true}";
-    return HttpJsonUtils::send_json(req, response);
+    return ApiResponseUtils::send_success(req);
 }
 
 esp_err_t api_event_logs_unsubscribe_handler(httpd_req_t *req) {
     MqttClient::decrementEventLogSubscribers();
-
-    const char* response = "{\"success\":true}";
-    return HttpJsonUtils::send_json(req, response);
+    return ApiResponseUtils::send_success(req);
 }

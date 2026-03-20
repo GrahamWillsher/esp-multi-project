@@ -1,13 +1,13 @@
 #include "mqtt_config_handlers.h"
 
+#include "config_handler_common.h"
 #include "tx_send_guard.h"
 #include "../config/logging_config.h"
 
-#include <esp32common/espnow/connection_manager.h>
-#include <espnow_peer_manager.h>
 #include <mqtt_manager.h>
 #include <Arduino.h>
 #include <cstring>
+#include <esp32common/espnow/packet_utils.h>
 #include <esp32common/config/timing_config.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -15,21 +15,14 @@
 namespace TxMqttConfigHandlers {
 
 void handle_mqtt_config_request(const espnow_queue_msg_t& msg, uint8_t* receiver_mac) {
-    if (msg.len < (int)sizeof(mqtt_config_request_t)) {
-        LOG_ERROR("MQTT_CFG", "Invalid request message size: %d bytes", msg.len);
+    if (!TxConfigHandlerCommon::validate_connected_message(
+            msg,
+            sizeof(mqtt_config_request_t),
+            "MQTT_CFG",
+            "MQTT config request",
+            receiver_mac)) {
         return;
     }
-
-    auto& conn_mgr = EspNowConnectionManager::instance();
-    auto state = conn_mgr.get_state();
-
-    if (state != EspNowConnectionState::CONNECTED) {
-        LOG_WARN("MQTT_CFG", "Cannot respond to MQTT config request - receiver state is %u (need CONNECTED)",
-                 (uint8_t)state);
-        return;
-    }
-
-    memcpy(receiver_mac, msg.mac, 6);
 
     LOG_INFO("MQTT_CFG", "Received MQTT config request from receiver");
 
@@ -37,23 +30,16 @@ void handle_mqtt_config_request(const espnow_queue_msg_t& msg, uint8_t* receiver
 }
 
 void handle_mqtt_config_update(const espnow_queue_msg_t& msg, uint8_t* receiver_mac) {
-    if (msg.len < (int)sizeof(mqtt_config_update_t)) {
-        LOG_ERROR("MQTT_CFG", "Invalid message size: %d bytes", msg.len);
-        return;
-    }
-
-    auto& conn_mgr = EspNowConnectionManager::instance();
-    auto state = conn_mgr.get_state();
-
-    if (state != EspNowConnectionState::CONNECTED) {
-        LOG_WARN("MQTT_CFG", "Cannot respond to MQTT config update - receiver state is %u (need CONNECTED)",
-                 (uint8_t)state);
+    if (!TxConfigHandlerCommon::validate_connected_message(
+            msg,
+            sizeof(mqtt_config_update_t),
+            "MQTT_CFG",
+            "MQTT config update",
+            receiver_mac)) {
         return;
     }
 
     const mqtt_config_update_t* config = reinterpret_cast<const mqtt_config_update_t*>(msg.data);
-
-    memcpy(receiver_mac, msg.mac, 6);
 
     LOG_INFO("MQTT_CFG", "Received MQTT config update:");
     LOG_INFO("MQTT_CFG", "  Enabled: %s", config->enabled ? "YES" : "NO");
@@ -104,7 +90,7 @@ void handle_mqtt_config_update(const espnow_queue_msg_t& msg, uint8_t* receiver_
 }
 
 void send_mqtt_config_ack(const uint8_t* receiver_mac, bool success, const char* message) {
-    mqtt_config_ack_t ack;
+    mqtt_config_ack_t ack{};
     memset(&ack, 0, sizeof(ack));
 
     ack.type = msg_mqtt_config_ack;
@@ -134,14 +120,10 @@ void send_mqtt_config_ack(const uint8_t* receiver_mac, bool success, const char*
     strncpy(ack.message, message, sizeof(ack.message) - 1);
     ack.message[sizeof(ack.message) - 1] = '\0';
 
-    ack.checksum = 0;
+    ack.checksum = EspnowPacketUtils::calculate_message_checksum(&ack);
 
-    if (!EspnowPeerManager::is_peer_registered(receiver_mac)) {
-        LOG_WARN("MQTT_CFG", "Receiver not registered as peer, adding now");
-        if (!EspnowPeerManager::add_peer(receiver_mac)) {
-            LOG_ERROR("MQTT_CFG", "Failed to add receiver as peer");
-            return;
-        }
+    if (!TxConfigHandlerCommon::ensure_peer_registered(receiver_mac, "MQTT_CFG")) {
+        return;
     }
 
     esp_err_t result = TxSendGuard::send_to_receiver_guarded(

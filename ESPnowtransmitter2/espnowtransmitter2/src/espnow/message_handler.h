@@ -25,12 +25,6 @@ public:
     void start_rx_task(QueueHandle_t queue);
     
     /**
-     * @brief Initialize message handler - registers state change callback
-     * Should be called after connection manager is initialized
-     */
-    void init();
-    
-    /**
      * @brief Check if receiver is currently connected
      * @return true if receiver peer is registered and active
      */

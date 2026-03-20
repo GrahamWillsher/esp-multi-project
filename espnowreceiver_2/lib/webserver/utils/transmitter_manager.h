@@ -4,188 +4,15 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <vector>
-#include <freertos/FreeRTOS.h>
-#include <freertos/semphr.h>
-#include <freertos/timers.h>
-
-// Battery settings structure (matches transmitter)
-struct BatterySettings {
-    uint32_t capacity_wh;
-    uint32_t max_voltage_mv;
-    uint32_t min_voltage_mv;
-    float max_charge_current_a;
-    float max_discharge_current_a;
-    uint8_t soc_high_limit;
-    uint8_t soc_low_limit;
-    uint8_t cell_count;
-    uint8_t chemistry;
-    uint32_t version;  // Version tracking for synchronization
-};
-
-struct BatteryEmulatorSettings {
-    bool double_battery;
-    uint16_t pack_max_voltage_dV;
-    uint16_t pack_min_voltage_dV;
-    uint16_t cell_max_voltage_mV;
-    uint16_t cell_min_voltage_mV;
-    bool soc_estimated;
-    uint8_t led_mode;  // 0=Classic, 1=Energy Flow, 2=Heartbeat
-};
-
-struct PowerSettings {
-    uint16_t charge_w;
-    uint16_t discharge_w;
-    uint16_t max_precharge_ms;
-    uint16_t precharge_duration_ms;
-};
-
-struct InverterSettings {
-    uint8_t cells;
-    uint8_t modules;
-    uint8_t cells_per_module;
-    uint16_t voltage_level;
-    uint16_t capacity_ah;
-    uint8_t battery_type;
-};
-
-struct CanSettings {
-    uint16_t frequency_khz;
-    uint16_t fd_frequency_mhz;
-    uint16_t sofar_id;
-    uint16_t pylon_send_interval_ms;
-};
-
-struct ContactorSettings {
-    bool control_enabled;
-    bool nc_contactor;
-    uint16_t pwm_frequency_hz;
-};
+#include "transmitter_settings_types.h"
+#include "transmitter_event_log_types.h"
 
 class TransmitterManager {
-private:
-    static SemaphoreHandle_t data_mutex_;
-    static TimerHandle_t nvs_save_timer_;
-    static constexpr uint32_t NVS_SAVE_DEBOUNCE_MS = 2000;
-
-    static void nvs_save_timer_callback(TimerHandle_t timer);
-    static void persist_to_nvs_now();
-    static void schedule_nvs_save();
-
-    static uint8_t mac[6];
-    static bool mac_known;
-    
-    // Current network configuration (active IP - could be DHCP or Static)
-    static uint8_t current_ip[4];
-    static uint8_t current_gateway[4];
-    static uint8_t current_subnet[4];
-    
-    // Saved static configuration (from transmitter NVS)
-    static uint8_t static_ip[4];
-    static uint8_t static_gateway[4];
-    static uint8_t static_subnet[4];
-    static uint8_t static_dns_primary[4];
-    static uint8_t static_dns_secondary[4];
-    
-    static bool ip_known;
-    static bool is_static_ip;  // True if using static IP, false if DHCP
-    static uint32_t network_config_version;  // Version from NVS
-    
-    // MQTT configuration (from transmitter)
-    static bool mqtt_enabled;
-    static uint8_t mqtt_server[4];
-    static uint16_t mqtt_port;
-    static char mqtt_username[32];
-    static char mqtt_password[32];
-    static char mqtt_client_id[32];
-    static bool mqtt_connected;
-    static uint32_t mqtt_config_version;
-    static bool mqtt_config_known;
-    
-    // Phase 4: Runtime status tracking (from version beacons)
-    static bool ethernet_connected;
-    static unsigned long last_beacon_time_ms;
-    static bool last_espnow_send_success;
-    
-    // V2: Legacy version tracking removed - only use firmware metadata
-    
-    // Firmware metadata (from .rodata)
-    static bool metadata_received;  // Flag indicating metadata was received
-    static bool metadata_valid;
-    static char metadata_env[32];
-    static char metadata_device[16];
-    static uint8_t metadata_major;
-    static uint8_t metadata_minor;
-    static uint8_t metadata_patch;
-    static char metadata_build_date[48];
-    static uint32_t metadata_version;
-    
-    // Battery settings (cached from PACKET/SETTINGS)
-    static BatterySettings battery_settings;
-    static bool battery_settings_known;
-
-    static BatteryEmulatorSettings battery_emulator_settings;
-    static bool battery_emulator_settings_known;
-
-    static PowerSettings power_settings;
-    static bool power_settings_known;
-
-    static InverterSettings inverter_settings;
-    static bool inverter_settings_known;
-
-    static CanSettings can_settings;
-    static bool can_settings_known;
-
-    static ContactorSettings contactor_settings;
-    static bool contactor_settings_known;
-    
-    // Time data (cached from heartbeat)
-    static uint64_t uptime_ms;
-    static uint64_t unix_time;
-    static uint8_t time_source;  // 0=unsynced, 1=NTP, 2=manual, 3=GPS
-    
-    // Phase 3: Static spec data from battery emulator (via MQTT)
-    static String static_specs_json_;
-    static String battery_specs_json_;
-    static String inverter_specs_json_;
-    static String charger_specs_json_;
-    static String system_specs_json_;
-    static bool static_specs_known_;
-    
-    // Cell monitor data (from BE/cell_data MQTT topic)
-    static constexpr uint16_t MAX_CELL_COUNT = 128;
-    static uint16_t cell_voltages_mV_[MAX_CELL_COUNT];
-    static bool cell_balancing_status_[MAX_CELL_COUNT];
-    static uint16_t cell_count_;
-    static uint16_t cell_min_voltage_mV_;
-    static uint16_t cell_max_voltage_mV_;
-    static bool balancing_active_;
-    static bool cell_data_known_;
-    static char cell_data_source_[32];       // Data source tag (dummy/live/live_simulated)
-
 public:
-    struct EventLogEntry {
-        uint32_t timestamp;
-        uint8_t level;
-        int32_t data;
-        char message[96];
-    };
+    using EventLogEntry = TransmitterEventLogTypes::EventLogEntry;
 
-    struct CellDataSnapshot {
-        bool known;
-        uint16_t cell_count;
-        uint16_t min_voltage_mV;
-        uint16_t max_voltage_mV;
-        bool balancing_active;
-        std::vector<uint16_t> voltages_mV;
-        std::vector<bool> balancing_status;
-        char data_source[32];
-    };
 
-private:
-    static std::vector<EventLogEntry> event_logs_;
-    static bool event_logs_known_;
-    static uint32_t event_logs_last_update_ms_;
-    
+
 public:
     // Initialization (load cache from NVS)
     static void init();
@@ -317,18 +144,8 @@ public:
     static String getChargerSpecsJson();
     static String getSystemSpecsJson();
     
-    // Cell monitor data (from BE/cell_data MQTT topic)
-    static void storeCellData(const JsonObject& cell_data);
-    static bool hasCellData();
-    static uint16_t getCellCount();
-    static const uint16_t* getCellVoltages();
-    static const bool* getCellBalancingStatus();
-    static uint16_t getCellMinVoltage();
-    static uint16_t getCellMaxVoltage();
-    static bool isBalancingActive();
-    static const char* getCellDataSource();
-    static bool getCellDataSnapshot(CellDataSnapshot& snapshot);
-
+    // Phase 3: Cell monitor data queries delegated to CellDataCache
+    
     // Event logs (from transmitter via MQTT or HTTP proxy)
     static void storeEventLogs(const JsonObject& logs);
     static bool hasEventLogs();

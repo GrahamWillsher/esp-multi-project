@@ -393,7 +393,7 @@ esp_err_t systeminfo_handler(httpd_req_t *req) {
         }
     )rawliteral";
 
-    String html = generatePage("ESP-NOW Receiver Config", content, "", script);
+    String html = renderPage("ESP-NOW Receiver Config", content, PageRenderOptions("", script));
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, html.c_str(), html.length());
     return ESP_OK;

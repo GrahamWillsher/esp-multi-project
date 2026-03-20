@@ -1,0 +1,11 @@
+#ifndef TRANSMITTER_NVS_PERSISTENCE_H
+#define TRANSMITTER_NVS_PERSISTENCE_H
+
+class TransmitterNvsPersistence {
+public:
+    static void init();
+    static void loadFromNVS();
+    static void saveToNVS();
+};
+
+#endif

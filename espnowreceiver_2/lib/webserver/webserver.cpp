@@ -88,8 +88,10 @@ void init_webserver() {
     
     LOG_INFO("WEBSERVER", "WiFi connected - proceeding with initialization");
     
-    // Count expected handlers (update this when adding/removing handlers)
-    const int EXPECTED_HANDLER_COUNT = 64;  // 18 pages + 46 API handlers (44 specific + 1 firmware + 1 catch-all 404)
+    // Compute expected handlers from registries (prevents stale constants).
+    const int expected_page_handler_count = PAGE_COUNT;
+    const int expected_api_handler_count = expected_all_api_handlers();
+    const int expected_handler_count = expected_page_handler_count + expected_api_handler_count;
     
     // Initialize SSE notification system
     SSENotifier::init();
@@ -129,12 +131,12 @@ void init_webserver() {
     g_webserver_metrics.recv_wait_timeout_s = static_cast<uint8_t>(config.recv_wait_timeout);
     g_webserver_metrics.send_wait_timeout_s = static_cast<uint8_t>(config.send_wait_timeout);
     g_webserver_metrics.lru_purge_enabled = config.lru_purge_enable;
-    g_webserver_metrics.expected_handlers = static_cast<uint16_t>(EXPECTED_HANDLER_COUNT);
+    g_webserver_metrics.expected_handlers = static_cast<uint16_t>(expected_handler_count);
     
     // Verify configuration can handle all handlers
-    if (config.max_uri_handlers < EXPECTED_HANDLER_COUNT) {
+    if (config.max_uri_handlers < expected_handler_count) {
         LOG_ERROR("WEBSERVER", "max_uri_handlers (%d) is less than expected handlers (%d)!", 
-                      config.max_uri_handlers, EXPECTED_HANDLER_COUNT);
+                      config.max_uri_handlers, expected_handler_count);
         LOG_ERROR("WEBSERVER", "Some handlers will fail to register. Increase max_uri_handlers!");
         // Continue anyway to register what we can, but warn user
     }
@@ -151,8 +153,6 @@ void init_webserver() {
     g_webserver_metrics.init_successes++;
     
     LOG_INFO("WEBSERVER", "Server started successfully");
-    LOG_INFO("WEBSERVER", "Accessible at: http://%s", WiFi.localIP().toString().c_str());
-    
     // Register URI handlers (with counter for verification)
     int registered_count = 0;
     
@@ -171,6 +171,7 @@ void init_webserver() {
     
     // Register receiver pages
     if (register_systeminfo_page(server) == ESP_OK) registered_count++;
+    if (register_network_config_page(server) == ESP_OK) registered_count++;
 
     if (register_cellmonitor_page(server) == ESP_OK) registered_count++;
     
@@ -191,10 +192,10 @@ void init_webserver() {
     LOG_DEBUG("WEBSERVER", "API handlers registered: %d", api_count);
     
     // Verify all handlers registered successfully
-    LOG_INFO("WEBSERVER", "Handlers registered: %d/%d", registered_count, EXPECTED_HANDLER_COUNT);
-    if (registered_count < EXPECTED_HANDLER_COUNT) {
+    LOG_INFO("WEBSERVER", "Handlers registered: %d/%d", registered_count, expected_handler_count);
+    if (registered_count < expected_handler_count) {
         LOG_WARN("WEBSERVER", "Only %d of %d handlers registered! Increase max_uri_handlers!",
-                      registered_count, EXPECTED_HANDLER_COUNT);
+                      registered_count, expected_handler_count);
     } else {
         LOG_INFO("WEBSERVER", "All %d handlers registered successfully", registered_count);
     }
@@ -204,20 +205,9 @@ void init_webserver() {
     // Log accessible URLs for debugging
     LOG_INFO("WEBSERVER", "Access webserver at: http://%s", WiFi.localIP().toString().c_str());
     LOG_DEBUG("WEBSERVER", "Pages available:");
-    LOG_DEBUG("WEBSERVER", "  - / (Dashboard)");
-    LOG_DEBUG("WEBSERVER", "  - /transmitter (Transmitter Hub)");
-    LOG_DEBUG("WEBSERVER", "  - /transmitter/config (Settings)");
-    LOG_DEBUG("WEBSERVER", "  - /transmitter/hardware (Hardware Config)");
-    LOG_DEBUG("WEBSERVER", "  - /transmitter/battery (Battery Settings)");
-    LOG_DEBUG("WEBSERVER", "  - /transmitter/monitor (Monitor Page)");
-    LOG_DEBUG("WEBSERVER", "  - /receiver/config (Receiver Info)");
-    LOG_DEBUG("WEBSERVER", "  - /battery_settings.html (Battery Specs - BE/MQTT)");
-    LOG_DEBUG("WEBSERVER", "  - /inverter_settings.html (Inverter Specs - BE/MQTT)");
-    LOG_DEBUG("WEBSERVER", "  - /charger_settings.html (Charger Specs - BE/MQTT)");
-    LOG_DEBUG("WEBSERVER", "  - /system_settings.html (System Specs - BE/MQTT)");
-    LOG_DEBUG("WEBSERVER", "  - /ota (OTA Updates)");
-    LOG_DEBUG("WEBSERVER", "  - /debug (Debug Info)");
-    LOG_DEBUG("WEBSERVER", "  - /events (Event Logs)");
+    for (int i = 0; i < PAGE_COUNT; i++) {
+        LOG_DEBUG("WEBSERVER", "  - %s (%s)", PAGE_DEFINITIONS[i].uri, PAGE_DEFINITIONS[i].name);
+    }
 }
 
 void stop_webserver() {

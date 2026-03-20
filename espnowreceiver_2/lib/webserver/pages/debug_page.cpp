@@ -3,103 +3,161 @@
 #include "../common/nav_buttons.h"
 #include <Arduino.h>
 
-// Debug page processor
-static String debug_page_processor() {
-    String html = "";
-    
-    // Page-specific styles
-    html += "<style>";
-    html += ".debug-control { background-color: #2C3539; padding: 20px; border-radius: 8px; margin-bottom: 20px; }";
-    html += ".debug-control h3 { margin-top: 0; color: #50FA7B; }";
-    html += ".debug-control select { padding: 10px; margin: 10px 5px; font-size: 16px; border-radius: 4px; }";
-    html += ".debug-control button { padding: 12px 24px; margin: 10px 5px; font-size: 16px; }";
-    html += "#debug-status { margin-top: 15px; padding: 12px; border-radius: 4px; display: none; }";
-    html += ".status-success { background-color: #28a745; color: white; display: block; }";
-    html += ".status-error { background-color: #dc3545; color: white; display: block; }";
-    html += ".status-info { background-color: #17a2b8; color: white; display: block; }";
-    html += "</style>";
-        
-        // Debug Level Control Section
-        html += "<div class='debug-control'>";
-        html += "<h3>📊 Transmitter Debug Level Control</h3>";
-        html += "<p>Control the debug logging level of the ESP-NOW transmitter. Messages are published to MQTT topic: <code>espnow/transmitter/debug/{level}</code></p>";
-        
-        html += "<div style='background-color: #1e1e1e; padding: 12px; border-left: 4px solid #50FA7B; margin-bottom: 15px; border-radius: 4px;'>";
-        html += "<strong style='color: #50FA7B;'>Current Debug Level:</strong>";
-        html += "<span id='currentLevel' style='margin-left: 10px; color: #fff; font-size: 18px; font-weight: bold;'>Loading...</span>";
-        html += "</div>";
-        
-        html += "<label for='debugLevel'><strong>Select Debug Level:</strong></label><br>";
-        html += "<select id='debugLevel' name='debugLevel'>";
-        html += "<option value='0'>EMERG - Emergency (0) - System unusable</option>";
-        html += "<option value='1'>ALERT - Alert (1) - Immediate action required</option>";
-        html += "<option value='2'>CRIT - Critical (2) - Critical conditions</option>";
-        html += "<option value='3'>ERROR - Error (3) - Error conditions</option>";
-        html += "<option value='4'>WARNING - Warning (4) - Warning conditions</option>";
-        html += "<option value='5'>NOTICE - Notice (5) - Normal but significant</option>";
-        html += "<option value='6' selected>INFO - Info (6) - Informational messages</option>";
-        html += "<option value='7'>DEBUG - Debug (7) - Debug-level messages</option>";
-        html += "</select><br>";
-        html += "<button onclick='setDebugLevel()' class='button'>Set Transmitter Debug Level</button>";
-        html += "<div id='debug-status'></div>";
-        html += "</div>";
-        
-        // JavaScript for AJAX control
-        html += "<script>";
-        html += "var levelNames = ['EMERG', 'ALERT', 'CRIT', 'ERROR', 'WARNING', 'NOTICE', 'INFO', 'DEBUG'];";
-        html += "function setDebugLevel() {";
-        html += "  var level = document.getElementById('debugLevel').value;";
-        html += "  var statusDiv = document.getElementById('debug-status');";
-        html += "  statusDiv.textContent = 'Sending debug level ' + level + ' (' + levelNames[level] + ') to transmitter...';";
-        html += "  statusDiv.className = 'status-info';";
-        html += "  fetch('/api/setDebugLevel?level=' + level)";
-        html += "    .then(response => response.json())";
-        html += "    .then(data => {";
-        html += "      if (data.success) {";
-        html += "        statusDiv.textContent = '✓ ' + data.message;";
-        html += "        statusDiv.className = 'status-success';";
-        html += "        loadCurrentDebugLevel();";
-        html += "      } else {";
-        html += "        statusDiv.textContent = '✗ ' + data.message;";
-        html += "        statusDiv.className = 'status-error';";
-        html += "      }";
-        html += "      setTimeout(() => { statusDiv.style.display = 'none'; }, 5000);";
-        html += "    })";
-        html += "    .catch(error => {";
-        html += "      statusDiv.textContent = '✗ Error: ' + error;";
-        html += "      statusDiv.className = 'status-error';";
-        html += "    });";
-        html += "}";
-        html += "function loadCurrentDebugLevel() {";
-        html += "  fetch('/api/debugLevel')";
-        html += "    .then(response => response.json())";
-        html += "    .then(data => {";
-        html += "      if (data.level !== undefined) {";
-        html += "        var levelNum = data.level;";
-        html += "        var levelName = levelNames[levelNum] || 'UNKNOWN';";
-        html += "        document.getElementById('currentLevel').textContent = levelName + ' (' + levelNum + ')';";
-        html += "        document.getElementById('debugLevel').value = levelNum;";
-        html += "      } else {";
-        html += "        document.getElementById('currentLevel').textContent = 'Unknown';";
-        html += "      }";
-        html += "    })";
-        html += "    .catch(error => {";
-        html += "      document.getElementById('currentLevel').textContent = 'Unable to load';";
-        html += "    });";
-        html += "}";
-        html += "window.addEventListener('load', loadCurrentDebugLevel);";
-        html += "</script>";
-    
-    // Navigation buttons
-    html += generate_nav_buttons();
-    
-    return html;
-}
-
 // Debug page handler
 static esp_err_t debug_page_handler(httpd_req_t *req) {
-    String content = debug_page_processor();
-    String page = generatePage("Debug Logging Control", content);
+        String content = R"rawliteral(
+<div class='debug-control'>
+        <h3>📊 Transmitter Debug Level Control</h3>
+        <p>Control the debug logging level of the ESP-NOW transmitter. Messages are published to MQTT topic: <code>espnow/transmitter/debug/{level}</code></p>
+
+        <div class='current-level-box'>
+                <strong class='current-level-label'>Current Debug Level:</strong>
+                <span id='currentLevel' class='current-level-value'>Loading...</span>
+        </div>
+
+        <label for='debugLevel'><strong>Select Debug Level:</strong></label><br>
+        <select id='debugLevel' name='debugLevel'>
+                <option value='0'>EMERG - Emergency (0) - System unusable</option>
+                <option value='1'>ALERT - Alert (1) - Immediate action required</option>
+                <option value='2'>CRIT - Critical (2) - Critical conditions</option>
+                <option value='3'>ERROR - Error (3) - Error conditions</option>
+                <option value='4'>WARNING - Warning (4) - Warning conditions</option>
+                <option value='5'>NOTICE - Notice (5) - Normal but significant</option>
+                <option value='6' selected>INFO - Info (6) - Informational messages</option>
+                <option value='7'>DEBUG - Debug (7) - Debug-level messages</option>
+        </select><br>
+
+        <button onclick='setDebugLevel()' class='button'>Set Transmitter Debug Level</button>
+        <div id='debug-status'></div>
+</div>
+)rawliteral";
+
+        content += generate_nav_buttons("/debug");
+
+        const String extra_styles = R"rawliteral(
+.debug-control {
+        background-color: #2C3539;
+        padding: 20px;
+        border-radius: 8px;
+        margin-bottom: 20px;
+}
+
+.debug-control h3 {
+        margin-top: 0;
+        color: #50FA7B;
+}
+
+.debug-control select {
+        padding: 10px;
+        margin: 10px 5px;
+        font-size: 16px;
+        border-radius: 4px;
+}
+
+.debug-control button {
+        padding: 12px 24px;
+        margin: 10px 5px;
+        font-size: 16px;
+}
+
+.current-level-box {
+        background-color: #1e1e1e;
+        padding: 12px;
+        border-left: 4px solid #50FA7B;
+        margin-bottom: 15px;
+        border-radius: 4px;
+}
+
+.current-level-label {
+        color: #50FA7B;
+}
+
+.current-level-value {
+        margin-left: 10px;
+        color: #fff;
+        font-size: 18px;
+        font-weight: bold;
+}
+
+#debug-status {
+        margin-top: 15px;
+        padding: 12px;
+        border-radius: 4px;
+        display: none;
+}
+
+.status-success {
+        background-color: #28a745;
+        color: white;
+        display: block;
+}
+
+.status-error {
+        background-color: #dc3545;
+        color: white;
+        display: block;
+}
+
+.status-info {
+        background-color: #17a2b8;
+        color: white;
+        display: block;
+}
+)rawliteral";
+
+        const String script = R"rawliteral(
+const levelNames = ['EMERG', 'ALERT', 'CRIT', 'ERROR', 'WARNING', 'NOTICE', 'INFO', 'DEBUG'];
+
+function setDebugLevel() {
+    const level = document.getElementById('debugLevel').value;
+    const statusDiv = document.getElementById('debug-status');
+
+    statusDiv.textContent = 'Sending debug level ' + level + ' (' + levelNames[level] + ') to transmitter...';
+    statusDiv.className = 'status-info';
+
+    fetch('/api/setDebugLevel?level=' + level)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                statusDiv.textContent = '✓ ' + data.message;
+                statusDiv.className = 'status-success';
+                loadCurrentDebugLevel();
+            } else {
+                statusDiv.textContent = '✗ ' + data.message;
+                statusDiv.className = 'status-error';
+            }
+            setTimeout(() => {
+                statusDiv.style.display = 'none';
+            }, 5000);
+        })
+        .catch(error => {
+            statusDiv.textContent = '✗ Error: ' + error;
+            statusDiv.className = 'status-error';
+        });
+}
+
+function loadCurrentDebugLevel() {
+    fetch('/api/debugLevel')
+        .then(response => response.json())
+        .then(data => {
+            if (data.level !== undefined) {
+                const levelNum = data.level;
+                const levelName = levelNames[levelNum] || 'UNKNOWN';
+                document.getElementById('currentLevel').textContent = levelName + ' (' + levelNum + ')';
+                document.getElementById('debugLevel').value = levelNum;
+            } else {
+                document.getElementById('currentLevel').textContent = 'Unknown';
+            }
+        })
+        .catch(() => {
+            document.getElementById('currentLevel').textContent = 'Unable to load';
+        });
+}
+
+window.addEventListener('load', loadCurrentDebugLevel);
+)rawliteral";
+
+        String page = renderPage("Debug Logging Control", content, PageRenderOptions(extra_styles, script));
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, page.c_str(), page.length());
     return ESP_OK;

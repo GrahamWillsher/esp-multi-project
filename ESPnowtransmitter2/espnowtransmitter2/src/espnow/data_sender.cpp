@@ -98,13 +98,12 @@ void DataSender::send_battery_data() {
         LOG_TRACE("DATA_SENDER", "Data cached (SOC:%d%%, Power:%dW)", 
                  tx_data.soc, tx_data.power);
         
-        // Phase 2: Report dynamic data to transmission selector (enables dual ESP-NOW/MQTT support)
-        // Transmission selector will intelligently route small frequent updates via fastest method
+        // Phase 2: Record route selection for dynamic data (selector is advisory/planning)
         char timestamp_str[32];
         snprintf(timestamp_str, sizeof(timestamp_str), "%lu", millis());
         auto result = TransmissionSelector::transmit_dynamic_data(tx_data.soc, tx_data.power, timestamp_str);
         if (result.espnow_sent) {
-            LOG_TRACE("DATA_SENDER", "Dynamic data sent via %s", result.method);
+            LOG_TRACE("DATA_SENDER", "Dynamic data route selected: %s", result.method);
         }
     } else {
         // Cache write failed (mutex timeout or overflow)

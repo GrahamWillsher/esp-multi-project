@@ -2,7 +2,7 @@
 
 #include "api_response_utils.h"
 #include "../utils/transmitter_manager.h"
-#include "../utils/http_json_utils.h"
+#include <webserver_common_utils/http_json_utils.h>
 #include "../logging.h"
 
 #include <Arduino.h>
@@ -13,30 +13,9 @@
 #include <esp_now.h>
 #include <esp32common/espnow/common.h>
 
-namespace ESPNow {
-    extern uint8_t transmitter_mac[6];
-}
-
 esp_err_t api_reboot_handler(httpd_req_t *req) {
-    const uint8_t* target_mac = nullptr;
-    const char* mac_source = "none";
-
-    if (TransmitterManager::isMACKnown()) {
-        target_mac = TransmitterManager::getMAC();
-        mac_source = "TransmitterManager";
-    } else {
-        bool has_espnow_mac = false;
-        for (int i = 0; i < 6; ++i) {
-            if (ESPNow::transmitter_mac[i] != 0) {
-                has_espnow_mac = true;
-                break;
-            }
-        }
-        if (has_espnow_mac) {
-            target_mac = ESPNow::transmitter_mac;
-            mac_source = "ESPNow::transmitter_mac";
-        }
-    }
+    const uint8_t* target_mac = TransmitterManager::getMAC();
+    const char* mac_source = "TransmitterManager";
 
     if (target_mac != nullptr) {
         reboot_t reboot_msg = { msg_reboot };
@@ -51,7 +30,7 @@ esp_err_t api_reboot_handler(httpd_req_t *req) {
             return ApiResponseUtils::send_error_message(req, esp_err_to_name(result));
         }
     } else {
-        LOG_WARN("REBOOT: Transmitter MAC unknown in both caches, cannot send command");
+        LOG_WARN("REBOOT: Transmitter MAC unknown, cannot send command");
         return ApiResponseUtils::send_error_message(req, "Transmitter MAC unknown");
     }
 }
@@ -71,10 +50,13 @@ esp_err_t api_transmitter_ota_status_handler(httpd_req_t *req) {
         String body = http.getString();
         http.end();
 
-        StaticJsonDocument<256> doc;
+        StaticJsonDocument<1024> doc;
         DeserializationError err = deserializeJson(doc, body);
         if (err) {
-            return ApiResponseUtils::send_error_message(req, "Invalid OTA status JSON");
+            LOG_ERROR("OTA: Failed to parse transmitter OTA status JSON: %s", err.c_str());
+            return ApiResponseUtils::send_jsonf(req,
+                                                "{\"success\":false,\"message\":\"Invalid OTA status JSON\",\"detail\":\"%s\"}",
+                                                err.c_str());
         }
 
         bool in_progress = doc["in_progress"] | false;
@@ -103,7 +85,9 @@ esp_err_t api_transmitter_ota_status_handler(httpd_req_t *req) {
     }
 
     http.end();
-    return ApiResponseUtils::send_jsonf(req, "{\"success\":false,\"message\":\"Status HTTP error: %d\"}", code);
+    return ApiResponseUtils::send_jsonf(req,
+                                        "{\"success\":false,\"message\":\"Status HTTP error: %d\",\"in_progress\":false,\"ready_for_reboot\":false,\"last_success\":false}",
+                                        code);
 }
 
 esp_err_t api_ota_upload_handler(httpd_req_t *req) {
@@ -131,6 +115,39 @@ esp_err_t api_ota_upload_handler(httpd_req_t *req) {
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 
+    // Fetch OTA session challenge from transmitter so auth headers can be sent with the upload.
+    // The transmitter requires X-OTA-Session/Nonce/Expires/Signature before accepting the body.
+    char ota_session_id[40] = {0};
+    char ota_nonce[40] = {0};
+    char ota_expires_str[24] = {0};
+    char ota_signature[80] = {0};
+    {
+        const String arm_url = TransmitterManager::getURL() + "/api/ota_arm";
+        HTTPClient arm_client;
+        arm_client.begin(arm_url);
+        arm_client.setTimeout(5000);
+        int arm_code = arm_client.sendRequest("POST", static_cast<uint8_t*>(nullptr), 0);
+        if (arm_code != 200) {
+            LOG_ERROR("OTA: Failed to arm OTA session on transmitter, HTTP %d", arm_code);
+            arm_client.end();
+            return ApiResponseUtils::send_error_message(req, "Failed to arm OTA session on transmitter");
+        }
+        String arm_body = arm_client.getString();
+        arm_client.end();
+
+        StaticJsonDocument<400> arm_doc;
+        if (deserializeJson(arm_doc, arm_body) || !arm_doc["success"].as<bool>()) {
+            LOG_ERROR("OTA: Invalid OTA arm response from transmitter");
+            return ApiResponseUtils::send_error_message(req, "Invalid OTA arm response from transmitter");
+        }
+        strlcpy(ota_session_id, arm_doc["session_id"] | "", sizeof(ota_session_id));
+        strlcpy(ota_nonce,      arm_doc["nonce"]       | "", sizeof(ota_nonce));
+        strlcpy(ota_signature,  arm_doc["signature"]   | "", sizeof(ota_signature));
+        uint32_t expires_at_ms = arm_doc["expires_at_ms"] | 0U;
+        snprintf(ota_expires_str, sizeof(ota_expires_str), "%lu", (unsigned long)expires_at_ms);
+        LOG_INFO("OTA: Session armed, id=%.8s... expires_at=%s", ota_session_id, ota_expires_str);
+    }
+
     const uint8_t* ip = TransmitterManager::getIP();
     IPAddress tx_ip(ip[0], ip[1], ip[2], ip[3]);
     WiFiClient tx_client;
@@ -148,7 +165,54 @@ esp_err_t api_ota_upload_handler(httpd_req_t *req) {
     tx_client.print("Content-Length: ");
     tx_client.print((unsigned)firmware_size);
     tx_client.print("\r\n");
+    tx_client.print("X-OTA-Session: ");
+    tx_client.print(ota_session_id);
+    tx_client.print("\r\n");
+    tx_client.print("X-OTA-Nonce: ");
+    tx_client.print(ota_nonce);
+    tx_client.print("\r\n");
+    tx_client.print("X-OTA-Expires: ");
+    tx_client.print(ota_expires_str);
+    tx_client.print("\r\n");
+    tx_client.print("X-OTA-Signature: ");
+    tx_client.print(ota_signature);
+    tx_client.print("\r\n");
     tx_client.print("Connection: close\r\n\r\n");
+
+    auto read_transmitter_response = [&](int* out_status, String* out_body) -> bool {
+        if (!out_status || !out_body || !tx_client.available()) {
+            return false;
+        }
+
+        String status_line = tx_client.readStringUntil('\n');
+        status_line.trim();
+
+        int status_code = -1;
+        int sp1 = status_line.indexOf(' ');
+        if (sp1 > 0 && status_line.length() >= sp1 + 4) {
+            status_code = status_line.substring(sp1 + 1, sp1 + 4).toInt();
+        }
+
+        while (tx_client.available()) {
+            String h = tx_client.readStringUntil('\n');
+            if (h == "\r" || h.length() == 0) break;
+        }
+
+        String body = "";
+        unsigned long body_start = millis();
+        while ((tx_client.connected() || tx_client.available()) && (millis() - body_start < 1200)) {
+            while (tx_client.available()) {
+                body += static_cast<char>(tx_client.read());
+                if (body.length() > 512) break;
+            }
+            if (body.length() > 512) break;
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
+
+        *out_status = status_code;
+        *out_body = body;
+        return true;
+    };
 
     char buf[1024];
     size_t total_forwarded = 0;
@@ -161,14 +225,44 @@ esp_err_t api_ota_upload_handler(httpd_req_t *req) {
             return ApiResponseUtils::send_error_message(req, "Upload receive failed during streaming");
         }
 
-        size_t sent = tx_client.write((const uint8_t*)buf, read_len);
-        if (sent != (size_t)read_len) {
-            tx_client.stop();
-            return ApiResponseUtils::send_error_message(req, "Failed to forward OTA chunk to transmitter");
+        size_t offset = 0;
+        const uint32_t write_start_ms = millis();
+        while (offset < static_cast<size_t>(read_len)) {
+            const size_t to_write = static_cast<size_t>(read_len) - offset;
+            size_t sent = tx_client.write(reinterpret_cast<const uint8_t*>(buf) + offset, to_write);
+            if (sent > 0) {
+                offset += sent;
+                continue;
+            }
+
+            int early_status = -1;
+            String early_body;
+            if (read_transmitter_response(&early_status, &early_body)) {
+                tx_client.stop();
+                early_body.replace("\"", "'");
+                StaticJsonDocument<768> out_doc;
+                char message[96];
+                snprintf(message, sizeof(message), "Transmitter OTA rejected upload: HTTP %d", early_status);
+                out_doc["success"] = false;
+                out_doc["message"] = message;
+                out_doc["detail"] = early_body;
+                String err_json;
+                err_json.reserve(256 + early_body.length());
+                serializeJson(out_doc, err_json);
+                LOG_ERROR("OTA: Transmitter replied early with HTTP %d while forwarding at byte %u", early_status, (unsigned)(total_forwarded + offset));
+                return HttpJsonUtils::send_json(req, err_json.c_str());
+            }
+
+            // No progress: allow short retry window for transient socket backpressure.
+            if (!tx_client.connected() || (millis() - write_start_ms) > 15000) {
+                tx_client.stop();
+                return ApiResponseUtils::send_error_message(req, "Failed to forward OTA chunk to transmitter");
+            }
+            vTaskDelay(pdMS_TO_TICKS(2));
         }
 
         remaining -= read_len;
-        total_forwarded += sent;
+        total_forwarded += static_cast<size_t>(read_len);
     }
 
     unsigned long wait_start = millis();

@@ -3,16 +3,34 @@
 
 // Central page registry - all pages defined in one place
 const PageInfo PAGE_DEFINITIONS[] = {
-    // Landing page
-    { "/",                          "Dashboard",                   subtype_none,          false },  // V2: New device-centric landing page
-    
-    // Transmitter section
-    { "/transmitter",               "Transmitter Hub",             subtype_none,          false },  // Hub page with navigation
-    { "/transmitter/config",        "Configuration",               subtype_none,          false },  // Moved from /
-    { "/transmitter/hardware",      "Hardware Config",             subtype_none,          false },
-    
-    // Receiver section
-    { "/receiver/config",           "Configuration",               subtype_systeminfo,    false },  // Renamed from /systeminfo
+    // Landing + hub
+    { "/",                          "Dashboard",                   subtype_none,            false, false },
+    { "/transmitter",               "Transmitter Hub",             subtype_none,            false, false },
+
+    // Transmitter configuration pages
+    { "/transmitter/config",        "TX Config",                   subtype_none,            false, true  },
+    { "/transmitter/hardware",      "HW Config",                   subtype_none,            false, false },
+    { "/transmitter/battery",       "Battery Settings",            subtype_battery_config,  false, false },
+    { "/transmitter/inverter",      "Inverter Settings",           subtype_inverter_config, false, false },
+    { "/transmitter/monitor",       "Monitor",                     subtype_power_profile,   false, false },
+    { "/transmitter/monitor2",      "Monitor SSE",                 subtype_power_profile,   true,  false },
+    { "/transmitter/reboot",        "Reboot",                      subtype_none,            false, false },
+
+    // Receiver pages
+    { "/receiver/config",           "Receiver Info",               subtype_systeminfo,      false, true  },
+    { "/receiver/network",          "Receiver Network",            subtype_network_config,  false, false },
+    { "/cellmonitor",               "Cell Monitor",                subtype_cell_info,       true,  false },
+
+    // Tooling pages
+    { "/ota",                       "OTA",                         subtype_none,            false, false },
+    { "/debug",                     "Debug",                       subtype_none,            false, false },
+    { "/events",                    "Event Logs",                  subtype_events,          false, false },
+
+    // Spec/display pages
+    { "/battery_settings.html",     "Battery Specs",               subtype_none,            false, false },
+    { "/inverter_settings.html",    "Inverter Specs",              subtype_none,            false, false },
+    { "/charger_settings.html",     "Charger Specs",               subtype_none,            false, false },
+    { "/system_settings.html",      "System Specs",                subtype_none,            false, false }
 };
 
 const int PAGE_COUNT = sizeof(PAGE_DEFINITIONS) / sizeof(PageInfo);

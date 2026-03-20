@@ -5,6 +5,7 @@
 #include "espnow_send.h"
 #include "component_apply_tracker.h"
 #include "type_catalog_cache.h"
+#include "battery_data_store.h"
 #include <esp32common/espnow/connection_manager.h>
 #include "battery_handlers.h"  // Phase 1: Battery Emulator data handlers
 #include "battery_settings_cache.h"  // Phase 2: Settings version tracking
@@ -29,6 +30,8 @@ extern void notify_sse_data_updated();
 static constexpr const char* kLogTag = "ESPNOW";
 static uint32_t g_rx_message_seq = 0;
 static bool g_received_data_initialized = false;
+static uint8_t g_last_received_soc = 0;
+static int32_t g_last_received_power = 0;
 
 static void store_transmitter_mac(const uint8_t* mac) {
     if (!mac) {
@@ -45,12 +48,12 @@ static void update_received_data_cache(
     bool* out_soc_changed,
     bool* out_power_changed) {
     const bool first_data = !g_received_data_initialized;
-    const bool soc_changed = first_data || (ESPNow::received_soc != soc);
-    const bool power_changed = first_data || (ESPNow::received_power != power);
+    const bool soc_changed = first_data || (g_last_received_soc != soc);
+    const bool power_changed = first_data || (g_last_received_power != power);
 
-    ESPNow::received_soc = soc;
-    ESPNow::received_power = power;
-    ESPNow::received_voltage_mv = voltage_mv;
+    g_last_received_soc = soc;
+    g_last_received_power = power;
+    BatteryData::update_basic_telemetry(soc, power, voltage_mv);
     g_received_data_initialized = true;
 
     if (out_first_data) {
@@ -478,93 +481,57 @@ void setup_message_routes() {
                     beacon->ethernet_connected
                 );
                 
-                // Check each config section version against our cache
+                // Check each config section version against our cache and request if stale/unknown.
+                // Uses the shared request_config_section() helper to avoid repeating the
+                // build/send/log pattern for each section.
                 bool request_sent = false;
-                
-                // Check MQTT config version
-                // Request if: 1) Never received, OR 2) Version mismatch
-                bool need_mqtt_update = !TransmitterManager::isMqttConfigKnown();
-                if (!need_mqtt_update) {
-                    uint32_t cached_version = TransmitterManager::getMqttConfigVersion();
-                    need_mqtt_update = (cached_version != beacon->mqtt_config_version);
-                }
-                
-                if (need_mqtt_update) {
-                    LOG_INFO(kLogTag, "[VERSION_BEACON] MQTT config %s: cached v%u, beacon v%u - requesting update",
-                             TransmitterManager::isMqttConfigKnown() ? "stale" : "unknown",
-                             TransmitterManager::isMqttConfigKnown() ? TransmitterManager::getMqttConfigVersion() : 0,
-                             beacon->mqtt_config_version);
-                    
-                    // Send config request for MQTT section
-                    config_section_request_t request;
-                    request.type = msg_config_section_request;
-                    request.section = config_section_mqtt;
-                    request.requested_version = beacon->mqtt_config_version;
-                    
-                    esp_err_t result = esp_now_send(msg->mac, (const uint8_t*)&request, sizeof(request));
-                    if (result == ESP_OK) {
-                        LOG_INFO(kLogTag, "[VERSION_BEACON] Sent MQTT config request (v%u)", beacon->mqtt_config_version);
-                    } else {
-                        LOG_ERROR(kLogTag, "[VERSION_BEACON] Failed to send MQTT config request: %s", esp_err_to_name(result));
+
+                struct SectionCheck {
+                    bool        needs_update;
+                    uint32_t    cached_version;
+                    uint32_t    beacon_version;
+                    config_section_t section;
+                    const char* label;
+                };
+
+                const uint32_t cached_mqtt_version =
+                    TransmitterManager::isMqttConfigKnown() ? TransmitterManager::getMqttConfigVersion() : 0;
+                const uint32_t cached_net_version =
+                    TransmitterManager::isIPKnown() ? TransmitterManager::getNetworkConfigVersion() : 0;
+                const uint32_t cached_batt_version =
+                    TransmitterManager::hasBatterySettings() ? BatterySettingsCache::instance().get_version() : 0;
+
+                const SectionCheck checks[] = {
+                    {
+                        !TransmitterManager::isMqttConfigKnown() ||
+                            cached_mqtt_version != beacon->mqtt_config_version,
+                        cached_mqtt_version, beacon->mqtt_config_version,
+                        config_section_mqtt, "MQTT"
+                    },
+                    {
+                        !TransmitterManager::isIPKnown() ||
+                            cached_net_version != beacon->network_config_version,
+                        cached_net_version, beacon->network_config_version,
+                        config_section_network, "Network"
+                    },
+                    {
+                        !TransmitterManager::hasBatterySettings() ||
+                            cached_batt_version != beacon->battery_settings_version,
+                        cached_batt_version, beacon->battery_settings_version,
+                        config_section_battery, "Battery"
+                    },
+                };
+
+                for (const auto& chk : checks) {
+                    if (chk.needs_update) {
+                        LOG_INFO(kLogTag, "[VERSION_BEACON] %s config %s: cached v%u, beacon v%u - requesting update",
+                                 chk.label,
+                                 chk.cached_version == 0 ? "unknown" : "stale",
+                                 chk.cached_version,
+                                 chk.beacon_version);
+                        request_config_section(msg->mac, chk.section, chk.beacon_version, chk.label);
+                        request_sent = true;
                     }
-                    request_sent = true;
-                }
-                
-                // Check network config version
-                // Request if: 1) Never received, OR 2) Version mismatch
-                bool need_network_update = !TransmitterManager::isIPKnown();
-                if (!need_network_update) {
-                    uint32_t cached_version = TransmitterManager::getNetworkConfigVersion();
-                    need_network_update = (cached_version != beacon->network_config_version);
-                }
-                
-                if (need_network_update) {
-                    LOG_INFO(kLogTag, "[VERSION_BEACON] Network config %s: cached v%u, beacon v%u - requesting update",
-                             TransmitterManager::isIPKnown() ? "stale" : "unknown",
-                             TransmitterManager::isIPKnown() ? TransmitterManager::getNetworkConfigVersion() : 0,
-                             beacon->network_config_version);
-                    
-                    // Send config request for Network section
-                    config_section_request_t request;
-                    request.type = msg_config_section_request;
-                    request.section = config_section_network;
-                    request.requested_version = beacon->network_config_version;
-                    
-                    esp_err_t result = esp_now_send(msg->mac, (const uint8_t*)&request, sizeof(request));
-                    if (result == ESP_OK) {
-                        LOG_INFO(kLogTag, "[VERSION_BEACON] Sent Network config request (v%u)", beacon->network_config_version);
-                    } else {
-                        LOG_ERROR(kLogTag, "[VERSION_BEACON] Failed to send Network config request: %s", esp_err_to_name(result));
-                    }
-                    request_sent = true;
-                }
-
-                // Check battery settings version
-                // Request if: 1) Never received, OR 2) Version mismatch
-                bool need_battery_update = !TransmitterManager::hasBatterySettings();
-                if (!need_battery_update) {
-                    const uint32_t cached_battery_version = BatterySettingsCache::instance().get_version();
-                    need_battery_update = (cached_battery_version != beacon->battery_settings_version);
-                }
-
-                if (need_battery_update) {
-                    LOG_INFO(kLogTag, "[VERSION_BEACON] Battery config %s: cached v%u, beacon v%u - requesting update",
-                             TransmitterManager::hasBatterySettings() ? "stale" : "unknown",
-                             TransmitterManager::hasBatterySettings() ? BatterySettingsCache::instance().get_version() : 0,
-                             beacon->battery_settings_version);
-
-                    config_section_request_t request;
-                    request.type = msg_config_section_request;
-                    request.section = config_section_battery;
-                    request.requested_version = beacon->battery_settings_version;
-
-                    esp_err_t result = esp_now_send(msg->mac, (const uint8_t*)&request, sizeof(request));
-                    if (result == ESP_OK) {
-                        LOG_INFO(kLogTag, "[VERSION_BEACON] Sent Battery config request (v%u)", beacon->battery_settings_version);
-                    } else {
-                        LOG_ERROR(kLogTag, "[VERSION_BEACON] Failed to send Battery config request: %s", esp_err_to_name(result));
-                    }
-                    request_sent = true;
                 }
 
                 // Extract metadata directly from beacon (no separate request/response needed)

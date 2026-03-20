@@ -1,5 +1,6 @@
 #pragma once
 #include <esp_http_server.h>
+#include <webserver_common_utils/ota_session_utils.h>
 
 /**
  * @brief Manages HTTP server for OTA firmware updates
@@ -15,6 +16,16 @@ public:
      * @brief Initialize and start HTTP server for OTA
      */
     void init_http_server();
+
+    /**
+     * @brief Stop HTTP server for OTA if running
+     */
+    void stop_http_server();
+
+    /**
+     * @brief Check if HTTP server is running
+     */
+    bool is_http_server_running() const { return http_server_ != nullptr; }
     
     /**
      * @brief Check if OTA update is currently in progress
@@ -22,6 +33,13 @@ public:
      */
     bool is_ota_in_progress() const { return ota_in_progress_; }
     bool is_ota_ready_for_reboot() const { return ota_ready_for_reboot_; }
+
+    /**
+     * @brief Arm a fresh OTA auth session from trusted ESP-NOW control plane
+     * @param requester_mac MAC of requester (receiver)
+     * @return true if session armed
+     */
+    bool arm_ota_session_from_control_plane(const uint8_t* requester_mac);
     
 private:
     OtaManager() = default;
@@ -37,6 +55,13 @@ private:
      * @return ESP_OK on success, ESP_FAIL on error
      */
     static esp_err_t ota_upload_handler(httpd_req_t *req);
+
+    /**
+     * @brief HTTP handler to arm a short-lived OTA session
+     * @param req HTTP request object
+     * @return ESP_OK on success
+     */
+    static esp_err_t ota_arm_handler(httpd_req_t *req);
     
     /**
      * @brief HTTP handler for firmware info API
@@ -51,6 +76,13 @@ private:
      * @return ESP_OK on success
      */
     static esp_err_t root_handler(httpd_req_t *req);
+
+    /**
+     * @brief HTTP handler for consolidated runtime health status
+     * @param req HTTP request object
+     * @return ESP_OK on success
+     */
+    static esp_err_t health_handler(httpd_req_t *req);
     
     /**
      * @brief HTTP handler for event logs API
@@ -93,10 +125,25 @@ private:
      * @return ESP_OK on success
      */
     static esp_err_t test_data_reset_handler(httpd_req_t *req);
-    
+
+    /**
+     * @brief Arm a fresh OTA session token window
+     * @return true if session created successfully
+     */
+    bool arm_ota_session();
+
+    /**
+     * @brief Validate required OTA auth headers before reading upload body
+     * @param req HTTP request object
+     * @return true if auth is valid and session is consumed, false otherwise
+     */
+    bool validate_ota_auth_headers(httpd_req_t* req);
+
     httpd_handle_t http_server_{nullptr};
     volatile bool ota_in_progress_{false};
     volatile bool ota_ready_for_reboot_{false};
     bool ota_last_success_{false};
     char ota_last_error_[96] = {0};
+
+    OtaSessionUtils::Session ota_session_;
 };

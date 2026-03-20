@@ -1,7 +1,8 @@
 #include "api_type_selection_handlers.h"
 
+#include "api_request_utils.h"
 #include "api_response_utils.h"
-#include "../utils/http_json_utils.h"
+#include <webserver_common_utils/http_json_utils.h>
 
 #include <esp32common/logging/logging_config.h>
 #include "../../receiver_config/receiver_config_manager.h"
@@ -34,12 +35,14 @@ static TypeEntry battery_interfaces[] = {
     {5, "CAN-FD (MCP2518 add-on)"}
 };
 
+static constexpr size_t kMaxTypeEntries = 128;
+
 static String generate_sorted_type_json(TypeEntry* types, size_t count) {
-    TypeEntry* sorted_copy = new TypeEntry[count];
-    if (!sorted_copy) {
+    if (count > kMaxTypeEntries) {
         return "{\"types\":[]}";
     }
 
+    TypeEntry sorted_copy[kMaxTypeEntries];
     memcpy(sorted_copy, types, count * sizeof(TypeEntry));
     std::sort(sorted_copy, sorted_copy + count);
 
@@ -54,8 +57,6 @@ static String generate_sorted_type_json(TypeEntry* types, size_t count) {
     String json;
     json.reserve(32 + (count * 32));
     serializeJson(doc, json);
-
-    delete[] sorted_copy;
     return json;
 }
 
@@ -73,16 +74,10 @@ static const char* component_apply_state_to_string(ComponentApplyTracker::State 
 
 static esp_err_t api_component_apply_handler(httpd_req_t *req) {
     char content[256] = {0};
-    int ret = httpd_req_recv(req, content, sizeof(content) - 1);
-
-    if (ret <= 0) {
-        return ApiResponseUtils::send_jsonf(req, "{\"success\":false,\"error\":\"No data received\"}");
-    }
-
     StaticJsonDocument<256> doc;
-    DeserializationError error = deserializeJson(doc, content);
-    if (error) {
-        return ApiResponseUtils::send_jsonf(req, "{\"success\":false,\"error\":\"Invalid JSON format\"}");
+    esp_err_t response_error = ESP_OK;
+    if (!ApiRequestUtils::read_json_body_or_respond(req, content, sizeof(content), doc, &response_error)) {
+        return response_error;
     }
 
     const int apply_mask = doc["apply_mask"] | 0;
@@ -347,7 +342,7 @@ static esp_err_t api_get_selected_interfaces_handler(httpd_req_t *req) {
 int register_type_selection_api_handlers(httpd_handle_t server) {
     int count = 0;
 
-    httpd_uri_t handlers[] = {
+    static const httpd_uri_t handlers[] = {
         {.uri = "/api/get_battery_types", .method = HTTP_GET, .handler = api_get_battery_types_handler, .user_ctx = NULL},
         {.uri = "/api/get_inverter_types", .method = HTTP_GET, .handler = api_get_inverter_types_handler, .user_ctx = NULL},
         {.uri = "/api/get_selected_types", .method = HTTP_GET, .handler = api_get_selected_types_handler, .user_ctx = NULL},
@@ -365,4 +360,8 @@ int register_type_selection_api_handlers(httpd_handle_t server) {
     }
 
     return count;
+}
+
+int expected_type_selection_api_handlers() {
+    return 8;
 }

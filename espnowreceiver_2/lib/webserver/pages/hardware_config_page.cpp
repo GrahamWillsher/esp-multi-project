@@ -243,7 +243,7 @@ static esp_err_t hardware_config_handler(httpd_req_t *req) {
     </script>
     )rawliteral";
 
-    String page = generatePage("Hardware Config", content, "/transmitter/hardware");
+    String page = renderPage("Hardware Config", content);
     return httpd_resp_send(req, page.c_str(), page.length());
 }
 

@@ -14,8 +14,6 @@
 #include "display/display.h"
 #include "display/display_splash.h"
 #include "display/display_update_queue.h"
-#include "display/display_manager.h"
-#include "hal/display/tft_espi_display_driver.h"
 
 #include "espnow/espnow_callbacks.h"
 #include "espnow/espnow_tasks.h"
@@ -44,12 +42,6 @@
 // ═══════════════════════════════════════════════════════════════════════
 // Globals
 // ═══════════════════════════════════════════════════════════════════════
-
-// Hardware display instance (lives for entire application lifetime)
-static TFT_eSPI tft_hardware = TFT_eSPI();
-
-// Display driver (wraps TFT_eSPI with HAL interface)
-static HAL::TftEspiDisplayDriver tft_driver(tft_hardware);
 
 // DEBUG SWITCH: keep disabled for normal boot; this probe uses direct TFT test frames.
 static constexpr bool PRE_LITTLEFS_DEBUG_HALT = false;
@@ -178,13 +170,13 @@ static void run_pre_littlefs_debug_and_halt() {
     #endif
 
     // Initialize TFT
-    tft_hardware.init();
-    tft_hardware.setRotation(1);  // Landscape
-    tft_hardware.setSwapBytes(true);
+    tft.init();
+    tft.setRotation(1);  // Landscape
+    tft.setSwapBytes(true);
     LOG_WARN("PREBOOT", "TFT hardware initialized");
 
     LOG_WARN("PREBOOT", "Step 1: Backlight forced OFF for 2s");
-    tft_hardware.fillScreen(TFT_BLACK);
+    tft.fillScreen(TFT_BLACK);
     smart_delay(2000);
 
     // Turn backlight ON while keeping black frame, to catch unexpected white frame
@@ -194,18 +186,18 @@ static void run_pre_littlefs_debug_and_halt() {
     #else
     ledcWrite(HardwareConfig::GPIO_BACKLIGHT, 255);
     #endif
-    tft_hardware.fillScreen(TFT_BLACK);
+    tft.fillScreen(TFT_BLACK);
     smart_delay(3000);
 
     // Visual checkpoints so we know direct panel writes are stable pre-LittleFS
     LOG_WARN("PREBOOT", "Step 3: Showing RED/GREEN/BLUE test frames");
-    tft_hardware.fillScreen(TFT_RED);
+    tft.fillScreen(TFT_RED);
     smart_delay(1000);
-    tft_hardware.fillScreen(TFT_GREEN);
+    tft.fillScreen(TFT_GREEN);
     smart_delay(1000);
-    tft_hardware.fillScreen(TFT_BLUE);
+    tft.fillScreen(TFT_BLUE);
     smart_delay(1000);
-    tft_hardware.fillScreen(TFT_BLACK);
+    tft.fillScreen(TFT_BLACK);
 
     LOG_WARN("PREBOOT", "HALT: Program stopped BEFORE initlittlefs().");
     LOG_WARN("PREBOOT", "Observe display + serial logs now.");
@@ -239,13 +231,9 @@ void setup() {
     LOG_INFO("MAIN", "========================================");
     Serial.flush();
 
-    // Initialize Display Manager with TFT driver (provides HAL abstraction)
-    Display::DisplayManager::init(&tft_driver);
-    LOG_INFO("MAIN", "Display HAL initialized");
-
-    // Initialize TFT display and backlight (legacy function - uses global tft object)
-    // TODO: Refactor to use Display::DisplayManager for HAL abstraction
+    // Initialize TFT display, backlight and display system
     init_display();
+    LOG_INFO("MAIN", "Display system initialized");
     
     // Pre-LittleFS debug probe (requested): stop here to inspect startup behavior
     if (PRE_LITTLEFS_DEBUG_HALT) {
@@ -404,7 +392,6 @@ void setup() {
     
     // *** PHASE 2: Initialize system state machine ***
     SystemStateManager::instance().init();
-    transition_to_state(SystemState::WAITING_FOR_TRANSMITTER);
     
     // NOW register ESP-NOW callbacks (queue is ready)
     esp_now_register_recv_cb(on_data_recv);

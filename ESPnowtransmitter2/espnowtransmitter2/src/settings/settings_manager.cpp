@@ -1231,7 +1231,7 @@ void SettingsManager::handle_settings_update(const espnow_queue_msg_t& msg) {
 }
 
 void SettingsManager::send_settings_ack(const uint8_t* mac, uint8_t category, uint8_t field_id, bool success, uint32_t new_version, const char* error_msg) {
-    settings_update_ack_msg_t ack;
+    settings_update_ack_msg_t ack{};
     ack.type = msg_settings_update_ack;
     ack.category = category;
     ack.field_id = field_id;
@@ -1245,7 +1245,7 @@ void SettingsManager::send_settings_ack(const uint8_t* mac, uint8_t category, ui
         ack.error_msg[0] = '\0';
     }
     
-    ack.checksum = 0; // TODO: Calculate checksum if needed
+    ack.checksum = EspnowPacketUtils::calculate_message_checksum(&ack);
     
     esp_err_t result = esp_now_send(mac, (const uint8_t*)&ack, sizeof(ack));
     

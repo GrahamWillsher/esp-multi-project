@@ -2,6 +2,7 @@
 
 #include "tx_send_guard.h"
 #include "../network/mqtt_manager.h"
+#include "../network/ota_manager.h"
 #include "../test_data/test_data_config.h"
 #include "../config/logging_config.h"
 
@@ -69,7 +70,11 @@ void handle_ota_start(const espnow_queue_msg_t& msg) {
     const ota_start_t* ota = reinterpret_cast<const ota_start_t*>(msg.data);
     LOG_INFO("CMD", "OTA_START command (size=%u bytes) from %02X:%02X:%02X:%02X:%02X:%02X",
              ota->size, msg.mac[0], msg.mac[1], msg.mac[2], msg.mac[3], msg.mac[4], msg.mac[5]);
-    LOG_INFO("CMD", ">>> OTA mode ready - waiting for HTTP POST...");
+    if (OtaManager::instance().arm_ota_session_from_control_plane(msg.mac)) {
+        LOG_INFO("CMD", ">>> OTA session armed - fetch /api/ota_status (or /api/ota_arm) for challenge, then POST /ota_upload with auth headers");
+    } else {
+        LOG_ERROR("CMD", "Failed to arm OTA session");
+    }
 }
 
 void handle_debug_control(const espnow_queue_msg_t& msg, uint8_t* receiver_mac) {

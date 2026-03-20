@@ -1,8 +1,10 @@
 #include "api_sse_handlers.h"
 
 #include "../utils/transmitter_manager.h"
+#include "../utils/cell_data_cache.h"
 #include "../utils/sse_notifier.h"
-#include "../utils/http_sse_utils.h"
+#include <webserver_common_utils/http_sse_utils.h>
+#include "../utils/telemetry_snapshot_utils.h"
 #include "../logging.h"
 #include "../../src/mqtt/mqtt_client.h"
 #include "../../src/espnow/espnow_send.h"
@@ -11,12 +13,6 @@
 #include <Arduino.h>
 #include <esp_now.h>
 #include <esp32common/espnow/common.h>
-
-namespace ESPNow {
-extern uint8_t received_soc;
-extern int32_t received_power;
-extern uint32_t received_voltage_mv;
-}
 
 namespace {
 struct SseMetricsInternal {
@@ -65,6 +61,7 @@ void recordMonitorSessionEnd(uint32_t duration_ms) {
     }
     portEXIT_CRITICAL(&g_sse_metrics_mux);
 }
+
 }
 
 void get_sse_runtime_metrics(SseRuntimeMetrics& out_metrics) {
@@ -105,30 +102,9 @@ esp_err_t api_cell_data_sse_handler(httpd_req_t *req) {
     }
 
     auto sendCellData = [req]() -> bool {
-        TransmitterManager::CellDataSnapshot snapshot;
-        if (TransmitterManager::getCellDataSnapshot(snapshot) && snapshot.known) {
-
-            String json = "{\"success\":true,\"cells\":[";
-            json.reserve(180 + (snapshot.cell_count * 16));
-            for (uint16_t i = 0; i < snapshot.cell_count; i++) {
-                if (i > 0) json += ",";
-                json += String(snapshot.voltages_mV[i]);
-            }
-            json += "],\"balancing\":[";
-            for (uint16_t i = 0; i < snapshot.cell_count; i++) {
-                if (i > 0) json += ",";
-                json += snapshot.balancing_status[i] ? "true" : "false";
-            }
-            json += "],\"cell_min_voltage_mV\":";
-            json += String(snapshot.min_voltage_mV);
-            json += ",\"cell_max_voltage_mV\":";
-            json += String(snapshot.max_voltage_mV);
-            json += ",\"balancing_active\":";
-            json += snapshot.balancing_active ? "true" : "false";
-            json += ",\"mode\":\"";
-            json += snapshot.data_source;
-            json += "\"}";
-
+        CellDataCache::CellDataSnapshot snapshot;
+        if (CellDataCache::get_cell_data_snapshot(snapshot) && snapshot.known) {
+            String json = TelemetrySnapshotUtils::serialize_cell_data(snapshot);
             String event = "data: " + json + "\n\n";
             event.reserve(json.length() + 12);
             const bool ok = (httpd_resp_send_chunk(req, event.c_str(), event.length()) == ESP_OK);
@@ -195,7 +171,7 @@ esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
         return ESP_FAIL;
     }
 
-    msg_subtype data_subtype = get_subtype_for_uri("/monitor2");
+    msg_subtype data_subtype = get_subtype_for_uri("/transmitter/monitor2");
 
     if (TransmitterManager::isMACKnown()) {
         request_data_t req_msg = { msg_request_data, data_subtype };
@@ -210,9 +186,10 @@ esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
     uint32_t last_voltage = 0;
 
     char event_data[512];
-    uint8_t current_soc = ESPNow::received_soc;
-    int32_t current_power = ESPNow::received_power;
-    uint32_t current_voltage = ESPNow::received_voltage_mv;
+    uint8_t current_soc = 0;
+    int32_t current_power = 0;
+    uint32_t current_voltage = 0;
+    TelemetrySnapshotUtils::fill_snapshot_telemetry(current_soc, current_power, current_voltage);
 
     snprintf(event_data, sizeof(event_data),
              "data: {\"soc\":%d,\"power\":%ld,\"voltage_mv\":%u,\"voltage_v\":%.1f}\n\n",
@@ -234,18 +211,8 @@ esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
     const TickType_t max_duration = pdMS_TO_TICKS(300000);
 
     while ((xTaskGetTickCount() - start_time) < max_duration) {
-        EventBits_t bits = xEventGroupWaitBits(
-            SSENotifier::getEventGroup(),
-            (1 << 0),
-            pdTRUE,
-            pdFALSE,
-            pdMS_TO_TICKS(500)
-        );
-
-        if (bits & (1 << 0)) {
-            current_soc = ESPNow::received_soc;
-            current_power = ESPNow::received_power;
-            current_voltage = ESPNow::received_voltage_mv;
+        if (SSENotifier::waitForUpdate(500)) {
+            TelemetrySnapshotUtils::fill_snapshot_telemetry(current_soc, current_power, current_voltage);
 
             if (current_soc != last_soc || current_power != last_power || current_voltage != last_voltage) {
                 snprintf(event_data, sizeof(event_data),

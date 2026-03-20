@@ -128,6 +128,12 @@ void MqttManager::update() {
 }
 
 void MqttManager::attempt_connection() {
+    if (!EthernetManager::instance().is_fully_ready()) {
+        LOG_WARN("MQTT", "Ethernet not ready, deferring MQTT connection attempt");
+        on_network_error();
+        return;
+    }
+
     LOG_INFO("MQTT", "Attempting connection to %s:%d...", 
              config::get_mqtt_config().server, config::get_mqtt_config().port);
     
@@ -220,45 +226,42 @@ MqttStatistics MqttManager::get_statistics() const {
     return stats;
 }
 
-bool MqttManager::connect() {
-    if (!config::features::MQTT_ENABLED) return false;
-    
-    if (!EthernetManager::instance().is_connected()) {
-        LOG_WARN("MQTT", "Ethernet not connected, skipping MQTT connection");
+bool MqttManager::ensure_publish_buffer(size_t required_bytes) {
+    if (required_bytes == 0) {
         return false;
     }
-    
-    LOG_INFO("MQTT", "Attempting connection to %s:%d...", 
-                  config::get_mqtt_config().server, config::get_mqtt_config().port);
-    
-    bool success = false;
-    if (strlen(config::get_mqtt_config().username) > 0) {
-        success = client_.connect(config::get_mqtt_config().client_id, 
-                                 config::get_mqtt_config().username, 
-                                 config::get_mqtt_config().password);
-    } else {
-        success = client_.connect(config::get_mqtt_config().client_id);
+
+    if (publish_buffer_ != nullptr && publish_buffer_capacity_ >= required_bytes) {
+        return true;
     }
-    
-    if (success) {
-        LOG_INFO("MQTT", "Connected to broker");
-        connected_ = true;
-        
-        // Publish connection status
-        client_.publish(config::get_mqtt_config().topics.status, "online", true);
-        
-        // Subscribe to OTA topic
-        if (client_.subscribe(config::get_mqtt_config().topics.ota)) {
-            LOG_INFO("MQTT", "Subscribed to OTA topic: %s", config::get_mqtt_config().topics.ota);
-        } else {
-            LOG_ERROR("MQTT", "Failed to subscribe to OTA topic");
-        }
-    } else {
-        LOG_ERROR("MQTT", "Connection failed, rc=%d", client_.state());
-        connected_ = false;
+
+    if (publish_buffer_ != nullptr) {
+        free(publish_buffer_);
+        publish_buffer_ = nullptr;
+        publish_buffer_capacity_ = 0;
     }
-    
-    return success;
+
+    publish_buffer_ = static_cast<char*>(ps_malloc(required_bytes));
+    if (!publish_buffer_) {
+        LOG_ERROR("MQTT", "Failed to allocate %u-byte PSRAM publish buffer",
+                  (unsigned)required_bytes);
+        return false;
+    }
+
+    publish_buffer_capacity_ = required_bytes;
+    LOG_DEBUG("MQTT", "Allocated reusable PSRAM publish buffer (%u bytes)",
+              (unsigned)publish_buffer_capacity_);
+    return true;
+}
+
+bool MqttManager::connect() {
+    if (!config::features::MQTT_ENABLED) {
+        return false;
+    }
+
+    LOG_DEBUG("MQTT", "Legacy connect() wrapper invoked; forwarding to state machine connection path");
+    attempt_connection();
+    return is_connected();
 }
 
 bool MqttManager::publish_data(int soc, long power, const char* timestamp, bool eth_connected) {
@@ -300,53 +303,46 @@ bool MqttManager::publish_status(const char* message, bool retained) {
 
 bool MqttManager::publish_static_specs() {
     if (!is_connected()) return false;
-    
-    // Allocate buffer in PSRAM to avoid stack overflow
-    char* buffer = (char*)ps_malloc(2048);
-    if (!buffer) {
-        LOG_ERROR("MQTT", "Failed to allocate PSRAM for static specs");
+
+    constexpr size_t kBufferSize = 2048;
+    if (!ensure_publish_buffer(kBufferSize)) {
         return false;
     }
-    
-    size_t len = StaticData::serialize_all_specs(buffer, 2048);
+
+    size_t len = StaticData::serialize_all_specs(publish_buffer_, kBufferSize);
     
     if (len > 0) {
-        bool success = client_.publish("transmitter/BE/spec_data", buffer, true); // Retained
+        bool success = client_.publish("transmitter/BE/spec_data", publish_buffer_, true); // Retained
         if (success) {
             LOG_INFO("MQTT", "Published static specs (%u bytes)", len);
         } else {
             LOG_ERROR("MQTT", "Failed to publish static specs");
         }
-        free(buffer);
         return success;
     }
     
     LOG_ERROR("MQTT", "Failed to serialize static specs");
-    free(buffer);
     return false;
 }
 
 bool MqttManager::publish_battery_specs() {
     if (!is_connected()) return false;
-    
-    // Allocate buffer in PSRAM
-    char* buffer = (char*)ps_malloc(512);
-    if (!buffer) {
-        LOG_ERROR("MQTT", "Failed to allocate PSRAM for battery specs");
+
+    constexpr size_t kBufferSize = 512;
+    if (!ensure_publish_buffer(kBufferSize)) {
         return false;
     }
-    
-    size_t len = StaticData::serialize_battery_specs(buffer, 512);
+
+    size_t len = StaticData::serialize_battery_specs(publish_buffer_, kBufferSize);
     
     bool success = false;
     if (len > 0) {
-        success = client_.publish("transmitter/BE/battery_specs", buffer, true); // Retained
+        success = client_.publish("transmitter/BE/battery_specs", publish_buffer_, true); // Retained
         if (success) {
             LOG_DEBUG("MQTT", "Published battery specs (%u bytes)", len);
         }
     }
-    
-    free(buffer);
+
     return success;
 }
 
@@ -354,51 +350,46 @@ bool MqttManager::publish_cell_data() {
     if (!is_connected()) {
         return false;
     }
-    
-    // Allocate buffer in PSRAM (needs 6KB for 96 cells + balancing + metadata)
-    char* buffer = (char*)ps_malloc(6144);
-    if (!buffer) {
-        LOG_ERROR("MQTT", "Failed to allocate PSRAM for cell data");
+
+    // Needs 6KB for 96 cells + balancing + metadata
+    constexpr size_t kBufferSize = 6144;
+    if (!ensure_publish_buffer(kBufferSize)) {
         return false;
     }
-    
-    size_t len = StaticData::serialize_cell_data(buffer, 6144);
+
+    size_t len = StaticData::serialize_cell_data(publish_buffer_, kBufferSize);
     
     bool success = false;
     if (len > 0) {
-        success = client_.publish("transmitter/BE/cell_data", buffer, true); // Retained
+        success = client_.publish("transmitter/BE/cell_data", publish_buffer_, true); // Retained
         if (success) {
             LOG_DEBUG("MQTT", "Published cell data (%u bytes)", len);
         }
     } else {
         Serial.println("[MQTT_DEBUG] serialize returned 0 bytes, not publishing");
     }
-    
-    free(buffer);
+
     return success;
 }
 
 bool MqttManager::publish_inverter_specs() {
     if (!is_connected()) return false;
-    
-    // Allocate buffer in PSRAM
-    char* buffer = (char*)ps_malloc(512);
-    if (!buffer) {
-        LOG_ERROR("MQTT", "Failed to allocate PSRAM for inverter specs");
+
+    constexpr size_t kBufferSize = 512;
+    if (!ensure_publish_buffer(kBufferSize)) {
         return false;
     }
-    
-    size_t len = StaticData::serialize_inverter_specs(buffer, 512);
+
+    size_t len = StaticData::serialize_inverter_specs(publish_buffer_, kBufferSize);
     
     bool success = false;
     if (len > 0) {
-        success = client_.publish("transmitter/BE/spec_data_2", buffer, true); // Retained
+        success = client_.publish("transmitter/BE/spec_data_2", publish_buffer_, true); // Retained
         if (success) {
             LOG_DEBUG("MQTT", "Published inverter specs (%u bytes)", len);
         }
     }
-    
-    free(buffer);
+
     return success;
 }
 
@@ -425,22 +416,20 @@ bool MqttManager::publish_battery_type_catalog() {
     obj["name"] = "None";
 #endif
 
-    char* buffer = (char*)ps_malloc(4096);
-    if (!buffer) {
-        LOG_ERROR("MQTT", "Failed to allocate PSRAM for battery type catalog");
+    constexpr size_t kBufferSize = 4096;
+    if (!ensure_publish_buffer(kBufferSize)) {
         return false;
     }
 
-    const size_t len = serializeJson(doc, buffer, 4096);
+    const size_t len = serializeJson(doc, publish_buffer_, kBufferSize);
     bool success = false;
     if (len > 0) {
-        success = client_.publish("transmitter/BE/battery_type_catalog", buffer, true);
+        success = client_.publish("transmitter/BE/battery_type_catalog", publish_buffer_, true);
         if (success) {
             LOG_INFO("MQTT", "Published battery type catalog (%u bytes)", (unsigned)len);
         }
     }
 
-    free(buffer);
     return success;
 }
 
@@ -467,22 +456,20 @@ bool MqttManager::publish_inverter_type_catalog() {
     obj["name"] = "None";
 #endif
 
-    char* buffer = (char*)ps_malloc(3072);
-    if (!buffer) {
-        LOG_ERROR("MQTT", "Failed to allocate PSRAM for inverter type catalog");
+    constexpr size_t kBufferSize = 3072;
+    if (!ensure_publish_buffer(kBufferSize)) {
         return false;
     }
 
-    const size_t len = serializeJson(doc, buffer, 3072);
+    const size_t len = serializeJson(doc, publish_buffer_, kBufferSize);
     bool success = false;
     if (len > 0) {
-        success = client_.publish("transmitter/BE/inverter_type_catalog", buffer, true);
+        success = client_.publish("transmitter/BE/inverter_type_catalog", publish_buffer_, true);
         if (success) {
             LOG_INFO("MQTT", "Published inverter type catalog (%u bytes)", (unsigned)len);
         }
     }
 
-    free(buffer);
     return success;
 }
 
@@ -544,17 +531,15 @@ bool MqttManager::publish_event_logs() {
         obj["event"] = get_event_enum_string(item.event_handle);
     }
 
-    // Allocate buffer in PSRAM for serialization
-    char* buffer = (char*)ps_malloc(6144);
-    if (!buffer) {
-        LOG_ERROR("MQTT", "Failed to allocate PSRAM for event logs");
+    constexpr size_t kBufferSize = 6144;
+    if (!ensure_publish_buffer(kBufferSize)) {
         return false;
     }
 
-    size_t len = serializeJson(doc, buffer, 6144);
+    size_t len = serializeJson(doc, publish_buffer_, kBufferSize);
     bool success = false;
     if (len > 0) {
-        success = client_.publish("transmitter/BE/event_logs", buffer, true);
+        success = client_.publish("transmitter/BE/event_logs", publish_buffer_, true);
         if (success) {
             LOG_DEBUG("MQTT", "Published %u changed event(s) (%u bytes)", (unsigned)max_events, len);
             
@@ -569,7 +554,6 @@ bool MqttManager::publish_event_logs() {
         LOG_ERROR("MQTT", "Failed to serialize event logs");
     }
 
-    free(buffer);
     return success;
 }
 

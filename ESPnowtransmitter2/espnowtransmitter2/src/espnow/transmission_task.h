@@ -63,4 +63,5 @@ private:
     
     // Rate limiting
     static constexpr uint32_t TRANSMIT_INTERVAL_MS = 50;  // 20 msg/sec max
+    static constexpr uint32_t CLEANUP_INTERVAL_MS = 10000; // Run cache cleanup every 10 seconds
 };

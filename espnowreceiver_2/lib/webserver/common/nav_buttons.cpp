@@ -10,10 +10,9 @@ String generate_nav_buttons(const char* current_uri) {
         if (current_uri != nullptr && strcmp(PAGE_DEFINITIONS[i].uri, current_uri) == 0) {
             continue;
         }
-        
-        // Skip configuration pages from navigation buttons (accessed via hub pages)
-        if (strcmp(PAGE_DEFINITIONS[i].uri, "/transmitter/config") == 0 ||
-            strcmp(PAGE_DEFINITIONS[i].uri, "/receiver/config") == 0) {
+
+        // Skip pages marked as hidden from navigation (accessed via hub pages)
+        if (PAGE_DEFINITIONS[i].hide_from_nav) {
             continue;
         }
         

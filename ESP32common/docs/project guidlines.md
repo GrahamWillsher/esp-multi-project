@@ -13,6 +13,18 @@
 - Keep protocol behavior backward-compatible unless explicitly versioned.
 - Validate changes with builds and reference checks.
 
+## Standing Policies (apply to every step)
+
+> **1. Legacy removal is mandatory at each step.**
+> All redundant, obsolete, duplicate, or compatibility-only code introduced or superseded by a step is removed at that step's completion. Code that is merely "unused but harmless" does not survive.
+
+> **2. This document is updated at each step completion.**
+> The tracking table and step notes are updated to record exactly what was changed and what was removed. The document is the single source of truth for the state of the refactor.
+
+> **3. Prefer a small signature adjustment over cloning.**
+> When a function is *almost* reusable, adjust its signature or add a parameter rather than copying it. Cloning is only acceptable when the two functions have genuinely divergent invariants that cannot be unified without breaking consumers. Every copy-for-minor-variation is a future drift bug.
+
+
 ---
 
 # 2. Repository Structure (Current Baseline)

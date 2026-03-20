@@ -13,7 +13,7 @@ volatile bool g_ack_received = false;
 volatile uint32_t g_ack_seq = 0;
 volatile uint8_t g_lock_channel = 0;
 espnow_payload_t tx_data;
-// espnow_rx_queue is defined in main.cpp (project-specific)
+// espnow_rx_queue is defined by project runtime context (project-specific)
 
 uint8_t requester_mac[6] = {0};  // Track who requested data
 
@@ -66,8 +66,7 @@ void on_espnow_recv(const uint8_t *mac_addr, const uint8_t *data, int len) {
         memcpy(msg.mac, mac_addr, 6);
         msg.len = len;
         msg.timestamp = millis();
-        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-        xQueueSendFromISR(espnow_rx_queue, &msg, &xHigherPriorityTaskWoken);
+        xQueueSend(espnow_rx_queue, &msg, 0);
         
         // CRITICAL: Also send PROBE and ACK messages to discovery queue
         // This allows active hopping task to receive ACKs independently of RX task
@@ -77,12 +76,8 @@ void on_espnow_recv(const uint8_t *mac_addr, const uint8_t *data, int len) {
             uint8_t msg_type = data[0];
             if (msg_type == msg_probe || msg_type == msg_ack) {
                 // Send to discovery queue as well (don't block if full)
-                xQueueSendFromISR(espnow_discovery_queue, &msg, &xHigherPriorityTaskWoken);
+                xQueueSend(espnow_discovery_queue, &msg, 0);
             }
-        }
-        
-        if (xHigherPriorityTaskWoken) {
-            portYIELD_FROM_ISR();
         }
     }
 }

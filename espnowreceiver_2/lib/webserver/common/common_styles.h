@@ -2,7 +2,7 @@
 #define COMMON_STYLES_H
 
 // Common CSS styles for all pages
-const char* COMMON_STYLES = R"rawliteral(
+static constexpr char COMMON_STYLES[] = R"rawliteral(
     html { font-family: Arial, Helvetica, sans-serif; display: inline-block; text-align: center; }
     body { max-width: 800px; margin: 0px auto; padding: 20px; background-color: #303841; color: white; }
     h1 { color: white; }
@@ -89,14 +89,6 @@ const char* COMMON_STYLES = R"rawliteral(
         text-align: center;
     }
     .note {
-        background-color: #ff9800;
-        color: #000;
-        padding: 15px;
-        border-radius: 10px;
-        margin: 20px 0;
-        font-weight: bold;
-    }
-    .settings-note {
         background-color: #ff9800;
         color: #000;
         padding: 15px;

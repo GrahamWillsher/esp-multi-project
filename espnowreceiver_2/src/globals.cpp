@@ -30,10 +30,6 @@ namespace Display {
 
 // ESP-NOW State (definitions)
 namespace ESPNow {
-    uint8_t received_soc = 50;
-    int32_t received_power = 0;
-    uint32_t received_voltage_mv = 0;
-    
     LEDColor current_led_color = LED_ORANGE;  // Start with orange (medium)
     LEDEffect current_led_effect = LED_EFFECT_FLASH;
 

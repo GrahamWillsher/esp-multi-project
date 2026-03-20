@@ -73,7 +73,7 @@ static esp_err_t event_logs_page_handler(httpd_req_t *req) {
 
     content += generate_nav_buttons();
 
-    String page = generatePage("Event Logs", content);
+    String page = renderPage("Event Logs", content);
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, page.c_str(), page.length());
     

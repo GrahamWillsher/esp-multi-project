@@ -6,35 +6,6 @@
 #include <firmware_metadata.h>
 
 /**
- * @brief Helper function to capitalize first letter of each word
- */
-static String capitalizeWords(const char* str) {
-    if (!str || strlen(str) == 0) return String("");
-    
-    // Convert to String first to avoid char-by-char issues
-    String input = String(str);
-    String result;
-    result.reserve(input.length() + 10);  // Pre-allocate to avoid reallocation
-    
-    bool capitalize_next = true;
-    
-    for (unsigned int i = 0; i < input.length(); i++) {
-        char c = input.charAt(i);
-        if (c == '-' || c == '_' || c == ' ') {
-            result += ' ';
-            capitalize_next = true;
-        } else if (capitalize_next) {
-            result += (char)toupper(c);
-            capitalize_next = false;
-        } else {
-            result += (char)tolower(c);
-        }
-    }
-    
-    return result;
-}
-
-/**
  * @brief Handler for the dashboard landing page
  * 
  * Shows two device cards (Transmitter + Receiver) with status indicators
@@ -72,7 +43,7 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
             // Get device name from env if available
             const char* env = TransmitterManager::getMetadataEnv();
             if (env && strlen(env) > 0) {
-                tx_device_name = capitalizeWords(env);
+                tx_device_name = String(env);
             }
         } else {
             // No metadata in cache - request it
@@ -88,7 +59,7 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
     // Get receiver device name from metadata
     String rx_device_name = "Unknown Device";
     if (FirmwareMetadata::isValid(FirmwareMetadata::metadata)) {
-        rx_device_name = capitalizeWords(FirmwareMetadata::metadata.env_name);
+        rx_device_name = String(FirmwareMetadata::metadata.env_name);
         char rx_version_str[16];
         snprintf(rx_version_str, sizeof(rx_version_str), "%d.%d.%d",
                  FirmwareMetadata::metadata.version_major,
@@ -98,7 +69,7 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
     }
     
     String content = R"rawliteral(
-    <h1>ESP-NOW System Dashboard</h1>
+    <h1>Battery Emulator System Dashboard</h1>
     
     <div style='display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin: 30px 0;'>
         
@@ -108,7 +79,7 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
                 <div onmouseover='this.parentElement.style.transform="translateY(-5px)"; this.parentElement.style.boxShadow="0 8px 20px rgba(0,0,0,0.3)";' 
                      onmouseout='this.parentElement.style.transform="translateY(0)"; this.parentElement.style.boxShadow="0 4px 6px rgba(0,0,0,0.2)";'>
                     <h2 style='margin: 0 0 15px 0; color: #2196F3;'>📡 Transmitter</h2>
-                    <p style='color: #888; font-size: 14px; margin: 5px 0;'>)rawliteral";
+                    <p id='txDeviceName' style='color: #888; font-size: 14px; margin: 5px 0;'>)rawliteral";
     content += tx_device_name;
     content += R"rawliteral(</p>
                     
@@ -164,7 +135,7 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
                 <div onmouseover='this.parentElement.style.transform="translateY(-5px)"; this.parentElement.style.boxShadow="0 8px 20px rgba(0,0,0,0.3)";' 
                      onmouseout='this.parentElement.style.transform="translateY(0)"; this.parentElement.style.boxShadow="0 4px 6px rgba(0,0,0,0.2)";'>
                     <h2 style='margin: 0 0 15px 0; color: #4CAF50;'>📱 Receiver</h2>
-                    <p style='color: #888; font-size: 14px; margin: 5px 0;'>)rawliteral";
+                    <p id='rxDeviceName' style='color: #888; font-size: 14px; margin: 5px 0;'>)rawliteral";
     content += rx_device_name;
     content += R"rawliteral(</p>
                     
@@ -448,6 +419,19 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
             }
         }
 
+        function formatEnvName(env) {
+            if (!env) return 'Unknown Device';
+            const spaced = String(env).replace(/[-_]+/g, ' ').trim();
+            return spaced.replace(/\b\w/g, c => c.toUpperCase());
+        }
+
+        function applyFormattedDeviceNames() {
+            const txEl = document.getElementById('txDeviceName');
+            const rxEl = document.getElementById('rxDeviceName');
+            if (txEl) txEl.textContent = formatEnvName(txEl.textContent);
+            if (rxEl) rxEl.textContent = formatEnvName(rxEl.textContent);
+        }
+
         
         // Update transmitter data every 2 seconds (match transmission rate)
         setInterval(async function() {
@@ -606,6 +590,7 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
         
         // Load event logs on page load
         window.addEventListener('load', function() {
+            applyFormattedDeviceNames();
             loadEventLogs();
         });
 
@@ -636,7 +621,7 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
     </script>
     )rawliteral";
     
-    String page = generatePage("Dashboard", content, "/");
+    String page = renderPage("Dashboard", content);
     return httpd_resp_send(req, page.c_str(), page.length());
 }
 

@@ -102,6 +102,7 @@ public:
     
 private:
     uint8_t current_backlight_ = 0;  // Track current brightness state
+    float backlight_dither_error_ = 0.0f;
 
     // Stateful rendering cache (previously hidden function-local statics)
     int16_t last_backlight_logged_ = -1;
@@ -109,10 +110,8 @@ private:
     bool soc_gradient_initialized_ = false;
 
     bool power_bar_initialized_ = false;
-    int power_bar_char_width_ = 0;
-    int power_bar_max_bars_per_side_ = 0;
-    uint16_t power_bar_gradient_green_[LayoutSpec::PowerBar::MAX_BARS_PER_SIDE] = {0};
-    uint16_t power_bar_gradient_red_[LayoutSpec::PowerBar::MAX_BARS_PER_SIDE] = {0};
+    uint16_t power_bar_gradient_green_[LayoutSpec::PowerBar::SEGMENTS_PER_SIDE] = {0};
+    uint16_t power_bar_gradient_red_[LayoutSpec::PowerBar::SEGMENTS_PER_SIDE] = {0};
     int power_bar_previous_signed_bars_ = 0;
     int32_t power_bar_last_power_text_ = 2147483647;
     
@@ -170,33 +169,25 @@ private:
     void draw_soc(float soc_percent);
 
     // Power-bar rendering helpers
-    void init_power_bar_state(int& bar_char_width,
-                              int& max_bars_per_side,
-                              uint16_t* gradient_green,
-                              uint16_t* gradient_red);
+    void init_power_bar_state();
     int calculate_power_bar_count(int32_t clamped_power,
                                   int max_bars_per_side,
                                   int32_t max_power) const;
     bool should_pulse_animate(int signed_bars,
                               int previous_signed_bars) const;
+    /// Draw centre segment plus `bars` side segments using fillRect.
+    /// ripple_pos: 0-based index from centre outward to dim (-1 = none).
     void draw_power_bars(int bars,
                          bool charging,
-                         int center_x,
-                         int bar_y,
-                         int bar_char_width,
                          const uint16_t* gradient_green,
                          const uint16_t* gradient_red,
                          int ripple_pos = -1);
+    /// Clear only the segments that were active before but are not active now.
     void clear_power_bar_residuals(int bars,
                                    bool charging,
-                                   int previous_signed_bars,
-                                   int center_x,
-                                   int bar_y,
-                                   int bar_char_width);
-    void draw_zero_power_marker(int center_x,
-                                int bar_y,
-                                int max_bars_per_side,
-                                int bar_char_width);
+                                   int previous_signed_bars);
+    /// Draw the always-visible centre segment (zero-power state).
+    void draw_zero_power_marker();
     void draw_power_text_if_changed(int32_t power_w,
                                     int center_x,
                                     int text_y,

@@ -287,7 +287,7 @@ static esp_err_t cellmonitor_handler(httpd_req_t *req) {
     </script>
     )rawliteral";
 
-    String page = generatePage("Cell Monitor", content, "/cellmonitor");
+    String page = renderPage("Cell Monitor", content);
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, page.c_str(), page.length());
     return ESP_OK;
