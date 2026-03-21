@@ -3,10 +3,10 @@
 **Attribution**: This work is completely based on Dala the Great’s Battery Emulator: https://github.com/dalathegreat/Battery-Emulator
 **Scope**: The goal is to split that project into two devices — one for control and one for display — with communication between them. If the display device stops working, it does not interfere with the main control device.
 
-**Version**: 1.3 (Current Workspace Baseline)  
+**Version**: 1.4 (Service Integration Results Merged)  
 **Date**: March 20, 2026  
 **Device**: Olimex ESP32-POE2 (Transmitter)  
-**Status**: Active development baseline (build passing in current workspace)
+**Status**: Active development — OTA hardening complete through Phase D; service integration progress merged
 
 ---
 
@@ -51,7 +51,7 @@ Build a **real-time battery monitoring and control system** that transmits CAN b
 | **ESP-NOW transmission** | Low-power wireless to receiver | ✅ Section 11 |
 | **Cable detection** | Physical Ethernet presence verification | ✅ New |
 | **MQTT telemetry** | Cloud reporting (if Ethernet available) | ✅ Phase 3 |
-| **OTA firmware updates** | Remote code deployment via Ethernet | ✅ Phase 3 |
+| **OTA firmware updates** | Remote code deployment, anti-brick boot guard + rollback | ✅ Phase D |
 | **NTP time sync** | Accurate timestamps via Ethernet | ✅ Phase 2 |
 | **Heartbeat protocol** | Connection health monitoring (10s interval) | ✅ Section 11 |
 | **State machine control** | Deterministic system behavior | ✅ New |
@@ -88,6 +88,8 @@ This addendum is the current authoritative map for structure and operation.
   - version/protocol constants: `../../esp32common/firmware_version.h`
   - heartbeat protocol reference: `../../esp32common/docs/ESPNOW_HEARTBEAT.md`
   - OTA auth/session utilities: `../../esp32common/webserver_common_utils/include/webserver_common_utils/ota_auth_utils.h`, `../../esp32common/webserver_common_utils/include/webserver_common_utils/ota_session_utils.h`
+  - OTA boot guard (shared): `../../esp32common/runtime_common_utils/include/runtime_common_utils/ota_boot_guard.h`
+  - firmware compatibility policy (shared): `../../esp32common/firmware_metadata/firmware_compatibility_policy.h`
   - transmitter OTA runtime/HTTP server: `src/network/ota_manager.cpp`
 
 4. **NTP and timing**
@@ -277,7 +279,7 @@ if (EthernetManager::instance().is_link_present()) {
 - Service checks: `is_fully_ready()` before network operations
 - Dual gating: Heartbeat checks both states
 
-**Reference**: [SERVICE_INTEGRATION_GUIDE.md](SERVICE_INTEGRATION_GUIDE.md)
+**Reference**: [OTA & Service Integration Status](#ota--service-integration-status)
 
 ---
 
@@ -330,6 +332,45 @@ MQTT Task (if Ethernet ready)
 
 ---
 
+## OTA & Service Integration Status
+
+Derived from: `../../esp32common/docs/systemworks/service integration.md` (last updated: March 2026)
+
+### Completed Phases
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| A.1 | Shared OTA boot-guard utility (`runtime_common_utils/ota_boot_guard`) added to `esp32common` | ✅ |
+| A.2 | Transmitter boot-guard integrated (pending-verify detect + health gate + confirm/rollback) | ✅ |
+| A.3 | Receiver boot-guard integrated (same contract as transmitter) | ✅ |
+| A.4 | OTA status/health enriched with boot-guard and rollback state fields | ✅ |
+| B.1 | Receiver self-OTA endpoint implemented and registered (`/api/ota_upload_receiver`) | ✅ |
+| B.2a | OTA transaction ID telemetry (`ota_txn_id`) exposed by both device status APIs | ✅ |
+| B.2b | Full two-phase commit state telemetry (`commit_state`, `commit_detail`, post-reboot polling) | ✅ |
+| C.1 | OTA PSK loaded from provisioned NVS source (`security/ota_psk`); placeholder default blocked | ✅ |
+| C.2a | Manifest image-hash verification (`X-OTA-Image-SHA256`) enforced during OTA stream | ✅ |
+| C.3a | Receiver OTA UI preflight compatibility gate (device type + major version checks) | ✅ |
+| C.3b | Server-side compatibility enforcement on OTA upload endpoints (both devices) | ✅ |
+| NTP.1 | NTP lifecycle moved under `ServiceSupervisor` Ethernet callback ownership | ✅ |
+| D.1 | Commit-verification monitor hardened: txn-mismatch rollback detection, `boot_guard_error`, reboot-window progress, timeout diagnostics | ✅ |
+| D.2 | Shared `FirmwareCompatibilityPolicy` utility extracted into `esp32common`; consumed by both OTA endpoints | ✅ |
+
+### Open / Remaining Items
+
+| Item | Description | Priority |
+|------|-------------|----------|
+| 4.1.5 | Replace default OTA PSK path with provisioned secret (verify transmitter config) | Medium |
+| 4.3.3 | Add common OTA transaction schema for status and telemetry | Medium |
+| C.2b ⏭️ | Detached artifact signature / public-key verification (skipped for now) | Low |
+| 4.1.4 ⏭️ | Integration tests for Ethernet flap + MQTT/NTP/OTA behavior (skipped for now) | Low |
+
+### New Shared Utilities in `esp32common`
+
+- **`firmware_metadata/firmware_compatibility_policy.h/.cpp`** — `FirmwareCompatibilityPolicy::MetadataScan` (sliding-window scanner), `validate_scan()` multi-rule policy (device type, major version, `min_compatible_major`). Consumed by `ota_manager.cpp` (transmitter) and `api_control_handlers.cpp` (receiver).
+- **`runtime_common_utils/ota_boot_guard.h/.cpp`** — Boot-pending detection, health-gated confirm/rollback. Called from setup paths on both devices.
+
+---
+
 ## Hardware & GPIO Allocation
 
 ### GPIO Reference Documentation
@@ -369,9 +410,9 @@ Use the following current documents for hardware pin allocation and conflicts:
 - Shared packet-level communication architecture
 - Inter-device message flow context used by both transmitter and receiver
 
-### Service Integration Guide
+### Service Integration (Merged)
 
-**SERVICE_INTEGRATION_GUIDE.md** - How to use state machines with services
+Service integration guidance and progress are merged into this document.
 - Gating patterns (when to start/stop services)
 - Callback registration
 - Error handling
@@ -421,11 +462,11 @@ Week 1: Ethernet state machine + tests
   └─ Integration testing
   
 Week 2: Service integration
-  ├─ Update MQTT gating
-  ├─ Update NTP gating
-  ├─ Update OTA gating
-  ├─ Test real Ethernet scenarios
-  └─ Regression testing
+  ├─ ✅ Completed: MQTT gating update
+  ├─ ✅ Completed: NTP gating update
+  ├─ ✅ Completed: OTA gating update
+  ├─ ⏳ Remaining: Test real Ethernet scenarios
+  └─ ⏳ Remaining: Regression testing
   
 Week 3: Field trial
   ├─ Deploy to test site
@@ -456,17 +497,17 @@ After the first production build, prioritize these enhancements:
    - Benefit: Stable during intermittent connections
    - Reference: [POST_RELEASE_IMPROVEMENTS.md](POST_RELEASE_IMPROVEMENTS.md#link-flap-debouncing)
 
-2. **MQTT Reconnection Logic** (3 days)
-   - Problem: MQTT doesn't auto-reconnect on disconnect
-   - Solution: Retry backoff (exponential) with max attempts
-   - Benefit: Reliable cloud reporting
-   - Reference: [POST_RELEASE_IMPROVEMENTS.md](POST_RELEASE_IMPROVEMENTS.md#mqtt-reconnection)
+2. **MQTT Reconnection Logic** ✅ Implemented
+   - `MqttManager::update()` gates connection attempts on `EthernetManager::is_fully_ready()`.
+   - Retry backoff and reconnect logic implemented; lifecycle start/stop tied to Ethernet callbacks via `ServiceSupervisor`.
+   - Reference: `src/network/mqtt_manager.cpp`, `src/network/service_supervisor.cpp`
 
-3. **OTA Rollback** (2 days)
-   - Problem: Failed OTA leaves device bricked
-   - Solution: Validate firmware signature, rollback on CRC error
-   - Benefit: Safer remote updates
-   - Reference: [POST_RELEASE_IMPROVEMENTS.md](POST_RELEASE_IMPROVEMENTS.md#ota-rollback)
+3. **OTA Rollback** ✅ Implemented
+   - Boot guard (`ota_boot_guard`) integrated on both devices; marks app valid only after health gate passes, triggers rollback on failure.
+   - Two-phase commit telemetry (`ota_txn_id`, `commit_state`, `commit_detail`) tracks the OTA cycle through reboot and post-boot validation.
+   - Commit-verification monitor detects rollback-by-txn-mismatch, `boot_guard_error` state, and reboot-window progress; surfaces detailed timeout diagnostics.
+   - Server-side compatibility enforcement (device type + major version) blocks incompatible firmware images at upload time.
+   - Reference: `../../esp32common/docs/systemworks/service integration.md` (Phases A–D)
 
 #### Medium Priority (Quality of life)
 
@@ -605,28 +646,28 @@ This master document references the following technical documents. Start with th
 1. **PROJECT_ARCHITECTURE_MASTER.md** (this file) - High-level overview
 2. **ETHERNET_STATE_MACHINE_TECHNICAL_REFERENCE.md** - State machine details
 3. **TRANSMITTER_STATE_MACHINE_IMPLEMENTATION.md** - Wireless protocol states
-4. **SERVICE_INTEGRATION_GUIDE.md** - How to use state machines
-5. **TASK_ARCHITECTURE_AND_SERVICE_ISOLATION.md** - FreeRTOS task design
-6. **ETHERNET_STATE_MACHINE_COMPLETE_IMPLEMENTATION.md** - Production code
-7. **POST_RELEASE_IMPROVEMENTS.md** - Future enhancements
-8. **ETHERNET_TIMING_ANALYSIS.md** - Historical debugging notes
-9. **STATE_MACHINE_ARCHITECTURE_ANALYSIS.md** - Architecture decision log
-10. **../../esp32common/docs/ESP-NOW_Communication_Architecture.md** - Shared ESP-NOW protocol architecture
-11. **../../esp32common/docs/MQTT_LOGGER_IMPLEMENTATION.md** - Shared MQTT logging integration details
-12. **../../espnowreceiver_2/PROJECT_ARCHITECTURE_MASTER.md** - Receiver architecture master document
-13. **../../esp32common/docs/project guidlines.md** - Cross-project coding and architecture rules
+4. **TASK_ARCHITECTURE_AND_SERVICE_ISOLATION.md** - FreeRTOS task design
+5. **ETHERNET_STATE_MACHINE_COMPLETE_IMPLEMENTATION.md** - Production code
+6. **POST_RELEASE_IMPROVEMENTS.md** - Future enhancements
+7. **ETHERNET_TIMING_ANALYSIS.md** - Historical debugging notes
+8. **STATE_MACHINE_ARCHITECTURE_ANALYSIS.md** - Architecture decision log
+9. **../../esp32common/docs/ESP-NOW_Communication_Architecture.md** - Shared ESP-NOW protocol architecture
+10. **../../esp32common/docs/MQTT_LOGGER_IMPLEMENTATION.md** - Shared MQTT logging integration details
+11. **../../espnowreceiver_2/PROJECT_ARCHITECTURE_MASTER.md** - Receiver architecture master document
+12. **../../esp32common/docs/project guidlines.md** - Cross-project coding and architecture rules
+13. **../../esp32common/docs/systemworks/service integration.md** - MQTT/NTP/OTA service integration investigation and live phase progress tracking
 
 ---
 
 ## Support & Questions
 
-**For implementation questions**: See SERVICE_INTEGRATION_GUIDE.md  
+**For implementation questions**: See [OTA & Service Integration Status](#ota--service-integration-status)  
 **For state machine details**: See ETHERNET_STATE_MACHINE_TECHNICAL_REFERENCE.md  
 **For debugging**: See TASK_ARCHITECTURE_AND_SERVICE_ISOLATION.md  
 **For future work**: See POST_RELEASE_IMPROVEMENTS.md
 
 ---
 
-**Status**: ✅ Ready for First Production Release  
-**Next Step**: Run 7 test scenarios, then proceed to integration testing
+**Status**: ✅ OTA hardening complete through Phase D; service integration results merged (v1.4)  
+**Next Step**: Complete remaining open items (4.1.5 OTA PSK config, 4.3.3 transaction schema), then run 7 integration test scenarios for final release sign-off
 
