@@ -182,9 +182,6 @@ private:
     ValidationResult validate_contactor_settings() const;
     ValidationResult validate_all_settings() const;
 
-    // CRC helper
-    static uint32_t calculate_crc32(const void* data, size_t length);
-    
     // Battery settings storage
     uint32_t battery_capacity_wh_{30000};              // 30kWh default
     uint32_t battery_max_voltage_mv_{58000};           // 58V default

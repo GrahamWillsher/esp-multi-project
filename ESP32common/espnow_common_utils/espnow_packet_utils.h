@@ -2,6 +2,7 @@
 #define ESPNOW_PACKET_UTILS_H
 
 #include <Arduino.h>
+#include <cstring>
 #include <esp32common/espnow/common.h>
 
 namespace EspnowPacketUtils {
@@ -93,20 +94,25 @@ namespace EspnowPacketUtils {
     }
 
     /**
-     * @brief Print packet info to serial for debugging
-     * 
+     * @brief Print packet info for debugging.
+     *
+     * Emits a structured log at DEBUG level via ESP_LOGD; compiles to a no-op
+     * when CORE_DEBUG_LEVEL < 4 (release builds), incurring zero runtime cost.
+     * Routes through the ESP-IDF log infrastructure so runtime level changes
+     * and log backends are respected.
+     *
      * @param info PacketInfo to print
      * @param subtype_name Optional human-readable subtype name
      */
     inline void print_packet_info(const PacketInfo& info, const char* subtype_name = nullptr) {
         if (subtype_name) {
-            Serial.printf("[PACKET] %s: seq=%u, frag=%u/%u, len=%u, checksum=0x%04X\n",
-                         subtype_name, info.seq, info.frag_index, info.frag_total, 
-                         info.payload_len, info.checksum);
+            ESP_LOGD("espnow_pkt", "%s: seq=%u, frag=%u/%u, len=%u, checksum=0x%04X",
+                     subtype_name, info.seq, info.frag_index, info.frag_total,
+                     info.payload_len, info.checksum);
         } else {
-            Serial.printf("[PACKET] subtype=%u: seq=%u, frag=%u/%u, len=%u, checksum=0x%04X\n",
-                         info.subtype, info.seq, info.frag_index, info.frag_total, 
-                         info.payload_len, info.checksum);
+            ESP_LOGD("espnow_pkt", "subtype=%u: seq=%u, frag=%u/%u, len=%u, checksum=0x%04X",
+                     info.subtype, info.seq, info.frag_index, info.frag_total,
+                     info.payload_len, info.checksum);
         }
     }
 
@@ -182,6 +188,81 @@ namespace EspnowPacketUtils {
         const uint8_t* bytes = reinterpret_cast<const uint8_t*>(message);
         const uint16_t* stored_checksum = reinterpret_cast<const uint16_t*>(bytes + sizeof(T) - sizeof(uint16_t));
         return calculated == *stored_checksum;
+    }
+
+    /**
+     * @brief Calculate standard CRC32-IEEE for an arbitrary byte buffer.
+     *
+     * This is the canonical project-owned CRC32 implementation used for
+     * persisted settings blobs and other non-wire integrity checks.
+     */
+    inline uint32_t crc32_packet(const void* data, size_t len) {
+        if (!data || len == 0) {
+            return 0;
+        }
+
+        uint32_t crc = 0xFFFFFFFFu;
+        const uint8_t* bytes = reinterpret_cast<const uint8_t*>(data);
+        for (size_t index = 0; index < len; ++index) {
+            crc ^= bytes[index];
+            for (uint8_t bit = 0; bit < 8; ++bit) {
+                if ((crc & 1u) != 0) {
+                    crc = (crc >> 1) ^ 0xEDB88320u;
+                } else {
+                    crc >>= 1;
+                }
+            }
+        }
+
+        return crc ^ 0xFFFFFFFFu;
+    }
+
+    /**
+     * @brief Calculate CRC32 over a full message/struct.
+     */
+    template<typename T>
+    inline uint32_t calculate_message_crc32(const T* message) {
+        if (!message) {
+            return 0;
+        }
+        return crc32_packet(message, sizeof(T));
+    }
+
+    /**
+     * @brief Calculate CRC32 for a message with a trailing uint32_t CRC field.
+     *
+     * The last 4 bytes are zeroed before CRC calculation. This matches the
+     * persisted settings blob contract used by the transmitter.
+     */
+    template<typename T>
+    inline uint32_t calculate_message_crc32_zeroed(const T* message) {
+        static_assert(sizeof(T) >= sizeof(uint32_t), "Message must be large enough to contain trailing CRC32");
+
+        if (!message) {
+            return 0;
+        }
+
+        T copy = *message;
+        uint8_t* bytes = reinterpret_cast<uint8_t*>(&copy);
+        memset(bytes + sizeof(T) - sizeof(uint32_t), 0, sizeof(uint32_t));
+        return crc32_packet(bytes, sizeof(T));
+    }
+
+    /**
+     * @brief Verify CRC32 for a message with a trailing uint32_t CRC field.
+     */
+    template<typename T>
+    inline bool verify_message_crc32(const T* message) {
+        static_assert(sizeof(T) >= sizeof(uint32_t), "Message must be large enough to contain trailing CRC32");
+
+        if (!message) {
+            return false;
+        }
+
+        uint32_t stored_crc = 0;
+        const uint8_t* bytes = reinterpret_cast<const uint8_t*>(message);
+        memcpy(&stored_crc, bytes + sizeof(T) - sizeof(uint32_t), sizeof(stored_crc));
+        return calculate_message_crc32_zeroed(message) == stored_crc;
     }
 
 } // namespace EspnowPacketUtils

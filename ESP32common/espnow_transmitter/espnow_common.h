@@ -264,7 +264,7 @@ typedef struct __attribute__((packed)) {
     uint8_t  state;         // Connection state enum
     uint8_t  rssi;          // Last RX RSSI (if known, 0 if N/A)
     uint8_t  flags;         // Status flags (e.g., low_batt, degraded)
-    uint16_t checksum;      // CRC16 checksum
+    uint32_t checksum;      // CRC32 checksum
 } heartbeat_t;
 
 // Heartbeat acknowledgment (receiver confirms receipt)
@@ -273,7 +273,7 @@ typedef struct __attribute__((packed)) {
     uint32_t ack_seq;       // Sequence number being acknowledged
     uint64_t uptime_ms;     // Receiver uptime in milliseconds (64-bit to avoid overflow after 49 days)
     uint8_t  state;         // Receiver connection state
-    uint16_t checksum;      // CRC16 checksum
+    uint32_t checksum;      // CRC32 checksum
 } heartbeat_ack_t;
 
 // Placeholder config types (simplified for now - will expand in Phase 3)

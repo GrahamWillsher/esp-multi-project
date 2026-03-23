@@ -85,65 +85,28 @@ bool DiscoveryTask::attempt_restart_once() {
     metrics_.total_restarts++;
 
     // STEP 1: Remove ALL ESP-NOW peers for guaranteed clean slate
-    cleanup_all_peers();
+    restart_cleanup_peers();
 
     // STEP 2: Force channel lock and verify
-    // g_lock_channel: ISR-written locked channel from earlier discovery phase.
-    // Used to restore WiFi to the known receiver channel after recovery.
-    if (!force_and_verify_channel(g_lock_channel)) {
-        restart_failure_count_++;
-        metrics_.failed_restarts++;
-
-        if (restart_failure_count_ >= MAX_RESTART_FAILURES) {
-            LOG_ERROR("DISCOVERY", "✗ Maximum restart failures reached (%d) - system needs attention",
-                     MAX_RESTART_FAILURES);
-            TxStateMachine::instance().set_state(TxStateMachine::ConnectionState::FAILED, "max discovery restart failures");
-            transition_to(RecoveryState::PERSISTENT_FAILURE);
-            restart_in_progress_ = false;
-            return false;
-        }
-
-        const uint32_t backoff_ms = TxStateMachine::instance().next_backoff_ms();
-        LOG_WARN("DISCOVERY", "Restart attempt failed, scheduling retry in %lums", backoff_ms);
-        schedule_restart_retry(backoff_ms);
-        transition_to(RecoveryState::RESTART_FAILED);
-        restart_in_progress_ = false;
-        return false;
+    if (!restart_lock_channel()) {
+        return handle_restart_failure(
+            "✗ Maximum restart failures reached - system needs attention",
+            "Restart attempt failed, scheduling retry in",
+            "max discovery restart failures"
+        );
     }
 
     // STEP 3: Restart discovery task with clean state
-    EspnowDiscovery::instance().restart();
-    task_handle_ = EspnowDiscovery::instance().get_task_handle();
-
-    // Give new task time to stabilize
-    delay(TimingConfig::RESTART_STABILIZATION_DELAY_MS);
+    restart_relaunch_discovery();
 
     // STEP 4: Final verification
     uint8_t verify_ch = 0;
-    wifi_second_chan_t second;
-    esp_wifi_get_channel(&verify_ch, &second);
-
-    // g_lock_channel: ISR-written value — verify that WiFi actually locked to it.
-    if (verify_ch != g_lock_channel) {
-        LOG_ERROR("DISCOVERY", "✗ Post-restart channel mismatch: %d != %d", verify_ch, g_lock_channel);
-        metrics_.failed_restarts++;
-        restart_failure_count_++;
-
-        if (restart_failure_count_ >= MAX_RESTART_FAILURES) {
-            LOG_ERROR("DISCOVERY", "✗ Maximum restart failures reached (%d) after post-restart verification",
-                     MAX_RESTART_FAILURES);
-            TxStateMachine::instance().set_state(TxStateMachine::ConnectionState::FAILED, "post-restart verification failed");
-            transition_to(RecoveryState::PERSISTENT_FAILURE);
-            restart_in_progress_ = false;
-            return false;
-        }
-
-        const uint32_t backoff_ms = TxStateMachine::instance().next_backoff_ms();
-        LOG_WARN("DISCOVERY", "Post-restart verification failed, scheduling retry in %lums", backoff_ms);
-        schedule_restart_retry(backoff_ms);
-        transition_to(RecoveryState::RESTART_FAILED);
-        restart_in_progress_ = false;
-        return false;
+    if (!restart_verify_channel(verify_ch)) {
+        return handle_restart_failure(
+            "✗ Maximum restart failures reached after post-restart verification",
+            "Post-restart verification failed, scheduling retry in",
+            "post-restart verification failed"
+        );
     }
 
     // Success!
@@ -166,6 +129,68 @@ bool DiscoveryTask::attempt_restart_once() {
     transition_to(RecoveryState::NORMAL);
     restart_in_progress_ = false;
     return true;
+}
+
+void DiscoveryTask::restart_cleanup_peers() {
+    cleanup_all_peers();
+}
+
+bool DiscoveryTask::restart_lock_channel() {
+    // g_lock_channel: ISR-written locked channel from earlier discovery phase.
+    // Used to restore WiFi to the known receiver channel after recovery.
+    return force_and_verify_channel(g_lock_channel);
+}
+
+void DiscoveryTask::restart_relaunch_discovery() {
+    EspnowDiscovery::instance().restart();
+    task_handle_ = EspnowDiscovery::instance().get_task_handle();
+
+    // Give new task time to stabilize (cooperative, non-blocking wait)
+    restart_wait_for_stabilization();
+}
+
+void DiscoveryTask::restart_wait_for_stabilization() const {
+    const uint32_t wait_ms = TimingConfig::RESTART_STABILIZATION_DELAY_MS;
+    const uint32_t start_ms = millis();
+
+    while ((millis() - start_ms) < wait_ms) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+bool DiscoveryTask::restart_verify_channel(uint8_t& verify_channel) const {
+    wifi_second_chan_t second;
+    esp_wifi_get_channel(&verify_channel, &second);
+
+    // g_lock_channel: ISR-written value — verify that WiFi actually locked to it.
+    if (verify_channel != g_lock_channel) {
+        LOG_ERROR("DISCOVERY", "✗ Post-restart channel mismatch: %d != %d", verify_channel, g_lock_channel);
+        return false;
+    }
+
+    return true;
+}
+
+bool DiscoveryTask::handle_restart_failure(const char* max_failure_log,
+                                           const char* retry_log,
+                                           const char* failure_state_reason) {
+    restart_failure_count_++;
+    metrics_.failed_restarts++;
+
+    if (restart_failure_count_ >= MAX_RESTART_FAILURES) {
+        LOG_ERROR("DISCOVERY", "%s (%d)", max_failure_log, MAX_RESTART_FAILURES);
+        TxStateMachine::instance().set_state(TxStateMachine::ConnectionState::FAILED, failure_state_reason);
+        transition_to(RecoveryState::PERSISTENT_FAILURE);
+        restart_in_progress_ = false;
+        return false;
+    }
+
+    const uint32_t backoff_ms = TxStateMachine::instance().next_backoff_ms();
+    LOG_WARN("DISCOVERY", "%s %lums", retry_log, backoff_ms);
+    schedule_restart_retry(backoff_ms);
+    transition_to(RecoveryState::RESTART_FAILED);
+    restart_in_progress_ = false;
+    return false;
 }
 
 void DiscoveryTask::schedule_restart_retry(uint32_t delay_ms) {

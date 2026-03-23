@@ -14,11 +14,10 @@
 #include <PubSubClient.h>
 #include <LittleFS.h>
 
-// External references to global variables (backward-compatible aliases)
-// These reference the namespaced variables defined in globals.cpp
-extern bool& test_mode_enabled;
-extern volatile int& g_test_soc;
-extern volatile int32_t& g_test_power;
+// Legacy compatibility globals (defined in src/globals.cpp)
+extern bool test_mode_enabled;
+extern volatile int g_test_soc;
+extern volatile int32_t g_test_power;
 
 // ═══════════════════════════════════════════════════════════════════════
 // NOTE: PAGE_DEFINITIONS moved to page_definitions.h/cpp

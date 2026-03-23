@@ -34,11 +34,11 @@ namespace TaskConfig {
      * Handles MQTT connections, pub/sub operations, and network I/O.
      * May need larger stack for JSON serialization and MQTT operations.
      * 
-    * Current: 8192 bytes
+    * Current: 10240 bytes
      * Minimum: 2048 bytes
      * Increase if: MQTT operations fail or task crashes
      */
-    constexpr uint32_t MQTT_CLIENT_STACK = 8192;
+    constexpr uint32_t MQTT_CLIENT_STACK = 10240;
 
     /**
      * @brief Display renderer task stack size

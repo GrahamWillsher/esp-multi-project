@@ -5,7 +5,28 @@
 #include "../espnow/espnow_send.h"
 #include "../espnow/type_catalog_cache.h"
 #include <ArduinoJson.h>
+#include <array>
 #include <cstring>
+
+namespace {
+
+constexpr uint32_t fnv1a_const(const char* str, uint32_t hash = 2166136261u) {
+    return (*str == '\0') ? hash : fnv1a_const(str + 1, (hash ^ static_cast<uint8_t>(*str)) * 16777619u);
+}
+
+uint32_t fnv1a_runtime(const char* str) {
+    uint32_t hash = 2166136261u;
+    while (str && *str) {
+        hash ^= static_cast<uint8_t>(*str++);
+        hash *= 16777619u;
+    }
+    return hash;
+}
+
+std::array<TypeCatalogCache::TypeEntry, 128> g_battery_catalog_scratch{};
+std::array<TypeCatalogCache::TypeEntry, 128> g_inverter_catalog_scratch{};
+
+} // namespace
 
 // Static member initialization
 WiFiClient MqttClient::wifi_client_;
@@ -137,26 +158,53 @@ void MqttClient::messageCallback(char* topic, uint8_t* payload, unsigned int len
     LOG_DEBUG("MQTT", "Message received on topic: %s (%u bytes)", topic, length);
     const char* json_payload = reinterpret_cast<const char*>(payload);
 
-    struct TopicRoute {
-        const char* topic;
-        void (*handler)(const char*, size_t);
-    };
-
-    static const TopicRoute kTopicRoutes[] = {
-        {"transmitter/BE/spec_data", &MqttClient::handleSpecData},
-        {"transmitter/BE/spec_data_2", &MqttClient::handleSpecData2},
-        {"transmitter/BE/battery_specs", &MqttClient::handleBatterySpecs},
-        {"transmitter/BE/battery_type_catalog", &MqttClient::handleBatteryTypeCatalog},
-        {"transmitter/BE/inverter_type_catalog", &MqttClient::handleInverterTypeCatalog},
-        {"transmitter/BE/cell_data", &MqttClient::handleCellData},
-        {"transmitter/BE/event_logs", &MqttClient::handleEventLogs},
-    };
-
-    for (const auto& route : kTopicRoutes) {
-        if (strcmp(topic, route.topic) == 0) {
-            route.handler(json_payload, length);
-            return;
-        }
+    // Hash-based dispatch keeps topic handling O(1)-like for small fixed route sets,
+    // while retaining strcmp guards to eliminate any practical collision risk.
+    switch (fnv1a_runtime(topic)) {
+        case fnv1a_const("transmitter/BE/spec_data"):
+            if (strcmp(topic, "transmitter/BE/spec_data") == 0) {
+                handleSpecData(json_payload, length);
+                return;
+            }
+            break;
+        case fnv1a_const("transmitter/BE/spec_data_2"):
+            if (strcmp(topic, "transmitter/BE/spec_data_2") == 0) {
+                handleSpecData2(json_payload, length);
+                return;
+            }
+            break;
+        case fnv1a_const("transmitter/BE/battery_specs"):
+            if (strcmp(topic, "transmitter/BE/battery_specs") == 0) {
+                handleBatterySpecs(json_payload, length);
+                return;
+            }
+            break;
+        case fnv1a_const("transmitter/BE/battery_type_catalog"):
+            if (strcmp(topic, "transmitter/BE/battery_type_catalog") == 0) {
+                handleBatteryTypeCatalog(json_payload, length);
+                return;
+            }
+            break;
+        case fnv1a_const("transmitter/BE/inverter_type_catalog"):
+            if (strcmp(topic, "transmitter/BE/inverter_type_catalog") == 0) {
+                handleInverterTypeCatalog(json_payload, length);
+                return;
+            }
+            break;
+        case fnv1a_const("transmitter/BE/cell_data"):
+            if (strcmp(topic, "transmitter/BE/cell_data") == 0) {
+                handleCellData(json_payload, length);
+                return;
+            }
+            break;
+        case fnv1a_const("transmitter/BE/event_logs"):
+            if (strcmp(topic, "transmitter/BE/event_logs") == 0) {
+                handleEventLogs(json_payload, length);
+                return;
+            }
+            break;
+        default:
+            break;
     }
 
     LOG_DEBUG("MQTT", "Ignoring message on unhandled topic: %s", topic);
@@ -260,11 +308,8 @@ void MqttClient::handleBatteryTypeCatalog(const char* json_payload, size_t lengt
         return;
     }
 
-    auto* entries = new TypeCatalogCache::TypeEntry[128]{};
-    if (!entries) {
-        LOG_ERROR("MQTT", "OOM allocating battery type catalog parse buffer");
-        return;
-    }
+    auto& entries = g_battery_catalog_scratch;
+    entries.fill({});
 
     size_t count = 0;
     for (JsonVariant v : types) {
@@ -285,10 +330,8 @@ void MqttClient::handleBatteryTypeCatalog(const char* json_payload, size_t lengt
     }
 
     if (count > 0) {
-        TypeCatalogCache::replace_battery_entries(entries, count, version);
+        TypeCatalogCache::replace_battery_entries(entries.data(), count, version);
     }
-
-    delete[] entries;
 }
 
 void MqttClient::handleInverterTypeCatalog(const char* json_payload, size_t length) {
@@ -316,11 +359,8 @@ void MqttClient::handleInverterTypeCatalog(const char* json_payload, size_t leng
         return;
     }
 
-    auto* entries = new TypeCatalogCache::TypeEntry[128]{};
-    if (!entries) {
-        LOG_ERROR("MQTT", "OOM allocating inverter type catalog parse buffer");
-        return;
-    }
+    auto& entries = g_inverter_catalog_scratch;
+    entries.fill({});
 
     size_t count = 0;
     for (JsonVariant v : types) {
@@ -341,10 +381,8 @@ void MqttClient::handleInverterTypeCatalog(const char* json_payload, size_t leng
     }
 
     if (count > 0) {
-        TypeCatalogCache::replace_inverter_entries(entries, count, version);
+        TypeCatalogCache::replace_inverter_entries(entries.data(), count, version);
     }
-
-    delete[] entries;
 }
 
 void MqttClient::handleCellData(const char* json_payload, size_t length) {

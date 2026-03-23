@@ -3,6 +3,7 @@
 #include "rx_state_machine.h"
 #include "../config/logging_config.h"
 #include <espnow_transmitter.h>
+#include <esp32common/espnow/packet_utils.h>
 #include <esp32common/espnow/connection_event.h>
 #include "../webserver/utils/transmitter_manager.h"
 
@@ -48,9 +49,9 @@ void RxHeartbeatManager::on_heartbeat(const heartbeat_t* hb, const uint8_t* mac)
         return;
     }
     
-    // Validate CRC
-    if (!validate_crc16(hb, sizeof(*hb))) {
-        LOG_ERROR("HEARTBEAT", "CRC validation failed for seq=%u", hb->seq);
+    // Validate CRC32
+    if (!EspnowPacketUtils::verify_message_crc32(hb)) {
+        LOG_ERROR("HEARTBEAT", "CRC32 validation failed for seq=%u", hb->seq);
         return;
     }
     
@@ -81,8 +82,8 @@ void RxHeartbeatManager::send_ack(uint32_t ack_seq, const uint8_t* mac) {
     ack.uptime_ms = millis();
     ack.state = static_cast<uint8_t>(RxStateMachine::instance().connection_state());
     
-    // Calculate CRC16 over all fields except checksum
-    ack.checksum = calculate_crc16(&ack, sizeof(ack) - sizeof(ack.checksum));
+    // Calculate CRC32 over all fields except trailing checksum
+    ack.checksum = EspnowPacketUtils::calculate_message_crc32_zeroed(&ack);
     
     esp_err_t result = esp_now_send(mac, (uint8_t*)&ack, sizeof(ack));
     

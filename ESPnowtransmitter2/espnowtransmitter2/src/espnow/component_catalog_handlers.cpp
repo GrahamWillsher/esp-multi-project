@@ -17,6 +17,7 @@
 #include <Arduino.h>
 #include <Preferences.h>
 #include <firmware_version.h>
+#include <esp32common/espnow/packet_utils.h>
 #include <vector>
 #include <cstddef>
 #include <cstring>
@@ -76,17 +77,11 @@ bool save_interface_selection(uint8_t battery_interface, uint8_t inverter_interf
     return verify_batt == battery_interface && verify_inv == inverter_interface;
 }
 
-uint16_t checksum16(const uint8_t* data, size_t len) {
-    uint16_t sum = 0;
-    for (size_t i = 0; i < len; ++i) {
-        sum += data[i];
-    }
-    return sum;
-}
-
 void populate_component_apply_ack_checksum(component_apply_ack_t& ack) {
     ack.checksum = 0;
-    ack.checksum = checksum16(reinterpret_cast<const uint8_t*>(&ack), sizeof(ack) - sizeof(ack.checksum));
+    ack.checksum = EspnowPacketUtils::calculate_checksum(
+        reinterpret_cast<const uint8_t*>(&ack),
+        static_cast<uint16_t>(sizeof(ack) - sizeof(ack.checksum)));
 }
 
 void send_component_apply_ack(const uint8_t* target_mac, component_apply_ack_t& ack) {
@@ -371,9 +366,9 @@ void handle_component_apply_request(const espnow_queue_msg_t& msg) {
     strncpy(ack.message, "Apply failed", sizeof(ack.message) - 1);
     ack.message[sizeof(ack.message) - 1] = '\0';
 
-    const uint16_t calculated = checksum16(
+    const uint16_t calculated = EspnowPacketUtils::calculate_checksum(
         reinterpret_cast<const uint8_t*>(request),
-        sizeof(component_apply_request_t) - sizeof(request->checksum));
+        static_cast<uint16_t>(sizeof(component_apply_request_t) - sizeof(request->checksum)));
     if (calculated != request->checksum) {
         strncpy(ack.message, "Checksum mismatch", sizeof(ack.message) - 1);
         load_interface_selection(ack.battery_interface, ack.inverter_interface);

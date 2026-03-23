@@ -4,6 +4,7 @@
 #include <espnow_transmitter.h>
 #include <esp32common/espnow/connection_manager.h>
 #include <esp32common/espnow/connection_event.h>
+#include <esp32common/espnow/packet_utils.h>
 #include "../config/logging_config.h"
 #include "../network/time_manager.h"
 #include "../network/ethernet_manager.h"
@@ -77,8 +78,8 @@ void HeartbeatManager::send_heartbeat() {
     hb.rssi = 0;  // TODO: Get last RSSI if available
     hb.flags = 0;
     
-    // Calculate CRC16 over all fields except checksum
-    hb.checksum = calculate_crc16(&hb, sizeof(hb) - sizeof(hb.checksum));
+    // Calculate CRC32 over all fields except trailing checksum
+    hb.checksum = EspnowPacketUtils::calculate_message_crc32_zeroed(&hb);
     
     esp_err_t result = TxSendGuard::send_to_receiver_guarded(
         peer_mac,
@@ -99,9 +100,9 @@ void HeartbeatManager::send_heartbeat() {
 void HeartbeatManager::on_heartbeat_ack(const heartbeat_ack_t* ack) {
     if (!ack) return;
     
-    // Validate CRC
-    if (!validate_crc16(ack, sizeof(*ack))) {
-        LOG_ERROR("HEARTBEAT", "ACK CRC validation failed");
+    // Validate CRC32
+    if (!EspnowPacketUtils::verify_message_crc32(ack)) {
+        LOG_ERROR("HEARTBEAT", "ACK CRC32 validation failed");
         return;
     }
     

@@ -4,7 +4,6 @@
 
 #include "common.h"
 #include "state_machine.h"
-#include "state/connection_state_manager.h"
 #include "display/display_led.h"
 #include "display/display_core.h"
 #include "espnow/rx_heartbeat_manager.h"

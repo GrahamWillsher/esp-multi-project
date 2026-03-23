@@ -44,7 +44,6 @@ namespace ESPNow {
 
 // FreeRTOS Resources (definitions)
 namespace RTOS {
-    TaskHandle_t task_test_data = NULL;
     TaskHandle_t task_indicator = NULL;
     TaskHandle_t task_espnow_worker = NULL;
     TaskHandle_t task_display_renderer = NULL;
@@ -57,3 +56,9 @@ TFT_eSPI tft = TFT_eSPI();
 
 // State Machine
 SystemState current_state = SystemState::BOOTING;
+
+// Legacy webserver compatibility globals (test-data engine removed)
+bool test_mode_enabled = false;
+volatile int g_test_soc = 0;
+volatile int32_t g_test_power = 0;
+volatile uint32_t g_test_voltage_mv = 0;

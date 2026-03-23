@@ -21,10 +21,10 @@
 #include <freertos/queue.h>
 #include "../../src/mqtt/mqtt_client.h"
 
-extern bool& test_mode_enabled;
-extern volatile int& g_test_soc;
-extern volatile int32_t& g_test_power;
-extern volatile uint32_t& g_test_voltage_mv;
+extern bool test_mode_enabled;
+extern volatile int g_test_soc;
+extern volatile int32_t g_test_power;
+extern volatile uint32_t g_test_voltage_mv;
 
 namespace ESPNow {
 extern QueueHandle_t queue;

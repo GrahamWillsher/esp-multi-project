@@ -130,8 +130,17 @@ void TransmissionTask::transmit_next_transient() {
     if (result == ESP_OK) {
         // Mark as sent in cache
         EnhancedCache::instance().mark_transient_sent(entry.seq);
-        LOG_INFO("TX_TASK", "ESP-NOW TX: SOC=%d%%, Power=%dW (seq:%u)", 
-                 entry.data.soc, entry.data.power, entry.seq);
+        // Rate-limit success log: report once every 10 s with cumulative send count
+        static uint32_t last_transient_log_ms = 0;
+        static uint32_t transient_send_count = 0;
+        transient_send_count++;
+        const uint32_t now_ms = millis();
+        if (now_ms - last_transient_log_ms >= 10000) {
+            LOG_INFO("TX_TASK", "ESP-NOW TX: SOC=%d%%, Power=%dW (seq:%u) [%u pkts/10s]",
+                     entry.data.soc, entry.data.power, entry.seq, transient_send_count);
+            last_transient_log_ms = now_ms;
+            transient_send_count = 0;
+        }
     } else {
         LOG_ERROR("TX_TASK", "Failed to send transient (seq: %u): %s", 
                   entry.seq, esp_err_to_name(result));
@@ -199,8 +208,8 @@ void TransmissionTask::transmit_next_state() {
         if (result == ESP_OK) {
             // Mark as sent in cache
             EnhancedCache::instance().mark_state_sent(type);
-            LOG_INFO("TX_TASK", "State config sent (type: %d, version: %d, timestamp: %u)", 
-                     static_cast<uint8_t>(type), entry.version, entry.timestamp);
+            LOG_DEBUG("TX_TASK", "State config sent (type: %d, version: %d, timestamp: %u)",
+                      static_cast<uint8_t>(type), entry.version, entry.timestamp);
         } else {
             LOG_ERROR("TX_TASK", "Failed to send state config (type: %d): %s", 
                       static_cast<uint8_t>(type), esp_err_to_name(result));

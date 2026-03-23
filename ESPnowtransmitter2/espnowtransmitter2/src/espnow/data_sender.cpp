@@ -36,17 +36,19 @@ void DataSender::task_impl(void* parameter) {
     
     TickType_t last_wake_time = xTaskGetTickCount();
     const TickType_t interval_ticks = pdMS_TO_TICKS(timing::ESPNOW_SEND_INTERVAL_MS);
+    auto& state_machine = TxStateMachine::instance();
     
     while (true) {
         vTaskDelayUntil(&last_wake_time, interval_ticks);
         
         // Phase 2: Update test data if enabled (runtime configuration)
-        if (TestDataGenerator::is_enabled()) {
+        const bool test_mode_enabled = TestDataGenerator::is_enabled();
+        if (test_mode_enabled) {
             TestDataGenerator::update();
         }
         
-        if (TxStateMachine::instance().is_transmission_active()) {
-            const char* mode_str = TestDataGenerator::is_enabled() ? "TEST" : "LIVE";
+        if (state_machine.is_transmission_active()) {
+            const char* mode_str = test_mode_enabled ? "TEST" : "LIVE";
             LOG_TRACE("DATA_SENDER", "Sending data (transmission active, mode: %s)", mode_str);
             send_battery_data();
         } else {
@@ -74,6 +76,8 @@ void DataSender::task_impl(void* parameter) {
  * LED updates are published separately by the event/status pipeline.
  */
 void DataSender::send_battery_data() {
+    auto& cache = EnhancedCache::instance();
+
     // Phase 2: Read battery data from datalayer (live or test depending on configuration)
     // Convert from datalayer format (pptt = percent * 100) to simple percentage
     uint16_t soc_pptt = datalayer.battery.status.reported_soc;  // e.g., 8000 = 80.00%
@@ -94,7 +98,7 @@ void DataSender::send_battery_data() {
     
     // Section 11: ALWAYS write to cache first (cache-centric pattern)
     // Background transmission task will handle sending from cache
-    if (EnhancedCache::instance().add_transient(tx_data)) {
+    if (cache.add_transient(tx_data)) {
         LOG_TRACE("DATA_SENDER", "Data cached (SOC:%d%%, Power:%dW)", 
                  tx_data.soc, tx_data.power);
         

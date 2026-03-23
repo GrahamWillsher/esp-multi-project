@@ -7,17 +7,19 @@
 
 #include "battery_handlers.h"
 #include "component_config_handler.h"
+#include <esp32common/espnow/packet_utils.h>
+#include <cstring>
 
 bool validate_checksum(const void* data, size_t len) {
-    const uint8_t* bytes = (const uint8_t*)data;
-    uint16_t calculated_sum = 0;
-
-    for (size_t i = 0; i < len - 2; i++) {
-        calculated_sum += bytes[i];
+    if (!data || len < sizeof(uint16_t)) {
+        return false;
     }
-
-    uint16_t message_checksum = bytes[len - 2] | (bytes[len - 1] << 8);
-    return (calculated_sum == message_checksum);
+    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(data);
+    const uint16_t calculated = EspnowPacketUtils::calculate_checksum(
+        bytes, static_cast<uint16_t>(len - sizeof(uint16_t)));
+    uint16_t stored = 0;
+    memcpy(&stored, bytes + len - sizeof(uint16_t), sizeof(stored));
+    return calculated == stored;
 }
 
 void handle_component_config(const espnow_queue_msg_t* msg) {

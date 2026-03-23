@@ -1,7 +1,7 @@
 #include "battery_settings_page.h"
+#include "battery_settings_page_content.h"
+#include "battery_settings_page_script.h"
 #include "../common/page_generator.h"
-#include "../common/nav_buttons.h"
-#include "../utils/transmitter_manager.h"
 #include <Arduino.h>
 
 /**
@@ -11,6 +11,15 @@
  * Users can view and modify battery settings that are sent to the transmitter
  */
 static esp_err_t battery_settings_handler(httpd_req_t *req) {
+    String content = get_battery_settings_page_content();
+    String script = get_battery_settings_page_script();
+
+    String html = renderPage("ESP-NOW Receiver - Battery Settings", content, PageRenderOptions("", script));
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, html.c_str(), html.length());
+    return ESP_OK;
+
+#if 0
     String content = R"rawliteral(
     <h1>Battery Settings</h1>
     )rawliteral";
@@ -552,6 +561,7 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, html.c_str(), html.length());
     return ESP_OK;
+#endif
 }
 
 /**

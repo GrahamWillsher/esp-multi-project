@@ -74,10 +74,30 @@ public:
     size_t route_count() const { return route_count_; }
     
 private:
-    EspnowMessageRouter() = default;
+    EspnowMessageRouter();
+
+    static constexpr uint8_t NO_ROUTE = 0xFF;
+
+    void reset_route_indexes();
+    bool try_route_chain(uint8_t head_index, const espnow_queue_msg_t& msg, uint8_t subtype);
+    void append_type_route(uint8_t type, uint8_t route_index);
+    void append_packet_subtype_route(uint8_t subtype, uint8_t route_index);
+    void append_packet_any_route(uint8_t route_index);
     
     static constexpr size_t MAX_ROUTES = 48;  // Phase 3: Increased for granular subtypes + future expansion
     MessageRoute routes_[MAX_ROUTES];
+    uint8_t next_route_[MAX_ROUTES];
+
+    // Type pre-index (all non-packet message types)
+    uint8_t type_heads_[256];
+    uint8_t type_tails_[256];
+
+    // Packet-specific subtype pre-index (msg_packet only)
+    uint8_t packet_any_head_;
+    uint8_t packet_any_tail_;
+    uint8_t packet_sub_heads_[256];
+    uint8_t packet_sub_tails_[256];
+
     size_t route_count_ = 0;
 };
 

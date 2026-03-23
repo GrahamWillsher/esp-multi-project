@@ -7,6 +7,7 @@
 #include "../common.h"
 #include <esp_log.h>
 #include <esp32common/espnow/common.h>
+#include <esp32common/espnow/packet_utils.h>
 #include <nvs_flash.h>
 #include <cstring>
 
@@ -276,19 +277,15 @@ bool ComponentConfigHandler::save_to_nvs() {
 }
 
 bool ComponentConfigHandler::validate_checksum(const uint8_t* data, size_t len) const {
-  if (len < sizeof(uint16_t)) {
+  if (!data || len < sizeof(uint16_t)) {
     return false;
   }
-  
-  // Calculate checksum (exclude last 2 bytes which are the checksum itself)
-  uint16_t calculated = 0;
-  for (size_t i = 0; i < len - sizeof(uint16_t); i++) {
-    calculated += data[i];
-  }
-  
-  // Extract stored checksum (last 2 bytes)
-  uint16_t stored;
-  memcpy(&stored, data + len - sizeof(uint16_t), sizeof(uint16_t));
-  
-  return (calculated == stored);
+
+  const uint16_t calculated = EspnowPacketUtils::calculate_checksum(
+      data, static_cast<uint16_t>(len - sizeof(uint16_t)));
+
+  uint16_t stored = 0;
+  memcpy(&stored, data + len - sizeof(uint16_t), sizeof(stored));
+
+  return calculated == stored;
 }

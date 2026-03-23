@@ -92,6 +92,14 @@ private:
     
     // Helper methods
     bool attempt_restart_once();
+    void restart_cleanup_peers();
+    bool restart_lock_channel();
+    void restart_relaunch_discovery();
+    void restart_wait_for_stabilization() const;
+    bool restart_verify_channel(uint8_t& verify_channel) const;
+    bool handle_restart_failure(const char* max_failure_log,
+                                const char* retry_log,
+                                const char* failure_state_reason);
     void schedule_restart_retry(uint32_t delay_ms);
     void clear_restart_request();
     void cleanup_all_peers();

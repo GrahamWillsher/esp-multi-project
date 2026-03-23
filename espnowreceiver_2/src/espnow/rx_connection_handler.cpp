@@ -32,6 +32,21 @@ static bool has_valid_mac(const uint8_t* mac) {
     return false;
 }
 
+static esp_err_t send_config_section_request(const uint8_t* transmitter_mac,
+                                             config_section_t section,
+                                             uint32_t requested_version = 0) {
+    config_section_request_t request{};
+    request.type = msg_config_section_request;
+    request.section = section;
+    request.requested_version = requested_version;
+    return esp_now_send(transmitter_mac, reinterpret_cast<const uint8_t*>(&request), sizeof(request));
+}
+
+static esp_err_t send_request_data_message(const uint8_t* transmitter_mac, uint8_t subtype) {
+    request_data_t request{msg_request_data, subtype};
+    return esp_now_send(transmitter_mac, reinterpret_cast<const uint8_t*>(&request), sizeof(request));
+}
+
 ReceiverConnectionHandler::ReceiverConnectionHandler()
     : last_rx_time_ms_(0),
       power_data_confirmed_(false),
@@ -271,33 +286,26 @@ void ReceiverConnectionHandler::send_initialization_requests(const uint8_t* tran
     LOG_INFO("CONN_HANDLER", "[INIT] Connection CONFIRMED (both devices ready) - sending initialization requests");
 
     // Request static config sections immediately (no legacy snapshot)
-    config_section_request_t mqtt_req;
-    mqtt_req.type = msg_config_section_request;
-    mqtt_req.section = config_section_mqtt;
-    mqtt_req.requested_version = 0;  // Force send
-    esp_now_send(transmitter_mac, (const uint8_t*)&mqtt_req, sizeof(mqtt_req));
+    static constexpr struct {
+        config_section_t section;
+        const char* label;
+    } kInitSections[] = {
+        {config_section_mqtt, "MQTT"},
+        {config_section_network, "NETWORK"},
+        {config_section_metadata, "METADATA"},
+        {config_section_battery, "BATTERY"},
+    };
 
-    config_section_request_t net_req;
-    net_req.type = msg_config_section_request;
-    net_req.section = config_section_network;
-    net_req.requested_version = 0;  // Force send
-    esp_now_send(transmitter_mac, (const uint8_t*)&net_req, sizeof(net_req));
-
-    config_section_request_t meta_req;
-    meta_req.type = msg_config_section_request;
-    meta_req.section = config_section_metadata;
-    meta_req.requested_version = 0;  // Force send
-    esp_now_send(transmitter_mac, (const uint8_t*)&meta_req, sizeof(meta_req));
-
-    config_section_request_t batt_req;
-    batt_req.type = msg_config_section_request;
-    batt_req.section = config_section_battery;
-    batt_req.requested_version = 0;  // Force send
-    esp_now_send(transmitter_mac, (const uint8_t*)&batt_req, sizeof(batt_req));
+    for (const auto& entry : kInitSections) {
+        esp_err_t section_result = send_config_section_request(transmitter_mac, entry.section, 0);
+        if (section_result != ESP_OK) {
+            LOG_WARN("CONN_HANDLER", "Failed to request %s config section: %s",
+                     entry.label, esp_err_to_name(section_result));
+        }
+    }
     
     // Send REQUEST_DATA to ensure power profile stream is active
-    request_data_t req_msg = { msg_request_data, subtype_power_profile };
-    esp_err_t result = esp_now_send(transmitter_mac, (const uint8_t*)&req_msg, sizeof(req_msg));
+    esp_err_t result = send_request_data_message(transmitter_mac, subtype_power_profile);
     if (result == ESP_OK) {
         LOG_INFO("CONN_HANDLER", "Requested power profile data stream");
     } else if (result == ESP_ERR_ESPNOW_NOT_FOUND) {
@@ -402,8 +410,7 @@ void ReceiverConnectionHandler::tick() {
     LOG_WARN("CONN_HANDLER", "[RETRY] No power-profile data yet — re-sending REQUEST_DATA (connected %lu ms ago)",
              now - connected_at_ms_);
 
-    request_data_t req = { msg_request_data, subtype_power_profile };
-    esp_err_t result = esp_now_send(transmitter_mac_, (const uint8_t*)&req, sizeof(req));
+    esp_err_t result = send_request_data_message(transmitter_mac_, subtype_power_profile);
     if (result != ESP_OK) {
         LOG_WARN("CONN_HANDLER", "[RETRY] esp_now_send failed: %s", esp_err_to_name(result));
     }
@@ -419,43 +426,41 @@ void ReceiverConnectionHandler::tick() {
 
     last_catalog_retry_ms_ = now;
 
-    if (!catalog_versions_received_ && versions_retry_count_ < CATALOG_MAX_RETRIES) {
-        if (send_type_catalog_versions_request()) {
-            versions_retry_count_++;
-            LOG_INFO("CONN_HANDLER", "[CATALOG_RETRY] Re-requested catalog versions (%u/%u)",
-                     (unsigned)versions_retry_count_,
-                     (unsigned)CATALOG_MAX_RETRIES);
-        }
-    }
+    struct CatalogRetryItem {
+        const char* label;
+        bool should_request;
+        bool (*send_fn)();
+        uint8_t* retry_count;
+    };
 
-    if ((TypeCatalogCache::battery_refresh_required() || !TypeCatalogCache::has_battery_entries()) &&
-        battery_catalog_retry_count_ < CATALOG_MAX_RETRIES) {
-        if (send_battery_types_request()) {
-            battery_catalog_retry_count_++;
-            LOG_INFO("CONN_HANDLER", "[CATALOG_RETRY] Re-requested battery catalog (%u/%u)",
-                     (unsigned)battery_catalog_retry_count_,
-                     (unsigned)CATALOG_MAX_RETRIES);
-        }
-    }
+    CatalogRetryItem retry_items[] = {
+        {"catalog versions", !catalog_versions_received_, &send_type_catalog_versions_request, &versions_retry_count_},
+        {"battery catalog",
+         (TypeCatalogCache::battery_refresh_required() || !TypeCatalogCache::has_battery_entries()),
+         &send_battery_types_request,
+         &battery_catalog_retry_count_},
+        {"inverter catalog",
+         (TypeCatalogCache::inverter_refresh_required() || !TypeCatalogCache::has_inverter_entries()),
+         &send_inverter_types_request,
+         &inverter_catalog_retry_count_},
+        {"inverter interfaces", !TypeCatalogCache::has_inverter_interface_entries(), &send_inverter_interfaces_request,
+         &inverter_interface_retry_count_},
+    };
 
-    if ((TypeCatalogCache::inverter_refresh_required() || !TypeCatalogCache::has_inverter_entries()) &&
-        inverter_catalog_retry_count_ < CATALOG_MAX_RETRIES) {
-        if (send_inverter_types_request()) {
-            inverter_catalog_retry_count_++;
-            LOG_INFO("CONN_HANDLER", "[CATALOG_RETRY] Re-requested inverter catalog (%u/%u)",
-                     (unsigned)inverter_catalog_retry_count_,
-                     (unsigned)CATALOG_MAX_RETRIES);
+    for (auto& item : retry_items) {
+        if (!item.should_request || *(item.retry_count) >= CATALOG_MAX_RETRIES) {
+            continue;
         }
-    }
 
-    if (!TypeCatalogCache::has_inverter_interface_entries() &&
-        inverter_interface_retry_count_ < CATALOG_MAX_RETRIES) {
-        if (send_inverter_interfaces_request()) {
-            inverter_interface_retry_count_++;
-            LOG_INFO("CONN_HANDLER", "[CATALOG_RETRY] Re-requested inverter interfaces (%u/%u)",
-                     (unsigned)inverter_interface_retry_count_,
-                     (unsigned)CATALOG_MAX_RETRIES);
+        if (!item.send_fn()) {
+            continue;
         }
+
+        ++(*(item.retry_count));
+        LOG_INFO("CONN_HANDLER", "[CATALOG_RETRY] Re-requested %s (%u/%u)",
+                 item.label,
+                 (unsigned)(*(item.retry_count)),
+                 (unsigned)CATALOG_MAX_RETRIES);
     }
 }
 

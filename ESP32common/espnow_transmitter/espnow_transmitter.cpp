@@ -21,39 +21,6 @@ uint16_t calculate_checksum(espnow_payload_t* data) {
     return (uint16_t)(data->soc + data->power);
 }
 
-// CRC16-CCITT implementation for heartbeat messages
-uint16_t calculate_crc16(const void* data, size_t len) {
-    const uint8_t* ptr = (const uint8_t*)data;
-    uint16_t crc = 0xFFFF;
-    
-    for (size_t i = 0; i < len; i++) {
-        crc ^= (uint16_t)ptr[i] << 8;
-        for (uint8_t bit = 0; bit < 8; bit++) {
-            if (crc & 0x8000) {
-                crc = (crc << 1) ^ 0x1021;
-            } else {
-                crc = crc << 1;
-            }
-        }
-    }
-    
-    return crc;
-}
-
-// Validate CRC16 checksum (checksum field must be last in struct)
-bool validate_crc16(const void* data, size_t len) {
-    if (len < sizeof(uint16_t)) return false;
-    
-    // Extract stored checksum (last 2 bytes)
-    const uint8_t* ptr = (const uint8_t*)data;
-    uint16_t stored_crc = (uint16_t)ptr[len - 2] | ((uint16_t)ptr[len - 1] << 8);
-    
-    // Calculate CRC over all bytes except checksum field
-    uint16_t calculated_crc = calculate_crc16(data, len - sizeof(uint16_t));
-    
-    return stored_crc == calculated_crc;
-}
-
 bool set_channel(uint8_t ch) {
     return esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE) == ESP_OK;
 }

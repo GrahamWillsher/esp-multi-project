@@ -33,7 +33,7 @@ static bool g_received_data_initialized = false;
 static uint8_t g_last_received_soc = 0;
 static int32_t g_last_received_power = 0;
 
-static void store_transmitter_mac(const uint8_t* mac) {
+void store_transmitter_mac(const uint8_t* mac) {
     if (!mac) {
         return;
     }
@@ -89,20 +89,43 @@ static void update_display_if_changed(uint8_t soc, int32_t power, bool soc_chang
     }
 }
 
-// Forward declarations for handler functions
-void handle_data_message(const espnow_queue_msg_t* msg);
-void handle_flash_led_message(const espnow_queue_msg_t* msg);
-void handle_debug_ack_message(const espnow_queue_msg_t* msg);
-void handle_packet_events(const espnow_queue_msg_t* msg);
-void handle_packet_logs(const espnow_queue_msg_t* msg);
-void handle_packet_cell_info(const espnow_queue_msg_t* msg);
-void handle_packet_unknown(const espnow_queue_msg_t* msg, uint8_t subtype);
+void apply_telemetry_sample(
+    const uint8_t* mac,
+    uint8_t soc,
+    int32_t power,
+    const char* source,
+    bool include_first_data_log) {
+    bool first_data = false;
+    bool soc_changed = false;
+    bool power_changed = false;
 
-// Phase 2: Settings message handlers
-void handle_settings_update_ack(const espnow_queue_msg_t* msg);
-void handle_settings_changed(const espnow_queue_msg_t* msg);
-void handle_component_apply_ack_message(const espnow_queue_msg_t* msg);
-static void request_category_refresh(const uint8_t* mac, uint8_t category, const char* reason);
+    update_received_data_cache(
+        soc,
+        power,
+        estimate_voltage_mv(soc),
+        &first_data,
+        &soc_changed,
+        &power_changed
+    );
+
+    store_transmitter_mac(mac);
+    notify_sse_data_updated();
+
+    if (include_first_data_log) {
+        LOG_DEBUG(kLogTag, "ESP-NOW RX: SOC=%d%%, Power=%dW (first=%s)",
+                  soc, power, first_data ? "YES" : "no");
+    } else {
+        LOG_TRACE(kLogTag, "%s: SOC=%d%%, Power=%dW", source, soc, power);
+    }
+
+    update_display_if_changed(soc, power, soc_changed, power_changed);
+
+    if (include_first_data_log && (soc_changed || power_changed)) {
+        LOG_TRACE(kLogTag, "Display updated: SOC=%d%% Power=%dW", soc, power);
+    }
+}
+
+#include "espnow_tasks_internal.h"
 
 // ═══════════════════════════════════════════════════════════════════════
 // MESSAGE HANDLER CONFIGURATIONS
@@ -571,7 +594,11 @@ void setup_message_routes() {
 void task_espnow_worker(void *parameter) {
     LOG_DEBUG(kLogTag, "ESP-NOW Worker task started");
 
-    if (!RxStateMachine::instance().init()) {
+    auto& state_machine = RxStateMachine::instance();
+    auto& connection_handler = ReceiverConnectionHandler::instance();
+    auto& connection_manager = EspNowConnectionManager::instance();
+
+    if (!state_machine.init()) {
         LOG_ERROR(kLogTag, "Failed to initialize RX state machine");
     }
     
@@ -601,14 +628,14 @@ void task_espnow_worker(void *parameter) {
             if (queue_msg.len < 1) continue;
 
             const uint8_t msg_type = queue_msg.data[0];
-            ReceiverConnectionHandler::instance().on_link_activity(queue_msg.mac);
-            RxStateMachine::instance().on_message_processing(msg_type, ++g_rx_message_seq);
+            connection_handler.on_link_activity(queue_msg.mac);
+            state_machine.on_message_processing(msg_type, ++g_rx_message_seq);
             
             // Update connection watchdog on any received message
             transmitter_state.last_rx_time_ms = millis();
 
             // Centralized connection timeout ownership: any ESP-NOW traffic indicates liveness.
-            EspNowConnectionManager::instance().on_heartbeat_received();
+            connection_manager.on_heartbeat_received();
 
             // Keep dashboard connection status fresh on any ESP-NOW traffic
             if (TransmitterManager::isMACKnown()) {
@@ -620,23 +647,23 @@ void task_espnow_worker(void *parameter) {
 
             // Ensure sender is registered as a peer using common utility
             // Only trigger peer_registered events when in CONNECTING state to avoid spam
-            auto current_state = EspNowConnectionManager::instance().get_state();
+            auto current_state = connection_manager.get_state();
             bool is_connecting = (current_state == EspNowConnectionState::CONNECTING);
             
             if (!EspnowPeerManager::is_peer_registered(queue_msg.mac)) {
                 if (EspnowPeerManager::add_peer(queue_msg.mac, 0)) {
                     if (is_connecting) {
-                        ReceiverConnectionHandler::instance().on_peer_registered(queue_msg.mac);
+                        connection_handler.on_peer_registered(queue_msg.mac);
                     }
                 }
             } else {
                 // Peer already exists (e.g., transmitter reboot). Ensure state advances.
-                if (is_connecting && !EspNowConnectionManager::instance().is_connected()) {
-                    ReceiverConnectionHandler::instance().on_peer_registered(queue_msg.mac);
+                if (is_connecting && !connection_manager.is_connected()) {
+                    connection_handler.on_peer_registered(queue_msg.mac);
                 }
             }
 
-            if (!transmitter_state.is_connected && EspNowConnectionManager::instance().is_connected()) {
+            if (!transmitter_state.is_connected && connection_manager.is_connected()) {
                 transmitter_state.is_connected = true;
                 LOG_INFO(kLogTag, "Transmitter connection established");
                 // Note: Initialization requests (config sections, REQUEST_DATA) are sent automatically
@@ -647,19 +674,19 @@ void task_espnow_worker(void *parameter) {
             // Post DATA_RECEIVED event for actual data messages only
             // Exclude periodic keep-alive/status messages (heartbeat, version beacon)
             // These are tracked separately and don't represent "new data" for connection purposes
-            if (EspNowConnectionManager::instance().is_connected()) {
+            if (connection_manager.is_connected()) {
                 bool is_keepalive_msg = (msg_type == msg_heartbeat || 
                                          msg_type == msg_heartbeat_ack ||
                                          msg_type == msg_version_beacon);
                 
                 if (!is_keepalive_msg) {
-                    ReceiverConnectionHandler::instance().on_data_received(queue_msg.mac);
+                    connection_handler.on_data_received(queue_msg.mac);
                 }
             }
             
             // Route message using common router
             if (!router.route_message(queue_msg)) {
-                RxStateMachine::instance().on_message_error();
+                state_machine.on_message_error();
                 // Message not handled - check if it's an unknown packet subtype
                 uint8_t type = queue_msg.data[0];
                 if (type == msg_packet) {
@@ -671,11 +698,11 @@ void task_espnow_worker(void *parameter) {
                     LOG_WARN(kLogTag, "Unknown message type: %u, len=%d", type, queue_msg.len);
                 }
             } else {
-                RxStateMachine::instance().on_message_valid();
+                state_machine.on_message_valid();
             }
         }
 
-        RxStateMachine::instance().check_stale(90000, 5000);  // 90s timeout + 5s grace window for config updates
+        state_machine.check_stale(90000, 5000);  // 90s timeout + 5s grace window for config updates
 
         const uint32_t now_ms = millis();
         if ((now_ms - last_stats_log_ms) >= 15000) {
@@ -705,313 +732,4 @@ void task_espnow_worker(void *parameter) {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// MESSAGE HANDLER IMPLEMENTATIONS
-// ═══════════════════════════════════════════════════════════════════════
-
-// Note: handle_probe_message and handle_ack_message removed - now using
-// EspnowStandardHandlers::handle_probe and EspnowStandardHandlers::handle_ack
-// from common library with custom configuration callbacks.
-
-void handle_flash_led_message(const espnow_queue_msg_t* msg) {
-    if (msg->len >= (int)sizeof(flash_led_t)) {
-        const flash_led_t* flash_msg = reinterpret_cast<const flash_led_t*>(msg->data);
-        
-        // Validate color code (wire format matches enum: 0=RED, 1=GREEN, 2=ORANGE, 3=BLUE)
-        if (flash_msg->color > LED_BLUE) {
-            LOG_WARN(kLogTag, "Invalid LED color code: %d", flash_msg->color);
-            return;
-        }
-
-        // Validate effect code (0=CONTINUOUS, 1=FLASH, 2=HEARTBEAT)
-        if (flash_msg->effect > LED_EFFECT_HEARTBEAT) {
-            LOG_WARN(kLogTag, "Invalid LED effect code: %d", flash_msg->effect);
-            return;
-        }
-        
-        LEDColor color = static_cast<LEDColor>(flash_msg->color);
-        LEDEffect effect = static_cast<LEDEffect>(flash_msg->effect);
-        
-        static const char* color_names[] = {"RED", "GREEN", "ORANGE", "BLUE"};
-        static const char* effect_names[] = {"CONTINUOUS", "FLASH", "HEARTBEAT"};
-        LOG_DEBUG(kLogTag, "LED request: color=%d (%s), effect=%d (%s)",
-                 flash_msg->color,
-                 color_names[flash_msg->color],
-                 flash_msg->effect,
-                 effect_names[flash_msg->effect]);
-        
-        // Store the current LED color for status indicator task to use
-        ESPNow::current_led_color = color;
-        ESPNow::current_led_effect = effect;
-    }
-}
-
-void handle_debug_ack_message(const espnow_queue_msg_t* msg) {
-    if (msg->len >= (int)sizeof(debug_ack_t)) {
-        const debug_ack_t* ack = reinterpret_cast<const debug_ack_t*>(msg->data);
-        
-        static const char* level_names[] = {"EMERG", "ALERT", "CRIT", "ERROR", "WARNING", "NOTICE", "INFO", "DEBUG"};
-        static const char* status_names[] = {"Success", "Invalid level", "Error"};
-        
-        LOG_INFO(kLogTag, "Debug ACK received: applied=%s (%d), previous=%s (%d), status=%s",
-                 ack->applied <= 7 ? level_names[ack->applied] : "UNKNOWN",
-                 ack->applied,
-                 ack->previous <= 7 ? level_names[ack->previous] : "UNKNOWN",
-                 ack->previous,
-                 ack->status <= 2 ? status_names[ack->status] : "UNKNOWN");
-        
-        if (ack->status != 0) {
-            LOG_WARN(kLogTag, "Transmitter reported error changing debug level");
-        }
-    } else {
-        LOG_WARN(kLogTag, "Debug ACK packet too short: %d bytes (expected %d)", 
-                 msg->len, sizeof(debug_ack_t));
-    }
-}
-
-void handle_data_message(const espnow_queue_msg_t* msg) {
-    if (msg->len >= (int)sizeof(espnow_payload_t)) {
-        const espnow_payload_t* payload = reinterpret_cast<const espnow_payload_t*>(msg->data);
-        
-        uint16_t calc_checksum = payload->soc + (uint16_t)payload->power;
-        
-        if (calc_checksum == payload->checksum) {
-            // Mark RxStateMachine as active when actual data arrives (not just keep-alive)
-            RxStateMachine::instance().on_activity();
-            
-            bool first_data = false;
-            bool soc_changed = false;
-            bool power_changed = false;
-            update_received_data_cache(
-                payload->soc,
-                payload->power,
-                estimate_voltage_mv(payload->soc),
-                &first_data,
-                &soc_changed,
-                &power_changed
-            );
-            const bool display_soc_changed = first_data || soc_changed;
-            const bool display_power_changed = first_data || power_changed;
-            
-            // Store transmitter MAC for sending control messages
-            store_transmitter_mac(msg->mac);
-            notify_sse_data_updated();
-            
-            LOG_DEBUG(kLogTag, "ESP-NOW RX: SOC=%d%%, Power=%dW (first=%s)", 
-                      payload->soc, payload->power, first_data ? "YES" : "no");
-            
-            update_display_if_changed(payload->soc, payload->power, display_soc_changed, display_power_changed);
-            if (display_soc_changed || display_power_changed) {
-                LOG_TRACE(kLogTag, "Display updated: SOC=%d%% Power=%dW", payload->soc, payload->power);
-            }
-        } else {
-            // CRC mismatch
-            LOG_WARN(kLogTag, "CRC failed: expected 0x%04X, got 0x%04X", 
-                         calc_checksum, payload->checksum);
-        }
-    } else {
-        LOG_WARN(kLogTag, "DATA packet too short: %d bytes (expected %d)",
-                 msg->len, sizeof(espnow_payload_t));
-    }
-}
-
-void handle_packet_events(const espnow_queue_msg_t* msg) {
-    EspnowPacketUtils::PacketInfo info;
-    if (!EspnowPacketUtils::get_packet_info(msg, info)) {
-        LOG_WARN(kLogTag, "Invalid packet structure");
-        return;
-    }
-    
-    EspnowPacketUtils::print_packet_info(info, "EVENTS");
-    
-    if (info.payload_len >= 5) {
-        uint8_t soc = info.payload[0];
-        int32_t power;
-        memcpy(&power, &info.payload[1], sizeof(int32_t));
-
-        bool soc_changed = false;
-        bool power_changed = false;
-        update_received_data_cache(
-            soc,
-            power,
-            estimate_voltage_mv(soc),
-            nullptr,
-            &soc_changed,
-            &power_changed
-        );
-        
-        // Store transmitter MAC for sending control messages
-        store_transmitter_mac(msg->mac);
-        notify_sse_data_updated();
-        
-        LOG_TRACE(kLogTag, "EVENTS: SOC=%d%%, Power=%dW", soc, power);
-        
-        update_display_if_changed(soc, power, soc_changed, power_changed);
-    }
-}
-
-void handle_packet_logs(const espnow_queue_msg_t* msg) {
-    EspnowPacketUtils::PacketInfo info;
-    if (EspnowPacketUtils::get_packet_info(msg, info)) {
-        EspnowPacketUtils::print_packet_info(info, "LOGS");
-    }
-}
-
-// ============================================================================
-// PHASE 2: Settings Synchronization Handlers
-// ============================================================================
-
-void handle_settings_update_ack(const espnow_queue_msg_t* msg) {
-    if (msg->len < sizeof(settings_update_ack_msg_t)) {
-        LOG_WARN(kLogTag, "Settings update ACK message too short: %d bytes", msg->len);
-        return;
-    }
-    
-    const settings_update_ack_msg_t* ack = reinterpret_cast<const settings_update_ack_msg_t*>(msg->data);
-    
-    const char* category_str = (ack->category == SETTINGS_BATTERY) ? "BATTERY" : 
-                               (ack->category == SETTINGS_CHARGER) ? "CHARGER" : 
-                               (ack->category == SETTINGS_INVERTER) ? "INVERTER" : "UNKNOWN";
-    
-    if (ack->success) {
-        LOG_INFO(kLogTag, "✓ Settings update ACK: category=%s, field=%d, version=%u", 
-                 category_str, ack->field_id, ack->new_version);
-        
-        // Update our cached version for this category
-        // Note: Currently only battery settings have version tracking
-        // TODO Phase 3: Add version tracking for charger/inverter/system settings
-        if (ack->category == SETTINGS_BATTERY) {
-            BatterySettingsCache::instance().mark_updated(ack->new_version);
-        }
-        
-        // GRANULAR REFRESH: Request ONLY the category that was updated
-        // The ACK message doesn't contain the new value, so we need to re-request
-        // the updated settings from the transmitter to refresh our local cache
-        request_category_refresh(msg->mac, ack->category, "after successful update");
-        
-    } else {
-        LOG_ERROR(kLogTag, "✗ Settings update FAILED: category=%s, field=%d, error=%s", 
-                  category_str, ack->field_id, ack->error_msg);
-        
-        // On failure, request current settings to ensure we're in sync with transmitter
-        request_category_refresh(msg->mac, ack->category, "to verify state after failure");
-    }
-}
-
-// Helper function to request refresh of a specific settings category
-// This ensures we only refresh what changed, not all settings
-static void request_category_refresh(const uint8_t* mac, uint8_t category, const char* reason) {
-    esp_err_t result = ESP_OK;
-    
-    switch (category) {
-        case SETTINGS_BATTERY:
-            // Request battery settings only (transmitter sends battery_settings_full_msg_t)
-            LOG_INFO(kLogTag, "Requesting battery settings refresh %s", reason);
-            {
-                request_data_t req = { msg_request_data, subtype_battery_config };
-                result = esp_now_send(mac, (const uint8_t*)&req, sizeof(req));
-            }
-            break;
-            
-        case SETTINGS_CHARGER:
-            // TODO Phase 3: Request charger settings only
-            // request_data_t req = { msg_request_data, subtype_charger_config };
-            LOG_WARN(kLogTag, "Charger settings refresh not yet implemented");
-            break;
-            
-        case SETTINGS_INVERTER:
-            // TODO Phase 3: Request inverter settings only
-            // request_data_t req = { msg_request_data, subtype_inverter };
-            LOG_WARN(kLogTag, "Inverter settings refresh not yet implemented");
-            break;
-            
-        case SETTINGS_SYSTEM:
-            // TODO Phase 3: Request system settings only
-            // request_data_t req = { msg_request_data, subtype_system };
-            LOG_WARN(kLogTag, "System settings refresh not yet implemented");
-            break;
-            
-        default:
-            LOG_ERROR(kLogTag, "Unknown settings category: %d", category);
-            return;
-    }
-    
-    if (result != ESP_OK) {
-        LOG_WARN(kLogTag, "Failed to request category %d refresh: %s", category, esp_err_to_name(result));
-    }
-}
-
-void handle_settings_changed(const espnow_queue_msg_t* msg) {
-    if (msg->len < sizeof(settings_changed_msg_t)) {
-        LOG_WARN(kLogTag, "Settings changed message too short: %d bytes", msg->len);
-        return;
-    }
-    
-    const settings_changed_msg_t* change = reinterpret_cast<const settings_changed_msg_t*>(msg->data);
-    
-    // Verify checksum using common utility
-    if (!EspnowPacketUtils::verify_message_checksum(change)) {
-        uint16_t calc_checksum = EspnowPacketUtils::calculate_message_checksum(change);
-        LOG_WARN(kLogTag, "Settings changed checksum mismatch: calc=%u, recv=%u", calc_checksum, change->checksum);
-        return;
-    }
-    
-    const char* category_str = (change->category == SETTINGS_BATTERY) ? "BATTERY" : 
-                               (change->category == SETTINGS_CHARGER) ? "CHARGER" : 
-                               (change->category == SETTINGS_INVERTER) ? "INVERTER" : "UNKNOWN";
-    
-    LOG_INFO(kLogTag, "⚡ Settings changed notification: category=%s, new_version=%u", category_str, change->new_version);
-    
-    // Update our local version number to match transmitter
-    // Note: Individual field updates are already handled via msg_battery_settings_update ACK
-    // We don't need to request full settings - just update the version
-    BatterySettingsCache::instance().mark_updated(change->new_version);
-    LOG_DEBUG(kLogTag, "Version updated to %u (no full settings refresh needed)", change->new_version);
-}
-
-void handle_packet_cell_info(const espnow_queue_msg_t* msg) {
-    EspnowPacketUtils::PacketInfo info;
-    if (EspnowPacketUtils::get_packet_info(msg, info)) {
-        EspnowPacketUtils::print_packet_info(info, "CELL_INFO");
-    }
-}
-
-void handle_component_apply_ack_message(const espnow_queue_msg_t* msg) {
-    if (msg->len < (int)sizeof(component_apply_ack_t)) {
-        LOG_WARN(kLogTag, "Component apply ACK too short: %d bytes", msg->len);
-        return;
-    }
-
-    const component_apply_ack_t* ack = reinterpret_cast<const component_apply_ack_t*>(msg->data);
-
-    uint16_t calculated = 0;
-    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(ack);
-    for (size_t i = 0; i < sizeof(component_apply_ack_t) - sizeof(ack->checksum); ++i) {
-        calculated += bytes[i];
-    }
-
-    if (calculated != ack->checksum) {
-        LOG_WARN(kLogTag, "Component apply ACK checksum mismatch: calc=%u recv=%u", calculated, ack->checksum);
-        return;
-    }
-
-    LOG_INFO(kLogTag,
-             "Component apply ACK: request_id=%lu success=%u reboot_required=%u ready=%u mask=0x%02X persisted=0x%02X msg=%s",
-             static_cast<unsigned long>(ack->request_id),
-             static_cast<unsigned>(ack->success),
-             static_cast<unsigned>(ack->reboot_required),
-             static_cast<unsigned>(ack->ready_for_reboot),
-             static_cast<unsigned>(ack->apply_mask),
-             static_cast<unsigned>(ack->persisted_mask),
-             ack->message);
-
-    ComponentApplyTracker::on_ack(*ack);
-}
-
-void handle_packet_unknown(const espnow_queue_msg_t* msg, uint8_t subtype) {
-    EspnowPacketUtils::PacketInfo info;
-    if (EspnowPacketUtils::get_packet_info(msg, info)) {
-        LOG_WARN(kLogTag, "PACKET/UNKNOWN: subtype=%u, seq=%u", 
-                     subtype, info.seq);
-    }
-}
+// Handler implementations live in espnow_message_handlers.cpp and espnow_settings_sync.cpp.

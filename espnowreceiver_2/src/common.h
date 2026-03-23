@@ -1,4 +1,3 @@
-#include "state/receiver_state_manager.h"
 /*
  * Common definitions and global state
  * Shared across all modules
@@ -87,7 +86,6 @@ namespace ESPNow {
 
 // FreeRTOS Resources
 namespace RTOS {
-    extern TaskHandle_t task_test_data;
     extern TaskHandle_t task_indicator;
     extern TaskHandle_t task_espnow_worker;
     extern TaskHandle_t task_display_renderer;

@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include <IPAddress.h>
+#include <ETH.h>
 
 // ============================================================================
 // COMMON ETHERNET CONFIGURATION
