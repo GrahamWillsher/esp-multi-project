@@ -46,7 +46,6 @@ private:
     
     void send_heartbeat();
     
-    static constexpr uint32_t HEARTBEAT_INTERVAL_MS = 10000;  // 10 seconds
     static constexpr uint32_t MAX_UNACKED_HEARTBEATS = 3;     // Trigger CONNECTION_LOST after 3
     
     uint32_t m_heartbeat_seq = 0;        // Monotonic sequence counter

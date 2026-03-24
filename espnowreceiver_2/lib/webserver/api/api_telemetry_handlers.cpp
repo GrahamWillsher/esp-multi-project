@@ -3,6 +3,7 @@
 #include "api_response_utils.h"
 #include "webserver_metrics.h"
 #include "../webserver.h"
+#include "api_field_builders.h"
 
 #include "../utils/transmitter_manager.h"
 #include "../utils/cell_data_cache.h"
@@ -39,36 +40,16 @@ using namespace WebserverMetrics;
 esp_err_t api_data_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_DATA);
     StaticJsonDocument<512> doc;
-
-    String ssid = WiFi.SSID();
-    String ip = WiFi.localIP().toString();
-    String mac = WiFi.macAddress();
-    int channel = WiFi.channel();
-
-    String chipModel = ESP.getChipModel();
-    uint8_t chipRevision = ESP.getChipRevision();
-    uint64_t efuseMac = ESP.getEfuseMac();
-
-    char efuseMacStr[18];
-    snprintf(efuseMacStr, sizeof(efuseMacStr),
-             "%02X:%02X:%02X:%02X:%02X:%02X",
-             (uint8_t)(efuseMac >> 40), (uint8_t)(efuseMac >> 32),
-             (uint8_t)(efuseMac >> 24), (uint8_t)(efuseMac >> 16),
-             (uint8_t)(efuseMac >> 8), (uint8_t)(efuseMac));
-
-    doc["chipModel"] = chipModel;
-    doc["chipRevision"] = chipRevision;
-    doc["efuseMac"] = efuseMacStr;
-    doc["ssid"] = ssid;
-    doc["ip"] = ip;
-    doc["mac"] = mac;
-    doc["channel"] = channel;
+    
+    ApiFieldBuilders::addChipInfo(doc);
+    ApiFieldBuilders::addWiFiFields(doc);
 
     String json;
     json.reserve(256);
     serializeJson(doc, json);
     return HttpJsonUtils::send_json(req, json.c_str());
 }
+
 
 esp_err_t api_get_receiver_info_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_GET_RECEIVER_INFO);
@@ -120,28 +101,23 @@ esp_err_t api_dashboard_data_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_DASHBOARD_DATA);
     StaticJsonDocument<384> doc;
 
-    bool tx_connected = TransmitterManager::isTransmitterConnected();
-    String tx_ip = TransmitterManager::getIPString();
-    bool tx_is_static = TransmitterManager::isStaticIP();
-    String tx_mac = TransmitterManager::getMACString();
+    JsonObject transmitter = ApiFieldBuilders::addTransmitterObject(doc);
+    transmitter["connected"] = TransmitterManager::isTransmitterConnected();
+    transmitter["ip"] = TransmitterManager::getIPString();
+    transmitter["is_static"] = TransmitterManager::isStaticIP();
+    transmitter["mac"] = TransmitterManager::getMACString();
+    
     String tx_firmware = "Unknown";
-
     if (TransmitterManager::hasMetadata()) {
         uint8_t major, minor, patch;
         TransmitterManager::getMetadataVersion(major, minor, patch);
         char version_str[12];
-        snprintf(version_str, sizeof(version_str), "%d.%d.%d", major, minor, patch);
+        ApiFieldBuilders::formatVersionString(version_str, sizeof(version_str), major, minor, patch);
         tx_firmware = String(version_str);
     }
-
-    JsonObject transmitter = doc.createNestedObject("transmitter");
-    transmitter["connected"] = tx_connected;
-    transmitter["ip"] = tx_ip;
-    transmitter["is_static"] = tx_is_static;
-    transmitter["mac"] = tx_mac;
     transmitter["firmware"] = tx_firmware;
 
-    JsonObject receiver = doc.createNestedObject("receiver");
+    JsonObject receiver = ApiFieldBuilders::addReceiverObject(doc);
     receiver["is_static"] = true;
 
     String json;
@@ -149,6 +125,7 @@ esp_err_t api_dashboard_data_handler(httpd_req_t *req) {
     serializeJson(doc, json);
     return HttpJsonUtils::send_json(req, json.c_str());
 }
+
 
 esp_err_t api_version_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_VERSION);

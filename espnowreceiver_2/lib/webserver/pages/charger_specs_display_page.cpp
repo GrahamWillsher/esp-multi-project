@@ -1,4 +1,5 @@
 #include "charger_specs_display_page.h"
+#include "generic_specs_page.h"
 #include "../common/spec_page_layout.h"
 #include "../utils/transmitter_manager.h"
 #include "../page_definitions.h"
@@ -83,62 +84,35 @@ esp_err_t charger_specs_page_handler(httpd_req_t *req) {
         </div>
 )";
 
-    String html_footer = build_spec_page_html_footer(R"(
-            <a href="/" class="btn btn-secondary">← Back to Dashboard</a>
-            <a href="/inverter_settings.html" class="btn btn-secondary">← Inverter Specs</a>
-            <a href="/system_settings.html" class="btn btn-secondary">System Specs →</a>
-)");
+    static const SpecPageNavLink kNavLinks[] = {
+        {"/", "← Back to Dashboard"},
+        {"/inverter_settings.html", "← Inverter Specs"},
+        {"/system_settings.html", "System Specs →"},
+    };
 
-    // Allocate response buffer (PSRAM for large allocations)
-    size_t html_header_len = html_header.length();
-    size_t html_footer_len = html_footer.length();
-    size_t specs_section_max = 2048;
-    size_t total_size = html_header_len + specs_section_max + html_footer_len + 256;
-    
-    char* response = (char*)ps_malloc(total_size);
-    if (!response) {
-        LOG_ERROR("CHARGER_PAGE", "Failed to allocate %d bytes in PSRAM", total_size);
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Memory allocation failed");
-        return ESP_FAIL;
-    }
+    String html_footer = build_spec_page_html_footer(
+        ::build_spec_page_nav_links(kNavLinks, sizeof(kNavLinks) / sizeof(kNavLinks[0])));
 
-    // Build response safely
-    char specs_section[2048];
-    snprintf(specs_section, sizeof(specs_section), html_specs_section,
-             charger_type.c_str(),
-             charger_manufacturer.c_str(),
-             max_charge_power_w,
-             max_charge_current_da / 10.0f,
-             min_charge_voltage_dv / 10.0f,
-             max_charge_voltage_dv / 10.0f,
-             supports_modbus ? "enabled" : "disabled",
-             supports_modbus ? "✓" : "✗",
-             supports_can ? "enabled" : "disabled",
-             supports_can ? "✓" : "✗");
-    
-    // Safe concatenation
-    size_t offset = 0;
-    offset += snprintf(response + offset, total_size - offset, "%s", html_header.c_str());
-    offset += snprintf(response + offset, total_size - offset, "%s", specs_section);
-    offset += snprintf(response + offset, total_size - offset, "%s", html_footer.c_str());
-    
-    // Send response
-    httpd_resp_set_type(req, "text/html; charset=utf-8");
-    httpd_resp_send(req, response, strlen(response));
-    
-    free(response);
-    LOG_INFO("CHARGER_PAGE", "Charger specs page served (%d bytes)", offset);
-    
-    return ESP_OK;
+    GenericSpecsPage::RenderConfig render_config = {
+        .log_tag = "CHARGER_PAGE",
+        .specs_section_size = 2048,
+        .total_slack_bytes = 256,
+        .allocate_specs_section_in_psram = false,
+    };
+    return GenericSpecsPage::send_formatted_page(req, html_header, html_specs_section, html_footer, render_config,
+        charger_type.c_str(),
+        charger_manufacturer.c_str(),
+        max_charge_power_w,
+        max_charge_current_da / 10.0f,
+        min_charge_voltage_dv / 10.0f,
+        max_charge_voltage_dv / 10.0f,
+        supports_modbus ? "enabled" : "disabled",
+        supports_modbus ? "✓" : "✗",
+        supports_can ? "enabled" : "disabled",
+        supports_can ? "✓" : "✗");
 }
 
 // Registration function for webserver initialization
 esp_err_t register_charger_specs_page(httpd_handle_t server) {
-    httpd_uri_t uri = {
-        .uri       = "/charger_settings.html",
-        .method    = HTTP_GET,
-        .handler   = charger_specs_page_handler,
-        .user_ctx  = NULL
-    };
-    return httpd_register_uri_handler(server, &uri);
+    return GenericSpecsPage::register_page(server, "/charger_settings.html", charger_specs_page_handler);
 }

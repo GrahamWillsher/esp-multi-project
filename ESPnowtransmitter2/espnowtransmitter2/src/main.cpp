@@ -23,11 +23,13 @@
 #include <firmware_version.h>  // DEVICE_NAME, PROTOCOL_VERSION, FW_VERSION_*
 #include <firmware_metadata.h>
 #include <runtime_common_utils/ota_boot_guard.h>
+#include <runtime_common_utils/setup_health_gate.h>
 
 // Configuration
 #include "config/hardware_config.h"
 #include "config/network_config.h"
 #include "config/task_config.h"
+#include "config/runtime_task_startup.h"
 #include "config/logging_config.h"
 #include <esp32common/config/timing_config.h>
 
@@ -242,7 +244,7 @@ static void bootstrap_espnow() {
         LOG_ERROR("STATE", "Failed to initialize common connection manager!");
     }
     EspNowConnectionManager::instance().set_auto_reconnect(true);
-    EspNowConnectionManager::instance().set_connecting_timeout_ms(timing::ESPNOW_CONNECTING_TIMEOUT_MS);
+    EspNowConnectionManager::instance().set_connecting_timeout_ms(TimingConfig::ESPNOW_CONNECTING_TIMEOUT_MS);
 
     // Initialize transmitter connection handler (registers state callbacks)
     TransmitterConnectionHandler::instance().init();
@@ -365,41 +367,8 @@ static void bootstrap_data_layer() {
 // then DiscoveryTask and MQTT task.  Once this phase returns all data-flow
 // pipelines are active.
 static void bootstrap_tasks() {
-    LOG_DEBUG("ESPNOW", "Starting ESP-NOW tasks...");
     // (RX task was already started in bootstrap_espnow — it must precede discovery)
-
-    // Background transmission task (Priority 2 — LOW, Core 1)
-    // Reads from EnhancedCache and transmits via ESP-NOW (non-blocking)
-    TransmissionTask::instance().start(task_config::PRIORITY_LOW, 1);
-    LOG_INFO("ESPNOW", "Background transmission task started (Priority 2, Core 1)");
-
-    HeartbeatManager::instance().init();
-    LOG_INFO("HEARTBEAT", "Heartbeat manager initialized (10s interval, ACK-based)");
-
-#if CONFIG_CAN_ENABLED
-    LOG_INFO("MAIN", "===== PHASE 4a: REAL BATTERY DATA =====");
-    LOG_INFO("MAIN", "Using CAN bus data from datalayer");
-    DataSender::instance().start();
-    LOG_INFO("MAIN", "✓ Data sender started (real battery data)");
-#else
-    LOG_INFO("MAIN", "Using simulated test data (CAN disabled)");
-    DataSender::instance().start();
-#endif
-
-    // Start discovery task (periodic announcements until receiver connects)
-    DiscoveryTask::instance().start();
-
-    // Start MQTT task (lowest priority — background telemetry)
-    if (config::features::MQTT_ENABLED) {
-        xTaskCreate(
-            task_mqtt_loop,
-            "mqtt_task",
-            task_config::STACK_SIZE_MQTT,
-            nullptr,
-            task_config::PRIORITY_LOW,
-            nullptr
-        );
-    }
+    RuntimeTaskStartup::start_runtime_tasks();
 }
 
 // --- Phase 8: Post-start network services -----------------------------------
@@ -438,31 +407,21 @@ void setup() {
     );
 
     {
-        const bool heap_ok            = ESP.getFreeHeap() > 32768;
-        const bool ethernet_not_fatal = EthernetManager::instance().get_state() != EthernetConnectionState::ERROR_STATE;
-        const bool espnow_queue_ready = RuntimeContext::instance().espnow_message_queue() != nullptr;
-        const bool health_gate_ok     = heap_ok && ethernet_not_fatal && espnow_queue_ready;
+        const SetupHealthGate::Check checks[] = {
+            {"heap_ok", ESP.getFreeHeap() > 32768},
+            {"ethernet_not_fatal", EthernetManager::instance().get_state() != EthernetConnectionState::ERROR_STATE},
+            {"espnow_queue_ready", RuntimeContext::instance().espnow_message_queue() != nullptr},
+        };
 
-        if (OtaBootGuard::is_pending_verification() && !health_gate_ok) {
-            // OTA pending-verify reboot + health gate failed → trigger rollback
-            LOG_ERROR("BOOT_GUARD",
-                      "Setup health gate failed (heap_ok=%d, ethernet_not_fatal=%d, espnow_queue_ready=%d); triggering rollback",
-                      heap_ok ? 1 : 0,
-                      ethernet_not_fatal ? 1 : 0,
-                      espnow_queue_ready ? 1 : 0);
-            OtaBootGuard::trigger_rollback_and_reboot("transmitter setup health gate failed");
-        } else {
-            // Health gate OK (OTA or normal boot), OR normal boot with marginal health (no rollback available).
-            // Always confirm here so boot_guard_passed=true is visible in the OTA status API.
-            if (!health_gate_ok) {
-                LOG_WARN("BOOT_GUARD",
-                         "Setup health gate suboptimal on normal boot (heap_ok=%d, ethernet_not_fatal=%d, espnow_queue_ready=%d); confirming anyway",
-                         heap_ok ? 1 : 0,
-                         ethernet_not_fatal ? 1 : 0,
-                         espnow_queue_ready ? 1 : 0);
-            }
-            OtaBootGuard::confirm_running_app("transmitter setup health gate passed");
-            LOG_INFO("BOOT_GUARD", "Transmitter app confirmed valid after setup health gate");
+        const SetupHealthGate::Outcome outcome = SetupHealthGate::apply(
+            "TX_BOOT_GUARD",
+            checks,
+            sizeof(checks) / sizeof(checks[0]),
+            "transmitter setup health gate failed",
+            "transmitter setup health gate passed");
+
+        if (outcome == SetupHealthGate::Outcome::Error) {
+            LOG_ERROR("BOOT_GUARD", "Transmitter setup health gate helper returned error");
         }
     }
 
@@ -482,7 +441,7 @@ void loop() {
     // ✅ NEW: Update Ethernet state machine (check timeouts, recovery transitions)
     static uint32_t last_eth_update = 0;
     uint32_t now = millis();
-    if (now - last_eth_update > timing::ETH_STATE_MACHINE_UPDATE_INTERVAL_MS) {
+    if (now - last_eth_update > TimingConfig::ETH_STATE_MACHINE_UPDATE_INTERVAL_MS) {
         EthernetManager::instance().update_state_machine();
         last_eth_update = now;
     }
@@ -497,7 +456,7 @@ void loop() {
     static uint32_t last_can_stats = 0;
     
     // Phase 4a: Periodic CAN statistics (every 10 seconds)
-    if (now - last_can_stats > timing::CAN_STATS_LOG_INTERVAL_MS) {
+    if (now - last_can_stats > TimingConfig::CAN_STATS_LOG_INTERVAL_MS) {
         if (CANDriver::instance().is_ready()) {
             LOG_INFO("CAN", "Stats: RX=%u, TX=%u, Errors=%u, BMS=%s",
                      CANDriver::instance().get_rx_count(),
@@ -510,7 +469,7 @@ void loop() {
 #endif
     
     // Periodic state validation (every 30 seconds) - Phase 2
-    if (now - last_state_validation > timing::STATE_VALIDATION_INTERVAL_MS) {
+    if (now - last_state_validation > TimingConfig::STATE_VALIDATION_INTERVAL_MS) {
         if (!DiscoveryTask::instance().validate_state()) {
             LOG_WARN("MAIN", "State validation failed - triggering self-healing restart");
             DiscoveryTask::instance().restart();
@@ -534,14 +493,14 @@ void loop() {
     HeartbeatManager::instance().tick();
     
     // Metrics reporting (every 5 minutes) - Phase 3
-    if (now - last_metrics_report > timing::METRICS_REPORT_INTERVAL_MS) {
+    if (now - last_metrics_report > TimingConfig::METRICS_REPORT_INTERVAL_MS) {
         DiscoveryTask::instance().get_metrics().log_summary();
         last_metrics_report = now;
     }
     
     // Peer state audit (every 2 minutes, if debug enabled) - Phase 2
     #if LOG_LEVEL >= LOG_LEVEL_DEBUG
-    if (now - last_peer_audit > timing::PEER_AUDIT_INTERVAL_MS) {
+    if (now - last_peer_audit > TimingConfig::PEER_AUDIT_INTERVAL_MS) {
         DiscoveryTask::instance().audit_peer_state();
         last_peer_audit = now;
     }

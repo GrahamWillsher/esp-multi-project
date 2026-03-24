@@ -6,6 +6,8 @@ public:
     static void init();
     static void loadFromNVS();
     static void saveToNVS();
+    static void persist();
+    static void notifyAndPersist();
 };
 
 #endif

@@ -109,6 +109,4 @@ private:
     uint64_t uptime_ms_{0};
     uint32_t last_millis_{0};
     
-    // NTP sync constants
-    static constexpr uint32_t NTP_RESYNC_INTERVAL_MS = 3600000; // 1 hour
 };

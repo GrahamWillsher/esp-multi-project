@@ -9,7 +9,9 @@
 #include "common.h"
 #include "helpers.h"
 #include "config/task_config.h"
+#include "config/runtime_task_startup.h"
 #include "state_machine.h"
+#include <runtime_common_utils/bootstrap_phase_runner.h>
 #include "display/display_led.h"
 #include "display/display.h"
 #include "display/display_splash.h"
@@ -29,6 +31,7 @@
 #include <esp32common/espnow/connection_manager.h>
 #include <esp32common/espnow/connection_event_processor.h>
 #include <channel_manager.h>
+#include <esp32common/config/timing_config.h>
 #include "config/wifi_setup.h"
 #include "config/littlefs_init.h"
 #include "../lib/webserver/webserver.h"
@@ -39,6 +42,7 @@
 #include <firmware_version.h>
 #include <firmware_metadata.h>  // Embed firmware metadata in binary
 #include <runtime_common_utils/ota_boot_guard.h>
+#include <runtime_common_utils/setup_health_gate.h>
 
 // ═══════════════════════════════════════════════════════════════════════
 // Globals
@@ -46,10 +50,6 @@
 
 // DEBUG SWITCH: keep disabled for normal boot; this probe uses direct TFT test frames.
 static constexpr bool PRE_LITTLEFS_DEBUG_HALT = false;
-
-// Dedicated LED renderer task (always-on, effect-driven)
-static constexpr uint32_t LED_RENDER_TASK_STACK = 3072;
-static constexpr UBaseType_t LED_RENDER_TASK_PRIORITY = 1;
 
 static void task_led_renderer(void* parameter) {
     (void)parameter;
@@ -208,8 +208,16 @@ static void run_pre_littlefs_debug_and_halt() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// BOOTSTRAP PHASE FUNCTIONS
+// setup() is decomposed into ordered phases.  Each phase owns exactly one
+// system layer.  Execution order must be preserved; later phases depend on
+// resources established by earlier ones.
+// ═══════════════════════════════════════════════════════════════════════
 
-void setup() {
+// --- Phase 1: Hardware -------------------------------------------------------
+// Serial port, backlight suppression, firmware metadata, OTA boot guard.
+// No subsystem dependencies.
+static void bootstrap_hardware() {
     // Force backlight OFF immediately at boot to prevent pre-splash white flash
     pinMode(HardwareConfig::GPIO_BACKLIGHT, OUTPUT);
     digitalWrite(HardwareConfig::GPIO_BACKLIGHT, LOW);
@@ -218,52 +226,54 @@ void setup() {
     smart_delay(1000);  // Give serial time to initialize
     LOG_INFO("MAIN", "\n========================================");
     LOG_INFO("MAIN", "ESP32 T-Display-S3 ESP-NOW Receiver");
-    
-    // Display firmware metadata using logging system
+
     char fwInfo[128];
     FirmwareMetadata::getInfoString(fwInfo, sizeof(fwInfo), false);
     LOG_INFO("MAIN", "%s", fwInfo);
-    
+
     if (FirmwareMetadata::isValid(FirmwareMetadata::metadata)) {
         LOG_INFO("MAIN", "Built: %s", FirmwareMetadata::metadata.build_date);
     }
-    
+
     LOG_INFO("MAIN", "Build: %s %s", __DATE__, __TIME__);
     LOG_INFO("MAIN", "========================================");
     Serial.flush();
 
     OtaBootGuard::begin("RX_BOOT_GUARD");
+}
 
-    // Initialize TFT display, backlight and display system
+// --- Phase 2: Display --------------------------------------------------------
+// Hardware display init, optional pre-LittleFS debug halt.
+// Depends on: GPIO (Phase 1).
+static void bootstrap_display() {
     init_display();
     LOG_INFO("MAIN", "Display system initialized");
-    
-    // Pre-LittleFS debug probe (requested): stop here to inspect startup behavior
+
     if (PRE_LITTLEFS_DEBUG_HALT) {
         run_pre_littlefs_debug_and_halt();
     }
+}
 
-    // Initialize LittleFS filesystem
+// --- Phase 3: Filesystem & Network Config ------------------------------------
+// LittleFS mount, receiver NVS config load, WiFi bring-up.
+// Depends on: display ready (splash shown during LittleFS init).
+static void bootstrap_filesystem() {
     initlittlefs();
-
-    // Load receiver network configuration from NVS
     ReceiverNetworkConfig::loadConfig();
-
-    // Initialize WiFi with static IP and connect to network
     setupWiFi();
+}
 
-    // Initialize receiver-side configuration cache (local static data)
+// --- Phase 4: Services -------------------------------------------------------
+// Receiver/transmitter caches, webserver, ESP-NOW radio init.
+// Depends on: WiFi (Phase 3).
+static void bootstrap_services() {
     ReceiverConfigManager::init();
-
-    // Initialize transmitter cache from NVS (write-through cache)
     TransmitterManager::init();
-    
-    // Initialize web server (after WiFi is connected)
+
     LOG_INFO("MAIN", "Initializing web server...");
     init_webserver();
     LOG_INFO("MAIN", "Web server initialized");
-    
-    // Initialize ESP-NOW (but don't register callback yet - queue must be created first)
+
     esp_wifi_set_ps(WIFI_PS_NONE);
 
     LOG_INFO("MAIN", "Initializing ESP-NOW...");
@@ -272,165 +282,94 @@ void setup() {
     }
     LOG_INFO("MAIN", "ESP-NOW initialized on WiFi channel %d", WiFi.channel());
     LOG_DEBUG("MAIN", "ESP-NOW and WiFi STA coexist on same channel");
-    
-    // Display initial ready screen (splash was already shown during LittleFS init)
+}
+
+// --- Phase 5: Display Content ------------------------------------------------
+// Show initial ready screen after services are ready.
+// Depends on: services (Phase 4).
+static void bootstrap_display_content() {
     displayInitialScreen();
-    
-    LOG_INFO("MAIN", "===== Setup complete =====");
-    smart_delay(1000);
-    
-    // Don't clear screen here - let data display handle it when it starts
-    // tft.fillScreen(Display::tft_background);
-    
-    // Create mutex for TFT display access
-    RTOS::tft_mutex = xSemaphoreCreateMutex();
-    if (RTOS::tft_mutex == NULL) {
-        handle_error(ErrorSeverity::FATAL, "RTOS", "Failed to create TFT mutex");
-    }
-    LOG_DEBUG("MAIN", "TFT mutex created");
-    
-    // Create ESP-NOW message queue
-    ESPNow::queue = xQueueCreate(ESPNow::QUEUE_SIZE, sizeof(espnow_queue_msg_t));
-    if (ESPNow::queue == NULL) {
-        handle_error(ErrorSeverity::FATAL, "RTOS", "Failed to create ESP-NOW queue");
-    }
-    LOG_DEBUG("MAIN", "ESP-NOW queue created (size=%d)", ESPNow::QUEUE_SIZE);
+}
 
-    // CRITICAL: Setup message routes BEFORE starting worker task
-    // This prevents race condition where PROBE messages arrive before handlers are registered
-    LOG_DEBUG("MAIN", "Setting up ESP-NOW message routes...");
-    setup_message_routes();  // From espnow_tasks.cpp
-    LOG_DEBUG("MAIN", "ESP-NOW message routes initialized");
+// --- Phase 6: FreeRTOS Tasks -------------------------------------------------
+// Create runtime primitives (queues/mutexes) and start all background tasks.
+// Depends on: services ready (Phase 4).
+static void bootstrap_tasks() {
+    RuntimeTaskStartup::create_runtime_primitives();
+    RuntimeTaskStartup::start_runtime_tasks(task_led_renderer);
+}
 
-    // Initialize decoupled display snapshot queue
-    DisplayUpdateQueue::init();
-    
-    // Create FreeRTOS tasks
-    LOG_DEBUG("MAIN", "Creating FreeRTOS tasks...");
-
-    // Task: ESP-NOW Worker (priority 2, core 1) - highest priority for message processing
-    xTaskCreatePinnedToCore(
-        task_espnow_worker,
-        "ESPNowWorker",
-        TaskConfig::ESPNOW_WORKER_STACK,
-        NULL,
-        TaskConfig::ESPNOW_WORKER_PRIORITY,
-        &RTOS::task_espnow_worker,
-        TaskConfig::WORKER_CORE
-    );
-
-    // Task: Display Renderer (priority 1, core 1) - decoupled from ESP-NOW worker
-    xTaskCreatePinnedToCore(
-        DisplayUpdateQueue::task_renderer,
-        "DisplayRenderer",
-        TaskConfig::DISPLAY_RENDERER_STACK,
-        NULL,
-        TaskConfig::DISPLAY_RENDERER_PRIORITY,
-        &RTOS::task_display_renderer,
-        TaskConfig::WORKER_CORE
-    );
-    
-    // Start periodic announcement using common discovery component
-    // (creates its own internal task, no need to wrap it)
-    LOG_DEBUG("MAIN", "Starting periodic announcement task...");
-    EspnowDiscovery::instance().start(
-        []() -> bool {
-            const auto state = RxStateMachine::instance().connection_state();
-            return state == RxStateMachine::ConnectionState::CONNECTED ||
-                   state == RxStateMachine::ConnectionState::ACTIVE ||
-                   state == RxStateMachine::ConnectionState::STALE;
-        },
-        TaskConfig::ANNOUNCEMENT_INTERVAL_MS,
-        TaskConfig::ANNOUNCEMENT_PRIORITY,
-        TaskConfig::ANNOUNCEMENT_TASK_STACK
-    );
-    
-    // Task: MQTT Client (priority 0, core 1) - low priority, receives spec data
-    xTaskCreatePinnedToCore(
-        task_mqtt_client,
-        "MqttClient",
-        TaskConfig::MQTT_CLIENT_STACK,
-        NULL,
-        TaskConfig::MQTT_CLIENT_PRIORITY,
-        NULL,
-        TaskConfig::WORKER_CORE
-    );
-
-    // Task: LED Renderer (priority 1, core 1) - always-on effect loop
-    xTaskCreatePinnedToCore(
-        task_led_renderer,
-        "LedRenderer",
-        LED_RENDER_TASK_STACK,
-        NULL,
-        LED_RENDER_TASK_PRIORITY,
-        &RTOS::task_indicator,
-        TaskConfig::WORKER_CORE
-    );
-    
-    LOG_DEBUG("MAIN", "All tasks created successfully");
-    
-    // PHASE C: Initialize channel manager (BEFORE connection manager)
+// --- Phase 7: ESP-NOW State Machines -----------------------------------------
+// Wire up channel manager, connection manager, heartbeat, state machine,
+// ESP-NOW callbacks and initial state transition.
+// Depends on: tasks started (Phase 6) — connection manager requires scheduler.
+static void bootstrap_espnow_state() {
     LOG_INFO("CHANNEL", "Initializing channel manager...");
     if (!ChannelManager::instance().init()) {
         LOG_ERROR("CHANNEL", "Failed to initialize channel manager!");
     }
-    
-    // PHASE C: Initialize common connection manager (AFTER first task starts)
-    // Must be after FreeRTOS scheduler has started
+
     LOG_INFO("STATE", "Initializing common connection manager...");
     if (!EspNowConnectionManager::instance().init()) {
         LOG_ERROR("STATE", "Failed to initialize common connection manager!");
     }
-    
-    // Enable auto-reconnect and set timeout
+
     EspNowConnectionManager::instance().set_auto_reconnect(true);
-    EspNowConnectionManager::instance().set_connecting_timeout_ms(30000);  // 30s timeout
-    
+    EspNowConnectionManager::instance().set_connecting_timeout_ms(TimingConfig::ESPNOW_CONNECTING_TIMEOUT_MS);
+
     create_connection_event_processor(3, 0);
     ReceiverConnectionHandler::instance().init();
-    
-    // Initialize RX heartbeat manager (after connection manager is ready)
+
     RxHeartbeatManager::instance().init();
     LOG_INFO("HEARTBEAT", "RX Heartbeat manager initialized (90s timeout)");
-    
-    // *** PHASE 2: Initialize system state machine ***
+
     SystemStateManager::instance().init();
-    
-    // NOW register ESP-NOW callbacks (queue is ready)
+
     esp_now_register_recv_cb(on_data_recv);
     esp_now_register_send_cb(on_espnow_sent);
     LOG_DEBUG("MAIN", "ESP-NOW callbacks registered");
-    
+
     transition_to_state(SystemState::WAITING_FOR_TRANSMITTER);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+
+void setup() {
+    static const BootstrapPhaseRunner::Phase kBootstrapPhases[] = {
+        {"hardware",       bootstrap_hardware},
+        {"display",        bootstrap_display},
+        {"filesystem",     bootstrap_filesystem},
+        {"services",       bootstrap_services},
+        {"display_content",bootstrap_display_content},
+        {"tasks",          bootstrap_tasks},
+        {"espnow_state",   bootstrap_espnow_state},
+    };
+
+    BootstrapPhaseRunner::run_phases(
+        kBootstrapPhases,
+        sizeof(kBootstrapPhases) / sizeof(kBootstrapPhases[0])
+    );
 
     {
-        const bool heap_ok         = ESP.getFreeHeap() > 32768;
-        const bool mutex_ok        = (RTOS::tft_mutex != nullptr);
-        const bool espnow_queue_ok = (ESPNow::queue != nullptr);
-        const bool health_gate_ok  = heap_ok && mutex_ok && espnow_queue_ok;
+        const SetupHealthGate::Check checks[] = {
+            {"heap_ok", ESP.getFreeHeap() > 32768},
+            {"mutex_ok", RTOS::tft_mutex != nullptr},
+            {"espnow_queue_ok", ESPNow::queue != nullptr},
+        };
 
-        if (OtaBootGuard::is_pending_verification() && !health_gate_ok) {
-            // OTA pending-verify reboot + health gate failed → trigger rollback
-            LOG_ERROR("BOOT_GUARD",
-                      "Setup health gate failed (heap_ok=%d, mutex_ok=%d, espnow_queue_ok=%d); triggering rollback",
-                      heap_ok ? 1 : 0,
-                      mutex_ok ? 1 : 0,
-                      espnow_queue_ok ? 1 : 0);
-            OtaBootGuard::trigger_rollback_and_reboot("receiver setup health gate failed");
-        } else {
-            // Health gate OK (OTA or normal boot), OR normal boot with marginal health (no rollback available).
-            // Always confirm so boot_guard_passed=true is set after a successful boot.
-            if (!health_gate_ok) {
-                LOG_WARN("BOOT_GUARD",
-                         "Setup health gate suboptimal on normal boot (heap_ok=%d, mutex_ok=%d, espnow_queue_ok=%d); confirming anyway",
-                         heap_ok ? 1 : 0,
-                         mutex_ok ? 1 : 0,
-                         espnow_queue_ok ? 1 : 0);
-            }
-            OtaBootGuard::confirm_running_app("receiver setup health gate passed");
-            LOG_INFO("BOOT_GUARD", "Receiver app confirmed valid after setup health gate");
+        const SetupHealthGate::Outcome outcome = SetupHealthGate::apply(
+            "RX_BOOT_GUARD",
+            checks,
+            sizeof(checks) / sizeof(checks[0]),
+            "receiver setup health gate failed",
+            "receiver setup health gate passed");
+
+        if (outcome == SetupHealthGate::Outcome::Error) {
+            LOG_ERROR("BOOT_GUARD", "Receiver setup health gate helper returned error");
         }
     }
+
+    LOG_INFO("MAIN", "Setup complete! All 7 bootstrap phases done.");
 }
 
 // ═══════════════════════════════════════════════════════════════════════

@@ -1,8 +1,9 @@
 #include "transmitter_nvs_persistence.h"
-#include "transmitter_status_cache.h"
+#include "transmitter_state.h"
 #include "transmitter_settings_cache.h"
-#include "transmitter_mqtt_cache.h"
-#include "transmitter_network_cache.h"
+#include "transmitter_mqtt_specs.h"
+#include "transmitter_network.h"
+#include "sse_notifier.h"
 #include "../logging.h"
 
 #include <Arduino.h>
@@ -21,9 +22,9 @@ namespace {
             return;
         }
 
-        TransmitterMqttCache::save_to_prefs(&prefs);
-        TransmitterNetworkCache::save_to_prefs(&prefs);
-        TransmitterStatusCache::save_metadata_to_prefs(&prefs);
+        TransmitterMqttSpecs::save_to_prefs(&prefs);
+        TransmitterNetwork::save_to_prefs(&prefs);
+        TransmitterState::save_metadata_to_prefs(&prefs);
         TransmitterSettingsCache::save_to_prefs(&prefs);
 
         prefs.end();
@@ -71,9 +72,9 @@ void TransmitterNvsPersistence::loadFromNVS() {
         return;
     }
 
-    TransmitterMqttCache::load_from_prefs(&prefs);
-    TransmitterNetworkCache::load_from_prefs(&prefs);
-    TransmitterStatusCache::load_metadata_from_prefs(&prefs);
+    TransmitterMqttSpecs::load_from_prefs(&prefs);
+    TransmitterNetwork::load_from_prefs(&prefs);
+    TransmitterState::load_metadata_from_prefs(&prefs);
     TransmitterSettingsCache::load_from_prefs(&prefs);
 
     prefs.end();
@@ -81,4 +82,13 @@ void TransmitterNvsPersistence::loadFromNVS() {
 
 void TransmitterNvsPersistence::saveToNVS() {
     schedule_nvs_save();
+}
+
+void TransmitterNvsPersistence::persist() {
+    saveToNVS();
+}
+
+void TransmitterNvsPersistence::notifyAndPersist() {
+    SSENotifier::notifyDataUpdated();
+    saveToNVS();
 }

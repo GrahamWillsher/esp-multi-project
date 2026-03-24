@@ -4,6 +4,7 @@
 #include "enhanced_cache.h"  // Section 11: Dual storage cache (replaces data_cache)
 #include "../config/task_config.h"
 #include "../config/logging_config.h"
+#include <esp32common/config/timing_config.h>
 #include "../datalayer/datalayer.h"  // Phase 4a: Real battery data
 #include "../battery_emulator/test_data_generator.h"  // Test data for development
 #include "../test_data/test_data_config.h"  // Phase 2: Runtime test data configuration
@@ -35,7 +36,7 @@ void DataSender::task_impl(void* parameter) {
     // This ensures battery setup() has already run and configured number_of_cells
     
     TickType_t last_wake_time = xTaskGetTickCount();
-    const TickType_t interval_ticks = pdMS_TO_TICKS(timing::ESPNOW_SEND_INTERVAL_MS);
+    const TickType_t interval_ticks = pdMS_TO_TICKS(TimingConfig::ESPNOW_SEND_INTERVAL_MS);
     auto& state_machine = TxStateMachine::instance();
     
     while (true) {

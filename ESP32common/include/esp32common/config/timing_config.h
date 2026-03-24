@@ -22,6 +22,8 @@ constexpr uint32_t COMPONENT_INIT_DELAY_MS = 100;
 // DISCOVERY & CHANNEL HOPPING
 // ============================================================================
 constexpr uint32_t DISCOVERY_RETRY_INTERVAL_MS = 5000;
+constexpr uint32_t DEFERRED_DISCOVERY_POLL_MS = 250;
+constexpr uint32_t ANNOUNCEMENT_INTERVAL_MS = 5000;
 constexpr uint32_t CHANNEL_STABILIZATION_MS = 150;
 constexpr uint32_t PEER_REGISTRATION_DELAY_MS = 100;
 constexpr uint32_t CHANNEL_SWITCHING_DELAY_MS = 300;
@@ -40,6 +42,8 @@ constexpr uint32_t RECOVERY_TIMEOUT_MS = 60000;
 // ============================================================================
 constexpr uint32_t HEARTBEAT_INTERVAL_MS = 10000;
 constexpr uint32_t HEARTBEAT_TIMEOUT_MS = 30000;
+constexpr uint32_t TX_HEARTBEAT_TIMEOUT_MS = 35000;
+constexpr uint32_t ESPNOW_CONNECTING_TIMEOUT_MS = 30000;
 constexpr uint32_t HEARTBEAT_ACK_TIMEOUT_MS = 1000;
 
 // ============================================================================
@@ -78,6 +82,9 @@ constexpr uint32_t MQTT_SUBSCRIBE_DELAY_MS = 100;
 constexpr uint32_t MQTT_CONNECTION_STABILIZATION_MS = 500;
 constexpr uint32_t MQTT_TASK_DELAY_MS = 5000;
 constexpr uint32_t MQTT_LOOP_DELAY_MS = 1000;
+constexpr uint32_t MQTT_STATS_LOG_INTERVAL_MS = 30000;
+constexpr uint32_t MQTT_CELL_PUBLISH_INTERVAL_MS = 1000;
+constexpr uint32_t MQTT_EVENT_PUBLISH_INTERVAL_MS = 5000;
 
 // ============================================================================
 // NETWORK - NTP / OTA
@@ -95,6 +102,12 @@ constexpr uint32_t COMPONENT_CONFIG_DELAY_MS = 1000;
 
 constexpr uint32_t MAIN_LOOP_DELAY_MS = 1000;
 constexpr uint32_t QUEUE_FLUSH_POLL_DELAY_MS = 10;
+
+constexpr uint32_t ETH_STATE_MACHINE_UPDATE_INTERVAL_MS = 1000;
+constexpr uint32_t CAN_STATS_LOG_INTERVAL_MS = 10000;
+constexpr uint32_t STATE_VALIDATION_INTERVAL_MS = 30000;
+constexpr uint32_t METRICS_REPORT_INTERVAL_MS = 300000;
+constexpr uint32_t PEER_AUDIT_INTERVAL_MS = 120000;
 
 constexpr uint32_t MUTEX_TIMEOUT_MS = 10;
 constexpr uint32_t CAN_RX_TIMEOUT_MS = 10;

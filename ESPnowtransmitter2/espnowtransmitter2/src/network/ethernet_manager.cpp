@@ -1,7 +1,6 @@
 #include "ethernet_manager.h"
 #include "../config/hardware_config.h"
 #include "../config/network_config.h"
-#include "../config/task_config.h"
 #include "../config/logging_config.h"
 #include <Arduino.h>
 #include <ESP32Ping.h>
@@ -220,7 +219,7 @@ void EthernetManager::update_state_machine() {
     if (current_state_ == EthernetConnectionState::LINK_LOST) {
         // Check if we should move to RECOVERING
         uint32_t age = get_state_age_ms();
-        if (age > timing::ETH_STATE_MACHINE_UPDATE_INTERVAL_MS && !recovery_active_this_outage_) {
+        if (age > TimingConfig::ETH_STATE_MACHINE_UPDATE_INTERVAL_MS && !recovery_active_this_outage_) {
             // Move to RECOVERING after 1 second (gated per-outage, not on lifetime counter)
             set_state(EthernetConnectionState::RECOVERING);
             metrics_.recoveries_attempted++;
@@ -261,7 +260,7 @@ void EthernetManager::check_state_timeout() {
                 set_state(EthernetConnectionState::ERROR_STATE);
             } else {
                 uint32_t now = millis();
-                if (now - last_ip_wait_log_ms_ >= timing::ANNOUNCEMENT_INTERVAL_MS) {
+                if (now - last_ip_wait_log_ms_ >= TimingConfig::ANNOUNCEMENT_INTERVAL_MS) {
                     last_ip_wait_log_ms_ = now;
                     LOG_INFO("ETH_TIMEOUT", "Still waiting for IP... (%lu ms)", age);
                 }

@@ -2,6 +2,7 @@
 #include "tx_state_machine.h"
 #include "tx_send_guard.h"
 #include <espnow_transmitter.h>
+#include <esp32common/config/timing_config.h>
 #include <esp32common/espnow/connection_manager.h>
 #include <esp32common/espnow/connection_event.h>
 #include <esp32common/espnow/packet_utils.h>
@@ -20,7 +21,7 @@ void HeartbeatManager::init() {
     m_last_send_time = 0;
     m_initialized = true;
     
-    LOG_INFO("HEARTBEAT", "Heartbeat manager initialized (interval: %u ms)", HEARTBEAT_INTERVAL_MS);
+    LOG_INFO("HEARTBEAT", "Heartbeat manager initialized (interval: %u ms)", TimingConfig::HEARTBEAT_INTERVAL_MS);
 }
 
 void HeartbeatManager::tick() {
@@ -39,7 +40,7 @@ void HeartbeatManager::tick() {
     uint32_t now = millis();
     
     // Check if it's time to send
-    if (now - m_last_send_time >= HEARTBEAT_INTERVAL_MS) {
+    if (now - m_last_send_time >= TimingConfig::HEARTBEAT_INTERVAL_MS) {
         send_heartbeat();
         m_last_send_time = now;
     }

@@ -1,6 +1,64 @@
 #include "tx_state_machine.h"
 #include "../config/logging_config.h"
 
+namespace {
+
+using State = TxStateMachine::ConnectionState;
+
+struct TransitionRule {
+    State from;
+    State to;
+};
+
+constexpr TransitionRule kTransitionRules[] = {
+    {State::DISCONNECTED, State::DISCOVERING},
+    {State::DISCONNECTED, State::RECONNECTING},
+
+    {State::DISCOVERING, State::CONNECTED},
+    {State::DISCOVERING, State::RECONNECTING},
+    {State::DISCOVERING, State::FAILED},
+    {State::DISCOVERING, State::DISCONNECTED},
+
+    {State::CONNECTED, State::ACTIVE},
+    {State::CONNECTED, State::STALE},
+    {State::CONNECTED, State::RECONNECTING},
+    {State::CONNECTED, State::DISCONNECTED},
+
+    {State::ACTIVE, State::CONNECTED},
+    {State::ACTIVE, State::STALE},
+    {State::ACTIVE, State::RECONNECTING},
+    {State::ACTIVE, State::DISCONNECTED},
+
+    {State::STALE, State::CONNECTED},
+    {State::STALE, State::ACTIVE},
+    {State::STALE, State::RECONNECTING},
+    {State::STALE, State::DISCONNECTED},
+
+    {State::RECONNECTING, State::DISCOVERING},
+    {State::RECONNECTING, State::CONNECTED},
+    {State::RECONNECTING, State::FAILED},
+    {State::RECONNECTING, State::DISCONNECTED},
+
+    {State::FAILED, State::RECONNECTING},
+    {State::FAILED, State::DISCOVERING},
+    {State::FAILED, State::DISCONNECTED},
+};
+
+bool is_transition_allowed(State from, State to) {
+    if (from == to) {
+        return true;
+    }
+
+    for (const auto& rule : kTransitionRules) {
+        if (rule.from == from && rule.to == to) {
+            return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
+
 TxStateMachine& TxStateMachine::instance() {
     static TxStateMachine s;
     return s;
@@ -22,6 +80,14 @@ void TxStateMachine::set_state(ConnectionState state, const char* reason) {
     if (xSemaphoreTake(mutex_, pdMS_TO_TICKS(20)) != pdTRUE) return;
 
     if (state_ != state) {
+        if (!is_transition_allowed(state_, state)) {
+            LOG_WARN("TX_STATE", "Rejected transition %s -> %s",
+                     espnow_device_state_to_string(state_),
+                     espnow_device_state_to_string(state));
+            xSemaphoreGive(mutex_);
+            return;
+        }
+
         state_ = state;
         stats_.transitions++;
         if (reason) {
@@ -49,6 +115,15 @@ void TxStateMachine::on_discovery_started() {
 void TxStateMachine::on_connected(uint8_t channel) {
     if (!mutex_) return;
     if (xSemaphoreTake(mutex_, pdMS_TO_TICKS(20)) != pdTRUE) return;
+
+    if (!is_transition_allowed(state_, ConnectionState::CONNECTED)) {
+        LOG_WARN("TX_STATE", "Rejected transition %s -> %s",
+                 espnow_device_state_to_string(state_),
+                 espnow_device_state_to_string(ConnectionState::CONNECTED));
+        xSemaphoreGive(mutex_);
+        return;
+    }
+
     state_ = ConnectionState::CONNECTED;
     stats_.transitions++;
     stats_.last_known_channel = channel;

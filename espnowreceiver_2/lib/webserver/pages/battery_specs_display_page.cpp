@@ -1,6 +1,7 @@
 #include "battery_specs_display_page.h"
 #include "battery_specs_display_page_content.h"
 #include "battery_specs_display_page_script.h"
+#include "generic_specs_page.h"
 #include "../common/spec_page_layout.h"
 #include "../utils/transmitter_manager.h"
 #include "../page_definitions.h"

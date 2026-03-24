@@ -1,5 +1,6 @@
 #include "webserver.h"
 #include "page_definitions.h"
+#include "page_registration_factory.h"
 #include "utils/transmitter_manager.h"
 #include "utils/sse_notifier.h"
 #include "pages/pages.h"
@@ -88,7 +89,7 @@ void init_webserver() {
     LOG_INFO("WEBSERVER", "WiFi connected - proceeding with initialization");
     
     // Compute expected handlers from registries (prevents stale constants).
-    const int expected_page_handler_count = PAGE_COUNT;
+    const int expected_page_handler_count = PageRegistrationFactory::get_expected_page_handler_count();
     const int expected_api_handler_count = expected_all_api_handlers();
     const int expected_handler_count = expected_page_handler_count + expected_api_handler_count;
     
@@ -152,38 +153,9 @@ void init_webserver() {
     g_webserver_metrics.init_successes++;
     
     LOG_INFO("WEBSERVER", "Server started successfully");
-    // Register URI handlers (with counter for verification)
-    int registered_count = 0;
     
-    // V2: Register new landing and hub pages
-    if (register_dashboard_page(server) == ESP_OK) registered_count++;
-    if (register_transmitter_hub_page(server) == ESP_OK) registered_count++;
-    
-    // Register transmitter pages (now with /transmitter prefix)
-    if (register_settings_page(server) == ESP_OK) registered_count++;
-    if (register_hardware_config_page(server) == ESP_OK) registered_count++;
-    if (register_battery_settings_page(server) == ESP_OK) registered_count++;
-    if (register_inverter_settings_page(server) == ESP_OK) registered_count++;
-    if (register_monitor_page(server) == ESP_OK) registered_count++;
-    if (register_monitor2_page(server) == ESP_OK) registered_count++;
-    if (register_reboot_page(server) == ESP_OK) registered_count++;
-    
-    // Register receiver pages
-    if (register_systeminfo_page(server) == ESP_OK) registered_count++;
-    if (register_network_config_page(server) == ESP_OK) registered_count++;
-
-    if (register_cellmonitor_page(server) == ESP_OK) registered_count++;
-    
-    // Register battery emulator spec pages (Phase 3)
-    if (register_battery_specs_page(server) == ESP_OK) registered_count++;
-    if (register_inverter_specs_page(server) == ESP_OK) registered_count++;
-    if (register_charger_specs_page(server) == ESP_OK) registered_count++;
-    if (register_system_specs_page(server) == ESP_OK) registered_count++;
-    
-    // Register system tool pages
-    if (register_ota_page(server) == ESP_OK) registered_count++;
-    if (register_debug_page(server) == ESP_OK) registered_count++;
-    if (register_event_logs_page(server) == ESP_OK) registered_count++;
+    // Register all page handlers via factory (consolidated registration)
+    int registered_count = PageRegistrationFactory::register_all_pages(server);
     
     // Register all API handlers (consolidated)
     int api_count = register_all_api_handlers(server);

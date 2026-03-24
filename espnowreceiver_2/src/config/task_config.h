@@ -47,6 +47,13 @@ namespace TaskConfig {
      * Keeps rendering work out of the ESP-NOW worker hot path.
      */
     constexpr uint32_t DISPLAY_RENDERER_STACK = 4096;
+
+    /**
+     * @brief LED renderer task stack size
+     *
+     * Drives always-on status LED animations independent of telemetry ingest.
+     */
+    constexpr uint32_t LED_RENDERER_STACK = 3072;
     
     /**
      * @brief Periodic announcement (discovery) task stack size
@@ -85,6 +92,13 @@ namespace TaskConfig {
      * Medium priority so rendering stays responsive without blocking ESP-NOW ingest.
      */
     constexpr uint8_t DISPLAY_RENDERER_PRIORITY = 1;
+
+    /**
+     * @brief LED renderer task priority
+     *
+     * Keeps animations responsive while remaining lower than ingest paths.
+     */
+    constexpr uint8_t LED_RENDERER_PRIORITY = 1;
     
     /**
      * @brief Periodic announcement task priority
@@ -105,20 +119,6 @@ namespace TaskConfig {
      */
     constexpr uint8_t WORKER_CORE = 1;
     
-    // ========================================
-    // Task Timing Constants (in milliseconds)
-    // ========================================
-    
-    /**
-     * @brief Periodic announcement interval
-     * 
-     * How often to broadcast receiver presence to the network.
-     * Helps transmitter rediscover receiver after disconnection.
-     * 
-     * Current: 5000 ms (5 seconds)
-     * Decrease to: Faster rediscovery (higher network traffic)
-     * Increase to: Lower network traffic (slower rediscovery)
-     */
-    constexpr uint32_t ANNOUNCEMENT_INTERVAL_MS = 5000;
-    
+    // ANNOUNCEMENT_INTERVAL_MS moved to TimingConfig — esp32common/config/timing_config.h
+
 } // namespace TaskConfig

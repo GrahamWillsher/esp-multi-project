@@ -1,11 +1,13 @@
 #include "battery_specs_display_page_script.h"
+#include "../common/spec_page_layout.h"
 
 String get_battery_specs_page_nav_links_html() {
-    return R"(
-            <a href="/" class="btn btn-secondary">&#8592; Back to Dashboard</a>
-            <a href="/charger_settings.html" class="btn btn-secondary">Charger Specs &#8594;</a>
-            <a href="/inverter_settings.html" class="btn btn-secondary">Inverter Specs &#8594;</a>
-)";
+    static const SpecPageNavLink kNavLinks[] = {
+        {"/", "&#8592; Back to Dashboard"},
+        {"/charger_settings.html", "Charger Specs &#8594;"},
+        {"/inverter_settings.html", "Inverter Specs &#8594;"},
+    };
+    return ::build_spec_page_nav_links(kNavLinks, sizeof(kNavLinks) / sizeof(kNavLinks[0]));
 }
 
 String get_battery_specs_page_inline_script() {

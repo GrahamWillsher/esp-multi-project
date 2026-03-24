@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <esp_log.h>
+#include <esp32common/config/timing_config.h>
 
 // ============================================================================
 // LOGGING MACROS
@@ -67,10 +68,10 @@ constexpr bool ENABLE_METRICS = true;
 constexpr uint32_t CHANNEL_TRANSITION_DELAY_MS = 50;
 
 // Time for peer registration to complete after channel change
-constexpr uint32_t PEER_REGISTRATION_DELAY_MS = 100;
+constexpr uint32_t PEER_REGISTRATION_DELAY_MS = TimingConfig::PEER_REGISTRATION_DELAY_MS;
 
 // Time for channel to stabilize after registration
-constexpr uint32_t CHANNEL_STABILIZING_DELAY_MS = 300;
+constexpr uint32_t CHANNEL_STABILIZING_DELAY_MS = TimingConfig::CHANNEL_SWITCHING_DELAY_MS;
 
 // Total time for complete channel lock sequence
 constexpr uint32_t TOTAL_CHANNEL_LOCK_TIME_MS = 
@@ -92,7 +93,7 @@ constexpr uint32_t ACK_WAIT_TIMEOUT_MS = 2000;
 constexpr uint32_t DISCOVERY_TOTAL_TIMEOUT_MS = 30000;  // 30 seconds
 
 // Delay before retrying discovery after failure
-constexpr uint32_t DISCOVERY_RETRY_DELAY_MS = 5000;
+constexpr uint32_t DISCOVERY_RETRY_DELAY_MS = TimingConfig::DISCOVERY_RETRY_INTERVAL_MS;
 
 // Time receiver waits for transmitter channel lock
 constexpr uint32_t RECEIVER_WAIT_FOR_LOCK_MS = TOTAL_CHANNEL_LOCK_TIME_MS + 100;  // 550ms
@@ -102,7 +103,7 @@ constexpr uint32_t RECEIVER_WAIT_FOR_LOCK_MS = TOTAL_CHANNEL_LOCK_TIME_MS + 100;
 // ============================================================================
 
 // Interval between HEARTBEAT messages
-constexpr uint32_t HEARTBEAT_INTERVAL_MS = 10000;  // 10 seconds
+constexpr uint32_t HEARTBEAT_INTERVAL_MS = TimingConfig::HEARTBEAT_INTERVAL_MS;
 
 // Timeout before considering connection degraded
 constexpr uint32_t HEARTBEAT_DEGRADED_TIMEOUT_MS = 15000;  // 15 seconds

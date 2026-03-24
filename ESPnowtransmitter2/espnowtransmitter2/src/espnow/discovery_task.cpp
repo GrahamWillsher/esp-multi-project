@@ -29,7 +29,7 @@ void DiscoveryTask::start() {
         []() -> bool {
             return EspNowConnectionManager::instance().is_connected();
         },
-        timing::ANNOUNCEMENT_INTERVAL_MS,
+        TimingConfig::ANNOUNCEMENT_INTERVAL_MS,
         task_config::PRIORITY_LOW,
         task_config::STACK_SIZE_ANNOUNCEMENT
     );

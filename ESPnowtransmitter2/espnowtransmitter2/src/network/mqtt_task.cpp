@@ -92,7 +92,7 @@ void publish_periodic_runtime_data(MqttManager& mqtt,
                                    unsigned long& last_cell_publish,
                                    unsigned long& last_event_publish) {
     // Publish data periodically when connected
-    if (is_connected_now && (now - last_publish > timing::MQTT_PUBLISH_INTERVAL_MS)) {
+    if (is_connected_now && (now - last_publish > TimingConfig::MQTT_PUBLISH_INTERVAL_MS)) {
         last_publish = now;
 
         // Get formatted timestamp
@@ -112,7 +112,7 @@ void publish_periodic_runtime_data(MqttManager& mqtt,
     }
 
     // Publish cell data periodically (less frequent - every 1 second) when connected
-    if (is_connected_now && (now - last_cell_publish > timing::MQTT_CELL_PUBLISH_INTERVAL_MS)) {
+    if (is_connected_now && (now - last_cell_publish > TimingConfig::MQTT_CELL_PUBLISH_INTERVAL_MS)) {
         last_cell_publish = now;
 
         // Publish cell voltages and balancing status via MQTT
@@ -126,7 +126,7 @@ void publish_periodic_runtime_data(MqttManager& mqtt,
     // Publish event logs periodically (every 5 seconds, only when subscribed) when connected
     if (is_connected_now &&
         mqtt.get_event_log_subscribers() > 0 &&
-        (now - last_event_publish > timing::MQTT_EVENT_PUBLISH_INTERVAL_MS)) {
+        (now - last_event_publish > TimingConfig::MQTT_EVENT_PUBLISH_INTERVAL_MS)) {
         last_event_publish = now;
         mqtt.publish_event_logs();
     }
@@ -156,7 +156,7 @@ void task_mqtt_loop(void* parameter) {
     // Wait for Ethernet to be ready
     while (!ethernet.is_connected()) {
         LOG_DEBUG("MQTT", "MQTT waiting for Ethernet");
-        vTaskDelay(pdMS_TO_TICKS(timing::MQTT_RECONNECT_INTERVAL_MS));
+        vTaskDelay(pdMS_TO_TICKS(TimingConfig::MQTT_RECONNECT_INTERVAL_MS));
     }
     
     LOG_INFO("MQTT", "MQTT task active");
@@ -185,7 +185,7 @@ void task_mqtt_loop(void* parameter) {
         );
         
         // Log statistics periodically
-        if (now - last_stats_log > timing::MQTT_STATS_LOG_INTERVAL_MS) {
+        if (now - last_stats_log > TimingConfig::MQTT_STATS_LOG_INTERVAL_MS) {
             auto stats = mqtt.get_statistics();
             LOG_INFO("MQTT_STATS", "Connections: %lu, Failed: %lu, Published: %lu, Uptime: %lu s, State: %d",
                     stats.total_connections,
