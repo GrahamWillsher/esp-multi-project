@@ -25,6 +25,12 @@ void begin(const char* log_tag = "BOOT_GUARD");
 bool is_pending_verification();
 
 /**
+ * @brief True if this boot started with a pending-verify image (i.e. an OTA reboot).
+ *        Remains true for the lifetime of this boot session even after confirmation.
+ */
+bool was_pending_at_boot();
+
+/**
  * @brief Confirm running app as valid and cancel rollback if pending.
  * @param reason Optional diagnostic message.
  * @return true on success (or no-op when not pending), false on error.

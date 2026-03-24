@@ -460,6 +460,48 @@ Completed:
    - Added `lib/webserver/pages/battery_settings_page_script.h/.cpp` and moved full page JavaScript logic into `get_battery_settings_page_script()`.
    - Updated `battery_settings_page.cpp` handler to assemble content/script via extracted modules and keep the same `renderPage(...)` and route behavior.
    - Build verification repeated: `pio run -e receiver_tft` ✅ SUCCESS (RAM 33.0%, Flash 19.2%; final Flash 19.2% with +172 bytes).
+23. Continued P2 web page decomposition with `dashboard_page` modular extraction:
+   - Added `lib/webserver/pages/dashboard_page_content.h/.cpp` and moved dashboard HTML assembly into `get_dashboard_page_content(...)`, keeping transmitter/receiver card values injected from the handler.
+   - Added `lib/webserver/pages/dashboard_page_script.h/.cpp` and moved the full dashboard polling/event-log/time-status JavaScript into `get_dashboard_page_script()`.
+   - Updated `dashboard_page.cpp` to orchestration-only flow: collect current transmitter/receiver summary fields, assemble content/script, and render via `renderPage(...)`.
+   - Removed the now-unused local `request_metadata` state from `dashboard_page.cpp` while preserving route behavior and live refresh semantics.
+   - Build verification repeated: `pio run -e receiver_tft` ✅ SUCCESS (RAM 33.0%, Flash 19.2%; final Flash 19.2% with 1539041 bytes flash used).
+24. Repaired cleanup regression in `network_config_page.cpp` and re-validated modular page architecture:
+   - Replaced the malformed/truncated legacy-disabled block (unterminated `#if 0` + raw string) with a clean orchestration-only implementation.
+   - `network_config_page.cpp` now consistently delegates to `get_network_config_page_content(...)`, `get_network_config_page_style()`, and `get_network_config_page_script()`, then renders via `renderPage(...)` with unchanged route registration.
+   - Build verification repeated: `pio run -e receiver_tft` ✅ SUCCESS (RAM 33.0%, Flash 19.2%; final flash used 1539041 bytes).
+25. Continued P2 web page decomposition with `systeminfo_page` modular extraction:
+   - Added `lib/webserver/pages/systeminfo_page_content.h/.cpp` and moved receiver configuration HTML composition (including nav generation) into `get_systeminfo_page_content()`.
+   - Added `lib/webserver/pages/systeminfo_page_script.h/.cpp` and moved the full configuration UI JavaScript into `get_systeminfo_page_script()`.
+   - Updated `systeminfo_page.cpp` to orchestration-only flow (content/script assembly + `renderPage(...)`) while preserving route registration and runtime behavior.
+   - Build verification repeated: `pio run -e receiver_tft` ✅ SUCCESS (RAM 33.0%, Flash 19.3%; final flash used 1539233 bytes).
+26. Continued P2 web page decomposition with `transmitter_hub_page` modular extraction:
+   - Added `lib/webserver/pages/transmitter_hub_page_content.h/.cpp` and moved dynamic transmitter hub HTML composition into `get_transmitter_hub_page_content(...)`.
+   - Added `lib/webserver/pages/transmitter_hub_page_script.h/.cpp` and moved all page JavaScript (firmware metadata polling + test data mode control) into `get_transmitter_hub_page_script()`.
+   - Updated `transmitter_hub_page.cpp` to orchestration-only flow: collect runtime transmitter summary fields, assemble content/script modules, and render via `renderPage(...)` with unchanged route registration.
+   - Build verification repeated: `pio run -e receiver_tft` ✅ SUCCESS (RAM 33.0%, Flash 19.3%; final flash used 1539177 bytes).
+27. Continued P2 web page decomposition with `cellmonitor_page` modular extraction:
+   - Added `lib/webserver/pages/cellmonitor_page_content.h/.cpp` and moved cell monitor HTML (data source status bar, statistics grid, cell voltage grid, voltage distribution bar chart) into `get_cellmonitor_page_content()`.
+   - Added `lib/webserver/pages/cellmonitor_page_script.h/.cpp` and moved the full SSE-based cell data JavaScript (SSE connection to `/api/cell_stream`, `renderCells`, `renderVoltageBar`, `updateBarHighlight`, `highlightCell`, exponential reconnect) into `get_cellmonitor_page_script()`.
+   - Updated `cellmonitor_page.cpp` to orchestration-only flow: delegates to content/script modules and renders via `renderPage("Cell Monitor", content, PageRenderOptions("", script))` with unchanged route (`/cellmonitor`) and handler registration.
+   - Build verification: `pio run -e receiver_tft` ✅ SUCCESS (RAM 33.0%, Flash 19.3%).
 
+28. Continued P2 web page decomposition with `inverter_specs_display_page` modular extraction:
+   - Added `lib/webserver/pages/inverter_specs_display_page_content.h/.cpp` exposing `get_inverter_specs_page_html_header()` (static CSS + page preamble) and `get_inverter_specs_section_fmt()` (printf-compatible format template for the specs data grid).
+   - Added `lib/webserver/pages/inverter_specs_display_page_script.h/.cpp` exposing `get_inverter_specs_page_html_footer()` (nav buttons + interface-name-fetch JS + page closing tags).
+   - Updated `inverter_specs_display_page.cpp` to orchestration-only flow: JSON parsing, fallback protocol name lookup, PSRAM buffer allocation, snprintf assembly using extracted module functions, send. Route `/inverter_settings.html` unchanged.
+29. Continued P2 web page decomposition with `battery_specs_display_page` modular extraction:
+   - Added `lib/webserver/pages/battery_specs_display_page_content.h/.cpp` exposing `get_battery_specs_page_html_header()` and `get_battery_specs_section_fmt()`.
+   - Added `lib/webserver/pages/battery_specs_display_page_script.h/.cpp` exposing `get_battery_specs_page_html_footer()` (nav buttons + type/interface label-fetch JS + page closing tags).
+   - Updated `battery_specs_display_page.cpp` to orchestration-only flow: JSON parsing, PSRAM buffer allocation, snprintf assembly, send. Route `/battery_settings.html` unchanged.
+30. Continued P2 web page decomposition with `inverter_settings_page` modular extraction:
+   - Added `lib/webserver/pages/inverter_settings_page_content.h/.cpp` and moved inverter protocol/interface selector HTML (including nav generation) into `get_inverter_settings_page_content()`.
+   - Added `lib/webserver/pages/inverter_settings_page_script.h/.cpp` and moved the full settings JavaScript (dropdown population with retry, change tracking, SaveOperation.runComponentApply) into `get_inverter_settings_page_script()`.
+   - Updated `inverter_settings_page.cpp` to orchestration-only flow via `renderPage(...)` with `PageRenderOptions`. Route `/transmitter/inverter` unchanged.
+31. Continued P2 web page decomposition with `hardware_config_page` modular extraction:
+   - Added `lib/webserver/pages/hardware_config_page_content.h/.cpp` and moved breadcrumb, LED pattern selector, live LED runtime status card, and save button HTML (including nav generation) into `get_hardware_config_page_content()`.
+   - Added `lib/webserver/pages/hardware_config_page_script.h/.cpp` and moved the embedded script block (LED mode change tracking, loadLiveLedStatus, loadHardwareSettings, saveHardwareSettings, resyncLedState, 2-second poll) into `get_hardware_config_page_script()`.
+   - Updated `hardware_config_page.cpp` to orchestration-only flow via `renderPage("Hardware Config", content, PageRenderOptions("", script))`. Route `/transmitter/hardware` unchanged.
+   - Build verification: `pio run -e receiver_tft` SUCCESS (RAM 33.0%, Flash 19.3%).
 Still pending from receiver P0/P1:
 1. No additional non-CRC Wave 1 receiver P0/P1 refactors pending in this track.

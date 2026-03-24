@@ -95,63 +95,26 @@ String get_network_config_page_script() {
                     
                     document.getElementById('useStaticIP').checked = data.use_static_ip || false;
                     
-                    // Update badge and toggle visibility
-                    const badge = document.getElementById('networkModeBadge');
-                    if (badge) {
-                        badge.textContent = data.use_static_ip ? 'Static IP' : 'DHCP';
-                        badge.className = data.use_static_ip ? 'network-mode-badge badge-static' : 'network-mode-badge badge-dhcp';
-                    }
+                    // Update badge using shared helper
+                    ReceiverNetworkFormController.updateNetworkModeBadge(data.use_static_ip, 'networkModeBadge');
                     
-                    // Toggle static IP section visibility
-                    toggleStaticIPSection();
-                    
-                    // Populate static IP fields if present
+                    // Populate static IP fields using shared helper
                     if (data.use_static_ip && data.static_ip) {
-                        const ip = data.static_ip.split('.');
-                        const gw = (data.gateway || '0.0.0.0').split('.');
-                        const sn = (data.subnet || '255.255.255.0').split('.');
-                        const dns1 = (data.dns_primary || '').split('.');
-                        const dns2 = (data.dns_secondary || '').split('.');
-                        
-                        // IP address
-                        if (ip.length === 4) {
-                            document.getElementById('ip0').value = ip[0];
-                            document.getElementById('ip1').value = ip[1];
-                            document.getElementById('ip2').value = ip[2];
-                            document.getElementById('ip3').value = ip[3];
+                        ReceiverNetworkFormController.setOctets('ip', data.static_ip);
+                        ReceiverNetworkFormController.setOctets('gw', data.gateway || '0.0.0.0');
+                        ReceiverNetworkFormController.setOctets('sub', data.subnet || '255.255.255.0');
+                        if (data.dns_primary && data.dns_primary !== '') {
+                            ReceiverNetworkFormController.setOctets('dns1_', data.dns_primary);
                         }
-                        
-                        // Gateway
-                        if (gw.length === 4) {
-                            document.getElementById('gw0').value = gw[0];
-                            document.getElementById('gw1').value = gw[1];
-                            document.getElementById('gw2').value = gw[2];
-                            document.getElementById('gw3').value = gw[3];
-                        }
-                        
-                        // Subnet
-                        if (sn.length === 4) {
-                            document.getElementById('sub0').value = sn[0];
-                            document.getElementById('sub1').value = sn[1];
-                            document.getElementById('sub2').value = sn[2];
-                            document.getElementById('sub3').value = sn[3];
-                        }
-                        
-                        // DNS (optional)
-                        if (dns1.length === 4 && dns1[0] !== '') {
-                            document.getElementById('dns1_0').value = dns1[0];
-                            document.getElementById('dns1_1').value = dns1[1];
-                            document.getElementById('dns1_2').value = dns1[2];
-                            document.getElementById('dns1_3').value = dns1[3];
-                        }
-                        
-                        if (dns2.length === 4 && dns2[0] !== '') {
-                            document.getElementById('dns2_0').value = dns2[0];
-                            document.getElementById('dns2_1').value = dns2[1];
-                            document.getElementById('dns2_2').value = dns2[2];
-                            document.getElementById('dns2_3').value = dns2[3];
+                        if (data.dns_secondary && data.dns_secondary !== '') {
+                            ReceiverNetworkFormController.setOctets('dns2_', data.dns_secondary);
                         }
                     }
+                    
+                    // Toggle visibility using shared helper
+                    ReceiverNetworkFormController.toggleStaticIpFields(data.use_static_ip, 
+                        ['localIpRow', 'gatewayRow', 'subnetRow', 'dns1Row', 'dns2Row']);
+                    
                     
                     // Store initial values for change tracking
                     NETWORK_CONFIG_FIELDS.forEach(fieldId => {
@@ -172,7 +135,10 @@ String get_network_config_page_script() {
                                 
                                 // Update static IP section visibility when checkbox changes
                                 if (fieldId === 'useStaticIP') {
-                                    toggleStaticIPSection();
+                                    const useStatic = element.checked;
+                                    ReceiverNetworkFormController.updateNetworkModeBadge(useStatic, 'networkModeBadge');
+                                    ReceiverNetworkFormController.toggleStaticIpFields(useStatic,
+                                        ['localIpRow', 'gatewayRow', 'subnetRow', 'dns1Row', 'dns2Row']);
                                 }
                             });
                         }
@@ -188,34 +154,6 @@ String get_network_config_page_script() {
         }
         
         // Toggle static IP section visibility
-        function toggleStaticIPSection() {
-            const useStatic = document.getElementById('useStaticIP').checked;
-            
-            // Update mode badge
-            const badge = document.getElementById('networkModeBadge');
-            if (badge) {
-                badge.textContent = useStatic ? 'Static IP' : 'DHCP';
-                badge.className = useStatic ? 'network-mode-badge badge-static' : 'network-mode-badge badge-dhcp';
-            }
-            
-            // Show/hide IP configuration rows
-            const toggleRows = ['localIpRow', 'gatewayRow', 'subnetRow'];
-            toggleRows.forEach(rowId => {
-                const row = document.getElementById(rowId);
-                if (row) {
-                    row.style.display = useStatic ? 'grid' : 'none';
-                }
-            });
-            
-            // Show/hide DNS rows (always hidden in DHCP mode)
-            const dnsRows = ['dns1Row', 'dns2Row'];
-            dnsRows.forEach(rowId => {
-                const row = document.getElementById(rowId);
-                if (row) {
-                    row.style.display = useStatic ? 'grid' : 'none';
-                }
-            });
-        }
         
         // Save network configuration
         async function saveNetworkConfig() {
@@ -258,24 +196,13 @@ String get_network_config_page_script() {
                 
                 // Add static IP fields if enabled
                 if (config.use_static_ip) {
-                    config.static_ip = [
-                        parseInt(document.getElementById('ip0').value),
-                        parseInt(document.getElementById('ip1').value),
-                        parseInt(document.getElementById('ip2').value),
-                        parseInt(document.getElementById('ip3').value)
-                    ];
-                    config.gateway = [
-                        parseInt(document.getElementById('gw0').value),
-                        parseInt(document.getElementById('gw1').value),
-                        parseInt(document.getElementById('gw2').value),
-                        parseInt(document.getElementById('gw3').value)
-                    ];
-                    config.subnet = [
-                        parseInt(document.getElementById('sub0').value),
-                        parseInt(document.getElementById('sub1').value),
-                        parseInt(document.getElementById('sub2').value),
-                        parseInt(document.getElementById('sub3').value)
-                    ];
+                    const ipStr = ReceiverNetworkFormController.collectOctets('ip');
+                    const gwStr = ReceiverNetworkFormController.collectOctets('gw');
+                    const subStr = ReceiverNetworkFormController.collectOctets('sub');
+                    
+                    config.static_ip = ipStr.split('.').map(x => parseInt(x));
+                    config.gateway = gwStr.split('.').map(x => parseInt(x));
+                    config.subnet = subStr.split('.').map(x => parseInt(x));
                     
                     // Validate IP octets
                     const allOctets = [...config.static_ip, ...config.gateway, ...config.subnet];
@@ -288,22 +215,14 @@ String get_network_config_page_script() {
                     // Optional DNS servers
                     const dns1_0 = document.getElementById('dns1_0').value;
                     if (dns1_0) {
-                        config.dns_primary = [
-                            parseInt(document.getElementById('dns1_0').value),
-                            parseInt(document.getElementById('dns1_1').value),
-                            parseInt(document.getElementById('dns1_2').value),
-                            parseInt(document.getElementById('dns1_3').value)
-                        ];
+                        const dns1Str = ReceiverNetworkFormController.collectOctets('dns1_');
+                        config.dns_primary = dns1Str.split('.').map(x => parseInt(x));
                     }
                     
                     const dns2_0 = document.getElementById('dns2_0').value;
                     if (dns2_0) {
-                        config.dns_secondary = [
-                            parseInt(document.getElementById('dns2_0').value),
-                            parseInt(document.getElementById('dns2_1').value),
-                            parseInt(document.getElementById('dns2_2').value),
-                            parseInt(document.getElementById('dns2_3').value)
-                        ];
+                        const dns2Str = ReceiverNetworkFormController.collectOctets('dns2_');
+                        config.dns_secondary = dns2Str.split('.').map(x => parseInt(x));
                     }
                 }
                 

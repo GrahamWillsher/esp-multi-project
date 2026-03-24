@@ -1,15 +1,15 @@
 #include "ota_page_content.h"
-#include "../common/nav_buttons.h"
 
 String get_ota_page_content() {
     String content = R"rawliteral(
-    <h1>ESP-NOW Receiver</h1>
-    <h2>OTA Firmware Update</h2>
+    <h1>OTA Firmware Update</h1>
+    <div style='margin-bottom: 20px;'>
+        <a href='/' style='display: inline-block; padding: 10px 16px; background: #4CAF50; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;'>
+            ← Dashboard
+        </a>
+    </div>
     )rawliteral";
-    
-    // Add navigation buttons from central registry
-    content += "    " + generate_nav_buttons("/ota");
-    
+
     content += R"rawliteral(
     
     <div class='info-box' style='margin-bottom: 20px;'>

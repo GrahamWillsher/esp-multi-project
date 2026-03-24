@@ -437,20 +437,32 @@ void setup() {
         sizeof(kBootstrapPhases) / sizeof(kBootstrapPhases[0])
     );
 
-    if (OtaBootGuard::is_pending_verification()) {
-        const bool heap_ok = ESP.getFreeHeap() > 32768;
+    {
+        const bool heap_ok            = ESP.getFreeHeap() > 32768;
         const bool ethernet_not_fatal = EthernetManager::instance().get_state() != EthernetConnectionState::ERROR_STATE;
         const bool espnow_queue_ready = RuntimeContext::instance().espnow_message_queue() != nullptr;
+        const bool health_gate_ok     = heap_ok && ethernet_not_fatal && espnow_queue_ready;
 
-        if (heap_ok && ethernet_not_fatal && espnow_queue_ready) {
-            OtaBootGuard::confirm_running_app("transmitter setup health gate passed");
-            LOG_INFO("BOOT_GUARD", "Transmitter app confirmed valid after setup health gate");
-        } else {
-            LOG_ERROR("BOOT_GUARD", "Setup health gate failed (heap_ok=%d, ethernet_not_fatal=%d, espnow_queue_ready=%d); triggering rollback",
+        if (OtaBootGuard::is_pending_verification() && !health_gate_ok) {
+            // OTA pending-verify reboot + health gate failed → trigger rollback
+            LOG_ERROR("BOOT_GUARD",
+                      "Setup health gate failed (heap_ok=%d, ethernet_not_fatal=%d, espnow_queue_ready=%d); triggering rollback",
                       heap_ok ? 1 : 0,
                       ethernet_not_fatal ? 1 : 0,
                       espnow_queue_ready ? 1 : 0);
             OtaBootGuard::trigger_rollback_and_reboot("transmitter setup health gate failed");
+        } else {
+            // Health gate OK (OTA or normal boot), OR normal boot with marginal health (no rollback available).
+            // Always confirm here so boot_guard_passed=true is visible in the OTA status API.
+            if (!health_gate_ok) {
+                LOG_WARN("BOOT_GUARD",
+                         "Setup health gate suboptimal on normal boot (heap_ok=%d, ethernet_not_fatal=%d, espnow_queue_ready=%d); confirming anyway",
+                         heap_ok ? 1 : 0,
+                         ethernet_not_fatal ? 1 : 0,
+                         espnow_queue_ready ? 1 : 0);
+            }
+            OtaBootGuard::confirm_running_app("transmitter setup health gate passed");
+            LOG_INFO("BOOT_GUARD", "Transmitter app confirmed valid after setup health gate");
         }
     }
 

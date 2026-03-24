@@ -6,8 +6,6 @@ String get_battery_settings_page_script() {
         let initialValues = {};
         let batterySettingsRetries = 0;
         const MAX_BATTERY_SETTINGS_RETRIES = 5;
-        let batteryTypeRetries = 0;
-        const MAX_BATTERY_TYPE_RETRIES = 15;
         
         window.onload = function() {
             // Load current settings from transmitter
@@ -89,22 +87,8 @@ String get_battery_settings_page_script() {
         }
 
         function getChangedCount() {
-            let changedCount = FIELD_MAP.filter(fm => {
-                const fEl = document.getElementById(fm.id);
-                return fEl && initialValues[fm.id] !== fEl.value;
-            }).length;
-
-            const typeSelect = document.getElementById('batteryType');
-            if (typeSelect && initialValues['batteryType'] !== typeSelect.value) {
-                changedCount++;
-            }
-
-            const interfaceSelect = document.getElementById('batteryInterface');
-            if (interfaceSelect && initialValues['batteryInterface'] !== interfaceSelect.value) {
-                changedCount++;
-            }
-
-            return changedCount;
+            const trackedFieldIds = FIELD_MAP.map(fm => fm.id).concat(['batteryType', 'batteryInterface']);
+            return FormChangeTracker.countChanges(initialValues, trackedFieldIds);
         }
         
         function loadBatterySettings() {
@@ -322,88 +306,48 @@ String get_battery_settings_page_script() {
         // Phase 3.1: Battery Type Selection
         function loadBatteryTypes() {
             console.log('Loading battery types...');
-            
-            fetch('/api/get_battery_types')
-                .then(response => response.json())
-                .then(data => {
-                    const typeSelect = document.getElementById('batteryType');
 
-                    if (data.loading || !Array.isArray(data.types) || data.types.length === 0) {
-                        typeSelect.innerHTML = "<option value=''>Loading...</option>";
-
-                        if (batteryTypeRetries < MAX_BATTERY_TYPE_RETRIES) {
-                            batteryTypeRetries++;
-                            setTimeout(loadBatteryTypes, 1000);
-                        } else {
-                            typeSelect.innerHTML = "<option value=''>No data (check transmitter link)</option>";
-                        }
-                        return;
-                    }
-
-                    batteryTypeRetries = 0;
-                    typeSelect.innerHTML = '';
-                    
-                    data.types.forEach(type => {
-                        const option = document.createElement('option');
-                        option.value = type.id;
-                        option.textContent = type.name;
-                        typeSelect.appendChild(option);
-                    });
-                    
-                    // Load current selection
-                    loadCurrentBatteryType();
-                    console.log('Battery types loaded');
-                })
-                .catch(error => console.error('Error loading battery types:', error));
-        }
-        
-        function loadCurrentBatteryType() {
-            fetch('/api/get_selected_types')
-                .then(response => response.json())
-                .then(data => {
-                    const typeSelect = document.getElementById('batteryType');
-                    typeSelect.value = data.battery_type;
-                    initialValues['batteryType'] = typeSelect.value;
+            return CatalogLoader.loadCatalogSelect({
+                catalogEndpoint: '/api/get_battery_types',
+                selectedEndpoint: '/api/get_selected_types',
+                selectedKey: 'battery_type',
+                selectId: 'batteryType',
+                loadingText: 'Loading...',
+                emptyText: 'No data (check transmitter link)',
+                maxRetries: 15,
+                logLabel: 'battery types',
+                onSelectedLoaded: (selectedValue, selected) => {
+                    initialValues['batteryType'] = selectedValue;
                     updateButtonText(getChangedCount());
-                    console.log('Current battery type loaded:', data.battery_type);
-                })
-                .catch(error => console.error('Error loading current type:', error));
+                    console.log('Current battery type loaded:', selected.battery_type);
+                },
+                onError: (error) => {
+                    console.error('Error loading battery types:', error);
+                }
+            });
         }
 
         function loadBatteryInterfaces() {
             console.log('Loading battery interfaces...');
 
-            fetch('/api/get_battery_interfaces')
-                .then(response => response.json())
-                .then(data => {
-                    const interfaceSelect = document.getElementById('batteryInterface');
-                    interfaceSelect.innerHTML = '';
-
-                    data.types.forEach(type => {
-                        const option = document.createElement('option');
-                        option.value = type.id;
-                        option.textContent = type.name;
-                        interfaceSelect.appendChild(option);
-                    });
-
-                    // Load current selection
-                    loadCurrentBatteryInterface();
-                    console.log('Battery interfaces loaded');
-                })
-                .catch(error => console.error('Error loading battery interfaces:', error));
-        }
-
-        function loadCurrentBatteryInterface() {
-            fetch('/api/get_selected_interfaces')
-                .then(response => response.json())
-                .then(data => {
-                    const interfaceSelect = document.getElementById('batteryInterface');
-                    interfaceSelect.value = data.battery_interface;
-                    initialValues['batteryInterface'] = interfaceSelect.value;
+            return CatalogLoader.loadCatalogSelect({
+                catalogEndpoint: '/api/get_battery_interfaces',
+                selectedEndpoint: '/api/get_selected_interfaces',
+                selectedKey: 'battery_interface',
+                selectId: 'batteryInterface',
+                loadingText: 'Loading...',
+                emptyText: 'No data available',
+                maxRetries: 0,
+                logLabel: 'battery interfaces',
+                onSelectedLoaded: (selectedValue, selected) => {
+                    initialValues['batteryInterface'] = selectedValue;
                     updateButtonText(getChangedCount());
-                    console.log('Current battery interface loaded:', data.battery_interface);
-                })
-                .catch(error => console.error('Error loading current interface:', error));
+                    console.log('Current battery interface loaded:', selected.battery_interface);
+                },
+                onError: (error) => {
+                    console.error('Error loading battery interfaces:', error);
+                }
+            });
         }
         
         function updateBatteryType() {
@@ -422,17 +366,11 @@ String get_battery_settings_page_script() {
         
         function updateButtonText(changedCount) {
             const saveButton = document.getElementById('saveButton');
-            if (changedCount === 0) {
-                saveButton.textContent = 'Nothing to Save';
-                saveButton.style.backgroundColor = '#6c757d';
-                saveButton.disabled = true;
-                saveButton.style.cursor = 'not-allowed';
-            } else {
-                saveButton.textContent = `Save ${changedCount} Changed Setting${changedCount > 1 ? 's' : ''}`;
-                saveButton.style.backgroundColor = '#4CAF50';
-                saveButton.disabled = false;
-                saveButton.style.cursor = 'pointer';
-            }
+            FormChangeTracker.updateSaveButton(saveButton, changedCount, {
+                nothingText: 'Nothing to Save',
+                changedSingularTemplate: 'Save 1 Changed Setting',
+                changedPluralTemplate: 'Save {count} Changed Settings'
+            });
         }
     )rawliteral";
 }

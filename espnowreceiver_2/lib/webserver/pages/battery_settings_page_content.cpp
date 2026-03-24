@@ -1,13 +1,14 @@
 #include "battery_settings_page_content.h"
-#include "../common/nav_buttons.h"
 
 String get_battery_settings_page_content() {
     String content = R"rawliteral(
     <h1>Battery Settings</h1>
+    <div style='margin-bottom: 20px;'>
+        <a href='/' style='display: inline-block; padding: 10px 16px; background: #4CAF50; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;'>
+            ← Dashboard
+        </a>
+    </div>
     )rawliteral";
-
-    // Add navigation buttons
-    content += "    " + generate_nav_buttons("/transmitter/battery");
 
     content += R"rawliteral(
     

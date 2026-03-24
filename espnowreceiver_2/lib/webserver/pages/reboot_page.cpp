@@ -1,15 +1,16 @@
 #include "reboot_page.h"
 #include "../common/page_generator.h"
-#include "../common/nav_buttons.h"
 
 esp_err_t reboot_handler(httpd_req_t *req) {
     String content = R"rawliteral(
     <h1>ESP-NOW Receiver</h1>
     <h2>Reboot Transmitter</h2>
+    <div style='margin-bottom: 20px;'>
+        <a href='/' style='display: inline-block; padding: 10px 16px; background: #4CAF50; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;'>
+            ← Dashboard
+        </a>
+    </div>
     )rawliteral";
-    
-    // Add navigation buttons
-    content += "    " + generate_nav_buttons("/transmitter/reboot");
     
     content += R"rawliteral(
     
@@ -39,15 +40,18 @@ esp_err_t reboot_handler(httpd_req_t *req) {
                 };
 
                 confirmBtn.disabled = true;
-                confirmBtn.style.backgroundColor = '#666';
+                confirmBtn.style.cursor = 'not-allowed';
+                confirmBtn.style.backgroundColor = '#ff9800';
                 confirmBtn.innerText = 'Starting reboot sequence...';
 
                 TransmitterReboot.run({
                     countdownSeconds: TransmitterReboot.COUNTDOWN_SECONDS,
                     updateCountdown: (seconds) => {
+                        confirmBtn.style.backgroundColor = '#ff9800';
                         confirmBtn.innerText = 'Reboot in ' + seconds + 's...';
                     },
                     onCommandStart: () => {
+                        confirmBtn.style.backgroundColor = '#ff9800';
                         confirmBtn.innerText = 'Sending...';
                     },
                     onSuccess: () => {
@@ -67,10 +71,7 @@ esp_err_t reboot_handler(httpd_req_t *req) {
         };
     )rawliteral";
 
-    String html = renderPage("ESP-NOW Receiver - Reboot Transmitter", content, PageRenderOptions("", script));
-    httpd_resp_set_type(req, "text/html");
-    httpd_resp_send(req, html.c_str(), html.length());
-    return ESP_OK;
+    return send_rendered_page(req, "ESP-NOW Receiver - Reboot Transmitter", content, PageRenderOptions("", script));
 }
 
 esp_err_t register_reboot_page(httpd_handle_t server) {

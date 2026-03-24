@@ -403,20 +403,32 @@ void setup() {
     
     transition_to_state(SystemState::WAITING_FOR_TRANSMITTER);
 
-    if (OtaBootGuard::is_pending_verification()) {
-        const bool heap_ok = ESP.getFreeHeap() > 32768;
-        const bool mutex_ok = (RTOS::tft_mutex != nullptr);
+    {
+        const bool heap_ok         = ESP.getFreeHeap() > 32768;
+        const bool mutex_ok        = (RTOS::tft_mutex != nullptr);
         const bool espnow_queue_ok = (ESPNow::queue != nullptr);
+        const bool health_gate_ok  = heap_ok && mutex_ok && espnow_queue_ok;
 
-        if (heap_ok && mutex_ok && espnow_queue_ok) {
-            OtaBootGuard::confirm_running_app("receiver setup health gate passed");
-            LOG_INFO("BOOT_GUARD", "Receiver app confirmed valid after setup health gate");
-        } else {
-            LOG_ERROR("BOOT_GUARD", "Setup health gate failed (heap_ok=%d, mutex_ok=%d, espnow_queue_ok=%d); triggering rollback",
+        if (OtaBootGuard::is_pending_verification() && !health_gate_ok) {
+            // OTA pending-verify reboot + health gate failed → trigger rollback
+            LOG_ERROR("BOOT_GUARD",
+                      "Setup health gate failed (heap_ok=%d, mutex_ok=%d, espnow_queue_ok=%d); triggering rollback",
                       heap_ok ? 1 : 0,
                       mutex_ok ? 1 : 0,
                       espnow_queue_ok ? 1 : 0);
             OtaBootGuard::trigger_rollback_and_reboot("receiver setup health gate failed");
+        } else {
+            // Health gate OK (OTA or normal boot), OR normal boot with marginal health (no rollback available).
+            // Always confirm so boot_guard_passed=true is set after a successful boot.
+            if (!health_gate_ok) {
+                LOG_WARN("BOOT_GUARD",
+                         "Setup health gate suboptimal on normal boot (heap_ok=%d, mutex_ok=%d, espnow_queue_ok=%d); confirming anyway",
+                         heap_ok ? 1 : 0,
+                         mutex_ok ? 1 : 0,
+                         espnow_queue_ok ? 1 : 0);
+            }
+            OtaBootGuard::confirm_running_app("receiver setup health gate passed");
+            LOG_INFO("BOOT_GUARD", "Receiver app confirmed valid after setup health gate");
         }
     }
 }

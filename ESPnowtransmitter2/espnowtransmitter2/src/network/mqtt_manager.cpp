@@ -375,7 +375,7 @@ bool MqttManager::publish_cell_data() {
 bool MqttManager::publish_inverter_specs() {
     if (!is_connected()) return false;
 
-    constexpr size_t kBufferSize = 512;
+    constexpr size_t kBufferSize = 768;
     if (!ensure_publish_buffer(kBufferSize)) {
         return false;
     }

@@ -1,9 +1,8 @@
-#include "api_settings_handlers.h"
+﻿#include "api_settings_handlers.h"
 
 #include "api_request_utils.h"
 #include "api_response_utils.h"
 #include "../utils/transmitter_manager.h"
-#include <webserver_common_utils/http_json_utils.h>
 #include "../logging.h"
 
 #include <Arduino.h>
@@ -13,8 +12,6 @@
 #include <cstring>
 
 esp_err_t api_get_battery_settings_handler(httpd_req_t *req) {
-    char json[512];
-
     bool requested = false;
     if (TransmitterManager::isMACKnown()) {
         request_data_t req_msg = { msg_request_data, subtype_battery_config };
@@ -33,36 +30,21 @@ esp_err_t api_get_battery_settings_handler(httpd_req_t *req) {
         ? TransmitterManager::getBatteryEmulatorSettings().led_mode
         : 0;
 
-    snprintf(json, sizeof(json),
-        "{"
-        "\"success\":%s,"
-        "\"requested\":%s,"
-        "\"capacity_wh\":%u,"
-        "\"max_voltage_mv\":%u,"
-        "\"min_voltage_mv\":%u,"
-        "\"max_charge_current_a\":%.1f,"
-        "\"max_discharge_current_a\":%.1f,"
-        "\"soc_high_limit\":%u,"
-        "\"soc_low_limit\":%u,"
-        "\"cell_count\":%u,"
-        "\"chemistry\":%u,"
-        "\"led_mode\":%u"
-        "}",
-        known ? "true" : "false",
-        requested ? "true" : "false",
-        settings.capacity_wh,
-        settings.max_voltage_mv,
-        settings.min_voltage_mv,
-        settings.max_charge_current_a,
-        settings.max_discharge_current_a,
-        settings.soc_high_limit,
-        settings.soc_low_limit,
-        settings.cell_count,
-        settings.chemistry,
-        led_mode
-    );
+    StaticJsonDocument<256> doc;
+    doc["success"]                  = known;
+    doc["requested"]                = requested;
+    doc["capacity_wh"]              = settings.capacity_wh;
+    doc["max_voltage_mv"]           = settings.max_voltage_mv;
+    doc["min_voltage_mv"]           = settings.min_voltage_mv;
+    doc["max_charge_current_a"]     = serialized(String(settings.max_charge_current_a, 1));
+    doc["max_discharge_current_a"]  = serialized(String(settings.max_discharge_current_a, 1));
+    doc["soc_high_limit"]           = settings.soc_high_limit;
+    doc["soc_low_limit"]            = settings.soc_low_limit;
+    doc["cell_count"]               = settings.cell_count;
+    doc["chemistry"]                = settings.chemistry;
+    doc["led_mode"]                 = led_mode;
 
-    return HttpJsonUtils::send_json(req, json);
+    return ApiResponseUtils::send_json_doc(req, doc);
 }
 
 esp_err_t api_save_setting_handler(httpd_req_t *req) {
@@ -191,10 +173,9 @@ esp_err_t api_save_setting_handler(httpd_req_t *req) {
             }
             TransmitterManager::storeContactorSettings(contactor);
         }
-        return ApiResponseUtils::send_success_message(req, "Setting sent to transmitter");
     } else {
         LOG_ERROR("API: ✗ ESP-NOW send FAILED: %s (0x%x)", esp_err_to_name(result), result);
         LOG_ERROR("API: Failed details - category=%d, field=%d, msg_size=%d", category, field, sizeof(msg));
-        return ApiResponseUtils::send_jsonf(req, "{\"success\":false,\"message\":\"ESP-NOW send failed: %s\"}", esp_err_to_name(result));
     }
+    return ApiResponseUtils::send_espnow_send_result(req, result, "Setting sent to transmitter");
 }

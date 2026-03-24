@@ -2,7 +2,6 @@
 
 #include "api_response_utils.h"
 #include "../utils/transmitter_manager.h"
-#include <webserver_common_utils/http_json_utils.h>
 
 #include <esp_now.h>
 #include <esp32common/espnow/common.h>
@@ -32,8 +31,6 @@ static const char* led_effect_name(uint8_t effect) {
 }
 
 esp_err_t api_get_led_runtime_status_handler(httpd_req_t *req) {
-    char json[512];
-
     const uint8_t current_color = ESPNow::current_led_color;
     const uint8_t current_effect = ESPNow::current_led_effect;
 
@@ -43,31 +40,19 @@ esp_err_t api_get_led_runtime_status_handler(httpd_req_t *req) {
 
     const bool synced = has_policy && (static_cast<uint8_t>(current_effect) == expected_effect);
 
-    snprintf(json, sizeof(json),
-        "{"
-        "\"success\":true,"
-        "\"led_mode\":%u,"
-        "\"has_led_policy\":%s,"
-        "\"current_color\":%u,"
-        "\"current_color_name\":\"%s\","
-        "\"current_effect\":%u,"
-        "\"current_effect_name\":\"%s\","
-        "\"expected_effect\":%u,"
-        "\"expected_effect_name\":\"%s\","
-        "\"effect_synced\":%s"
-        "}",
-        led_mode,
-        has_policy ? "true" : "false",
-        static_cast<uint8_t>(current_color),
-        led_color_name(current_color),
-        static_cast<uint8_t>(current_effect),
-        led_effect_name(current_effect),
-        expected_effect,
-        led_effect_name(expected_effect),
-        synced ? "true" : "false"
-    );
+    StaticJsonDocument<256> doc;
+    doc["success"] = true;
+    doc["led_mode"] = led_mode;
+    doc["has_led_policy"] = has_policy;
+    doc["current_color"] = static_cast<uint8_t>(current_color);
+    doc["current_color_name"] = led_color_name(current_color);
+    doc["current_effect"] = static_cast<uint8_t>(current_effect);
+    doc["current_effect_name"] = led_effect_name(current_effect);
+    doc["expected_effect"] = expected_effect;
+    doc["expected_effect_name"] = led_effect_name(expected_effect);
+    doc["effect_synced"] = synced;
 
-    return HttpJsonUtils::send_json(req, json);
+    return ApiResponseUtils::send_json_doc(req, doc);
 }
 
 esp_err_t api_resync_led_state_handler(httpd_req_t *req) {

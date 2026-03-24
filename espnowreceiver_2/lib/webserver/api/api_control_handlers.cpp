@@ -2,7 +2,6 @@
 
 #include "api_response_utils.h"
 #include "../utils/transmitter_manager.h"
-#include <webserver_common_utils/http_json_utils.h>
 #include "../logging.h"
 
 #include <Arduino.h>
@@ -432,69 +431,41 @@ esp_err_t api_transmitter_ota_status_handler(httpd_req_t *req) {
                                                 err.c_str());
         }
 
-        bool in_progress = doc["in_progress"] | false;
-        bool ready_for_reboot = doc["ready_for_reboot"] | false;
-        bool last_success = doc["last_success"] | false;
-        uint32_t ota_txn_id = doc["ota_txn_id"] | 0U;
-        bool rollback_pending = doc["rollback_pending"] | false;
-        bool boot_guard_passed = doc["boot_guard_passed"] | false;
-        const char* boot_guard_state = doc["boot_guard_state"] | "unknown";
-        const char* commit_state = doc["commit_state"] | "unknown";
-        const char* commit_detail = doc["commit_detail"] | "";
-        uint32_t state_since_ms = doc["state_since_ms"] | 0U;
-        uint32_t last_update_ms = doc["last_update_ms"] | 0U;
-        const char* raw_rollback_reason = doc["rollback_reason"] | "";
-        const char* raw_last_error = doc["last_error"] | "";
+        // Build response with quote-safe string fields
         char safe_last_error[128];
         char safe_rollback_reason[128];
         char safe_commit_detail[128];
-        size_t copy_index = 0;
-        while (raw_last_error[copy_index] != '\0' && copy_index < sizeof(safe_last_error) - 1) {
-            safe_last_error[copy_index] = (raw_last_error[copy_index] == '"') ? '\'' : raw_last_error[copy_index];
-            copy_index++;
-        }
-        safe_last_error[copy_index] = '\0';
-
-        copy_index = 0;
-        while (raw_rollback_reason[copy_index] != '\0' && copy_index < sizeof(safe_rollback_reason) - 1) {
-            safe_rollback_reason[copy_index] = (raw_rollback_reason[copy_index] == '"') ? '\'' : raw_rollback_reason[copy_index];
-            copy_index++;
-        }
-        safe_rollback_reason[copy_index] = '\0';
-
-        copy_index = 0;
-        while (commit_detail[copy_index] != '\0' && copy_index < sizeof(safe_commit_detail) - 1) {
-            safe_commit_detail[copy_index] = (commit_detail[copy_index] == '"') ? '\'' : commit_detail[copy_index];
-            copy_index++;
-        }
-        safe_commit_detail[copy_index] = '\0';
+        ApiResponseUtils::escape_double_quotes(doc["last_error"] | "", safe_last_error, sizeof(safe_last_error));
+        ApiResponseUtils::escape_double_quotes(doc["rollback_reason"] | "", safe_rollback_reason, sizeof(safe_rollback_reason));
+        ApiResponseUtils::escape_double_quotes(doc["commit_detail"] | "", safe_commit_detail, sizeof(safe_commit_detail));
 
         StaticJsonDocument<512> out_doc;
         out_doc["success"] = true;
-        out_doc["in_progress"] = in_progress;
-        out_doc["ready_for_reboot"] = ready_for_reboot;
-        out_doc["last_success"] = last_success;
-        out_doc["ota_txn_id"] = ota_txn_id;
-        out_doc["commit_state"] = commit_state;
+        out_doc["in_progress"] = doc["in_progress"] | false;
+        out_doc["ready_for_reboot"] = doc["ready_for_reboot"] | false;
+        out_doc["last_success"] = doc["last_success"] | false;
+        out_doc["ota_txn_id"] = doc["ota_txn_id"] | 0U;
+        out_doc["commit_state"] = doc["commit_state"] | "unknown";
         out_doc["commit_detail"] = safe_commit_detail;
-        out_doc["state_since_ms"] = state_since_ms;
-        out_doc["last_update_ms"] = last_update_ms;
+        out_doc["state_since_ms"] = doc["state_since_ms"] | 0U;
+        out_doc["last_update_ms"] = doc["last_update_ms"] | 0U;
         out_doc["last_error"] = safe_last_error;
-        out_doc["rollback_pending"] = rollback_pending;
-        out_doc["boot_guard_passed"] = boot_guard_passed;
-        out_doc["boot_guard_state"] = boot_guard_state;
+        out_doc["rollback_pending"] = doc["rollback_pending"] | false;
+        out_doc["boot_guard_passed"] = doc["boot_guard_passed"] | false;
+        out_doc["boot_guard_state"] = doc["boot_guard_state"] | "unknown";
         out_doc["rollback_reason"] = safe_rollback_reason;
 
-        String json;
-        json.reserve(160);
-        serializeJson(out_doc, json);
-        return HttpJsonUtils::send_json(req, json.c_str());
+        return ApiResponseUtils::send_json_doc(req, out_doc);
     }
 
     http.end();
-    return ApiResponseUtils::send_jsonf(req,
-                                        "{\"success\":false,\"message\":\"Status HTTP error: %d\",\"in_progress\":false,\"ready_for_reboot\":false,\"last_success\":false}",
-                                        code);
+    StaticJsonDocument<256> error_doc;
+    error_doc["success"] = false;
+    error_doc["message"] = "Status HTTP error: " + String(code);
+    error_doc["in_progress"] = false;
+    error_doc["ready_for_reboot"] = false;
+    error_doc["last_success"] = false;
+    return ApiResponseUtils::send_json_doc(req, error_doc);
 }
 
 esp_err_t api_ota_upload_receiver_handler(httpd_req_t *req) {
@@ -639,8 +610,9 @@ esp_err_t api_ota_upload_receiver_handler(httpd_req_t *req) {
     }
 
     LOG_INFO("OTA_RX", "Receiver OTA successful, written=%u bytes", static_cast<unsigned>(written_total));
-    HttpJsonUtils::send_json(req, "{\"success\":true,\"message\":\"Receiver firmware uploaded. Rebooting...\"}");
+    return ApiResponseUtils::send_success_message(req, "Receiver firmware uploaded. Rebooting...");
 
+    // Note: unreachable, but kept for clarity
     vTaskDelay(pdMS_TO_TICKS(250));
     ESP.restart();
     return ESP_OK;
@@ -720,10 +692,7 @@ esp_err_t api_ota_upload_handler(httpd_req_t *req) {
         out_doc["success"] = false;
         out_doc["message"] = message;
         out_doc["detail"] = early_body;
-        String err_json;
-        err_json.reserve(256 + early_body.length());
-        serializeJson(out_doc, err_json);
-        return HttpJsonUtils::send_json(req, err_json.c_str());
+        return ApiResponseUtils::send_json_doc(req, out_doc);
     }
 
     const OtaResponseResult response_result = await_and_parse_ota_response(tx_client);
@@ -741,7 +710,11 @@ esp_err_t api_ota_upload_handler(httpd_req_t *req) {
              response_result.status_code);
 
     if (response_result.status_code == 200) {
-        return HttpJsonUtils::send_json(req, "{\"success\":true,\"message\":\"Firmware streamed to transmitter\",\"status\":\"forwarded\"}");
+        StaticJsonDocument<128> success_doc;
+        success_doc["success"] = true;
+        success_doc["message"] = "Firmware streamed to transmitter";
+        success_doc["status"] = "forwarded";
+        return ApiResponseUtils::send_json_doc(req, success_doc);
     } else {
         String body = response_result.body;
         body.replace("\"", "'");
@@ -751,9 +724,6 @@ esp_err_t api_ota_upload_handler(httpd_req_t *req) {
         out_doc["success"] = false;
         out_doc["message"] = message;
         out_doc["detail"] = body;
-        String err_json;
-        err_json.reserve(256 + body.length());
-        serializeJson(out_doc, err_json);
-        return HttpJsonUtils::send_json(req, err_json.c_str());
+        return ApiResponseUtils::send_json_doc(req, out_doc);
     }
 }

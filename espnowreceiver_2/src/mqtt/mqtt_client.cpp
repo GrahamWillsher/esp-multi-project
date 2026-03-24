@@ -258,6 +258,20 @@ void MqttClient::handleSpecData2(const char* json_payload, size_t length) {
         LOG_ERROR("MQTT", "Failed to parse spec_data_2: %s", error.c_str());
         return;
     }
+
+    const bool has_protocol_name =
+        doc.containsKey("inverter_protocol_name") && doc["inverter_protocol_name"].is<const char*>();
+    const bool has_protocol_legacy =
+        doc.containsKey("inverter_protocol") && doc["inverter_protocol"].is<const char*>();
+    const bool has_type_id = doc.containsKey("inverter_type_id") && doc["inverter_type_id"].is<int>();
+    const bool has_schema = doc.containsKey("schema_version") || doc.containsKey("spec_schema");
+
+    if (!has_type_id && !has_protocol_name && !has_protocol_legacy) {
+        LOG_WARN("MQTT", "spec_data_2 missing canonical inverter identity fields (inverter_type_id/inverter_protocol_name)");
+    }
+    if (!has_schema) {
+        LOG_WARN("MQTT", "spec_data_2 missing schema marker (spec_schema/schema_version)");
+    }
     
     // Store inverter specs
     TransmitterManager::storeInverterSpecs(doc.as<JsonObject>());

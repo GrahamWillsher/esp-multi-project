@@ -2,7 +2,6 @@
 
 #include "api_request_utils.h"
 #include "api_response_utils.h"
-#include <webserver_common_utils/http_json_utils.h>
 #include "../../src/espnow/espnow_send.h"
 #include "../../src/mqtt/mqtt_client.h"
 
@@ -10,16 +9,17 @@
 #include <cstring>
 
 esp_err_t api_get_test_data_mode_handler(httpd_req_t *req) {
-    char json_response[256];
+    static const char* mode_names[] = {"OFF", "SOC_POWER_ONLY", "FULL_BATTERY_DATA"};
 
     const uint8_t mode = get_last_test_data_mode();
-    const char* mode_names[] = {"OFF", "SOC_POWER_ONLY", "FULL_BATTERY_DATA"};
 
-    snprintf(json_response, sizeof(json_response),
-             "{\"success\":true,\"mode\":%d,\"mode_name\":\"%s\",\"message\":\"Current test data mode\"}",
-             mode, mode_names[mode]);
+    StaticJsonDocument<128> doc;
+    doc["success"]   = true;
+    doc["mode"]      = mode;
+    doc["mode_name"] = mode_names[mode];
+    doc["message"]   = "Current test data mode";
 
-    return HttpJsonUtils::send_json(req, json_response);
+    return ApiResponseUtils::send_json_doc(req, doc);
 }
 
 esp_err_t api_set_test_data_mode_handler(httpd_req_t *req) {
@@ -48,12 +48,12 @@ esp_err_t api_set_test_data_mode_handler(httpd_req_t *req) {
     }
 
     if (send_test_data_mode_control(mode)) {
-        const char* mode_names[] = {"OFF", "SOC_POWER_ONLY", "FULL_BATTERY_DATA"};
-        char response[256];
-        snprintf(response, sizeof(response),
-                 "{\"success\":true,\"mode\":\"%s\",\"message\":\"Test data mode changed\"}",
-                 mode_names[mode]);
-        return HttpJsonUtils::send_json(req, response);
+        static const char* mode_names[] = {"OFF", "SOC_POWER_ONLY", "FULL_BATTERY_DATA"};
+        StaticJsonDocument<128> doc;
+        doc["success"] = true;
+        doc["mode"]    = mode_names[mode];
+        doc["message"] = "Test data mode changed";
+        return ApiResponseUtils::send_json_doc(req, doc);
     }
 
     return ApiResponseUtils::send_error_message(req, "Failed to send command to transmitter");

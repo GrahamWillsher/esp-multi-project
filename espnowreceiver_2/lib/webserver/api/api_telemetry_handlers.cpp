@@ -1,5 +1,6 @@
 #include "api_telemetry_handlers.h"
 #include "api_sse_handlers.h"
+#include "api_response_utils.h"
 #include "webserver_metrics.h"
 #include "../webserver.h"
 
@@ -380,16 +381,16 @@ esp_err_t api_get_event_logs_handler(httpd_req_t *req) {
     }
 
     http.end();
-    char json_response[160];
+    StaticJsonDocument<128> doc;
+    doc["success"] = false;
     if (httpCode == -1) {
-        snprintf(json_response, sizeof(json_response),
-                 "{\"success\":false,\"error\":\"Failed to connect to transmitter\"}");
+        doc["error"] = "Failed to connect to transmitter";
     } else {
-        snprintf(json_response, sizeof(json_response),
-                 "{\"success\":false,\"error\":\"Transmitter returned HTTP %d\"}", httpCode);
+        String error_msg = "Transmitter returned HTTP " + String(httpCode);
+        doc["error"] = error_msg;
     }
 
-    return HttpJsonUtils::send_json(req, json_response);
+    return ApiResponseUtils::send_json_doc(req, doc);
 }
 
 esp_err_t api_system_metrics_handler(httpd_req_t *req) {

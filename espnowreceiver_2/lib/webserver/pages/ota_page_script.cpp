@@ -62,6 +62,72 @@ String get_ota_page_script() {
         let receiverVersionForCompat = null;
         let transmitterVersionForCompat = null;
 
+        function redirectToDashboardAfterDelay(delayMs) {
+            const ms = Number.isFinite(delayMs) ? delayMs : 3000;
+            setTimeout(() => {
+                window.location.href = '/';
+            }, ms);
+        }
+
+        function runTransmitterReboot(options) {
+            const cfg = Object.assign({
+                countdownSeconds: 10,
+                rebootEndpoint: '/api/reboot',
+                redirectUrl: '/',
+                redirectDelayMs: 3000,
+                shouldRedirect: false,
+                updateCountdown: null,
+                onCommandStart: null,
+                onSuccess: null,
+                onFailure: null,
+                onError: null
+            }, options || {});
+
+            let seconds = Number.isFinite(cfg.countdownSeconds) ? cfg.countdownSeconds : 10;
+
+            const tick = () => {
+                if (typeof cfg.updateCountdown === 'function') {
+                    cfg.updateCountdown(seconds);
+                }
+
+                if (seconds <= 0) {
+                    if (typeof cfg.onCommandStart === 'function') {
+                        cfg.onCommandStart();
+                    }
+
+                    fetch(cfg.rebootEndpoint)
+                        .then(response => response.json())
+                        .then(data => {
+                            if (data.success) {
+                                if (typeof cfg.onSuccess === 'function') {
+                                    cfg.onSuccess(data);
+                                }
+                                if (cfg.shouldRedirect) {
+                                    setTimeout(() => {
+                                        window.location.href = cfg.redirectUrl;
+                                    }, cfg.redirectDelayMs);
+                                }
+                            } else {
+                                if (typeof cfg.onFailure === 'function') {
+                                    cfg.onFailure(data.message || 'Unknown error', data);
+                                }
+                            }
+                        })
+                        .catch(error => {
+                            if (typeof cfg.onError === 'function') {
+                                cfg.onError(error);
+                            }
+                        });
+                    return;
+                }
+
+                seconds--;
+                setTimeout(tick, 1000);
+            };
+
+            tick();
+        }
+
         function updateCompatibilityStatus() {
             const el = document.getElementById('compatibilityStatus');
             const rx = parseVersion(receiverVersionForCompat);
@@ -238,8 +304,8 @@ String get_ota_page_script() {
                 'prepared_waiting_reboot': 'Firmware staged — waiting for reboot...',
                 'prepare_upload':          'Receiving firmware image...',
                 'prepare_writing':         'Writing firmware to flash...',
-                'idle':                    'Transmitter online, awaiting OTA state...',
-                'unknown':                 'Awaiting state from transmitter...'
+                'idle':                    'Transmitter online after reboot; finalizing OTA status...',
+                'unknown':                 'Transmitter online; waiting for OTA status...'
             };
 
             const verificationInterval = setInterval(function() {
@@ -258,11 +324,30 @@ String get_ota_page_script() {
                         const currentTxn = Number(status.ota_txn_id || 0);
                         const commitState = status.commit_state || 'unknown';
                         const commitDetail = status.commit_detail || '';
+                        const bootGuardState = status.boot_guard_state || 'unknown';
+                        const rollbackPending = !!status.rollback_pending;
                         lastKnownCommitState = commitState;
                         lastKnownCommitDetail = commitDetail;
 
-                        // After the grace period: if txn is 0 and state is idle/unknown, the
-                        // transmitter came back on the old firmware (auto-rollback with no explicit state).
+                        // Check definitive success FIRST before any rollback heuristics.
+                        // This handles the case where the transmitter correctly rebooted with
+                        // new firmware: boot_guard_passed=true and commit_state may be
+                        // 'committed_validated' or could still be 'idle' on older builds.
+                        if (status.boot_guard_passed || commitState === 'committed_validated') {
+                            clearInterval(verificationInterval);
+                            const detailSuffix = commitDetail ? ('<br><span style="color:#888;font-size:12px;">' + commitDetail + '</span>') : '';
+                            statusDiv.innerHTML = '✅ OTA committed successfully. Transmitter validated new firmware.<br><span style="color:#888;font-size:12px;">Returning to dashboard...</span>' + detailSuffix;
+                            uploadBtn.disabled = false;
+                            uploadBtn.style.cursor = 'pointer';
+                            uploadBtn.style.backgroundColor = '#4CAF50';
+                            uploadBtn.innerText = 'Upload Complete';
+                            redirectToDashboardAfterDelay(3000);
+                            return;
+                        }
+
+                        // After the grace period: if txn is 0 and state is idle/unknown,
+                        // AND boot guard did NOT pass, declare rollback.
+                        // (If boot_guard_passed were true we'd have succeeded above.)
                         if (expectedTxnId && graceAttempts > txnMismatchGrace) {
                             if (currentTxn === 0 && (commitState === 'idle' || commitState === 'unknown')) {
                                 clearInterval(verificationInterval);
@@ -280,17 +365,6 @@ String get_ota_page_script() {
                             return;
                         }
 
-                        if (status.boot_guard_passed || commitState === 'committed_validated') {
-                            clearInterval(verificationInterval);
-                            const detailSuffix = commitDetail ? ('<br><span style="color:#888;font-size:12px;">' + commitDetail + '</span>') : '';
-                            statusDiv.innerHTML = '✅ OTA committed successfully. Transmitter validated new firmware.' + detailSuffix;
-                            uploadBtn.disabled = false;
-                            uploadBtn.style.cursor = 'pointer';
-                            uploadBtn.style.backgroundColor = '#4CAF50';
-                            uploadBtn.innerText = 'Upload Complete';
-                            return;
-                        }
-
                         // Explicit rollback states + boot guard error all terminate monitoring.
                         if (commitState.indexOf('rollback') >= 0 || commitState === 'boot_guard_error') {
                             clearInterval(verificationInterval);
@@ -305,10 +379,18 @@ String get_ota_page_script() {
                             return;
                         }
 
-                        const label = stateLabels[commitState] || ('State: ' + commitState);
+                        let label = stateLabels[commitState] || ('State: ' + commitState);
+                        if (commitState === 'idle' && rollbackPending) {
+                            label = 'Transmitter reboot detected; waiting for boot validation...';
+                        }
+                        const extraHint =
+                            (bootGuardState && bootGuardState !== 'unknown' && bootGuardState !== 'confirmed')
+                                ? (' (boot guard: ' + bootGuardState + ')')
+                                : '';
                         statusDiv.innerHTML = '⏳ Waiting for transmitter validation...<br>'
                             + '<span style="color:#888;font-size:12px;">' + label
-                            + (commitDetail ? (' — ' + commitDetail) : '') + '</span>';
+                            + (commitDetail ? (' — ' + commitDetail) : '')
+                            + extraHint + '</span>';
                     })
                     .catch(() => {
                         // Expected during the reboot window — transmitter will be briefly offline.
@@ -483,8 +565,8 @@ String get_ota_page_script() {
                                                     clearInterval(statusPollInterval);
                                                     const expectedTxnId = Number(status.ota_txn_id || 0);
 
-                                                    TransmitterReboot.run({
-                                                        countdownSeconds: TransmitterReboot.COUNTDOWN_SECONDS,
+                                                    runTransmitterReboot({
+                                                        countdownSeconds: 10,
                                                         updateCountdown: (seconds) => {
                                                             statusDiv.innerHTML = '✅ OTA verified on transmitter.';
                                                             uploadBtn.disabled = true;

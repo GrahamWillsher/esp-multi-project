@@ -260,6 +260,211 @@ window.SaveOperation = window.SaveOperation || {
     }
 };
 
+window.CatalogLoader = window.CatalogLoader || {
+    setLoadingOption(selectEl, text) {
+        if (!selectEl) return;
+        selectEl.innerHTML = `<option value=''>${text || 'Loading...'}</option>`;
+    },
+
+    setEmptyOption(selectEl, text) {
+        if (!selectEl) return;
+        selectEl.innerHTML = `<option value=''>${text || 'No data available'}</option>`;
+    },
+
+    populateSelect(selectEl, types) {
+        if (!selectEl) return;
+        selectEl.innerHTML = '';
+        (types || []).forEach(type => {
+            const option = document.createElement('option');
+            option.value = type.id;
+            option.textContent = type.name;
+            selectEl.appendChild(option);
+        });
+    },
+
+    loadCatalogSelect(options) {
+        const cfg = Object.assign({
+            catalogEndpoint: '',
+            selectedEndpoint: '',
+            selectedKey: '',
+            selectId: '',
+            loadingText: 'Loading...',
+            emptyText: 'No data available',
+            maxRetries: 0,
+            retryDelayMs: 1000,
+            onCatalogLoaded: null,
+            onSelectedLoaded: null,
+            onError: null,
+            logLabel: 'catalog'
+        }, options || {});
+
+        const selectEl = document.getElementById(cfg.selectId);
+        if (!selectEl) {
+            return Promise.resolve(null);
+        }
+
+        let attempts = 0;
+        this.setLoadingOption(selectEl, cfg.loadingText);
+
+        const loadCatalog = () => {
+            return fetch(cfg.catalogEndpoint)
+                .then(response => response.json())
+                .then(data => {
+                    const types = Array.isArray(data.types) ? data.types : [];
+                    if (data.loading || types.length === 0) {
+                        this.setLoadingOption(selectEl, cfg.loadingText);
+                        if (attempts < cfg.maxRetries) {
+                            attempts++;
+                            setTimeout(loadCatalog, cfg.retryDelayMs);
+                        } else {
+                            this.setEmptyOption(selectEl, cfg.emptyText);
+                        }
+                        return null;
+                    }
+
+                    this.populateSelect(selectEl, types);
+                    if (typeof cfg.onCatalogLoaded === 'function') {
+                        cfg.onCatalogLoaded(types, data, selectEl);
+                    }
+
+                    if (!cfg.selectedEndpoint || !cfg.selectedKey) {
+                        return types;
+                    }
+
+                    return fetch(cfg.selectedEndpoint)
+                        .then(response => response.json())
+                        .then(selected => {
+                            const selectedValue = String(selected[cfg.selectedKey]);
+                            selectEl.value = selectedValue;
+                            if (typeof cfg.onSelectedLoaded === 'function') {
+                                cfg.onSelectedLoaded(selectedValue, selected, selectEl, types);
+                            }
+                            return types;
+                        });
+                })
+                .catch(error => {
+                    if (typeof cfg.onError === 'function') {
+                        cfg.onError(error, selectEl);
+                    } else {
+                        console.error(`Failed to load ${cfg.logLabel}:`, error);
+                    }
+                    return null;
+                });
+        };
+
+        return loadCatalog();
+    },
+
+    loadCatalogLabel(options) {
+        const cfg = Object.assign({
+            catalogEndpoint: '',
+            selectedEndpoint: '',
+            selectedKey: '',
+            targetId: '',
+            fallbackText: 'Unknown',
+            unavailableText: 'Unavailable',
+            replaceIfCurrentIn: null,
+            onResolved: null,
+            onError: null,
+            logLabel: 'catalog label'
+        }, options || {});
+
+        const targetEl = document.getElementById(cfg.targetId);
+        if (!targetEl) {
+            return Promise.resolve(null);
+        }
+
+        return fetch(cfg.selectedEndpoint)
+            .then(response => response.json())
+            .then(selected => {
+                const selectedId = selected[cfg.selectedKey];
+                return fetch(cfg.catalogEndpoint)
+                    .then(response => response.json())
+                    .then(data => {
+                        const types = Array.isArray(data.types) ? data.types : [];
+                        const match = types.find(t => t.id === selectedId);
+                        const label = match ? `${match.name}` : cfg.fallbackText;
+                        const current = (targetEl.textContent || '').trim();
+                        const allowed = Array.isArray(cfg.replaceIfCurrentIn)
+                            ? cfg.replaceIfCurrentIn
+                            : null;
+
+                        if (!allowed || allowed.includes(current)) {
+                            targetEl.textContent = label;
+                        }
+
+                        if (typeof cfg.onResolved === 'function') {
+                            cfg.onResolved(label, selected, targetEl, types);
+                        }
+
+                        return label;
+                    });
+            })
+            .catch(error => {
+                if (targetEl) {
+                    targetEl.textContent = cfg.unavailableText;
+                }
+                if (typeof cfg.onError === 'function') {
+                    cfg.onError(error, targetEl);
+                } else {
+                    console.error(`Failed to load ${cfg.logLabel}:`, error);
+                }
+                return null;
+            });
+    }
+};
+
+window.FormChangeTracker = window.FormChangeTracker || {
+    getElementValue(element) {
+        if (!element) return undefined;
+        return element.type === 'checkbox' ? element.checked : element.value;
+    },
+
+    countChanges(initialValues, fieldIds) {
+        let changes = 0;
+        (fieldIds || []).forEach(fieldId => {
+            const element = document.getElementById(fieldId);
+            if (!element) return;
+            const currentValue = this.getElementValue(element);
+            if (initialValues[fieldId] !== currentValue) {
+                changes++;
+            }
+        });
+        return changes;
+    },
+
+    updateSaveButton(button, changedCount, options) {
+        if (!button) return;
+
+        const cfg = Object.assign({
+            nothingText: 'Nothing to Save',
+            changedSingularTemplate: 'Save 1 Change',
+            changedPluralTemplate: 'Save {count} Changes',
+            enabledColor: '#4CAF50',
+            disabledColor: '#6c757d'
+        }, options || {});
+
+        if (changedCount > 0) {
+            const text = changedCount === 1
+                ? cfg.changedSingularTemplate
+                : cfg.changedPluralTemplate.replace('{count}', String(changedCount));
+            SaveOperation.setButtonState(button, {
+                text,
+                backgroundColor: cfg.enabledColor,
+                disabled: false,
+                cursor: 'pointer'
+            });
+        } else {
+            SaveOperation.setButtonState(button, {
+                text: cfg.nothingText,
+                backgroundColor: cfg.disabledColor,
+                disabled: true,
+                cursor: 'not-allowed'
+            });
+        }
+    }
+};
+
 window.ComponentApplyCoordinator = window.ComponentApplyCoordinator || {
     POLL_INTERVAL_MS: 1000,
     MAX_POLL_ATTEMPTS: 40,
@@ -367,6 +572,45 @@ window.ComponentApplyCoordinator = window.ComponentApplyCoordinator || {
         }, cfg.pollIntervalMs);
     }
 };
+
+window.ReceiverNetworkFormController = window.ReceiverNetworkFormController || {
+    setOctets(prefix, value) {
+        if (!value || typeof value !== 'string') return;
+        const parts = value.split('.');
+        if (parts.length !== 4) return;
+        for (let i = 0; i < 4; i++) {
+            const el = document.getElementById(prefix + i);
+            if (el) el.value = parts[i];
+        }
+    },
+
+    collectOctets(prefix) {
+        const parts = [];
+        for (let i = 0; i < 4; i++) {
+            const el = document.getElementById(prefix + i);
+            parts.push((el && el.value) || '0');
+        }
+        return parts.join('.');
+    },
+
+    updateNetworkModeBadge(useStatic, badgeId) {
+        const badge = document.getElementById(badgeId || 'networkModeBadge');
+        if (!badge) return;
+        badge.textContent = useStatic ? 'Static IP' : 'DHCP';
+        badge.className = useStatic ? 'network-mode-badge badge-static' : 'network-mode-badge badge-dhcp';
+    },
+
+    toggleStaticIpFields(useStatic, rowIds) {
+        (rowIds || []).forEach(rowId => {
+            const row = document.getElementById(rowId);
+            if (!row) return;
+            row.style.display = useStatic ? 'grid' : 'none';
+            row.querySelectorAll('input').forEach(input => {
+                input.disabled = !useStatic;
+            });
+        });
+    }
+};
 )rawliteral";
 
 // Generate standard HTML page with common template
@@ -375,10 +619,26 @@ String renderPage(const String& title, const String& content, const PageRenderOp
     html += "<meta charset='utf-8'>";
     html += "<title>" + title + "</title>";
     html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
+    // Prevent browser favicon.ico request/404 noise by using an inline empty icon.
+    html += "<link rel='icon' href='data:,'>";
     html += "<style>" + String(COMMON_STYLES) + options.extra_styles + "</style>";
-    html += "<script>" + String(COMMON_SCRIPT_HELPERS) + options.script + "</script>";
+    if (options.include_common_script_helpers) {
+        html += "<script>" + String(COMMON_SCRIPT_HELPERS) + options.script + "</script>";
+    } else {
+        html += "<script>" + options.script + "</script>";
+    }
     html += "</head><body>";
     html += content;
     html += "</body></html>";
     return html;
+}
+
+esp_err_t send_rendered_page(httpd_req_t* req,
+                             const String& title,
+                             const String& content,
+                             const PageRenderOptions& options,
+                             const char* content_type) {
+    const String html = renderPage(title, content, options);
+    httpd_resp_set_type(req, content_type ? content_type : "text/html");
+    return httpd_resp_send(req, html.c_str(), html.length());
 }

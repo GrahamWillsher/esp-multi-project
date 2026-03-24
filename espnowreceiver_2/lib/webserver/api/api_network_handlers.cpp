@@ -3,7 +3,6 @@
 #include "api_request_utils.h"
 #include "api_response_utils.h"
 #include "../utils/transmitter_manager.h"
-#include <webserver_common_utils/http_json_utils.h>
 #include "../logging.h"
 #include "../../receiver_config/receiver_config_manager.h"
 
@@ -15,8 +14,6 @@
 #include <cstring>
 
 esp_err_t api_get_receiver_network_handler(httpd_req_t *req) {
-    char json[1024];
-
     String wifi_mac = WiFi.macAddress();
     String ssid = WiFi.SSID();
     int channel = WiFi.channel();
@@ -40,51 +37,37 @@ esp_err_t api_get_receiver_network_handler(httpd_req_t *req) {
     uint16_t mqtt_port = ReceiverNetworkConfig::getMqttPort();
     const char* mqtt_username = ReceiverNetworkConfig::getMqttUsername();
 
-    snprintf(json, sizeof(json),
-        "{"
-        "\"success\":true,"
-        "\"is_ap_mode\":%s,"
-        "\"wifi_mac\":\"%s\","
-        "\"chip_model\":\"%s\","
-        "\"chip_revision\":%d,"
-        "\"hostname\":\"%s\","
-        "\"ssid\":\"%s\","
-        "\"password\":\"%s\","
-        "\"channel\":%d,"
-        "\"use_static_ip\":%s,"
-        "\"static_ip\":\"%d.%d.%d.%d\","
-        "\"gateway\":\"%d.%d.%d.%d\","
-        "\"subnet\":\"%d.%d.%d.%d\","
-        "\"dns_primary\":\"%d.%d.%d.%d\","
-        "\"dns_secondary\":\"%d.%d.%d.%d\","
-        "\"mqtt_enabled\":%s,"
-        "\"mqtt_server\":\"%d.%d.%d.%d\","
-        "\"mqtt_port\":%d,"
-        "\"mqtt_username\":\"%s\","
-        "\"mqtt_password\":\"%s\""
-        "}",
-        is_ap_mode ? "true" : "false",
-        wifi_mac.c_str(),
-        chip_model.c_str(),
-        chip_revision,
-        hostname,
-        configured_ssid[0] ? configured_ssid : ssid.c_str(),
-        configured_password,
-        channel,
-        use_static_ip ? "true" : "false",
-        static_ip[0], static_ip[1], static_ip[2], static_ip[3],
-        gateway[0], gateway[1], gateway[2], gateway[3],
-        subnet[0], subnet[1], subnet[2], subnet[3],
-        dns_primary[0], dns_primary[1], dns_primary[2], dns_primary[3],
-        dns_secondary[0], dns_secondary[1], dns_secondary[2], dns_secondary[3],
-        mqtt_enabled ? "true" : "false",
-        mqtt_server[0], mqtt_server[1], mqtt_server[2], mqtt_server[3],
-        mqtt_port,
-        mqtt_username,
-        "********"
-    );
+    char ip_str[16], gw_str[16], sn_str[16], dns1_str[16], dns2_str[16], mqtt_str[16];
+    ApiResponseUtils::format_ipv4(ip_str, static_ip);
+    ApiResponseUtils::format_ipv4(gw_str, gateway);
+    ApiResponseUtils::format_ipv4(sn_str, subnet);
+    ApiResponseUtils::format_ipv4(dns1_str, dns_primary);
+    ApiResponseUtils::format_ipv4(dns2_str, dns_secondary);
+    ApiResponseUtils::format_ipv4(mqtt_str, mqtt_server);
 
-    return HttpJsonUtils::send_json(req, json);
+    StaticJsonDocument<512> doc;
+    doc["success"]        = true;
+    doc["is_ap_mode"]     = is_ap_mode;
+    doc["wifi_mac"]       = wifi_mac.c_str();
+    doc["chip_model"]     = chip_model.c_str();
+    doc["chip_revision"]  = chip_revision;
+    doc["hostname"]       = hostname;
+    doc["ssid"]           = configured_ssid[0] ? configured_ssid : ssid.c_str();
+    doc["password"]       = configured_password;
+    doc["channel"]        = channel;
+    doc["use_static_ip"]  = use_static_ip;
+    doc["static_ip"]      = ip_str;
+    doc["gateway"]        = gw_str;
+    doc["subnet"]         = sn_str;
+    doc["dns_primary"]    = dns1_str;
+    doc["dns_secondary"]  = dns2_str;
+    doc["mqtt_enabled"]   = mqtt_enabled;
+    doc["mqtt_server"]    = mqtt_str;
+    doc["mqtt_port"]      = mqtt_port;
+    doc["mqtt_username"]  = mqtt_username;
+    doc["mqtt_password"]  = "********";
+
+    return ApiResponseUtils::send_json_doc(req, doc);
 }
 
 esp_err_t api_save_receiver_network_handler(httpd_req_t *req) {
@@ -175,16 +158,8 @@ esp_err_t api_save_receiver_network_handler(httpd_req_t *req) {
 }
 
 esp_err_t api_get_network_config_handler(httpd_req_t *req) {
-    char json[1024];
-
     if (!TransmitterManager::isIPKnown()) {
-        snprintf(json, sizeof(json),
-            "{"
-            "\"success\":false,"
-            "\"message\":\"No network config cached yet\""
-            "}"
-        );
-        return HttpJsonUtils::send_json(req, json);
+        return ApiResponseUtils::send_error_message(req, "No network config cached yet");
     }
 
     bool is_static = TransmitterManager::isStaticIP();
@@ -200,47 +175,40 @@ esp_err_t api_get_network_config_handler(httpd_req_t *req) {
     const uint8_t* static_dns1 = TransmitterManager::getStaticDNSPrimary();
     const uint8_t* static_dns2 = TransmitterManager::getStaticDNSSecondary();
 
-    if (current_ip && current_gateway && current_subnet &&
-        static_ip && static_gateway && static_subnet && static_dns1 && static_dns2) {
-        snprintf(json, sizeof(json),
-            "{"
-            "\"success\":true,"
-            "\"use_static_ip\":%s,"
-            "\"current\":{"
-                "\"ip\":\"%d.%d.%d.%d\","
-                "\"gateway\":\"%d.%d.%d.%d\","
-                "\"subnet\":\"%d.%d.%d.%d\""
-            "},"
-            "\"static_config\":{"
-                "\"ip\":\"%d.%d.%d.%d\","
-                "\"gateway\":\"%d.%d.%d.%d\","
-                "\"subnet\":\"%d.%d.%d.%d\","
-                "\"dns_primary\":\"%d.%d.%d.%d\","
-                "\"dns_secondary\":\"%d.%d.%d.%d\""
-            "},"
-            "\"config_version\":%u"
-            "}",
-            is_static ? "true" : "false",
-            current_ip[0], current_ip[1], current_ip[2], current_ip[3],
-            current_gateway[0], current_gateway[1], current_gateway[2], current_gateway[3],
-            current_subnet[0], current_subnet[1], current_subnet[2], current_subnet[3],
-            static_ip[0], static_ip[1], static_ip[2], static_ip[3],
-            static_gateway[0], static_gateway[1], static_gateway[2], static_gateway[3],
-            static_subnet[0], static_subnet[1], static_subnet[2], static_subnet[3],
-            static_dns1[0], static_dns1[1], static_dns1[2], static_dns1[3],
-            static_dns2[0], static_dns2[1], static_dns2[2], static_dns2[3],
-            version
-        );
-    } else {
-        snprintf(json, sizeof(json),
-            "{"
-            "\"success\":false,"
-            "\"message\":\"No network data available\""
-            "}"
-        );
+    if (!(current_ip && current_gateway && current_subnet &&
+          static_ip && static_gateway && static_subnet && static_dns1 && static_dns2)) {
+        return ApiResponseUtils::send_error_message(req, "No network data available");
     }
 
-    return HttpJsonUtils::send_json(req, json);
+    char cur_ip[16], cur_gw[16], cur_sn[16];
+    char st_ip[16], st_gw[16], st_sn[16], st_dns1[16], st_dns2[16];
+    ApiResponseUtils::format_ipv4(cur_ip, current_ip);
+    ApiResponseUtils::format_ipv4(cur_gw, current_gateway);
+    ApiResponseUtils::format_ipv4(cur_sn, current_subnet);
+    ApiResponseUtils::format_ipv4(st_ip, static_ip);
+    ApiResponseUtils::format_ipv4(st_gw, static_gateway);
+    ApiResponseUtils::format_ipv4(st_sn, static_subnet);
+    ApiResponseUtils::format_ipv4(st_dns1, static_dns1);
+    ApiResponseUtils::format_ipv4(st_dns2, static_dns2);
+
+    StaticJsonDocument<384> doc;
+    doc["success"]       = true;
+    doc["use_static_ip"] = is_static;
+    doc["config_version"] = version;
+
+    JsonObject current = doc.createNestedObject("current");
+    current["ip"]      = cur_ip;
+    current["gateway"] = cur_gw;
+    current["subnet"]  = cur_sn;
+
+    JsonObject sc = doc.createNestedObject("static_config");
+    sc["ip"]          = st_ip;
+    sc["gateway"]     = st_gw;
+    sc["subnet"]      = st_sn;
+    sc["dns_primary"]   = st_dns1;
+    sc["dns_secondary"] = st_dns2;
+
+    return ApiResponseUtils::send_json_doc(req, doc);
 }
 
 esp_err_t api_save_network_config_handler(httpd_req_t *req) {
@@ -295,46 +263,36 @@ esp_err_t api_save_network_config_handler(httpd_req_t *req) {
     esp_err_t result = esp_now_send(TransmitterManager::getMAC(), (const uint8_t*)&msg, sizeof(msg));
     if (result == ESP_OK) {
         LOG_INFO("API: ✓ Network config sent to transmitter");
-        return ApiResponseUtils::send_success_message(req, "Network config sent - awaiting transmitter response");
     } else {
         LOG_ERROR("API: ✗ ESP-NOW send FAILED: %s", esp_err_to_name(result));
-        return ApiResponseUtils::send_jsonf(req,
-                                            "{\"success\":false,\"message\":\"ESP-NOW send failed: %s\"}",
-                                            esp_err_to_name(result));
     }
+    return ApiResponseUtils::send_espnow_send_result(req, result, "Network config sent - awaiting transmitter response");
 }
 
 esp_err_t api_get_mqtt_config_handler(httpd_req_t *req) {
-    char json[512];
-
     if (!TransmitterManager::isMqttConfigKnown()) {
         LOG_INFO("API: MQTT config not cached");
-        snprintf(json, sizeof(json), "{\"success\":false,\"message\":\"MQTT config not cached\"}");
-        return HttpJsonUtils::send_json(req, json);
+        return ApiResponseUtils::send_error_message(req, "MQTT config not cached");
     }
 
     const uint8_t* server = TransmitterManager::getMqttServer();
-    snprintf(json, sizeof(json),
-        "{\"success\":true,"
-        "\"enabled\":%s,"
-        "\"server\":\"%d.%d.%d.%d\","
-        "\"port\":%d,"
-        "\"username\":\"%s\","
-        "\"password\":\"********\","
-        "\"client_id\":\"%s\","
-        "\"connected\":%s}",
-        TransmitterManager::isMqttEnabled() ? "true" : "false",
-        server[0], server[1], server[2], server[3],
-        TransmitterManager::getMqttPort(),
-        TransmitterManager::getMqttUsername(),
-        TransmitterManager::getMqttClientId(),
-        TransmitterManager::isMqttConnected() ? "true" : "false"
-    );
+    char server_str[16];
+    ApiResponseUtils::format_ipv4(server_str, server);
+
+    StaticJsonDocument<256> doc;
+    doc["success"]    = true;
+    doc["enabled"]    = TransmitterManager::isMqttEnabled();
+    doc["server"]     = server_str;
+    doc["port"]       = TransmitterManager::getMqttPort();
+    doc["username"]   = TransmitterManager::getMqttUsername();
+    doc["password"]   = "********";
+    doc["client_id"]  = TransmitterManager::getMqttClientId();
+    doc["connected"]  = TransmitterManager::isMqttConnected();
 
     LOG_INFO("API: ✓ Returning cached MQTT config (enabled=%d, connected=%d)",
              TransmitterManager::isMqttEnabled(), TransmitterManager::isMqttConnected());
 
-    return HttpJsonUtils::send_json(req, json);
+    return ApiResponseUtils::send_json_doc(req, doc);
 }
 
 esp_err_t api_save_mqtt_config_handler(httpd_req_t *req) {
@@ -390,11 +348,8 @@ esp_err_t api_save_mqtt_config_handler(httpd_req_t *req) {
     esp_err_t result = esp_now_send(TransmitterManager::getMAC(), (const uint8_t*)&msg, sizeof(msg));
     if (result == ESP_OK) {
         LOG_INFO("API: ✓ MQTT config sent to transmitter");
-        return ApiResponseUtils::send_success_message(req, "MQTT config sent - awaiting transmitter response");
     } else {
         LOG_ERROR("API: ✗ ESP-NOW send FAILED: %s", esp_err_to_name(result));
-        return ApiResponseUtils::send_jsonf(req,
-                                            "{\"success\":false,\"message\":\"ESP-NOW send failed: %s\"}",
-                                            esp_err_to_name(result));
     }
+    return ApiResponseUtils::send_espnow_send_result(req, result, "MQTT config sent - awaiting transmitter response");
 }

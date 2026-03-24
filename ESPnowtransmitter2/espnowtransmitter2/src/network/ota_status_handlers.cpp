@@ -213,7 +213,9 @@ esp_err_t OtaManager::ota_status_handler(httpd_req_t *req) {
     const char* commit_detail = mgr.ota_commit_detail_;
 
     if (!mgr.ota_in_progress_ && !mgr.ota_ready_for_reboot_) {
-        if (boot_guard_passed && mgr.ota_txn_id_ != 0) {
+        if (boot_guard_passed && OtaBootGuard::was_pending_at_boot()) {
+            // This boot started as an OTA pending-verify reboot AND the boot guard confirmed it.
+            // Report committed_validated regardless of txn_id (which is reset to 0 on reboot).
             commit_state  = "committed_validated";
             commit_detail = "boot guard passed and app confirmed";
         } else if (rollback_pending) {

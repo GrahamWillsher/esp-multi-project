@@ -9,6 +9,8 @@
 
 namespace {
 constexpr bool ENABLE_SERIALIZE_DEBUG_LOGS = false;
+constexpr const char* INVERTER_SPECS_SCHEMA = "inverter_specs.v1";
+constexpr uint16_t INVERTER_SPECS_SCHEMA_VERSION = 1;
 
 template <typename... Args>
 inline void serialize_debug_printf(const char* format, Args... args) {
@@ -111,11 +113,14 @@ void update_battery_specs(uint8_t battery_type) {
 
 void update_inverter_specs(uint8_t inverter_type) {
     const char* inverter_name = name_for_inverter_type(static_cast<InverterProtocolType>(inverter_type));
+    inverter_specs.inverter_type_id = inverter_type;
     if (inverter_name != nullptr) {
+        inverter_specs.inverter_protocol_name = inverter_name;
         inverter_specs.inverter_protocol = inverter_name;
     }
-    LOG_INFO("STATIC_DATA", "Updated inverter specs: %s",
-             inverter_specs.inverter_protocol);
+    LOG_INFO("STATIC_DATA", "Updated inverter specs: id=%u, name=%s",
+             inverter_specs.inverter_type_id,
+             inverter_specs.inverter_protocol_name);
 }
 
 const BatterySpecs& get_battery_specs() {
@@ -330,6 +335,12 @@ size_t serialize_inverter_specs(char* buffer, size_t buffer_size) {
     // Use PSRAM for JSON document to avoid stack overflow
     DynamicJsonDocument doc(512);
     
+    doc["spec_schema"] = INVERTER_SPECS_SCHEMA;
+    doc["schema_version"] = INVERTER_SPECS_SCHEMA_VERSION;
+    doc["inverter_type_id"] = inverter_specs.inverter_type_id;
+    doc["inverter_protocol_name"] = inverter_specs.inverter_protocol_name;
+
+    // Legacy compatibility field: kept for older receivers/scripts
     doc["inverter_protocol"] = inverter_specs.inverter_protocol;
     doc["inverter_manufacturer"] = inverter_specs.inverter_manufacturer;
     doc["max_charge_power_w"] = inverter_specs.max_charge_power_w;
@@ -401,6 +412,8 @@ size_t serialize_all_specs(char* buffer, size_t buffer_size) {
     
     // Inverter specs
     JsonObject inverter = doc.createNestedObject("inverter");
+    inverter["inverter_type_id"] = inverter_specs.inverter_type_id;
+    inverter["inverter_protocol_name"] = inverter_specs.inverter_protocol_name;
     inverter["protocol"] = inverter_specs.inverter_protocol;
     inverter["manufacturer"] = inverter_specs.inverter_manufacturer;
     inverter["max_charge_power_w"] = inverter_specs.max_charge_power_w;

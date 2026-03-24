@@ -6,6 +6,7 @@
 namespace {
 OtaBootGuard::State g_state = OtaBootGuard::State::Unknown;
 bool g_pending_verify = false;
+bool g_was_pending_at_boot = false;   // true if this boot started as an OTA pending-verify boot
 char g_reason[96] = "init";
 char g_log_tag[20] = "BOOT_GUARD";
 
@@ -56,6 +57,7 @@ void begin(const char* log_tag) {
     }
 
     g_pending_verify = (ota_state == ESP_OTA_IMG_PENDING_VERIFY);
+    g_was_pending_at_boot = g_pending_verify;  // snapshot: true for OTA reboot, false for normal boot
     if (g_pending_verify) {
         g_state = State::PendingVerification;
         set_reason("running image pending verify");
@@ -126,6 +128,10 @@ const char* state_string() {
 
 const char* last_reason() {
     return g_reason;
+}
+
+bool was_pending_at_boot() {
+    return g_was_pending_at_boot;
 }
 
 } // namespace OtaBootGuard

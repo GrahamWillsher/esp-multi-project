@@ -35,6 +35,8 @@ struct BatterySpecs {
  * @brief Inverter protocol and limits
  */
 struct InverterSpecs {
+    uint8_t inverter_type_id = 10;                        // Canonical protocol ID (InverterProtocolType)
+    const char* inverter_protocol_name = "PYLON_CAN";    // Canonical protocol name (authoritative)
     const char* inverter_protocol = "PYLON_CAN";       // e.g., "PYLON_CAN", "SMA_CAN", "SOLAX_CAN"
     const char* inverter_manufacturer = "Pylon";       // Manufacturer name
     uint32_t max_charge_power_w = 5000;                // Max charge power in watts

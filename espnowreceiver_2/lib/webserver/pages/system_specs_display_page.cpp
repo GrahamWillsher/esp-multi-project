@@ -1,4 +1,5 @@
 #include "system_specs_display_page.h"
+#include "../common/spec_page_layout.h"
 #include "../utils/transmitter_manager.h"
 #include "../page_definitions.h"
 #include "../logging.h"
@@ -55,151 +56,13 @@ esp_err_t system_specs_page_handler(httpd_req_t *req) {
         build_date = "Metadata unavailable";
     }
     
-    // HTML page
-    const char* html_header = R"(
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>System Specifications</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }
-        .container { max-width: 900px; margin: 0 auto; }
-        .header {
-            background: rgba(255, 255, 255, 0.95);
-            border-radius: 12px;
-            padding: 30px;
-            margin-bottom: 20px;
-            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
-        }
-        .header h1 {
-            color: #333;
-            margin-bottom: 10px;
-            font-size: 2.5em;
-        }
-        .header p {
-            color: black;
-            font-size: 1.1em;
-            font-weight: 600;
-        }
-        .specs-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-            gap: 20px;
-            margin-bottom: 20px;
-        }
-        .spec-card {
-            background: white;
-            border-radius: 12px;
-            padding: 25px;
-            box-shadow: 0 5px 20px rgba(0, 0, 0, 0.1);
-            border-left: 5px solid #667eea;
-            transition: transform 0.3s ease, box-shadow 0.3s ease;
-        }
-        .spec-card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
-        }
-        .spec-label {
-            font-size: 0.9em;
-            color: black;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            margin-bottom: 8px;
-            font-weight: 600;
-        }
-        .spec-value {
-            font-size: 1.8em;
-            color: #333;
-            font-weight: 700;
-            margin-bottom: 5px;
-            word-break: break-word;
-        }
-        .spec-unit {
-            font-size: 0.9em;
-            color: #999;
-        }
-        .feature-badge {
-            display: inline-block;
-            padding: 5px 12px;
-            background: #667eea;
-            color: white;
-            border-radius: 20px;
-            font-size: 0.85em;
-            margin-right: 5px;
-            margin-top: 5px;
-        }
-        .feature-badge.enabled { background: #20c997; }
-        .feature-badge.disabled { background: #ccc; }
-        .source-info {
-            padding: 15px 20px;
-            background: rgba(102, 126, 234, 0.1);
-            border: 1px solid #667eea;
-            border-radius: 8px;
-            color: black;
-            font-size: 0.95em;
-            text-align: center;
-            margin-bottom: 20px;
-        }
-        .nav-buttons {
-            display: flex;
-            gap: 10px;
-            justify-content: center;
-            margin-top: 20px;
-            flex-wrap: wrap;
-        }
-        .btn {
-            padding: 12px 24px;
-            border: none;
-            border-radius: 8px;
-            font-size: 1em;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            text-decoration: none;
-            display: inline-block;
-        }
-        .btn-primary {
-            background: #667eea;
-            color: white;
-        }
-        .btn-primary:hover {
-            background: #505aa8;
-            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
-        }
-        .btn-secondary {
-            background: white;
-            color: #667eea;
-            border: 2px solid #667eea;
-        }
-        .btn-secondary:hover {
-            background: #667eea;
-            color: white;
-        }
-        @media (max-width: 768px) {
-            .header h1 { font-size: 1.8em; }
-            .specs-grid { grid-template-columns: 1fr; }
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🖥️ System Specifications</h1>
-            <p>System Configuration (Real-time from MQTT)</p>
-        </div>
-        
-        <div class="source-info">
-            📡 Source: Battery Emulator via MQTT Topic: <strong>BE/battery_specs</strong>
-        </div>
-)";
+    String html_header = build_spec_page_html_header("System Specifications",
+                                                      "🖥️ System Specifications",
+                                                      "System Configuration (Real-time from MQTT)",
+                                                      "BE/battery_specs",
+                                                      "#667eea",
+                                                      "#764ba2",
+                                                      "#667eea");
 
     const char* html_specs_section = R"(
         <div class="specs-grid">
@@ -232,20 +95,15 @@ esp_err_t system_specs_page_handler(httpd_req_t *req) {
         </div>
 )";
 
-    const char* html_footer = R"(
-        <div class="nav-buttons">
+    String html_footer = build_spec_page_html_footer(R"(
             <a href="/" class="btn btn-secondary">← Back to Dashboard</a>
             <a href="/charger_settings.html" class="btn btn-secondary">← Charger Specs</a>
             <a href="/battery_settings.html" class="btn btn-secondary">Battery Specs →</a>
-        </div>
-    </div>
-</body>
-</html>
-)";
+)" );
 
     // Allocate response buffer (PSRAM for large allocations)
-    size_t html_header_len = strlen(html_header);
-    size_t html_footer_len = strlen(html_footer);
+    size_t html_header_len = html_header.length();
+    size_t html_footer_len = html_footer.length();
     size_t specs_section_max = 2048;
     size_t total_size = html_header_len + specs_section_max + html_footer_len + 256;
     
@@ -269,9 +127,9 @@ esp_err_t system_specs_page_handler(httpd_req_t *req) {
     
     // Safe concatenation
     size_t offset = 0;
-    offset += snprintf(response + offset, total_size - offset, "%s", html_header);
+    offset += snprintf(response + offset, total_size - offset, "%s", html_header.c_str());
     offset += snprintf(response + offset, total_size - offset, "%s", specs_section);
-    offset += snprintf(response + offset, total_size - offset, "%s", html_footer);
+    offset += snprintf(response + offset, total_size - offset, "%s", html_footer.c_str());
     
     // Send response
     httpd_resp_set_type(req, "text/html; charset=utf-8");

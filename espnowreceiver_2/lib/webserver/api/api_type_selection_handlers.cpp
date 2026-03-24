@@ -36,6 +36,8 @@ static TypeEntry battery_interfaces[] = {
 };
 
 static constexpr size_t kMaxTypeEntries = 128;
+using CatalogCopyFn = size_t (*)(TypeCatalogCache::TypeEntry*, size_t);
+using CatalogRequestFn = bool (*)();
 
 static String generate_sorted_type_json(TypeEntry* types, size_t count) {
     if (count > kMaxTypeEntries) {
@@ -58,6 +60,48 @@ static String generate_sorted_type_json(TypeEntry* types, size_t count) {
     json.reserve(32 + (count * 32));
     serializeJson(doc, json);
     return json;
+}
+
+static esp_err_t send_oom_response(httpd_req_t *req) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
+    return ESP_FAIL;
+}
+
+static esp_err_t serve_fixed_type_catalog(httpd_req_t *req, TypeEntry* types, size_t count) {
+    String json_response = generate_sorted_type_json(types, count);
+    return HttpJsonUtils::send_json(req, json_response.c_str());
+}
+
+static esp_err_t serve_cached_type_catalog(httpd_req_t *req,
+                                           CatalogCopyFn copy_entries,
+                                           CatalogRequestFn request_entries) {
+    auto* cache_entries = new TypeCatalogCache::TypeEntry[kMaxTypeEntries];
+    if (!cache_entries) {
+        return send_oom_response(req);
+    }
+
+    const size_t count = copy_entries(cache_entries, kMaxTypeEntries);
+    if (count == 0) {
+        delete[] cache_entries;
+        (void)request_entries();
+        return HttpJsonUtils::send_json(req, "{\"types\":[],\"loading\":true}");
+    }
+
+    auto* response_entries = new TypeEntry[count];
+    if (!response_entries) {
+        delete[] cache_entries;
+        return send_oom_response(req);
+    }
+
+    for (size_t i = 0; i < count; ++i) {
+        response_entries[i].id = cache_entries[i].id;
+        response_entries[i].name = cache_entries[i].name;
+    }
+
+    String json_response = generate_sorted_type_json(response_entries, count);
+    delete[] response_entries;
+    delete[] cache_entries;
+    return HttpJsonUtils::send_json(req, json_response.c_str());
 }
 
 static const char* component_apply_state_to_string(ComponentApplyTracker::State state) {
@@ -211,71 +255,11 @@ static esp_err_t api_component_apply_status_handler(httpd_req_t *req) {
 }
 
 static esp_err_t api_get_battery_types_handler(httpd_req_t *req) {
-    // Heap-allocate: 128 * 49 bytes = 6 KB, too large for the httpd task stack
-    auto* cache_entries = new TypeCatalogCache::TypeEntry[128];
-    if (!cache_entries) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
-        return ESP_FAIL;
-    }
-    size_t count = TypeCatalogCache::copy_battery_entries(cache_entries, 128);
-
-    if (count == 0) {
-        delete[] cache_entries;
-        send_battery_types_request();
-        return HttpJsonUtils::send_json(req, "{\"types\":[],\"loading\":true}");
-    }
-
-    // response_entries.name pointers point into cache_entries — keep cache_entries alive
-    // until after generate_sorted_type_json has built the String
-    auto* response_entries = new TypeEntry[count];
-    if (!response_entries) {
-        delete[] cache_entries;
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
-        return ESP_FAIL;
-    }
-    for (size_t i = 0; i < count; ++i) {
-        response_entries[i].id = cache_entries[i].id;
-        response_entries[i].name = cache_entries[i].name;
-    }
-
-    String json_response = generate_sorted_type_json(response_entries, count);
-    delete[] response_entries;
-    delete[] cache_entries;  // safe: JSON string has already copied the name data
-    return HttpJsonUtils::send_json(req, json_response.c_str());
+    return serve_cached_type_catalog(req, TypeCatalogCache::copy_battery_entries, send_battery_types_request);
 }
 
 static esp_err_t api_get_inverter_types_handler(httpd_req_t *req) {
-    // Heap-allocate: 128 * 49 bytes = 6 KB, too large for the httpd task stack
-    auto* cache_entries = new TypeCatalogCache::TypeEntry[128];
-    if (!cache_entries) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
-        return ESP_FAIL;
-    }
-    size_t count = TypeCatalogCache::copy_inverter_entries(cache_entries, 128);
-
-    if (count == 0) {
-        delete[] cache_entries;
-        send_inverter_types_request();
-        return HttpJsonUtils::send_json(req, "{\"types\":[],\"loading\":true}");
-    }
-
-    // response_entries.name pointers point into cache_entries — keep cache_entries alive
-    // until after generate_sorted_type_json has built the String
-    auto* response_entries = new TypeEntry[count];
-    if (!response_entries) {
-        delete[] cache_entries;
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
-        return ESP_FAIL;
-    }
-    for (size_t i = 0; i < count; ++i) {
-        response_entries[i].id = cache_entries[i].id;
-        response_entries[i].name = cache_entries[i].name;
-    }
-
-    String json_response = generate_sorted_type_json(response_entries, count);
-    delete[] response_entries;
-    delete[] cache_entries;  // safe: JSON string has already copied the name data
-    return HttpJsonUtils::send_json(req, json_response.c_str());
+    return serve_cached_type_catalog(req, TypeCatalogCache::copy_inverter_entries, send_inverter_types_request);
 }
 
 static esp_err_t api_get_selected_types_handler(httpd_req_t *req) {
@@ -289,42 +273,11 @@ static esp_err_t api_get_selected_types_handler(httpd_req_t *req) {
 }
 
 static esp_err_t api_get_battery_interfaces_handler(httpd_req_t *req) {
-    String json_response = generate_sorted_type_json(battery_interfaces, sizeof(battery_interfaces) / sizeof(TypeEntry));
-    return HttpJsonUtils::send_json(req, json_response.c_str());
+    return serve_fixed_type_catalog(req, battery_interfaces, sizeof(battery_interfaces) / sizeof(TypeEntry));
 }
 
 static esp_err_t api_get_inverter_interfaces_handler(httpd_req_t *req) {
-    auto* cache_entries = new TypeCatalogCache::TypeEntry[128];
-    if (!cache_entries) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
-        return ESP_FAIL;
-    }
-
-    size_t count = TypeCatalogCache::copy_inverter_interface_entries(cache_entries, 128);
-
-    if (count == 0) {
-        delete[] cache_entries;
-        send_inverter_interfaces_request();
-        return HttpJsonUtils::send_json(req, "{\"types\":[],\"loading\":true}");
-    }
-
-    auto* response_entries = new TypeEntry[count];
-    if (!response_entries) {
-        delete[] cache_entries;
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
-        return ESP_FAIL;
-    }
-
-    for (size_t i = 0; i < count; ++i) {
-        response_entries[i].id = cache_entries[i].id;
-        response_entries[i].name = cache_entries[i].name;
-    }
-
-    String json_response = generate_sorted_type_json(response_entries, count);
-    delete[] response_entries;
-    delete[] cache_entries;
-
-    return HttpJsonUtils::send_json(req, json_response.c_str());
+    return serve_cached_type_catalog(req, TypeCatalogCache::copy_inverter_interface_entries, send_inverter_interfaces_request);
 }
 
 static esp_err_t api_get_selected_interfaces_handler(httpd_req_t *req) {

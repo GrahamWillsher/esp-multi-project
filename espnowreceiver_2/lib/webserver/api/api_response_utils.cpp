@@ -2,6 +2,7 @@
 
 #include <webserver_common_utils/http_json_utils.h>
 
+#include <ArduinoJson.h>
 #include <cstdarg>
 #include <cstdio>
 
@@ -46,6 +47,48 @@ esp_err_t send_transmitter_mac_unknown(httpd_req_t* req) {
 esp_err_t send_error_with_status(httpd_req_t* req, const char* status, const char* message) {
     httpd_resp_set_status(req, status);
     return send_error_message(req, message);
+}
+
+esp_err_t send_json_doc(httpd_req_t* req, JsonDocument& doc) {
+    String buf;
+    serializeJson(doc, buf);
+    return HttpJsonUtils::send_json(req, buf.c_str());
+}
+
+esp_err_t send_success_doc(httpd_req_t* req, JsonDocument& doc) {
+    doc["success"] = true;
+    return send_json_doc(req, doc);
+}
+
+void format_ipv4(char* buf, const uint8_t ip[4]) {
+    snprintf(buf, 16, "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
+}
+
+void escape_double_quotes(const char* src, char* dst, size_t max_len) {
+    if (!src || !dst || max_len == 0) {
+        if (dst && max_len > 0) {
+            dst[0] = '\0';
+        }
+        return;
+    }
+
+    size_t copy_index = 0;
+    while (src[copy_index] != '\0' && copy_index < max_len - 1) {
+        dst[copy_index] = (src[copy_index] == '"') ? '\'' : src[copy_index];
+        copy_index++;
+    }
+    dst[copy_index] = '\0';
+}
+
+esp_err_t send_espnow_send_result(httpd_req_t* req,
+                                  esp_err_t espnow_result,
+                                  const char* success_msg) {
+    if (espnow_result == ESP_OK) {
+        return send_success_message(req, success_msg);
+    }
+    return send_jsonf(req,
+                      "{\"success\":false,\"message\":\"ESP-NOW send failed: %s\"}",
+                      esp_err_to_name(espnow_result));
 }
 
 } // namespace ApiResponseUtils
