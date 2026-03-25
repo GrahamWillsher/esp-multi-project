@@ -4,8 +4,9 @@
 #include "../common/page_generator.h"
 
 static esp_err_t cellmonitor_handler(httpd_req_t *req) {
-    const String content = get_cellmonitor_page_content();
-    const String script  = get_cellmonitor_page_script();
+    const char* content = get_cellmonitor_page_content();
+    const char* script  = get_cellmonitor_page_script();
+    // Both title and content are static literals — uses non-allocating const char* overload.
     return send_rendered_page(req, "Cell Monitor", content, PageRenderOptions("", script));
 }
 

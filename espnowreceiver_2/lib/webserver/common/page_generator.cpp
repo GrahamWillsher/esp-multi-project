@@ -1,6 +1,8 @@
 #include "page_generator.h"
 #include "common_styles.h"
 
+#include <cstring>
+
 static const char* COMMON_SCRIPT_HELPERS = R"rawliteral(
 window.TransmitterReboot = window.TransmitterReboot || {
     COUNTDOWN_SECONDS: 10,
@@ -638,7 +640,108 @@ esp_err_t send_rendered_page(httpd_req_t* req,
                              const String& content,
                              const PageRenderOptions& options,
                              const char* content_type) {
-    const String html = renderPage(title, content, options);
+    if (!req) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
     httpd_resp_set_type(req, content_type ? content_type : "text/html");
-    return httpd_resp_send(req, html.c_str(), html.length());
+
+    const auto send_chunk = [&](const char* data, size_t len) -> bool {
+        return len == 0 || (httpd_resp_send_chunk(req, data, len) == ESP_OK);
+    };
+
+    static const char kDocHeadStart[] =
+        "<!DOCTYPE html><html><head>"
+        "<meta charset='utf-8'>"
+        "<title>";
+    if (!send_chunk(kDocHeadStart, sizeof(kDocHeadStart) - 1)) return ESP_FAIL;
+    if (!send_chunk(title.c_str(), title.length())) return ESP_FAIL;
+
+    static const char kDocHeadMiddle[] =
+        "</title>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        "<link rel='icon' href='data:,'>"
+        "<style>";
+    if (!send_chunk(kDocHeadMiddle, sizeof(kDocHeadMiddle) - 1)) return ESP_FAIL;
+    if (!send_chunk(COMMON_STYLES, sizeof(COMMON_STYLES) - 1)) return ESP_FAIL;
+
+    const char* extra_styles_data = options.extra_styles_static ? options.extra_styles_static : options.extra_styles.c_str();
+    const size_t extra_styles_len = options.extra_styles_static ? strlen(options.extra_styles_static) : options.extra_styles.length();
+    if (!send_chunk(extra_styles_data, extra_styles_len)) return ESP_FAIL;
+
+    static const char kStyleCloseScriptOpen[] = "</style><script>";
+    if (!send_chunk(kStyleCloseScriptOpen, sizeof(kStyleCloseScriptOpen) - 1)) return ESP_FAIL;
+
+    if (options.include_common_script_helpers) {
+        if (!send_chunk(COMMON_SCRIPT_HELPERS, strlen(COMMON_SCRIPT_HELPERS))) return ESP_FAIL;
+    }
+
+    const char* script_data = options.script_static ? options.script_static : options.script.c_str();
+    const size_t script_len = options.script_static ? strlen(options.script_static) : options.script.length();
+    if (!send_chunk(script_data, script_len)) return ESP_FAIL;
+
+    static const char kBodyOpen[] = "</script></head><body>";
+    if (!send_chunk(kBodyOpen, sizeof(kBodyOpen) - 1)) return ESP_FAIL;
+    if (!send_chunk(content.c_str(), content.length())) return ESP_FAIL;
+
+    static const char kDocClose[] = "</body></html>";
+    if (!send_chunk(kDocClose, sizeof(kDocClose) - 1)) return ESP_FAIL;
+
+    return httpd_resp_send_chunk(req, nullptr, 0);
+}
+// Non-allocating overload — const char* title and content avoid String heap allocation
+// for fully-static page bodies (e.g. cellmonitor, event logs static content).
+esp_err_t send_rendered_page(httpd_req_t* req,
+                             const char* title,
+                             const char* content,
+                             const PageRenderOptions& options,
+                             const char* content_type) {
+    if (!req) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    httpd_resp_set_type(req, content_type ? content_type : "text/html");
+
+    const auto send_chunk = [&](const char* data, size_t len) -> bool {
+        return len == 0 || (httpd_resp_send_chunk(req, data, len) == ESP_OK);
+    };
+
+    static const char kDocHeadStart[] =
+        "<!DOCTYPE html><html><head>"
+        "<meta charset='utf-8'>"
+        "<title>";
+    if (!send_chunk(kDocHeadStart, sizeof(kDocHeadStart) - 1)) return ESP_FAIL;
+    if (!send_chunk(title, strlen(title))) return ESP_FAIL;
+
+    static const char kDocHeadMiddle[] =
+        "</title>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        "<link rel='icon' href='data:,'>"
+        "<style>";
+    if (!send_chunk(kDocHeadMiddle, sizeof(kDocHeadMiddle) - 1)) return ESP_FAIL;
+    if (!send_chunk(COMMON_STYLES, sizeof(COMMON_STYLES) - 1)) return ESP_FAIL;
+
+    const char* extra_styles_data = options.extra_styles_static ? options.extra_styles_static : options.extra_styles.c_str();
+    const size_t extra_styles_len = options.extra_styles_static ? strlen(options.extra_styles_static) : options.extra_styles.length();
+    if (!send_chunk(extra_styles_data, extra_styles_len)) return ESP_FAIL;
+
+    static const char kStyleCloseScriptOpen[] = "</style><script>";
+    if (!send_chunk(kStyleCloseScriptOpen, sizeof(kStyleCloseScriptOpen) - 1)) return ESP_FAIL;
+
+    if (options.include_common_script_helpers) {
+        if (!send_chunk(COMMON_SCRIPT_HELPERS, strlen(COMMON_SCRIPT_HELPERS))) return ESP_FAIL;
+    }
+
+    const char* script_data = options.script_static ? options.script_static : options.script.c_str();
+    const size_t script_len = options.script_static ? strlen(options.script_static) : options.script.length();
+    if (!send_chunk(script_data, script_len)) return ESP_FAIL;
+
+    static const char kBodyOpen[] = "</script></head><body>";
+    if (!send_chunk(kBodyOpen, sizeof(kBodyOpen) - 1)) return ESP_FAIL;
+    if (!send_chunk(content, strlen(content))) return ESP_FAIL;
+
+    static const char kDocClose[] = "</body></html>";
+    if (!send_chunk(kDocClose, sizeof(kDocClose) - 1)) return ESP_FAIL;
+
+    return httpd_resp_send_chunk(req, nullptr, 0);
 }

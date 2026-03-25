@@ -51,6 +51,36 @@
 // DEBUG SWITCH: keep disabled for normal boot; this probe uses direct TFT test frames.
 static constexpr bool PRE_LITTLEFS_DEBUG_HALT = false;
 
+static void log_timing_policy() {
+    LOG_INFO("TIMING", "Startup: serial=%lu wifi_stabilize=%lu post_init=%lu component=%lu",
+             static_cast<unsigned long>(TimingConfig::STARTUP.serial_init_delay_ms),
+             static_cast<unsigned long>(TimingConfig::STARTUP.wifi_radio_stabilization_ms),
+             static_cast<unsigned long>(TimingConfig::STARTUP.post_init_delay_ms),
+             static_cast<unsigned long>(TimingConfig::STARTUP.component_init_delay_ms));
+    LOG_INFO("TIMING", "Discovery: retry=%lu deferred=%lu announce=%lu probe=%lu tx_per_channel=%lu",
+             static_cast<unsigned long>(TimingConfig::DISCOVERY.retry_interval_ms),
+             static_cast<unsigned long>(TimingConfig::DISCOVERY.deferred_poll_ms),
+             static_cast<unsigned long>(TimingConfig::DISCOVERY.announcement_interval_ms),
+             static_cast<unsigned long>(TimingConfig::DISCOVERY.probe_interval_ms),
+             static_cast<unsigned long>(TimingConfig::DISCOVERY.transmit_duration_per_channel_ms));
+    LOG_INFO("TIMING", "Heartbeat: interval=%lu timeout=%lu connect=%lu ack=%lu",
+             static_cast<unsigned long>(TimingConfig::HEARTBEAT.interval_ms),
+             static_cast<unsigned long>(TimingConfig::HEARTBEAT.timeout_ms),
+             static_cast<unsigned long>(TimingConfig::HEARTBEAT.espnow_connecting_timeout_ms),
+             static_cast<unsigned long>(TimingConfig::HEARTBEAT.ack_timeout_ms));
+    LOG_INFO("TIMING", "MQTT: startup=%lu poll=%lu reconnect=%lu publish=%lu max_retry=%lu",
+             static_cast<unsigned long>(TimingConfig::MQTT.task_startup_delay_ms),
+             static_cast<unsigned long>(TimingConfig::MQTT.task_poll_ms),
+             static_cast<unsigned long>(TimingConfig::MQTT.reconnect_interval_ms),
+             static_cast<unsigned long>(TimingConfig::MQTT.publish_interval_ms),
+             static_cast<unsigned long>(TimingConfig::MQTT.max_retry_delay_ms));
+    LOG_INFO("TIMING", "Loops: main=%lu queue_flush=%lu metrics=%lu peer_audit=%lu",
+             static_cast<unsigned long>(TimingConfig::LOOPS.main_loop_delay_ms),
+             static_cast<unsigned long>(TimingConfig::LOOPS.queue_flush_poll_delay_ms),
+             static_cast<unsigned long>(TimingConfig::LOOPS.metrics_report_interval_ms),
+             static_cast<unsigned long>(TimingConfig::LOOPS.peer_audit_interval_ms));
+}
+
 static void task_led_renderer(void* parameter) {
     (void)parameter;
 
@@ -223,7 +253,7 @@ static void bootstrap_hardware() {
     digitalWrite(HardwareConfig::GPIO_BACKLIGHT, LOW);
 
     Serial.begin(115200);
-    smart_delay(1000);  // Give serial time to initialize
+    smart_delay(TimingConfig::SERIAL_INIT_DELAY_MS);
     LOG_INFO("MAIN", "\n========================================");
     LOG_INFO("MAIN", "ESP32 T-Display-S3 ESP-NOW Receiver");
 
@@ -236,6 +266,7 @@ static void bootstrap_hardware() {
     }
 
     LOG_INFO("MAIN", "Build: %s %s", __DATE__, __TIME__);
+    log_timing_policy();
     LOG_INFO("MAIN", "========================================");
     Serial.flush();
 

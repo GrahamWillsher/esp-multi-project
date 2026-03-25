@@ -340,12 +340,9 @@ private:
     // Metrics
     EthernetStateMetrics metrics_;
     
-    // Timeouts (in milliseconds)
-    static constexpr uint32_t PHY_RESET_TIMEOUT_MS = 5000;
-    static constexpr uint32_t CONFIG_APPLY_TIMEOUT_MS = 5000;
-    static constexpr uint32_t LINK_ACQUIRING_TIMEOUT_MS = 5000;
-    static constexpr uint32_t IP_ACQUIRING_TIMEOUT_MS = 30000;
-    static constexpr uint32_t RECOVERY_TIMEOUT_MS = 60000;
+    // Timeouts — sourced from TimingConfig::ETHERNET_* to avoid duplication.
+    // See: esp32common/include/esp32common/config/timing_config.h
+    // Ping attempt counts are defined as file-scope constants in ethernet_manager.cpp.
     
     // Network configuration
     bool use_static_ip_ = false;

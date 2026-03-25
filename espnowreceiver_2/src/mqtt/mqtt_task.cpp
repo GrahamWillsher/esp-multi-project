@@ -2,6 +2,7 @@
 #include "../lib/webserver/utils/transmitter_manager.h"
 #include "../lib/receiver_config/receiver_config_manager.h"
 #include "../common.h"
+#include <esp32common/config/timing_config.h>
 
 /**
  * @brief FreeRTOS task for MQTT client
@@ -13,8 +14,9 @@
 void task_mqtt_client(void* parameter) {
     LOG_INFO("MQTT_TASK", "Started");
     
-    // Wait a moment for WiFi and config to be loaded
-    vTaskDelay(pdMS_TO_TICKS(2000));
+    // Wait for WiFi and ReceiverNetworkConfig to fully initialise before
+    // attempting the first MQTT connection.
+    vTaskDelay(pdMS_TO_TICKS(TimingConfig::MQTT_TASK_STARTUP_DELAY_MS));
     
     while (true) {
         // Check if receiver MQTT is enabled and configured
@@ -56,7 +58,7 @@ void task_mqtt_client(void* parameter) {
             MqttClient::setEnabled(false);
         }
         
-        // Yield for other tasks
-        vTaskDelay(pdMS_TO_TICKS(100));  // Process messages 10x per second
+        // Yield — poll at TimingConfig::MQTT_TASK_POLL_MS cadence (10x/sec).
+        vTaskDelay(pdMS_TO_TICKS(TimingConfig::MQTT_TASK_POLL_MS));
     }
 }

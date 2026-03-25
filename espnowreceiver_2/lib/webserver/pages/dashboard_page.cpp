@@ -77,10 +77,9 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
                                                 rx_version,
                                                 rx_device_name,
                                                 WiFi.macAddress());
-    String script = get_dashboard_page_script();
+    const char* script = get_dashboard_page_script();
 
-    String page = renderPage("Dashboard", content, PageRenderOptions("", script));
-    return httpd_resp_send(req, page.c_str(), page.length());
+    return send_rendered_page(req, "Dashboard", content, PageRenderOptions("", script));
 }
 
 esp_err_t register_dashboard_page(httpd_handle_t server) {

@@ -55,20 +55,24 @@ esp_err_t inverter_specs_page_handler(httpd_req_t *req) {
         inverter_protocol = "Unknown";
     }
 
-    // Retrieve page sections from module functions
-    String html_header           = get_inverter_specs_page_html_header();
-    const char* html_specs_fmt   = get_inverter_specs_section_fmt();
-    String html_footer           = build_spec_page_html_footer(
-        get_inverter_specs_page_nav_links_html(),
-        get_inverter_specs_page_inline_script());
-
-    GenericSpecsPage::RenderConfig render_config = {
-        .log_tag = "INVERTER_PAGE",
-        .specs_section_size = 2048,
-        .total_slack_bytes = 768,
-        .allocate_specs_section_in_psram = true,
+    static const WebserverCommonSpecLayout::SpecPageNavLink kNavLinks[] = {
+        {"/", "&#8592; Back to Dashboard"},
+        {"/battery_settings.html", "&#8592; Battery Specs"},
+        {"/charger_settings.html", "Charger Specs &#8594;"},
     };
-    return GenericSpecsPage::send_formatted_page(req, html_header, html_specs_fmt, html_footer, render_config,
+
+    const String inline_script = get_inverter_specs_page_inline_script();
+
+    return WebserverCommonSpecLayout::send_spec_page_response(
+        req,
+        get_inverter_specs_page_params(),
+        kNavLinks,
+        sizeof(kNavLinks) / sizeof(kNavLinks[0]),
+        inline_script.c_str(),
+        get_inverter_specs_section_fmt(),
+        2048,
+        true,
+        "INVERTER_PAGE",
         inverter_protocol.c_str(),
         inverter_type_id,
         min_input_voltage_dv / 10.0f,

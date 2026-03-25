@@ -54,7 +54,7 @@ static esp_err_t transmitter_hub_handler(httpd_req_t *req) {
         version_text,
         build_date.isEmpty() ? "Unknown" : build_date
     );
-    String script = get_transmitter_hub_page_script();
+    const char* script = get_transmitter_hub_page_script();
 
     return send_rendered_page(req, "Transmitter Hub", content, PageRenderOptions("", script));
 }

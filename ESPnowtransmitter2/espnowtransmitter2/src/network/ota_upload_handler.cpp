@@ -18,6 +18,80 @@
 #include <esp_system.h>
 #include <cstring>
 
+namespace {
+
+struct OtaUploadResources {
+    uint8_t* buffer = nullptr;
+    size_t buffer_size = 0;
+    mbedtls_sha256_context sha_ctx;
+    bool sha_ctx_active = false;
+    bool update_started = false;
+
+    OtaUploadResources() {
+        mbedtls_sha256_init(&sha_ctx);
+    }
+
+    ~OtaUploadResources() {
+        if (sha_ctx_active) {
+            mbedtls_sha256_free(&sha_ctx);
+            sha_ctx_active = false;
+        }
+        if (buffer) {
+            free(buffer);
+            buffer = nullptr;
+        }
+    }
+
+    bool allocate_buffer(size_t size) {
+        buffer = static_cast<uint8_t*>(malloc(size));
+        if (!buffer) {
+            return false;
+        }
+        buffer_size = size;
+        return true;
+    }
+
+    bool start_sha() {
+        if (mbedtls_sha256_starts_ret(&sha_ctx, 0) != 0) {
+            return false;
+        }
+        sha_ctx_active = true;
+        return true;
+    }
+
+    bool update_sha(const uint8_t* data, size_t len) {
+        if (!sha_ctx_active) {
+            return false;
+        }
+        return mbedtls_sha256_update_ret(&sha_ctx, data, len) == 0;
+    }
+
+    bool finish_sha(unsigned char out_hash[32]) {
+        if (!sha_ctx_active) {
+            return false;
+        }
+        if (mbedtls_sha256_finish_ret(&sha_ctx, out_hash) != 0) {
+            return false;
+        }
+        mbedtls_sha256_free(&sha_ctx);
+        sha_ctx_active = false;
+        return true;
+    }
+
+    void mark_update_started() {
+        update_started = true;
+    }
+
+    void abort_update_if_started() {
+        if (update_started) {
+            Update.abort();
+            update_started = false;
+        }
+    }
+};
+
+} // namespace
+
 esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
     auto& mgr = instance();
 
@@ -79,40 +153,18 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
         return ESP_FAIL;
     }
 
-    constexpr size_t kOtaChunkSize = 1024;
-    uint8_t* buf = static_cast<uint8_t*>(malloc(kOtaChunkSize));
-    if (!buf) {
+    OtaUploadResources resources;
+    if (!resources.allocate_buffer(kOtaUploadPolicy.chunk_size_bytes)) {
         send_json_error(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                         "Failed to allocate OTA buffer");
         return ESP_FAIL;
     }
 
-    mbedtls_sha256_context sha_ctx;
-    mbedtls_sha256_init(&sha_ctx);
-    bool sha_ctx_active = false;
-
     auto fail_ota = [&](int status_code, const char* message) -> esp_err_t {
-        if (sha_ctx_active) {
-            mbedtls_sha256_free(&sha_ctx);
-            sha_ctx_active = false;
-        }
-        free(buf);
+        resources.abort_update_if_started();
         send_json_error(req, status_code, message);
         mgr.ota_in_progress_ = false;
-        mgr.set_commit_state("prepare_failed", message);
-        return ESP_FAIL;
-    };
-
-    auto fail_ota_with_update_abort = [&](int status_code,
-                                          const char* message) -> esp_err_t {
-        if (sha_ctx_active) {
-            mbedtls_sha256_free(&sha_ctx);
-            sha_ctx_active = false;
-        }
-        Update.abort();
-        free(buf);
-        send_json_error(req, status_code, message);
-        mgr.ota_in_progress_ = false;
+        mgr.ota_session_.deactivate();
         mgr.set_commit_state("prepare_failed", message);
         return ESP_FAIL;
     };
@@ -124,14 +176,11 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
     int    timeout_count = 0;
     FirmwareCompatibilityPolicy::MetadataScan metadata_scan;
 
-    if (mbedtls_sha256_starts_ret(&sha_ctx, 0) != 0) {
+    if (!resources.start_sha()) {
         send_json_error(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                         "Failed to initialize image hash");
-        mbedtls_sha256_free(&sha_ctx);
-        free(buf);
         return ESP_FAIL;
     }
-    sha_ctx_active = true;
 
     LOG_INFO("HTTP_OTA", "=== OTA START ===");
     LOG_INFO("HTTP_OTA", "OTA upload source IP: %s", client_ip);
@@ -157,6 +206,7 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
         mgr.ota_last_error_[sizeof(mgr.ota_last_error_) - 1] = '\0';
         return fail_ota(HTTPD_500_INTERNAL_SERVER_ERROR, "Update begin failed");
     }
+    resources.mark_update_started();
     mgr.set_commit_state("prepare_writing", "streaming firmware to inactive slot");
     LOG_INFO("HTTP_OTA", "Update.begin OK");
 
@@ -164,13 +214,15 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
     while (remaining > 0) {
         const int recv_len = httpd_req_recv(
             req,
-            reinterpret_cast<char*>(buf),
-            (remaining < kOtaChunkSize) ? remaining : kOtaChunkSize);
+            reinterpret_cast<char*>(resources.buffer),
+            (remaining < kOtaUploadPolicy.chunk_size_bytes)
+                ? remaining
+                : kOtaUploadPolicy.chunk_size_bytes);
 
         if (recv_len <= 0) {
             if (recv_len == HTTPD_SOCK_ERR_TIMEOUT) {
                 timeout_count++;
-                if (timeout_count >= OTA_UPLOAD_MAX_RECV_TIMEOUTS) {
+                if (timeout_count >= kOtaUploadPolicy.max_recv_timeouts) {
                     LOG_ERROR("HTTP_OTA",
                               "Upload timed out after %d recv timeouts "
                               "(remaining=%u, written=%u)",
@@ -179,10 +231,10 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
                     strncpy(mgr.ota_last_error_, "Upload timeout",
                             sizeof(mgr.ota_last_error_) - 1);
                     mgr.ota_last_error_[sizeof(mgr.ota_last_error_) - 1] = '\0';
-                    return fail_ota_with_update_abort(HTTP_STATUS_REQUEST_TIMEOUT,
-                                                      "Upload timed out");
+                    return fail_ota(HTTP_STATUS_REQUEST_TIMEOUT,
+                                    "Upload timed out");
                 }
-                if ((timeout_count % 20) == 0) {
+                if ((timeout_count % kOtaUploadPolicy.timeout_warn_cadence) == 0) {
                     LOG_WARN("HTTP_OTA",
                              "recv timeout x%d, remaining=%u, written=%u",
                              timeout_count, (unsigned)remaining,
@@ -197,12 +249,12 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
             strncpy(mgr.ota_last_error_, "Connection error during upload",
                     sizeof(mgr.ota_last_error_) - 1);
             mgr.ota_last_error_[sizeof(mgr.ota_last_error_) - 1] = '\0';
-            return fail_ota_with_update_abort(HTTPD_500_INTERNAL_SERVER_ERROR,
-                                              "Connection error");
+                return fail_ota(HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "Connection error");
         }
 
         // Write firmware chunk
-        if (Update.write((uint8_t*)buf, recv_len) != (size_t)recv_len) {
+            if (Update.write(resources.buffer, recv_len) != (size_t)recv_len) {
             LOG_ERROR("HTTP_OTA", "Update.write failed: %s", Update.errorString());
             LOG_ERROR("HTTP_OTA",
                       "Update.write error code: %d (chunk=%d, remaining=%u, written=%u)",
@@ -211,28 +263,25 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
             strncpy(mgr.ota_last_error_, Update.errorString(),
                     sizeof(mgr.ota_last_error_) - 1);
             mgr.ota_last_error_[sizeof(mgr.ota_last_error_) - 1] = '\0';
-            return fail_ota_with_update_abort(HTTPD_500_INTERNAL_SERVER_ERROR,
-                                              "Write failed");
+                return fail_ota(HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "Write failed");
         }
 
-        if (mbedtls_sha256_update_ret(
-                &sha_ctx,
-                reinterpret_cast<const unsigned char*>(buf),
-                static_cast<size_t>(recv_len)) != 0) {
+            if (!resources.update_sha(resources.buffer, static_cast<size_t>(recv_len))) {
             strncpy(mgr.ota_last_error_, "Image hash update failed",
                     sizeof(mgr.ota_last_error_) - 1);
             mgr.ota_last_error_[sizeof(mgr.ota_last_error_) - 1] = '\0';
-            return fail_ota_with_update_abort(HTTPD_500_INTERNAL_SERVER_ERROR,
-                                              "Image hash update failed");
+                return fail_ota(HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "Image hash update failed");
         }
 
-        metadata_scan.consume(reinterpret_cast<const uint8_t*>(buf),
+            metadata_scan.consume(resources.buffer,
                               static_cast<size_t>(recv_len));
 
         remaining      -= recv_len;
         total_written  += (size_t)recv_len;
 
-        if ((total_written - last_reported) >= 32768 || remaining == 0) {
+        if ((total_written - last_reported) >= kOtaUploadPolicy.progress_log_cadence_bytes || remaining == 0) {
             last_reported = total_written;
             const unsigned percent =
                 (expected_size > 0)
@@ -250,15 +299,13 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
              (unsigned)total_written, (unsigned)expected_size);
 
     unsigned char computed_sha[32] = {0};
-    if (mbedtls_sha256_finish_ret(&sha_ctx, computed_sha) != 0) {
+    if (!resources.finish_sha(computed_sha)) {
         strncpy(mgr.ota_last_error_, "Image hash finalize failed",
                 sizeof(mgr.ota_last_error_) - 1);
         mgr.ota_last_error_[sizeof(mgr.ota_last_error_) - 1] = '\0';
-        return fail_ota_with_update_abort(HTTPD_500_INTERNAL_SERVER_ERROR,
-                                          "Image hash finalize failed");
+        return fail_ota(HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "Image hash finalize failed");
     }
-    mbedtls_sha256_free(&sha_ctx);
-    sha_ctx_active = false;
 
     char computed_sha_hex[OTA_IMAGE_SHA256_HEX_LEN + 1] = {0};
     for (size_t index = 0; index < sizeof(computed_sha); ++index) {
@@ -273,8 +320,8 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
         strncpy(mgr.ota_last_error_, "Image hash verification failed",
                 sizeof(mgr.ota_last_error_) - 1);
         mgr.ota_last_error_[sizeof(mgr.ota_last_error_) - 1] = '\0';
-        return fail_ota_with_update_abort(HTTPD_400_BAD_REQUEST,
-                                          "Image hash verification failed");
+        return fail_ota(HTTPD_400_BAD_REQUEST,
+                "Image hash verification failed");
     }
 
     const auto compatibility = FirmwareCompatibilityPolicy::validate_scan(
@@ -320,7 +367,7 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
         strncpy(mgr.ota_last_error_, reject_message,
                 sizeof(mgr.ota_last_error_) - 1);
         mgr.ota_last_error_[sizeof(mgr.ota_last_error_) - 1] = '\0';
-        return fail_ota_with_update_abort(HTTPD_400_BAD_REQUEST, user_message);
+        return fail_ota(HTTPD_400_BAD_REQUEST, user_message);
     }
 
     if (compatibility.code ==
@@ -333,7 +380,6 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
 
     // Finalize update
     if (Update.end(true)) {
-        free(buf);
         LOG_INFO("HTTP_OTA", "Update successful! Size: %u bytes", Update.size());
         LOG_INFO("HTTP_OTA",
                  "OTA ready for reboot. Heap after OTA: free=%u, max_alloc=%u",
@@ -359,7 +405,6 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
                         ok_json_len > 0 ? ok_json_len : HTTPD_RESP_USE_STRLEN);
         return ESP_OK;
     } else {
-        free(buf);
         LOG_ERROR("HTTP_OTA", "Update.end failed: %s", Update.errorString());
         LOG_ERROR("HTTP_OTA",
                   "Update.end error code: %d, written=%u, expected=%u",

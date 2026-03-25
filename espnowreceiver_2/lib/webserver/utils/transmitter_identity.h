@@ -18,6 +18,8 @@
 
 namespace TransmitterIdentity {
 
+constexpr size_t kMacStringLength = 18; // "XX:XX:XX:XX:XX:XX" + NUL
+
 // ===== Registration (from transmitter_mac_registration) =====
 
 /**
@@ -61,7 +63,13 @@ const uint8_t* get_active_mac();
 /**
  * Format MAC address to human-readable string.
  * Format: "XX:XX:XX:XX:XX:XX"
- * Returns "Unknown" if mac is nullptr.
+ * Returns true on success.
+ * If mac is nullptr, writes "Unknown".
+ */
+bool format_mac(const uint8_t* mac, char* out, size_t out_len);
+
+/**
+ * Compatibility String wrapper for format_mac().
  */
 String format_mac(const uint8_t* mac);
 
@@ -75,7 +83,13 @@ bool is_mac_known();
 
 /**
  * Get formatted active MAC as String.
- * Returns "Unknown" if no MAC is available.
+ * Returns true on success.
+ * If no MAC is available, writes "Unknown".
+ */
+bool get_mac_string(char* out, size_t out_len);
+
+/**
+ * Compatibility String wrapper for get_mac_string().
  */
 String get_mac_string();
 

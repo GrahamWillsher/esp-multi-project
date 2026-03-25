@@ -3,6 +3,6 @@
 
 #include <Arduino.h>
 
-String get_battery_settings_page_script();
+const char* get_battery_settings_page_script();
 
 #endif // BATTERY_SETTINGS_PAGE_SCRIPT_H

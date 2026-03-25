@@ -1,6 +1,6 @@
 #include "battery_settings_page_script.h"
 
-String get_battery_settings_page_script() {
+const char* get_battery_settings_page_script() {
     return R"rawliteral(
         // Store initial values to detect changes
         let initialValues = {};

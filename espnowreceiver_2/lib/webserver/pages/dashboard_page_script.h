@@ -3,6 +3,6 @@
 
 #include <Arduino.h>
 
-String get_dashboard_page_script();
+const char* get_dashboard_page_script();
 
 #endif // DASHBOARD_PAGE_SCRIPT_H

@@ -6,6 +6,11 @@
 #include <ESP32Ping.h>
 #include <esp32common/config/timing_config.h>
 
+// Reachability test ping attempt counts — named here to keep networking policy
+// visible and tunable alongside state-machine timeout values in timing_config.h.
+static constexpr uint8_t kGatewayPingAttempts      = 3;  ///< Attempts to ping gateway in testStaticIPReachability()
+static constexpr uint8_t kConflictCheckPingAttempts = 2;  ///< Attempts to ping candidate IP in checkIPConflict()
+
 // ============================================================================
 // SINGLETON
 // ============================================================================
@@ -50,9 +55,9 @@ bool EthernetManager::init() {
     LOG_DEBUG("ETH", "Performing PHY hardware reset...");
     pinMode(hardware::ETH_POWER_PIN, OUTPUT);
     digitalWrite(hardware::ETH_POWER_PIN, LOW);
-    delay(10);
+    delay(TimingConfig::ETHERNET_PHY_POWER_ASSERT_DELAY_MS);
     digitalWrite(hardware::ETH_POWER_PIN, HIGH);
-    delay(150);
+    delay(TimingConfig::ETHERNET_INIT_DELAY_MS);
     LOG_DEBUG("ETH", "PHY hardware reset complete");
     
     // Initialize Ethernet
@@ -77,7 +82,13 @@ bool EthernetManager::init() {
     
     metrics_.total_initialization_ms = millis();
     LOG_INFO("ETH", "Ethernet initialization complete (async, waiting for cable + IP)");
-    
+    LOG_INFO("ETH", "Timeout policy — PHY_RESET:%ums  IP_ACQUIRE:%ums  RECOVERY:%ums | Ping: gateway=%u  conflict=%u attempts",
+             TimingConfig::ETHERNET_PHY_RESET_TIMEOUT_MS,
+             TimingConfig::ETHERNET_IP_ACQUIRING_TIMEOUT_MS,
+             TimingConfig::ETHERNET_RECOVERY_TIMEOUT_MS,
+             static_cast<unsigned>(kGatewayPingAttempts),
+             static_cast<unsigned>(kConflictCheckPingAttempts));
+
     return true;
 }
 
@@ -234,28 +245,28 @@ void EthernetManager::check_state_timeout() {
     
     switch (current_state_) {
         case EthernetConnectionState::PHY_RESET:
-            if (age > PHY_RESET_TIMEOUT_MS) {
+            if (age > TimingConfig::ETHERNET_PHY_RESET_TIMEOUT_MS) {
                 LOG_ERROR("ETH_TIMEOUT", "PHY reset timeout (%lu ms)", age);
                 set_state(EthernetConnectionState::ERROR_STATE);
             }
             break;
             
         case EthernetConnectionState::CONFIG_APPLYING:
-            if (age > CONFIG_APPLY_TIMEOUT_MS) {
+            if (age > TimingConfig::ETHERNET_CONFIG_APPLY_TIMEOUT_MS) {
                 LOG_ERROR("ETH_TIMEOUT", "Config apply timeout (%lu ms)", age);
                 set_state(EthernetConnectionState::ERROR_STATE);
             }
             break;
             
         case EthernetConnectionState::LINK_ACQUIRING:
-            if (age > LINK_ACQUIRING_TIMEOUT_MS) {
+            if (age > TimingConfig::ETHERNET_LINK_ACQUIRING_TIMEOUT_MS) {
                 LOG_ERROR("ETH_TIMEOUT", "Link acquiring timeout - cable may not be present (%lu ms)", age);
                 set_state(EthernetConnectionState::ERROR_STATE);
             }
             break;
             
         case EthernetConnectionState::IP_ACQUIRING:
-            if (age > IP_ACQUIRING_TIMEOUT_MS) {
+            if (age > TimingConfig::ETHERNET_IP_ACQUIRING_TIMEOUT_MS) {
                 LOG_ERROR("ETH_TIMEOUT", "IP acquiring timeout - DHCP server may be down (%lu ms)", age);
                 set_state(EthernetConnectionState::ERROR_STATE);
             } else {
@@ -268,7 +279,7 @@ void EthernetManager::check_state_timeout() {
             break;
             
         case EthernetConnectionState::RECOVERING:
-            if (age > RECOVERY_TIMEOUT_MS) {
+            if (age > TimingConfig::ETHERNET_RECOVERY_TIMEOUT_MS) {
                 LOG_ERROR("ETH_TIMEOUT", "Recovery timeout - cable may not be reconnected (%lu ms)", age);
                 set_state(EthernetConnectionState::ERROR_STATE);
             }
@@ -480,7 +491,7 @@ bool EthernetManager::testStaticIPReachability(const uint8_t ip[4], const uint8_
     vTaskDelay(pdMS_TO_TICKS(TimingConfig::ETHERNET_PHY_RESET_DELAY_MS));
     
     // 4. Ping gateway using ICMP
-    bool ping_success = Ping.ping(test_gateway, 3);  // 3 attempts
+    bool ping_success = Ping.ping(test_gateway, kGatewayPingAttempts);
     
     if (ping_success) {
         LOG_INFO("NET_TEST", "✓ Gateway is reachable (%s)", test_gateway.toString().c_str());
@@ -506,7 +517,7 @@ bool EthernetManager::checkIPConflict(const uint8_t ip[4]) {
     LOG_INFO("NET_CONFLICT", "Note: Can only detect live devices currently on network");
     
     // Ping the IP - if it responds, it's in use
-    bool responds = Ping.ping(test_ip, 2);  // 2 attempts
+    bool responds = Ping.ping(test_ip, kConflictCheckPingAttempts);
     
     if (responds) {
         LOG_WARN("NET_CONFLICT", "✗ IP is in use by live device (ping successful)");

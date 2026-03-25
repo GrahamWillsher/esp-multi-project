@@ -1,6 +1,6 @@
 #include "ota_page_script.h"
 
-String get_ota_page_script() {
+const char* get_ota_page_script() {
     return R"rawliteral(
         function formatEnvName(env) {
             if (!env) return '';
@@ -304,7 +304,7 @@ String get_ota_page_script() {
                 'prepared_waiting_reboot': 'Firmware staged — waiting for reboot...',
                 'prepare_upload':          'Receiving firmware image...',
                 'prepare_writing':         'Writing firmware to flash...',
-                'idle':                    'Transmitter online after reboot; finalizing OTA status...',
+                'idle':                    '',
                 'unknown':                 'Transmitter online; waiting for OTA status...'
             };
 
@@ -335,8 +335,7 @@ String get_ota_page_script() {
                         // 'committed_validated' or could still be 'idle' on older builds.
                         if (status.boot_guard_passed || commitState === 'committed_validated') {
                             clearInterval(verificationInterval);
-                            const detailSuffix = commitDetail ? ('<br><span style="color:#888;font-size:12px;">' + commitDetail + '</span>') : '';
-                            statusDiv.innerHTML = '✅ OTA committed successfully. Transmitter validated new firmware.<br><span style="color:#888;font-size:12px;">Returning to dashboard...</span>' + detailSuffix;
+                            statusDiv.innerHTML = '✅ Transmitter validated new firmware.';
                             uploadBtn.disabled = false;
                             uploadBtn.style.cursor = 'pointer';
                             uploadBtn.style.backgroundColor = '#4CAF50';
@@ -379,18 +378,7 @@ String get_ota_page_script() {
                             return;
                         }
 
-                        let label = stateLabels[commitState] || ('State: ' + commitState);
-                        if (commitState === 'idle' && rollbackPending) {
-                            label = 'Transmitter reboot detected; waiting for boot validation...';
-                        }
-                        const extraHint =
-                            (bootGuardState && bootGuardState !== 'unknown' && bootGuardState !== 'confirmed')
-                                ? (' (boot guard: ' + bootGuardState + ')')
-                                : '';
-                        statusDiv.innerHTML = '⏳ Waiting for transmitter validation...<br>'
-                            + '<span style="color:#888;font-size:12px;">' + label
-                            + (commitDetail ? (' — ' + commitDetail) : '')
-                            + extraHint + '</span>';
+                        statusDiv.innerHTML = '⏳ Transmitter validating firmware...';
                     })
                     .catch(() => {
                         // Expected during the reboot window — transmitter will be briefly offline.
@@ -546,10 +534,10 @@ String get_ota_page_script() {
                                     uploadBtn.style.backgroundColor = '#4CAF50';
                                     // Don't redirect - receiver is rebooting
                                 } else {
-                                    statusDiv.innerHTML = '✅ Firmware uploaded to transmitter.<br><br>Verifying OTA readiness...';
+                                    statusDiv.innerHTML = '✅ Firmware uploaded to transmitter.';
                                     progressBarDiv.style.display = 'none';
                                     uploadBtn.style.display = '';
-                                    uploadBtn.innerText = 'Upload complete\nVerifying OTA...';
+                                    uploadBtn.innerText = 'Verifying OTA...';
                                     uploadBtn.style.backgroundColor = '#4CAF50';
 
                                     let statusPollAttempts = 0;

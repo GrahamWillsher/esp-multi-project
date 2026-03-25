@@ -1,14 +1,17 @@
 #include "battery_specs_display_page_content.h"
 #include "../common/spec_page_layout.h"
 
-String get_battery_specs_page_html_header() {
-    return build_spec_page_html_header("Battery Specifications",
-                                       "&#128267; Battery Specifications",
-                                       "Battery Emulator Configuration (Real-time from MQTT)",
-                                       "BE/battery_specs",
-                                       "#667eea",
-                                       "#764ba2",
-                                       "#667eea");
+const WebserverCommonSpecLayout::SpecPageParams& get_battery_specs_page_params() {
+    static const WebserverCommonSpecLayout::SpecPageParams kParams = {
+        .page_title     = "Battery Specifications",
+        .heading        = "&#128267; Battery Specifications",
+        .subtitle       = "Battery Emulator Configuration (Real-time from MQTT)",
+        .source_topic   = "BE/battery_specs",
+        .gradient_start = "#667eea",
+        .gradient_end   = "#764ba2",
+        .accent_color   = "#667eea",
+    };
+    return kParams;
 }
 
 const char* get_battery_specs_section_fmt() {

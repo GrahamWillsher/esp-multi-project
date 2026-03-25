@@ -57,13 +57,15 @@ esp_err_t system_specs_page_handler(httpd_req_t *req) {
         build_date = "Metadata unavailable";
     }
     
-    String html_header = build_spec_page_html_header("System Specifications",
-                                                      "🖥️ System Specifications",
-                                                      "System Configuration (Real-time from MQTT)",
-                                                      "BE/battery_specs",
-                                                      "#667eea",
-                                                      "#764ba2",
-                                                      "#667eea");
+    static const WebserverCommonSpecLayout::SpecPageParams kPageParams = {
+        .page_title     = "System Specifications",
+        .heading        = "🖥️ System Specifications",
+        .subtitle       = "System Configuration (Real-time from MQTT)",
+        .source_topic   = "BE/battery_specs",
+        .gradient_start = "#667eea",
+        .gradient_end   = "#764ba2",
+        .accent_color   = "#667eea",
+    };
 
     const char* html_specs_section = R"(
         <div class="specs-grid">
@@ -102,16 +104,16 @@ esp_err_t system_specs_page_handler(httpd_req_t *req) {
         {"/battery_settings.html", "Battery Specs →"},
     };
 
-    String html_footer = build_spec_page_html_footer(
-        ::build_spec_page_nav_links(kNavLinks, sizeof(kNavLinks) / sizeof(kNavLinks[0])));
-
-    GenericSpecsPage::RenderConfig render_config = {
-        .log_tag = "SYSTEM_PAGE",
-        .specs_section_size = 2048,
-        .total_slack_bytes = 256,
-        .allocate_specs_section_in_psram = false,
-    };
-    return GenericSpecsPage::send_formatted_page(req, html_header, html_specs_section, html_footer, render_config,
+    return WebserverCommonSpecLayout::send_spec_page_response(
+        req,
+        kPageParams,
+        kNavLinks,
+        sizeof(kNavLinks) / sizeof(kNavLinks[0]),
+        nullptr,
+        html_specs_section,
+        2048,
+        false,
+        "SYSTEM_PAGE",
         hardware_model.c_str(),
         can_interface.c_str(),
         firmware_version.c_str(),

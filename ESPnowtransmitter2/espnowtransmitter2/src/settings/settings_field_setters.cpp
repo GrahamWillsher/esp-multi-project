@@ -11,6 +11,164 @@
 #include "../datalayer/datalayer.h"
 #include "../battery_emulator/devboard/utils/led_handler.h"
 
+namespace {
+
+// Generic bounded-range descriptor used by all settings categories.
+struct UIntFieldDescriptor {
+    uint8_t field_id;
+    const char* name;
+    uint32_t min_value;
+    uint32_t max_value;
+};
+
+struct FloatFieldDescriptor {
+    uint8_t field_id;
+    const char* name;
+    float min_value;
+    float max_value;
+};
+
+struct UIntRange {
+    uint32_t min;
+    uint32_t max;
+};
+
+struct FloatRange {
+    float min;
+    float max;
+};
+
+constexpr UIntRange kRangeBatteryCapacityWh{1000, 1000000};
+constexpr UIntRange kRangeBatteryMaxVoltageMv{30000, 100000};
+constexpr UIntRange kRangeBatteryMinVoltageMv{20000, 80000};
+constexpr UIntRange kRangeBatterySocHighLimit{50, 100};
+constexpr UIntRange kRangeBatterySocLowLimit{0, 50};
+constexpr UIntRange kRangeBatteryCellCount{4, 32};
+constexpr UIntRange kRangeBatteryChemistry{0, 3};
+constexpr UIntRange kRangeBatteryPackVoltageDv{100, 10000};
+constexpr UIntRange kRangeBatteryCellMaxVoltageMv{1500, 5000};
+constexpr UIntRange kRangeBatteryCellMinVoltageMv{1000, 4500};
+constexpr UIntRange kRangeBatteryLedMode{0, 2};
+constexpr FloatRange kRangeBatteryCurrentA{0.0f, 500.0f};
+
+constexpr UIntRange kRangePowerWatts{0, 50000};
+constexpr UIntRange kRangePowerMaxPrechargeMs{100, 60000};
+constexpr UIntRange kRangePowerPrechargeDurationMs{10, 30000};
+
+constexpr UIntRange kRangeInverterCells{0, 32};
+constexpr UIntRange kRangeInverterVoltageLevel{0, 10000};
+constexpr UIntRange kRangeInverterCapacityAh{0, 65000};
+constexpr UIntRange kRangeInverterBatteryType{0, 20};
+
+constexpr UIntRange kRangeCanFrequencyKhz{1, 1000};
+constexpr UIntRange kRangeCanFdFrequencyMhz{1, 100};
+constexpr UIntRange kRangeCanSofarId{0, 65535};
+constexpr UIntRange kRangeCanPylonSendIntervalMs{0, 60000};
+
+constexpr UIntRange kRangeContactorPwmFrequencyHz{100, 50000};
+
+// --- Battery ---
+constexpr UIntFieldDescriptor kBatteryUIntFieldDescriptors[] = {
+    {BATTERY_CAPACITY_WH,         "capacity_wh",         kRangeBatteryCapacityWh.min,       kRangeBatteryCapacityWh.max},
+    {BATTERY_MAX_VOLTAGE_MV,      "max_voltage_mv",      kRangeBatteryMaxVoltageMv.min,     kRangeBatteryMaxVoltageMv.max},
+    {BATTERY_MIN_VOLTAGE_MV,      "min_voltage_mv",      kRangeBatteryMinVoltageMv.min,     kRangeBatteryMinVoltageMv.max},
+    {BATTERY_SOC_HIGH_LIMIT,      "soc_high_limit",      kRangeBatterySocHighLimit.min,     kRangeBatterySocHighLimit.max},
+    {BATTERY_SOC_LOW_LIMIT,       "soc_low_limit",       kRangeBatterySocLowLimit.min,      kRangeBatterySocLowLimit.max},
+    {BATTERY_CELL_COUNT,          "cell_count",          kRangeBatteryCellCount.min,        kRangeBatteryCellCount.max},
+    {BATTERY_CHEMISTRY,           "chemistry",           kRangeBatteryChemistry.min,        kRangeBatteryChemistry.max},
+    {BATTERY_PACK_MAX_VOLTAGE_DV, "pack_max_voltage_dv", kRangeBatteryPackVoltageDv.min,    kRangeBatteryPackVoltageDv.max},
+    {BATTERY_PACK_MIN_VOLTAGE_DV, "pack_min_voltage_dv", kRangeBatteryPackVoltageDv.min,    kRangeBatteryPackVoltageDv.max},
+    {BATTERY_CELL_MAX_VOLTAGE_MV, "cell_max_voltage_mv", kRangeBatteryCellMaxVoltageMv.min, kRangeBatteryCellMaxVoltageMv.max},
+    {BATTERY_CELL_MIN_VOLTAGE_MV, "cell_min_voltage_mv", kRangeBatteryCellMinVoltageMv.min, kRangeBatteryCellMinVoltageMv.max},
+    {BATTERY_LED_MODE,            "led_mode",            kRangeBatteryLedMode.min,          kRangeBatteryLedMode.max},
+};
+
+constexpr FloatFieldDescriptor kBatteryFloatFieldDescriptors[] = {
+    {BATTERY_MAX_CHARGE_CURRENT_A,    "max_charge_current_a",    kRangeBatteryCurrentA.min, kRangeBatteryCurrentA.max},
+    {BATTERY_MAX_DISCHARGE_CURRENT_A, "max_discharge_current_a", kRangeBatteryCurrentA.min, kRangeBatteryCurrentA.max},
+};
+
+// --- Power ---
+constexpr UIntFieldDescriptor kPowerUIntFieldDescriptors[] = {
+    {POWER_CHARGE_W,              "power_charge_w",              kRangePowerWatts.min,               kRangePowerWatts.max},
+    {POWER_DISCHARGE_W,           "power_discharge_w",           kRangePowerWatts.min,               kRangePowerWatts.max},
+    {POWER_MAX_PRECHARGE_MS,      "power_max_precharge_ms",      kRangePowerMaxPrechargeMs.min,      kRangePowerMaxPrechargeMs.max},
+    {POWER_PRECHARGE_DURATION_MS, "power_precharge_duration_ms", kRangePowerPrechargeDurationMs.min, kRangePowerPrechargeDurationMs.max},
+};
+
+// --- Inverter ---
+constexpr UIntFieldDescriptor kInverterUIntFieldDescriptors[] = {
+    {INVERTER_CELLS,            "inverter_cells",            kRangeInverterCells.min,        kRangeInverterCells.max},
+    {INVERTER_MODULES,          "inverter_modules",          kRangeInverterCells.min,        kRangeInverterCells.max},
+    {INVERTER_CELLS_PER_MODULE, "inverter_cells_per_module", kRangeInverterCells.min,        kRangeInverterCells.max},
+    {INVERTER_VOLTAGE_LEVEL,    "inverter_voltage_level",    kRangeInverterVoltageLevel.min, kRangeInverterVoltageLevel.max},
+    {INVERTER_CAPACITY_AH,      "inverter_capacity_ah",      kRangeInverterCapacityAh.min,   kRangeInverterCapacityAh.max},
+    {INVERTER_BATTERY_TYPE,     "inverter_battery_type",     kRangeInverterBatteryType.min,  kRangeInverterBatteryType.max},
+};
+
+// --- CAN ---
+constexpr UIntFieldDescriptor kCanUIntFieldDescriptors[] = {
+    {CAN_FREQUENCY_KHZ,          "can_frequency_khz",          kRangeCanFrequencyKhz.min,      kRangeCanFrequencyKhz.max},
+    {CAN_FD_FREQUENCY_MHZ,       "can_fd_frequency_mhz",       kRangeCanFdFrequencyMhz.min,    kRangeCanFdFrequencyMhz.max},
+    {CAN_SOFAR_ID,               "can_sofar_id",               kRangeCanSofarId.min,           kRangeCanSofarId.max},
+    {CAN_PYLON_SEND_INTERVAL_MS, "can_pylon_send_interval_ms", kRangeCanPylonSendIntervalMs.min, kRangeCanPylonSendIntervalMs.max},
+};
+
+// --- Contactor (bool fields excluded — any 0/1 is valid) ---
+constexpr UIntFieldDescriptor kContactorUIntFieldDescriptors[] = {
+    {CONTACTOR_PWM_FREQUENCY_HZ, "contactor_pwm_frequency_hz", kRangeContactorPwmFrequencyHz.min, kRangeContactorPwmFrequencyHz.max},
+};
+
+constexpr const char* kBatteryChemistryLabels[] = {"NCA", "NMC", "LFP", "LTO"};
+
+// Generic descriptor-driven range-check for a uint32 value.
+// Returns false (with error log) if a matching descriptor reports out-of-range.
+// Returns true (pass-through) for field IDs not present in the table.
+template<size_t N>
+bool validate_uint_field(uint8_t field_id, uint32_t value,
+                         const UIntFieldDescriptor (&table)[N]) {
+    for (const auto& d : table) {
+        if (d.field_id == field_id) {
+            if (value < d.min_value || value > d.max_value) {
+                LOG_ERROR("SETTINGS",
+                          "Invalid %s: %u (must be %u-%u)",
+                          d.name, value, d.min_value, d.max_value);
+                return false;
+            }
+            return true;
+        }
+    }
+    return true;
+}
+
+// Generic descriptor-driven range-check for a float value.
+template<size_t N>
+bool validate_float_field(uint8_t field_id, float value,
+                          const FloatFieldDescriptor (&table)[N]) {
+    for (const auto& d : table) {
+        if (d.field_id == field_id) {
+            if (value < d.min_value || value > d.max_value) {
+                LOG_ERROR("SETTINGS",
+                          "Invalid %s: %.2f (must be %.2f-%.2f)",
+                          d.name, value, d.min_value, d.max_value);
+                return false;
+            }
+            return true;
+        }
+    }
+    return true;
+}
+
+// Convenience wrappers retained for the (unchanged) battery setter.
+inline bool validate_battery_uint_field(uint8_t field_id, uint32_t value) {
+    return validate_uint_field(field_id, value, kBatteryUIntFieldDescriptors);
+}
+inline bool validate_battery_float_field(uint8_t field_id, float value) {
+    return validate_float_field(field_id, value, kBatteryFloatFieldDescriptors);
+}
+
+} // namespace
+
 // ---------------------------------------------------------------------------
 // Battery field setter
 // ---------------------------------------------------------------------------
@@ -24,116 +182,93 @@ bool SettingsManager::save_battery_setting(uint8_t field_id,
 
     switch (field_id) {
         case BATTERY_CAPACITY_WH:
-            if (value_uint32 >= 1000 && value_uint32 <= 1000000) {
-                battery_capacity_wh_ = value_uint32;
-                changed = true;
-                LOG_INFO("SETTINGS", "Battery capacity updated: %dWh",
-                         battery_capacity_wh_);
-            } else {
-                LOG_ERROR("SETTINGS",
-                          "Invalid capacity: %d (must be 1000-1000000)",
-                          value_uint32);
+            if (!validate_battery_uint_field(field_id, value_uint32)) {
                 return false;
             }
+            battery_capacity_wh_ = value_uint32;
+            changed = true;
+            LOG_INFO("SETTINGS", "Battery capacity updated: %dWh",
+                     battery_capacity_wh_);
             break;
 
         case BATTERY_MAX_VOLTAGE_MV:
-            if (value_uint32 >= 30000 && value_uint32 <= 100000) {
-                battery_max_voltage_mv_ = value_uint32;
-                changed = true;
-                LOG_INFO("SETTINGS", "Max voltage updated: %dmV",
-                         battery_max_voltage_mv_);
-            } else {
-                LOG_ERROR("SETTINGS", "Invalid max voltage: %d", value_uint32);
+            if (!validate_battery_uint_field(field_id, value_uint32)) {
                 return false;
             }
+            battery_max_voltage_mv_ = value_uint32;
+            changed = true;
+            LOG_INFO("SETTINGS", "Max voltage updated: %dmV",
+                     battery_max_voltage_mv_);
             break;
 
         case BATTERY_MIN_VOLTAGE_MV:
-            if (value_uint32 >= 20000 && value_uint32 <= 80000) {
-                battery_min_voltage_mv_ = value_uint32;
-                changed = true;
-                LOG_INFO("SETTINGS", "Min voltage updated: %dmV",
-                         battery_min_voltage_mv_);
-            } else {
-                LOG_ERROR("SETTINGS", "Invalid min voltage: %d", value_uint32);
+            if (!validate_battery_uint_field(field_id, value_uint32)) {
                 return false;
             }
+            battery_min_voltage_mv_ = value_uint32;
+            changed = true;
+            LOG_INFO("SETTINGS", "Min voltage updated: %dmV",
+                     battery_min_voltage_mv_);
             break;
 
         case BATTERY_MAX_CHARGE_CURRENT_A:
-            if (value_float >= 0.0f && value_float <= 500.0f) {
-                battery_max_charge_current_a_ = value_float;
-                changed = true;
-                LOG_INFO("SETTINGS", "Max charge current updated: %.1fA",
-                         battery_max_charge_current_a_);
-            } else {
-                LOG_ERROR("SETTINGS", "Invalid charge current: %.1f",
-                          value_float);
+            if (!validate_battery_float_field(field_id, value_float)) {
                 return false;
             }
+            battery_max_charge_current_a_ = value_float;
+            changed = true;
+            LOG_INFO("SETTINGS", "Max charge current updated: %.1fA",
+                     battery_max_charge_current_a_);
             break;
 
         case BATTERY_MAX_DISCHARGE_CURRENT_A:
-            if (value_float >= 0.0f && value_float <= 500.0f) {
-                battery_max_discharge_current_a_ = value_float;
-                changed = true;
-                LOG_INFO("SETTINGS", "Max discharge current updated: %.1fA",
-                         battery_max_discharge_current_a_);
-            } else {
-                LOG_ERROR("SETTINGS", "Invalid discharge current: %.1f",
-                          value_float);
+            if (!validate_battery_float_field(field_id, value_float)) {
                 return false;
             }
+            battery_max_discharge_current_a_ = value_float;
+            changed = true;
+            LOG_INFO("SETTINGS", "Max discharge current updated: %.1fA",
+                     battery_max_discharge_current_a_);
             break;
 
         case BATTERY_SOC_HIGH_LIMIT:
-            if (value_uint32 >= 50 && value_uint32 <= 100) {
-                battery_soc_high_limit_ = value_uint32;
-                changed = true;
-                LOG_INFO("SETTINGS", "SOC high limit updated: %d%%",
-                         battery_soc_high_limit_);
-            } else {
-                LOG_ERROR("SETTINGS", "Invalid SOC high: %d", value_uint32);
+            if (!validate_battery_uint_field(field_id, value_uint32)) {
                 return false;
             }
+            battery_soc_high_limit_ = value_uint32;
+            changed = true;
+            LOG_INFO("SETTINGS", "SOC high limit updated: %d%%",
+                     battery_soc_high_limit_);
             break;
 
         case BATTERY_SOC_LOW_LIMIT:
-            if (value_uint32 >= 0 && value_uint32 <= 50) {
-                battery_soc_low_limit_ = value_uint32;
-                changed = true;
-                LOG_INFO("SETTINGS", "SOC low limit updated: %d%%",
-                         battery_soc_low_limit_);
-            } else {
-                LOG_ERROR("SETTINGS", "Invalid SOC low: %d", value_uint32);
+            if (!validate_battery_uint_field(field_id, value_uint32)) {
                 return false;
             }
+            battery_soc_low_limit_ = value_uint32;
+            changed = true;
+            LOG_INFO("SETTINGS", "SOC low limit updated: %d%%",
+                     battery_soc_low_limit_);
             break;
 
         case BATTERY_CELL_COUNT:
-            if (value_uint32 >= 4 && value_uint32 <= 32) {
-                battery_cell_count_ = value_uint32;
-                changed = true;
-                LOG_INFO("SETTINGS", "Cell count updated: %dS",
-                         battery_cell_count_);
-            } else {
-                LOG_ERROR("SETTINGS", "Invalid cell count: %d", value_uint32);
+            if (!validate_battery_uint_field(field_id, value_uint32)) {
                 return false;
             }
+            battery_cell_count_ = value_uint32;
+            changed = true;
+            LOG_INFO("SETTINGS", "Cell count updated: %dS",
+                     battery_cell_count_);
             break;
 
         case BATTERY_CHEMISTRY:
-            if (value_uint32 <= 3) {  // 0=NCA, 1=NMC, 2=LFP, 3=LTO
-                battery_chemistry_ = value_uint32;
-                changed = true;
-                const char* chem[] = {"NCA", "NMC", "LFP", "LTO"};
-                LOG_INFO("SETTINGS", "Chemistry updated: %s",
-                         chem[battery_chemistry_]);
-            } else {
-                LOG_ERROR("SETTINGS", "Invalid chemistry: %d", value_uint32);
+            if (!validate_battery_uint_field(field_id, value_uint32)) {
                 return false;
             }
+            battery_chemistry_ = value_uint32;
+            changed = true;
+            LOG_INFO("SETTINGS", "Chemistry updated: %s",
+                     kBatteryChemistryLabels[battery_chemistry_]);
             break;
 
         case BATTERY_DOUBLE_ENABLED:
@@ -144,55 +279,43 @@ bool SettingsManager::save_battery_setting(uint8_t field_id,
             break;
 
         case BATTERY_PACK_MAX_VOLTAGE_DV:
-            if (value_uint32 >= 100 && value_uint32 <= 10000) {
-                battery_pack_max_voltage_dV_ = value_uint32;
-                changed = true;
-                LOG_INFO("SETTINGS", "Pack max voltage updated: %u dV",
-                         battery_pack_max_voltage_dV_);
-            } else {
-                LOG_ERROR("SETTINGS", "Invalid pack max voltage: %d",
-                          value_uint32);
+            if (!validate_battery_uint_field(field_id, value_uint32)) {
                 return false;
             }
+            battery_pack_max_voltage_dV_ = value_uint32;
+            changed = true;
+            LOG_INFO("SETTINGS", "Pack max voltage updated: %u dV",
+                     battery_pack_max_voltage_dV_);
             break;
 
         case BATTERY_PACK_MIN_VOLTAGE_DV:
-            if (value_uint32 >= 100 && value_uint32 <= 10000) {
-                battery_pack_min_voltage_dV_ = value_uint32;
-                changed = true;
-                LOG_INFO("SETTINGS", "Pack min voltage updated: %u dV",
-                         battery_pack_min_voltage_dV_);
-            } else {
-                LOG_ERROR("SETTINGS", "Invalid pack min voltage: %d",
-                          value_uint32);
+            if (!validate_battery_uint_field(field_id, value_uint32)) {
                 return false;
             }
+            battery_pack_min_voltage_dV_ = value_uint32;
+            changed = true;
+            LOG_INFO("SETTINGS", "Pack min voltage updated: %u dV",
+                     battery_pack_min_voltage_dV_);
             break;
 
         case BATTERY_CELL_MAX_VOLTAGE_MV:
-            if (value_uint32 >= 1500 && value_uint32 <= 5000) {
-                battery_cell_max_voltage_mV_ = value_uint32;
-                changed = true;
-                LOG_INFO("SETTINGS", "Cell max voltage updated: %u mV",
-                         battery_cell_max_voltage_mV_);
-            } else {
-                LOG_ERROR("SETTINGS", "Invalid cell max voltage: %d",
-                          value_uint32);
+            if (!validate_battery_uint_field(field_id, value_uint32)) {
                 return false;
             }
+            battery_cell_max_voltage_mV_ = value_uint32;
+            changed = true;
+            LOG_INFO("SETTINGS", "Cell max voltage updated: %u mV",
+                     battery_cell_max_voltage_mV_);
             break;
 
         case BATTERY_CELL_MIN_VOLTAGE_MV:
-            if (value_uint32 >= 1000 && value_uint32 <= 4500) {
-                battery_cell_min_voltage_mV_ = value_uint32;
-                changed = true;
-                LOG_INFO("SETTINGS", "Cell min voltage updated: %u mV",
-                         battery_cell_min_voltage_mV_);
-            } else {
-                LOG_ERROR("SETTINGS", "Invalid cell min voltage: %d",
-                          value_uint32);
+            if (!validate_battery_uint_field(field_id, value_uint32)) {
                 return false;
             }
+            battery_cell_min_voltage_mV_ = value_uint32;
+            changed = true;
+            LOG_INFO("SETTINGS", "Cell min voltage updated: %u mV",
+                     battery_cell_min_voltage_mV_);
             break;
 
         case BATTERY_SOC_ESTIMATED:
@@ -203,16 +326,14 @@ bool SettingsManager::save_battery_setting(uint8_t field_id,
             break;
 
         case BATTERY_LED_MODE:
-            if (value_uint32 <= 2) {  // 0=Classic, 1=Energy Flow, 2=Heartbeat
-                battery_led_mode_ = value_uint32;
-                datalayer.battery.status.led_mode =
-                    static_cast<led_mode_enum>(battery_led_mode_);
-                changed = true;
-                LOG_INFO("SETTINGS", "LED mode updated: %u", battery_led_mode_);
-            } else {
-                LOG_ERROR("SETTINGS", "Invalid LED mode: %d", value_uint32);
+            if (!validate_battery_uint_field(field_id, value_uint32)) {
                 return false;
             }
+            battery_led_mode_ = value_uint32;
+            datalayer.battery.status.led_mode =
+                static_cast<led_mode_enum>(battery_led_mode_);
+            changed = true;
+            LOG_INFO("SETTINGS", "LED mode updated: %u", battery_led_mode_);
             break;
 
         default:
@@ -256,20 +377,40 @@ bool SettingsManager::save_power_setting(uint8_t field_id,
 
     switch (field_id) {
         case POWER_CHARGE_W:
+            if (!validate_uint_field(field_id, value_uint32, kPowerUIntFieldDescriptors)) {
+                return false;
+            }
             power_charge_w_ = value_uint32;
             changed = true;
+            LOG_INFO("SETTINGS", "Power charge limit updated: %uW",
+                     static_cast<unsigned>(power_charge_w_));
             break;
         case POWER_DISCHARGE_W:
+            if (!validate_uint_field(field_id, value_uint32, kPowerUIntFieldDescriptors)) {
+                return false;
+            }
             power_discharge_w_ = value_uint32;
             changed = true;
+            LOG_INFO("SETTINGS", "Power discharge limit updated: %uW",
+                     static_cast<unsigned>(power_discharge_w_));
             break;
         case POWER_MAX_PRECHARGE_MS:
+            if (!validate_uint_field(field_id, value_uint32, kPowerUIntFieldDescriptors)) {
+                return false;
+            }
             power_max_precharge_ms_ = value_uint32;
             changed = true;
+            LOG_INFO("SETTINGS", "Max precharge duration updated: %ums",
+                     static_cast<unsigned>(power_max_precharge_ms_));
             break;
         case POWER_PRECHARGE_DURATION_MS:
+            if (!validate_uint_field(field_id, value_uint32, kPowerUIntFieldDescriptors)) {
+                return false;
+            }
             power_precharge_duration_ms_ = value_uint32;
             changed = true;
+            LOG_INFO("SETTINGS", "Precharge duration updated: %ums",
+                     static_cast<unsigned>(power_precharge_duration_ms_));
             break;
         default:
             LOG_ERROR("SETTINGS", "Unknown power field ID: %d", field_id);
@@ -299,28 +440,58 @@ bool SettingsManager::save_inverter_setting(uint8_t field_id,
 
     switch (field_id) {
         case INVERTER_CELLS:
+            if (!validate_uint_field(field_id, value_uint32, kInverterUIntFieldDescriptors)) {
+                return false;
+            }
             inverter_cells_ = value_uint32;
             changed = true;
+            LOG_INFO("SETTINGS", "Inverter cells updated: %u",
+                     static_cast<unsigned>(inverter_cells_));
             break;
         case INVERTER_MODULES:
+            if (!validate_uint_field(field_id, value_uint32, kInverterUIntFieldDescriptors)) {
+                return false;
+            }
             inverter_modules_ = value_uint32;
             changed = true;
+            LOG_INFO("SETTINGS", "Inverter modules updated: %u",
+                     static_cast<unsigned>(inverter_modules_));
             break;
         case INVERTER_CELLS_PER_MODULE:
+            if (!validate_uint_field(field_id, value_uint32, kInverterUIntFieldDescriptors)) {
+                return false;
+            }
             inverter_cells_per_module_ = value_uint32;
             changed = true;
+            LOG_INFO("SETTINGS", "Inverter cells-per-module updated: %u",
+                     static_cast<unsigned>(inverter_cells_per_module_));
             break;
         case INVERTER_VOLTAGE_LEVEL:
+            if (!validate_uint_field(field_id, value_uint32, kInverterUIntFieldDescriptors)) {
+                return false;
+            }
             inverter_voltage_level_ = value_uint32;
             changed = true;
+            LOG_INFO("SETTINGS", "Inverter voltage level updated: %u",
+                     static_cast<unsigned>(inverter_voltage_level_));
             break;
         case INVERTER_CAPACITY_AH:
+            if (!validate_uint_field(field_id, value_uint32, kInverterUIntFieldDescriptors)) {
+                return false;
+            }
             inverter_capacity_ah_ = value_uint32;
             changed = true;
+            LOG_INFO("SETTINGS", "Inverter capacity updated: %uAh",
+                     static_cast<unsigned>(inverter_capacity_ah_));
             break;
         case INVERTER_BATTERY_TYPE:
+            if (!validate_uint_field(field_id, value_uint32, kInverterUIntFieldDescriptors)) {
+                return false;
+            }
             inverter_battery_type_ = value_uint32;
             changed = true;
+            LOG_INFO("SETTINGS", "Inverter battery type updated: %u",
+                     static_cast<unsigned>(inverter_battery_type_));
             break;
         default:
             LOG_ERROR("SETTINGS", "Unknown inverter field ID: %d", field_id);
@@ -350,20 +521,40 @@ bool SettingsManager::save_can_setting(uint8_t field_id,
 
     switch (field_id) {
         case CAN_FREQUENCY_KHZ:
+            if (!validate_uint_field(field_id, value_uint32, kCanUIntFieldDescriptors)) {
+                return false;
+            }
             can_frequency_khz_ = value_uint32;
             changed = true;
+            LOG_INFO("SETTINGS", "CAN frequency updated: %ukHz",
+                     static_cast<unsigned>(can_frequency_khz_));
             break;
         case CAN_FD_FREQUENCY_MHZ:
+            if (!validate_uint_field(field_id, value_uint32, kCanUIntFieldDescriptors)) {
+                return false;
+            }
             can_fd_frequency_mhz_ = value_uint32;
             changed = true;
+            LOG_INFO("SETTINGS", "CAN-FD frequency updated: %uMHz",
+                     static_cast<unsigned>(can_fd_frequency_mhz_));
             break;
         case CAN_SOFAR_ID:
+            if (!validate_uint_field(field_id, value_uint32, kCanUIntFieldDescriptors)) {
+                return false;
+            }
             can_sofar_id_ = value_uint32;
             changed = true;
+            LOG_INFO("SETTINGS", "CAN Sofar ID updated: 0x%04X",
+                     static_cast<unsigned>(can_sofar_id_));
             break;
         case CAN_PYLON_SEND_INTERVAL_MS:
+            if (!validate_uint_field(field_id, value_uint32, kCanUIntFieldDescriptors)) {
+                return false;
+            }
             can_pylon_send_interval_ms_ = value_uint32;
             changed = true;
+            LOG_INFO("SETTINGS", "CAN Pylon send interval updated: %ums",
+                     static_cast<unsigned>(can_pylon_send_interval_ms_));
             break;
         default:
             LOG_ERROR("SETTINGS", "Unknown CAN field ID: %d", field_id);
@@ -395,14 +586,23 @@ bool SettingsManager::save_contactor_setting(uint8_t field_id,
         case CONTACTOR_CONTROL_ENABLED:
             contactor_control_enabled_ = value_uint32 ? true : false;
             changed = true;
+            LOG_INFO("SETTINGS", "Contactor control updated: %s",
+                     contactor_control_enabled_ ? "ENABLED" : "DISABLED");
             break;
         case CONTACTOR_NC_MODE:
             contactor_nc_mode_ = value_uint32 ? true : false;
             changed = true;
+            LOG_INFO("SETTINGS", "Contactor NC mode updated: %s",
+                     contactor_nc_mode_ ? "NC" : "NO");
             break;
         case CONTACTOR_PWM_FREQUENCY_HZ:
+            if (!validate_uint_field(field_id, value_uint32, kContactorUIntFieldDescriptors)) {
+                return false;
+            }
             contactor_pwm_frequency_hz_ = value_uint32;
             changed = true;
+            LOG_INFO("SETTINGS", "Contactor PWM frequency updated: %uHz",
+                     static_cast<unsigned>(contactor_pwm_frequency_hz_));
             break;
         default:
             LOG_ERROR("SETTINGS", "Unknown contactor field ID: %d", field_id);

@@ -171,229 +171,365 @@ void set_event_MQTTpublished(EVENTS_ENUM_TYPE event) {
   events.entries[event].MQTTpublished = true;
 }
 
-String get_event_message_string(EVENTS_ENUM_TYPE event) {
+bool get_event_message(EVENTS_ENUM_TYPE event, char* out, size_t out_size) {
+  if (!out || out_size == 0) {
+    return false;
+  }
+
+  const char* message = nullptr;
   switch (event) {
     case EVENT_CANMCP2517FD_INIT_FAILURE:
-      return "CAN-FD initialization failed. Check hardware or bitrate settings";
+      message = "CAN-FD initialization failed. Check hardware or bitrate settings";
+      break;
     case EVENT_CANMCP2515_INIT_FAILURE:
-      return "CAN-MCP addon initialization failed. Check hardware";
+      message = "CAN-MCP addon initialization failed. Check hardware";
+      break;
     case EVENT_CANFD_BUFFER_FULL:
-      return "MCP2518FD message failed to send. Buffer full or no one on the bus to ACK the message!";
+      message = "MCP2518FD message failed to send. Buffer full or no one on the bus to ACK the message!";
+      break;
     case EVENT_CAN_BUFFER_FULL:
-      return "MCP2515 message failed to send. Buffer full or no one on the bus to ACK the message!";
+      message = "MCP2515 message failed to send. Buffer full or no one on the bus to ACK the message!";
+      break;
     case EVENT_TASK_OVERRUN:
-      return "Task took too long to complete. CPU load might be too high. Info message, no action required.";
+      message = "Task took too long to complete. CPU load might be too high. Info message, no action required.";
+      break;
     case EVENT_THERMAL_RUNAWAY:
-      return "THERMAL RUNAWAY! POTENTIAL FIRE OR EXPLOSION IMMINENT!";
+      message = "THERMAL RUNAWAY! POTENTIAL FIRE OR EXPLOSION IMMINENT!";
+      break;
     case EVENT_CAN_CORRUPTED_WARNING:
-      return "High amount of corrupted CAN messages detected. Check CAN wire shielding!";
+      message = "High amount of corrupted CAN messages detected. Check CAN wire shielding!";
+      break;
     case EVENT_CAN_NATIVE_TX_FAILURE:
-      return "CAN_NATIVE failed to transmit, or no one on the bus to ACK the message!";
+      message = "CAN_NATIVE failed to transmit, or no one on the bus to ACK the message!";
+      break;
     case EVENT_CAN_BATTERY_MISSING:
-      return "Battery not sending messages via CAN for the last 60 seconds. Check wiring!";
+      message = "Battery not sending messages via CAN for the last 60 seconds. Check wiring!";
+      break;
     case EVENT_CAN_BATTERY2_MISSING:
-      return "Secondary battery not sending messages via CAN for the last 60 seconds. Check wiring!";
+      message = "Secondary battery not sending messages via CAN for the last 60 seconds. Check wiring!";
+      break;
     case EVENT_CAN_CHARGER_MISSING:
-      return "Charger not sending messages via CAN for the last 60 seconds. Check wiring!";
+      message = "Charger not sending messages via CAN for the last 60 seconds. Check wiring!";
+      break;
     case EVENT_CAN_INVERTER_MISSING:
-      return "Inverter not sending messages via CAN for the last 60 seconds. Check wiring!";
+      message = "Inverter not sending messages via CAN for the last 60 seconds. Check wiring!";
+      break;
     case EVENT_CONTACTOR_WELDED:
-      return "Contactors sticking/welded. Inspect battery with caution!";
+      message = "Contactors sticking/welded. Inspect battery with caution!";
+      break;
     case EVENT_CONTACTOR_OPEN:
-      return "Battery decided to open contactors. Inspect battery!";
+      message = "Battery decided to open contactors. Inspect battery!";
+      break;
     case EVENT_CPU_OVERHEATING:
-      return "Battery-Emulator CPU overheating! Increase airflow/cooling to increase hardware lifespan!";
+      message = "Battery-Emulator CPU overheating! Increase airflow/cooling to increase hardware lifespan!";
+      break;
     case EVENT_CPU_OVERHEATED:
-      return "Battery-Emulator CPU melting! Performing controlled shutdown until temperature drops!";
+      message = "Battery-Emulator CPU melting! Performing controlled shutdown until temperature drops!";
+      break;
     case EVENT_CHARGE_LIMIT_EXCEEDED:
-      return "Inverter is charging faster than battery is allowing.";
+      message = "Inverter is charging faster than battery is allowing.";
+      break;
     case EVENT_DISCHARGE_LIMIT_EXCEEDED:
-      return "Inverter is discharging faster than battery is allowing.";
+      message = "Inverter is discharging faster than battery is allowing.";
+      break;
     case EVENT_WATER_INGRESS:
-      return "Water leakage inside battery detected. Operation halted. Inspect battery!";
+      message = "Water leakage inside battery detected. Operation halted. Inspect battery!";
+      break;
     case EVENT_12V_LOW:
-      return "12V battery source below required voltage to safely close contactors. Inspect the supply/battery!";
+      message = "12V battery source below required voltage to safely close contactors. Inspect the supply/battery!";
+      break;
     case EVENT_SOC_PLAUSIBILITY_ERROR:
-      return "SOC reported by battery not plausible. Restart battery!";
+      message = "SOC reported by battery not plausible. Restart battery!";
+      break;
     case EVENT_SOC_UNAVAILABLE:
-      return "SOC not sent by BMS. Calibrate BMS via app.";
+      message = "SOC not sent by BMS. Calibrate BMS via app.";
+      break;
     case EVENT_STALE_VALUE:
-      return "Important values detected as stale. System might have locked up!";
+      message = "Important values detected as stale. System might have locked up!";
+      break;
     case EVENT_KWH_PLAUSIBILITY_ERROR:
-      return "kWh remaining reported by battery not plausible. Battery needs cycling.";
+      message = "kWh remaining reported by battery not plausible. Battery needs cycling.";
+      break;
     case EVENT_BALANCING_START:
-      return "Balancing has started";
+      message = "Balancing has started";
+      break;
     case EVENT_BALANCING_END:
-      return "Balancing has ended";
+      message = "Balancing has ended";
+      break;
     case EVENT_BATTERY_EMPTY:
-      return "Battery is completely discharged";
+      message = "Battery is completely discharged";
+      break;
     case EVENT_BATTERY_FULL:
-      return "Battery is fully charged";
+      message = "Battery is fully charged";
+      break;
     case EVENT_BATTERY_FUSE:
-      return "Battery internal fuse blown. Inspect battery";
+      message = "Battery internal fuse blown. Inspect battery";
+      break;
     case EVENT_BATTERY_FROZEN:
-      return "Battery is too cold to operate optimally. Consider warming it up!";
+      message = "Battery is too cold to operate optimally. Consider warming it up!";
+      break;
     case EVENT_BATTERY_CAUTION:
-      return "Battery has raised a general caution flag. Might want to inspect it closely.";
+      message = "Battery has raised a general caution flag. Might want to inspect it closely.";
+      break;
     case EVENT_BATTERY_CHG_STOP_REQ:
-      return "Battery raised caution indicator AND requested charge stop. Inspect battery status!";
+      message = "Battery raised caution indicator AND requested charge stop. Inspect battery status!";
+      break;
     case EVENT_BATTERY_DISCHG_STOP_REQ:
-      return "Battery raised caution indicator AND requested discharge stop. Inspect battery status!";
+      message = "Battery raised caution indicator AND requested discharge stop. Inspect battery status!";
+      break;
     case EVENT_BATTERY_CHG_DISCHG_STOP_REQ:
-      return "Battery raised caution indicator AND requested charge/discharge stop. Inspect battery status!";
+      message = "Battery raised caution indicator AND requested charge/discharge stop. Inspect battery status!";
+      break;
     case EVENT_BATTERY_REQUESTS_HEAT:
-      return "COLD BATTERY! Battery requesting heating pads to activate!";
+      message = "COLD BATTERY! Battery requesting heating pads to activate!";
+      break;
     case EVENT_BATTERY_WARMED_UP:
-      return "Battery requesting heating pads to stop. The battery is now warm enough.";
+      message = "Battery requesting heating pads to stop. The battery is now warm enough.";
+      break;
     case EVENT_BATTERY_OVERHEAT:
-      return "Battery overheated. Shutting down to prevent thermal runaway!";
+      message = "Battery overheated. Shutting down to prevent thermal runaway!";
+      break;
     case EVENT_BATTERY_OVERVOLTAGE:
-      return "Battery exceeding maximum design voltage. Discharge battery to prevent damage!";
+      message = "Battery exceeding maximum design voltage. Discharge battery to prevent damage!";
+      break;
     case EVENT_BATTERY_UNDERVOLTAGE:
-      return "Battery under minimum design voltage. Charge battery to prevent damage!";
+      message = "Battery under minimum design voltage. Charge battery to prevent damage!";
+      break;
     case EVENT_BATTERY_VALUE_UNAVAILABLE:
-      return "Battery measurement unavailable. Check 12V power supply and battery wiring!";
+      message = "Battery measurement unavailable. Check 12V power supply and battery wiring!";
+      break;
     case EVENT_BATTERY_ISOLATION:
-      return "Battery reports isolation error. High voltage might be leaking to ground. Check battery!";
+      message = "Battery reports isolation error. High voltage might be leaking to ground. Check battery!";
+      break;
     case EVENT_BATTERY_SOC_RECALIBRATION:
-      return "The BMS updated the HV battery State of Charge (SOC) by more than 3pct based on SocByOcv.";
+      message = "The BMS updated the HV battery State of Charge (SOC) by more than 3pct based on SocByOcv.";
+      break;
     case EVENT_BATTERY_SOC_RESET_SUCCESS:
-      return "SOC reset routine was successful.";
+      message = "SOC reset routine was successful.";
+      break;
     case EVENT_BATTERY_SOC_RESET_FAIL:
-      return "SOC reset routine failed - check SOC is < 15 or > 90, and contactors are open.";
+      message = "SOC reset routine failed - check SOC is < 15 or > 90, and contactors are open.";
+      break;
     case EVENT_VOLTAGE_DIFFERENCE:
-      return "Too large voltage diff between the batteries. Second battery cannot join the DC-link";
+      message = "Too large voltage diff between the batteries. Second battery cannot join the DC-link";
+      break;
     case EVENT_SOH_DIFFERENCE:
-      return "Large deviation in State of health between packs. Inspect battery.";
+      message = "Large deviation in State of health between packs. Inspect battery.";
+      break;
     case EVENT_SOH_LOW:
-      return "State of health critically low. Battery internal resistance too high to continue. Recycle "
-             "battery.";
+      message = "State of health critically low. Battery internal resistance too high to continue. Recycle battery.";
+      break;
     case EVENT_HVIL_FAILURE:
-      return "Battery interlock loop broken. Check that high voltage / low voltage connectors are seated. "
-             "Battery will be disabled!";
+      message = "Battery interlock loop broken. Check that high voltage / low voltage connectors are seated. Battery will be disabled!";
+      break;
     case EVENT_PRECHARGE_FAILURE:
-      return "Battery failed to precharge. Check that capacitor is seated on high voltage output.";
+      message = "Battery failed to precharge. Check that capacitor is seated on high voltage output.";
+      break;
     case EVENT_AUTOMATIC_PRECHARGE_FAILURE:
-      return "Automatic precharge FAILURE. Failed to reach target voltage or BMS timeout. Reboot emulator to retry!";
+      message = "Automatic precharge FAILURE. Failed to reach target voltage or BMS timeout. Reboot emulator to retry!";
+      break;
     case EVENT_INTERNAL_OPEN_FAULT:
-      return "High voltage cable removed while battery running. Opening contactors!";
+      message = "High voltage cable removed while battery running. Opening contactors!";
+      break;
     case EVENT_INVERTER_OPEN_CONTACTOR:
-      return "Inverter side opened contactors. Normal operation.";
+      message = "Inverter side opened contactors. Normal operation.";
+      break;
     case EVENT_INTERFACE_MISSING:
-      return "Configuration trying to use CAN interface not baked into the software. Recompile software!";
+      message = "Configuration trying to use CAN interface not baked into the software. Recompile software!";
+      break;
     case EVENT_ERROR_OPEN_CONTACTOR:
-      return "Too much time spent in error state. Opening contactors, not safe to continue. "
-             "Check other active ERROR code for reason. Reboot emulator after problem is solved!";
+      message = "Too much time spent in error state. Opening contactors, not safe to continue. Check other active ERROR code for reason. Reboot emulator after problem is solved!";
+      break;
     case EVENT_MODBUS_INVERTER_MISSING:
-      return "Modbus inverter has not sent any data. Inspect communication wiring!";
+      message = "Modbus inverter has not sent any data. Inspect communication wiring!";
+      break;
     case EVENT_NO_ENABLE_DETECTED:
-      return "Inverter Enable line has not been active for a long time. Check Wiring!";
+      message = "Inverter Enable line has not been active for a long time. Check Wiring!";
+      break;
     case EVENT_CELL_CRITICAL_UNDER_VOLTAGE:
-      return "CELL VOLTAGE CRITICALLY LOW! Not possible to continue. Inspect battery!";
+      message = "CELL VOLTAGE CRITICALLY LOW! Not possible to continue. Inspect battery!";
+      break;
     case EVENT_CELL_UNDER_VOLTAGE:
-      return "Cell undervoltage. Further discharge not possible. Check balancing of cells";
+      message = "Cell undervoltage. Further discharge not possible. Check balancing of cells";
+      break;
     case EVENT_CELL_OVER_VOLTAGE:
-      return "Cell overvoltage. Further charging not possible. Check balancing of cells";
+      message = "Cell overvoltage. Further charging not possible. Check balancing of cells";
+      break;
     case EVENT_CELL_CRITICAL_OVER_VOLTAGE:
-      return "CELL VOLTAGE CRITICALLY HIGH! Not possible to continue. Inspect battery!";
+      message = "CELL VOLTAGE CRITICALLY HIGH! Not possible to continue. Inspect battery!";
+      break;
     case EVENT_CELL_DEVIATION_HIGH:
-      return "Large cell voltage deviation! Check balancing of cells";
+      message = "Large cell voltage deviation! Check balancing of cells";
+      break;
     case EVENT_UNKNOWN_EVENT_SET:
-      return "An unknown event was set! Review your code!";
+      message = "An unknown event was set! Review your code!";
+      break;
     case EVENT_DUMMY_INFO:
-      return "The dummy info event was set!";  // Don't change this event message!
+      message = "The dummy info event was set!";  // Don't change this event message!
+      break;
     case EVENT_DUMMY_DEBUG:
-      return "The dummy debug event was set!";  // Don't change this event message!
+      message = "The dummy debug event was set!";  // Don't change this event message!
+      break;
     case EVENT_DUMMY_WARNING:
-      return "The dummy warning event was set!";  // Don't change this event message!
+      message = "The dummy warning event was set!";  // Don't change this event message!
+      break;
     case EVENT_DUMMY_ERROR:
-      return "The dummy error event was set!";  // Don't change this event message!
+      message = "The dummy error event was set!";  // Don't change this event message!
+      break;
     case EVENT_PERSISTENT_SAVE_INFO:
-      return "Failed to save user settings. Namespace full?";
+      message = "Failed to save user settings. Namespace full?";
+      break;
     case EVENT_SERIAL_RX_WARNING:
-      return "Error in serial function: No data received for some time, see data for minutes";
+      message = "Error in serial function: No data received for some time, see data for minutes";
+      break;
     case EVENT_SERIAL_RX_FAILURE:
-      return "Error in serial function: No data for a long time!";
+      message = "Error in serial function: No data for a long time!";
+      break;
     case EVENT_SERIAL_TX_FAILURE:
-      return "Error in serial function: No ACK from receiver!";
+      message = "Error in serial function: No ACK from receiver!";
+      break;
     case EVENT_SERIAL_TRANSMITTER_FAILURE:
-      return "Error in serial function: Some ERROR level fault in transmitter, received by receiver";
+      message = "Error in serial function: Some ERROR level fault in transmitter, received by receiver";
+      break;
     case EVENT_SMA_PAIRING:
-      return "SMA inverter trying to pair, contactors will close and open according to Enable line";
+      message = "SMA inverter trying to pair, contactors will close and open according to Enable line";
+      break;
     case EVENT_OTA_UPDATE:
-      return "OTA update started!";
+      message = "OTA update started!";
+      break;
     case EVENT_OTA_UPDATE_TIMEOUT:
-      return "OTA update timed out!";
+      message = "OTA update timed out!";
+      break;
     case EVENT_RESET_UNKNOWN:
-      return "The board was reset unexpectedly, and reason can't be determined";
+      message = "The board was reset unexpectedly, and reason can't be determined";
+      break;
     case EVENT_RESET_POWERON:
-      return "The board was reset from a power-on event. Normal operation";
+      message = "The board was reset from a power-on event. Normal operation";
+      break;
     case EVENT_RESET_EXT:
-      return "The board was reset from an external pin";
+      message = "The board was reset from an external pin";
+      break;
     case EVENT_RESET_SW:
-      return "The board was reset via software, webserver or OTA. Normal operation";
+      message = "The board was reset via software, webserver or OTA. Normal operation";
+      break;
     case EVENT_RESET_PANIC:
-      return "The board was reset due to an exception or panic. Inform developers!";
+      message = "The board was reset due to an exception or panic. Inform developers!";
+      break;
     case EVENT_RESET_INT_WDT:
-      return "The board was reset due to an interrupt watchdog timeout. Inform developers!";
+      message = "The board was reset due to an interrupt watchdog timeout. Inform developers!";
+      break;
     case EVENT_RESET_TASK_WDT:
-      return "The board was reset due to a task watchdog timeout. Inform developers!";
+      message = "The board was reset due to a task watchdog timeout. Inform developers!";
+      break;
     case EVENT_RESET_WDT:
-      return "The board was reset due to other watchdog timeout. Inform developers!";
+      message = "The board was reset due to other watchdog timeout. Inform developers!";
+      break;
     case EVENT_RESET_DEEPSLEEP:
-      return "The board was reset after exiting deep sleep mode";
+      message = "The board was reset after exiting deep sleep mode";
+      break;
     case EVENT_RESET_BROWNOUT:
-      return "The board was reset due to a momentary low voltage condition. This is expected during certain "
-             "operations like flashing via USB";
+      message = "The board was reset due to a momentary low voltage condition. This is expected during certain operations like flashing via USB";
+      break;
     case EVENT_RESET_SDIO:
-      return "The board was reset over SDIO";
+      message = "The board was reset over SDIO";
+      break;
     case EVENT_RESET_USB:
-      return "The board was reset by the USB peripheral";
+      message = "The board was reset by the USB peripheral";
+      break;
     case EVENT_RESET_JTAG:
-      return "The board was reset by JTAG";
+      message = "The board was reset by JTAG";
+      break;
     case EVENT_RESET_EFUSE:
-      return "The board was reset due to an efuse error";
+      message = "The board was reset due to an efuse error";
+      break;
     case EVENT_RESET_PWR_GLITCH:
-      return "The board was reset due to a detected power glitch";
+      message = "The board was reset due to a detected power glitch";
+      break;
     case EVENT_RESET_CPU_LOCKUP:
-      return "The board was reset due to CPU lockup. Inform developers!";
+      message = "The board was reset due to CPU lockup. Inform developers!";
+      break;
     case EVENT_RJXZS_LOG:
-      return "Error code active in RJXZS BMS. Clear via their smartphone app!";
+      message = "Error code active in RJXZS BMS. Clear via their smartphone app!";
+      break;
     case EVENT_PAUSE_BEGIN:
-      return "The emulator is trying to pause the battery.";
+      message = "The emulator is trying to pause the battery.";
+      break;
     case EVENT_PAUSE_END:
-      return "The emulator is attempting to resume battery operation from pause.";
+      message = "The emulator is attempting to resume battery operation from pause.";
+      break;
     case EVENT_PID_FAILED:
-      return "Failed to write PID request to battery";
+      message = "Failed to write PID request to battery";
+      break;
     case EVENT_WIFI_CONNECT:
-      return "Wifi connected.";
+      message = "Wifi connected.";
+      break;
     case EVENT_WIFI_DISCONNECT:
-      return "Wifi disconnected.";
+      message = "Wifi disconnected.";
+      break;
     case EVENT_MQTT_CONNECT:
-      return "MQTT connected.";
+      message = "MQTT connected.";
+      break;
     case EVENT_MQTT_DISCONNECT:
-      return "MQTT disconnected.";
+      message = "MQTT disconnected.";
+      break;
     case EVENT_EQUIPMENT_STOP:
-      return "User requested stop, either via equipment stop circuit or webserver Open Contactor button";
+      message = "User requested stop, either via equipment stop circuit or webserver Open Contactor button";
+      break;
     case EVENT_SD_INIT_FAILED:
-      return "SD card initialization failed, check hardware. Power must be removed to reset the SD card.";
+      message = "SD card initialization failed, check hardware. Power must be removed to reset the SD card.";
+      break;
     case EVENT_PERIODIC_BMS_RESET:
-      return "BMS reset event completed.";
+      message = "BMS reset event completed.";
+      break;
     case EVENT_PERIODIC_BMS_RESET_FAILURE:
-      return "BMS reset aborted - contactors were still under load.";
+      message = "BMS reset aborted - contactors were still under load.";
+      break;
     case EVENT_BMS_RESET_REQ_SUCCESS:
-      return "BMS reset request completed successfully.";
+      message = "BMS reset request completed successfully.";
+      break;
     case EVENT_BMS_RESET_REQ_FAIL:
-      return "BMS reset request failed - check contactors are open.";
-    case EVENT_GPIO_CONFLICT:
-      return "GPIO Pin Conflict: The pin used by '" + esp32hal->failed_allocator() + "' is already allocated by '" +
-             esp32hal->conflicting_allocator() + "'. Please check your configuration and assign different pins.";
-    case EVENT_GPIO_NOT_DEFINED:
-      return "Missing GPIO Assignment: The component '" + esp32hal->failed_allocator() +
-             "' requires a GPIO pin that isn't configured. Please define a valid pin number in your settings.";
+      message = "BMS reset request failed - check contactors are open.";
+      break;
+    case EVENT_GPIO_CONFLICT: {
+      const String failed_allocator_str =
+        esp32hal ? esp32hal->failed_allocator() : String("unknown");
+      const String conflicting_allocator_str =
+        esp32hal ? esp32hal->conflicting_allocator() : String("unknown");
+      const int n = snprintf(
+          out, out_size,
+          "GPIO Pin Conflict: The pin used by '%s' is already allocated by '%s'. Please check your configuration and assign different pins.",
+        failed_allocator_str.c_str(), conflicting_allocator_str.c_str());
+      return n > 0;
+    }
+    case EVENT_GPIO_NOT_DEFINED: {
+      const String failed_allocator_str =
+        esp32hal ? esp32hal->failed_allocator() : String("unknown");
+      const int n = snprintf(
+          out, out_size,
+          "Missing GPIO Assignment: The component '%s' requires a GPIO pin that isn't configured. Please define a valid pin number in your settings.",
+        failed_allocator_str.c_str());
+      return n > 0;
+    }
     default:
-      return "";
+      out[0] = '\0';
+      return false;
   }
+
+  if (!message || message[0] == '\0') {
+    out[0] = '\0';
+    return false;
+  }
+
+  strlcpy(out, message, out_size);
+  return true;
+}
+
+String get_event_message_string(EVENTS_ENUM_TYPE event) {
+  char message[384] = {0};
+  if (!get_event_message(event, message, sizeof(message))) {
+    return "";
+  }
+  return String(message);
 }
 
 const char* get_event_enum_string(EVENTS_ENUM_TYPE event) {

@@ -1,10 +1,9 @@
 #pragma once
 
-#include <Arduino.h>
-
 /**
- * @brief Generate the HTML content for the Cell Monitor page.
+ * @brief Return the static HTML body content for the Cell Monitor page.
  *
- * @return String containing the HTML body content (no <script> block).
+ * Returns a pointer to a string literal in flash — no heap allocation.
+ * @return const char* pointing to the static HTML body (no <script> block).
  */
-String get_cellmonitor_page_content();
+const char* get_cellmonitor_page_content();

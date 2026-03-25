@@ -1,11 +1,12 @@
 #pragma once
 
 #include <Arduino.h>
+#include "../common/spec_page_layout.h"
 
 /**
  * @brief Build the shared-layout HTML header for Battery Specifications page.
  */
-String get_battery_specs_page_html_header();
+const WebserverCommonSpecLayout::SpecPageParams& get_battery_specs_page_params();
 
 /**
  * @brief printf-compatible format template for the Battery Specifications data grid.

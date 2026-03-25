@@ -17,6 +17,19 @@
 #include <esp_wifi.h>
 #include <WiFi.h>
 
+namespace {
+constexpr uint32_t kDiscoveryLoopPollMs = 10;
+constexpr uint32_t kPostChannelSettleDelayMs = 50;
+constexpr uint32_t kMsPerSecond = 1000;
+
+constexpr uint8_t kDiscoveryChannels[] = {
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13
+};
+
+constexpr uint8_t kDiscoveryChannelCount =
+    sizeof(kDiscoveryChannels) / sizeof(kDiscoveryChannels[0]);
+}  // namespace
+
 DiscoveryTask& DiscoveryTask::instance() {
     static DiscoveryTask instance;
     return instance;
@@ -154,7 +167,7 @@ void DiscoveryTask::restart_wait_for_stabilization() const {
     const uint32_t start_ms = millis();
 
     while ((millis() - start_ms) < wait_ms) {
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(pdMS_TO_TICKS(kDiscoveryLoopPollMs));
     }
 }
 
@@ -507,18 +520,16 @@ bool DiscoveryTask::active_channel_hop_scan(uint8_t* discovered_channel) {
     
     // Start from last known successful channel whenever possible
     uint8_t saved_ch = TxStateMachine::instance().last_known_channel();
-    if (saved_ch < 1 || saved_ch > 13) {
+    if (saved_ch < kDiscoveryChannels[0] ||
+        saved_ch > kDiscoveryChannels[kDiscoveryChannelCount - 1]) {
         // Fallback to persisted channel from channel manager/NVS
         saved_ch = ChannelManager::instance().get_channel();
     }
     
-    // Channels to scan (regulatory domain dependent)
-    const uint8_t channels[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13};
-    const uint8_t num_channels = sizeof(channels) / sizeof(channels[0]);
-    
     // Determine starting index: if we have a saved channel, start from there
     uint8_t start_index = 0;
-    if (saved_ch >= 1 && saved_ch <= 13) {
+    if (saved_ch >= kDiscoveryChannels[0] &&
+        saved_ch <= kDiscoveryChannels[kDiscoveryChannelCount - 1]) {
         start_index = saved_ch - 1;  // Convert channel number to array index
         LOG_INFO("DISCOVERY", "Starting scan from saved channel %d (quick reconnect)", saved_ch);
     } else {
@@ -540,9 +551,9 @@ bool DiscoveryTask::active_channel_hop_scan(uint8_t* discovered_channel) {
     uint8_t ack_mac[6] = {0};
     
     // Scan channels starting from start_index, wrapping around to scan all channels
-    for (uint8_t offset = 0; offset < num_channels; offset++) {
-        uint8_t i = (start_index + offset) % num_channels;  // Circular scan
-        uint8_t ch = channels[i];
+    for (uint8_t offset = 0; offset < kDiscoveryChannelCount; offset++) {
+        uint8_t i = (start_index + offset) % kDiscoveryChannelCount;  // Circular scan
+        uint8_t ch = kDiscoveryChannels[i];
         
         LOG_INFO("DISCOVERY", "Broadcasting PROBE on channel %d for %dms...", ch, TRANSMIT_DURATION_MS);
         
@@ -581,7 +592,7 @@ bool DiscoveryTask::active_channel_hop_scan(uint8_t* discovered_channel) {
             // Check discovery queue for ACK response
             // This queue is separate from the main RX queue, so RX task won't consume it
             espnow_queue_msg_t msg;
-            if (EspnowQueueManager::instance().receive_from_discovery_queue(msg, 10)) {
+            if (EspnowQueueManager::instance().receive_from_discovery_queue(msg, kDiscoveryLoopPollMs)) {
                 // Check if this is an ACK message
                 if (msg.len >= (int)sizeof(ack_t)) {
                     const ack_t* a = reinterpret_cast<const ack_t*>(msg.data);
@@ -606,7 +617,7 @@ bool DiscoveryTask::active_channel_hop_scan(uint8_t* discovered_channel) {
             }
             
             // Brief yield to prevent watchdog and allow ACKs to be received
-            vTaskDelay(pdMS_TO_TICKS(10));
+            vTaskDelay(pdMS_TO_TICKS(kDiscoveryLoopPollMs));
         }
         
         if (ack_received) {
@@ -617,7 +628,7 @@ bool DiscoveryTask::active_channel_hop_scan(uint8_t* discovered_channel) {
             // Otherwise peer channel won't match home channel and sends will fail
             esp_wifi_set_channel(ack_channel, WIFI_SECOND_CHAN_NONE);
             LOG_DEBUG("DISCOVERY", "WiFi channel set to %d", ack_channel);
-            delay(50);  // CHANNEL_TRANSITION delay (from timing config)
+            delay(kPostChannelSettleDelayMs);
             
             // Register peer with explicit channel (now matching our WiFi channel)
             if (!EspnowPeerManager::add_peer(ack_mac, ack_channel)) {
@@ -647,6 +658,9 @@ bool DiscoveryTask::active_channel_hop_scan(uint8_t* discovered_channel) {
 
 void DiscoveryTask::active_channel_hopping_task(void* parameter) {
     DiscoveryTask* self = static_cast<DiscoveryTask*>(parameter);
+    const uint32_t full_scan_duration_ms =
+        static_cast<uint32_t>(kDiscoveryChannelCount) *
+        TimingConfig::TRANSMIT_DURATION_PER_CHANNEL_MS;
     
     uint8_t discovered_channel = 0;
     uint32_t scan_attempt = 0;
@@ -654,8 +668,8 @@ void DiscoveryTask::active_channel_hopping_task(void* parameter) {
     
     LOG_INFO("DISCOVERY", "═══ ACTIVE CHANNEL HOPPING STARTED ═══");
     LOG_INFO("DISCOVERY", "Transmitter broadcasts PROBE until receiver ACKs");
-    LOG_INFO("DISCOVERY", "Each full scan takes ~13 seconds (1s × 13 channels)");
-    LOG_INFO("DISCOVERY", "Section 11 Architecture: 6x faster than Section 10 passive (78s → 13s)");
+    LOG_INFO("DISCOVERY", "Each full scan takes ~%lu seconds",
+             static_cast<unsigned long>(full_scan_duration_ms / kMsPerSecond));
     
     while (!discovery_complete) {
         scan_attempt++;
@@ -692,13 +706,16 @@ void DiscoveryTask::active_channel_hopping_task(void* parameter) {
         }
         
         // No receiver found this cycle - wait before retrying
-        LOG_INFO("DISCOVERY", "Waiting 5s before next scan cycle...");
-        vTaskDelay(pdMS_TO_TICKS(TimingConfig::DISCOVERY_RETRY_INTERVAL_MS));  // 5s retry in active mode
+        LOG_INFO("DISCOVERY", "Waiting %lums before next scan cycle...",
+                 static_cast<unsigned long>(TimingConfig::DISCOVERY_RETRY_INTERVAL_MS));
+        vTaskDelay(pdMS_TO_TICKS(TimingConfig::DISCOVERY_RETRY_INTERVAL_MS));
     }
     
     LOG_INFO("DISCOVERY", "✓ Active channel hopping complete - receiver connected");
     LOG_INFO("DISCOVERY", "Total scan attempts: %d", scan_attempt);
-    LOG_INFO("DISCOVERY", "Discovery time: ~%d seconds", scan_attempt * 13);
+    const uint32_t total_discovery_ms = scan_attempt * full_scan_duration_ms;
+    LOG_INFO("DISCOVERY", "Discovery time: ~%lu seconds",
+             static_cast<unsigned long>(total_discovery_ms / kMsPerSecond));
 
     // Task can exit - connection is now established. Clear handles/flags so future
     // reconnection attempts can start a fresh task without duplication.

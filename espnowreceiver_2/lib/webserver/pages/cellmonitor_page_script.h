@@ -9,6 +9,6 @@
  * monitor: SSE connection to /api/cell_stream, cell grid rendering,
  * voltage distribution bar chart, and bi-directional hover highlighting.
  *
- * @return String containing the JavaScript.
+ * @return Pointer to static JavaScript payload.
  */
-String get_cellmonitor_page_script();
+const char* get_cellmonitor_page_script();

@@ -13,7 +13,7 @@
  */
 static esp_err_t ota_handler(httpd_req_t *req) {
     String content = get_ota_page_content();
-    String script = get_ota_page_script();
+    const char* script = get_ota_page_script();
 
     return send_rendered_page(req,
                               "OTA Firmware Update",

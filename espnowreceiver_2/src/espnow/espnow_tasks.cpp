@@ -23,6 +23,7 @@
 #include <esp32common/espnow/message_router.h>
 #include <esp32common/espnow/standard_handlers.h>
 #include <esp32common/espnow/packet_utils.h>
+#include <esp32common/config/timing_config.h>
 #include <firmware_version.h>
 
 extern void notify_sse_data_updated();
@@ -624,7 +625,7 @@ void task_espnow_worker(void *parameter) {
     
     for (;;) {
         // Check for messages with short timeout to allow periodic connection check
-        if (xQueueReceive(ESPNow::queue, &queue_msg, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        if (xQueueReceive(ESPNow::queue, &queue_msg, pdMS_TO_TICKS(TimingConfig::RX_ESPNOW_QUEUE_RECEIVE_TIMEOUT_MS)) == pdTRUE) {
             if (queue_msg.len < 1) continue;
 
             const uint8_t msg_type = queue_msg.data[0];
@@ -702,10 +703,11 @@ void task_espnow_worker(void *parameter) {
             }
         }
 
-        state_machine.check_stale(90000, 5000);  // 90s timeout + 5s grace window for config updates
+        state_machine.check_stale(TimingConfig::RX_ESPNOW_STALE_TIMEOUT_MS,
+                      TimingConfig::RX_ESPNOW_CONFIG_UPDATE_GRACE_MS);
 
         const uint32_t now_ms = millis();
-        if ((now_ms - last_stats_log_ms) >= 15000) {
+        if ((now_ms - last_stats_log_ms) >= TimingConfig::RX_ESPNOW_QUEUE_STATS_LOG_INTERVAL_MS) {
             uint32_t callbacks = ESPNow::rx_callback_count;
             uint32_t drops = ESPNow::rx_queue_drop_count;
             UBaseType_t queued_now = uxQueueMessagesWaiting(ESPNow::queue);

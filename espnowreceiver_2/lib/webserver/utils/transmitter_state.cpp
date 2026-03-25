@@ -185,13 +185,12 @@ void load_metadata_from_prefs(void* prefs_ptr) {
     metadata.received = prefs.getBool(kKeyMetaKnown, false);
     metadata.valid = prefs.getBool(kKeyMetaValid, false);
 
-    String meta_env = prefs.getString(kKeyMetaEnv, "");
-    String meta_device = prefs.getString(kKeyMetaDevice, "");
-    String meta_build = prefs.getString(kKeyMetaBuild, "");
-
-    strncpy(metadata.env, meta_env.c_str(), sizeof(metadata.env) - 1);
-    strncpy(metadata.device, meta_device.c_str(), sizeof(metadata.device) - 1);
-    strncpy(metadata.build_date, meta_build.c_str(), sizeof(metadata.build_date) - 1);
+    metadata.env[0] = '\0';
+    metadata.device[0] = '\0';
+    metadata.build_date[0] = '\0';
+    prefs.getString(kKeyMetaEnv, metadata.env, sizeof(metadata.env));
+    prefs.getString(kKeyMetaDevice, metadata.device, sizeof(metadata.device));
+    prefs.getString(kKeyMetaBuild, metadata.build_date, sizeof(metadata.build_date));
 
     metadata.env[sizeof(metadata.env) - 1] = '\0';
     metadata.device[sizeof(metadata.device) - 1] = '\0';

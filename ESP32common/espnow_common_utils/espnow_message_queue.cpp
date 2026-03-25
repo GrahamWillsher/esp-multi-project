@@ -1,149 +1,284 @@
 /**
  * @file espnow_message_queue.cpp
- * @brief Implementation of ESP-NOW message queue
+ * @brief Implementation of fixed-capacity ring buffer for ESP-NOW messages
+ * 
+ * HARDENING PHASE A (2026-03-25): Complete rewrite from std::queue to ring buffer
+ * 
+ * Previous design problems fixed:
+ * - Dynamic allocation removed → Fixed buffer allocated once at construction
+ * - Unbounded growth eliminated → Deterministic capacity
+ * - Mixed synchronization fixed → Single-lock discipline
+ * - No metrics → Added overflow tracking and max-depth monitoring
  */
 
 #include "espnow_message_queue.h"
 #include <esp_timer.h>
+#include <cstdlib>
 
-EspNowMessageQueue::EspNowMessageQueue() 
-    : queue_mutex_(nullptr), 
-      log_tag_("ESPNOW_QUEUE") {
+// ============================================================================
+// Constructor and Destructor
+// ============================================================================
+
+EspNowMessageQueue::EspNowMessageQueue(size_t capacity, QueueOverflowPolicy overflow_policy)
+    : capacity_(capacity > 0 ? capacity : EspNowTiming::MAX_QUEUE_SIZE),
+      head_(0),
+      tail_(0),
+      count_(0),
+      overflow_policy_(overflow_policy),
+      buffer_mutex_(nullptr) {
     
-    // Create mutex for thread-safe queue access
-    queue_mutex_ = xSemaphoreCreateMutex();
-    if (queue_mutex_ == nullptr) {
-        LOG_ERROR(log_tag_, "Failed to create queue mutex!");
+    
+    // Allocate ring buffer (use malloc for compatibility)
+    buffer_ = (QueuedMessage*)malloc(sizeof(QueuedMessage) * capacity_);
+    if (buffer_ == nullptr) {
+        LOG_ERROR("ESPNOW_QUEUE", "Failed to allocate ring buffer (%u messages)", capacity_);
+        capacity_ = 0;
+        return;
     }
     
-    LOG_INFO(log_tag_, "Message queue initialized (capacity: %u)", 
-             EspNowTiming::MAX_QUEUE_SIZE);
+    // Initialize buffer (zero-initialize for safety)
+    memset(buffer_, 0, sizeof(QueuedMessage) * capacity_);
+    
+    // Create mutex
+    buffer_mutex_ = xSemaphoreCreateMutex();
+    if (buffer_mutex_ == nullptr) {
+        LOG_ERROR("ESPNOW_QUEUE", "Failed to create queue mutex");
+        free(buffer_);
+        buffer_ = nullptr;
+        return;
+    }
+    // Initialize metrics
+    metrics_.push_failures = 0;
+    metrics_.overflow_count = 0;
+    metrics_.max_depth_seen = 0;
+    
+    LOG_INFO("ESPNOW_QUEUE", "Ring buffer queue initialized (capacity: %u, policy: %s)",
+             capacity_,
+             overflow_policy_ == QueueOverflowPolicy::DROP_OLDEST ? "DROP_OLDEST" : "REJECT");
 }
 
 EspNowMessageQueue::~EspNowMessageQueue() {
-    // Clear queue
-    clear();
-    
-    // Delete mutex
-    if (queue_mutex_ != nullptr) {
-        vSemaphoreDelete(queue_mutex_);
-        queue_mutex_ = nullptr;
+    // Lock and clear
+    if (lock_queue()) {
+        count_ = 0;
+        head_ = 0;
+        tail_ = 0;
+        unlock_queue();
     }
     
-    LOG_INFO(log_tag_, "Message queue destroyed");
+    // Free buffer
+    if (buffer_ != nullptr) {
+            free(buffer_);
+        buffer_ = nullptr;
+    }
+    
+    // Destroy mutex
+    if (buffer_mutex_ != nullptr) {
+        vSemaphoreDelete(buffer_mutex_);
+        buffer_mutex_ = nullptr;
+    }
+    
+    LOG_INFO("ESPNOW_QUEUE", "Ring buffer queue destroyed");
 }
 
-bool EspNowMessageQueue::lock() {
-    if (queue_mutex_ != nullptr) {
-        return xSemaphoreTake(queue_mutex_, pdMS_TO_TICKS(EspNowTiming::QUEUE_OPERATION_TIMEOUT_MS)) == pdTRUE;
+// ============================================================================
+// Synchronization Helpers
+// ============================================================================
+
+bool EspNowMessageQueue::lock_queue(uint32_t timeout_ms) {
+    if (buffer_mutex_ == nullptr) {
+        LOG_ERROR("ESPNOW_QUEUE", "Queue mutex is null!");
+        return false;
     }
-    LOG_WARN(log_tag_, "Queue mutex is null!");
-    return false;
+    
+    BaseType_t result = xSemaphoreTake(buffer_mutex_, pdMS_TO_TICKS(timeout_ms));
+    if (result != pdTRUE) {
+        LOG_WARN("ESPNOW_QUEUE", "Failed to acquire queue lock (timeout: %ums)", timeout_ms);
+        return false;
+    }
+    
+    return true;
 }
 
-void EspNowMessageQueue::unlock() {
-    if (queue_mutex_ != nullptr) {
-        xSemaphoreGive(queue_mutex_);
+void EspNowMessageQueue::unlock_queue() {
+    if (buffer_mutex_ != nullptr) {
+        xSemaphoreGive(buffer_mutex_);
     }
 }
+
+// ============================================================================
+// Core Queue Operations
+// ============================================================================
 
 bool EspNowMessageQueue::push(const uint8_t* mac, const uint8_t* data, size_t len) {
     // Validate parameters
-    if (mac == nullptr || data == nullptr || len == 0 || len > EspNowTiming::MAX_ESPNOW_PAYLOAD) {
-        LOG_ERROR(log_tag_, "Invalid message parameters");
+    if (mac == nullptr || data == nullptr || len == 0 || len > 250) {
+        LOG_ERROR("ESPNOW_QUEUE", "Invalid push parameters (mac:%p, data:%p, len:%zu)",
+                 mac, data, len);
         return false;
     }
     
-    if (!lock()) {
-        LOG_ERROR(log_tag_, "Failed to lock queue for push");
+    if (!lock_queue()) {
+        LOG_ERROR("ESPNOW_QUEUE", "Failed to lock queue for push");
+        metrics_.push_failures++;
         return false;
     }
     
-    // Check if queue is full
-    if (queue_.size() >= EspNowTiming::MAX_QUEUE_SIZE) {
-        unlock();
-        LOG_WARN(log_tag_, "Queue is full (%u messages), cannot add", queue_.size());
+    // Check if buffer is initialized
+    if (buffer_ == nullptr || capacity_ == 0) {
+        LOG_ERROR("ESPNOW_QUEUE", "Queue buffer not initialized");
+        unlock_queue();
+        metrics_.push_failures++;
         return false;
     }
     
-    // Create and add message
-    QueuedMessage msg(mac, data, len);
-    msg.timestamp = esp_timer_get_time() / 1000;  // Current time in ms
-    msg.retry_count = 0;
+    // Handle overflow
+    if (count_ >= capacity_) {
+        handle_overflow();
+        // After overflow handling, if still full, fail or queue was cleared
+        if (count_ >= capacity_) {
+            LOG_WARN("ESPNOW_QUEUE", "Queue full and overflow not handled");
+            unlock_queue();
+            metrics_.push_failures++;
+            return false;
+        }
+    }
     
-    queue_.push(msg);
+    // Add message to buffer at head position
+    buffer_[head_] = QueuedMessage(mac, data, len);
+    buffer_[head_].timestamp = esp_timer_get_time() / 1000;  // ms since boot
+    buffer_[head_].retry_count = 0;
     
-    size_t current_size = queue_.size();
-    unlock();
+    // Advance head with wraparound
+    head_ = (head_ + 1) % capacity_;
+    count_++;
     
-    LOG_DEBUG(log_tag_, "Message queued (queue size: %u)", current_size);
+    // Track max depth
+    if (count_ > metrics_.max_depth_seen) {
+        metrics_.max_depth_seen = count_;
+    }
+    
+    LOG_DEBUG("ESPNOW_QUEUE", "Message pushed (size: %u/%u)", count_, capacity_);
+    
+    unlock_queue();
     return true;
 }
 
 bool EspNowMessageQueue::peek(QueuedMessage& msg) {
-    if (!lock()) {
-        LOG_ERROR(log_tag_, "Failed to lock queue for peek");
+    if (!lock_queue()) {
+        LOG_ERROR("ESPNOW_QUEUE", "Failed to lock queue for peek");
         return false;
     }
     
-    if (queue_.empty()) {
-        unlock();
+    if (count_ == 0) {
+        unlock_queue();
         return false;
     }
     
-    msg = queue_.front();
-    unlock();
+    // Copy message at tail
+    msg = buffer_[tail_];
+    
+    unlock_queue();
     return true;
 }
 
 bool EspNowMessageQueue::pop() {
-    if (!lock()) {
-        LOG_ERROR(log_tag_, "Failed to lock queue for pop");
+    if (!lock_queue()) {
+        LOG_ERROR("ESPNOW_QUEUE", "Failed to lock queue for pop");
         return false;
     }
     
-    if (queue_.empty()) {
-        unlock();
+    if (count_ == 0) {
+        unlock_queue();
         return false;
     }
     
-    queue_.pop();
-    size_t remaining = queue_.size();
-    unlock();
+    // Clear message at tail (for safety)
+    memset(&buffer_[tail_], 0, sizeof(QueuedMessage));
     
-    LOG_DEBUG(log_tag_, "Message removed from queue (remaining: %u)", remaining);
+    // Advance tail with wraparound
+    tail_ = (tail_ + 1) % capacity_;
+    count_--;
+    
+    LOG_DEBUG("ESPNOW_QUEUE", "Message popped (remaining: %u/%u)", count_, capacity_);
+    
+    unlock_queue();
     return true;
 }
 
+// ============================================================================
+// Queue Status
+// ============================================================================
+
 size_t EspNowMessageQueue::size() const {
-    // Note: This is not fully thread-safe, but safe enough for size check
-    return queue_.size();
+    // Not fully synchronized, but safe for read-only check
+    return count_;
 }
 
 bool EspNowMessageQueue::empty() const {
-    return queue_.empty();
+    return count_ == 0;
 }
 
 bool EspNowMessageQueue::full() const {
-    return queue_.size() >= EspNowTiming::MAX_QUEUE_SIZE;
+    return count_ >= capacity_;
 }
 
-void EspNowMessageQueue::clear() {
-    if (!lock()) {
-        LOG_ERROR(log_tag_, "Failed to lock queue for clear");
+QueueMetrics EspNowMessageQueue::get_metrics() const {
+    // Note: Not synchronized; snapshot may be slightly stale
+    return metrics_;
+}
+
+void EspNowMessageQueue::reset_metrics() {
+    if (!lock_queue()) {
         return;
     }
     
-    size_t cleared = queue_.size();
+    metrics_.push_failures = 0;
+    metrics_.overflow_count = 0;
+    metrics_.max_depth_seen = count_;  // Current depth becomes new max reference
     
-    // Clear the queue
-    while (!queue_.empty()) {
-        queue_.pop();
+    LOG_INFO("ESPNOW_QUEUE", "Metrics reset");
+    
+    unlock_queue();
+}
+
+// ============================================================================
+// Queue Management
+// ============================================================================
+
+void EspNowMessageQueue::clear() {
+    if (!lock_queue()) {
+        LOG_ERROR("ESPNOW_QUEUE", "Failed to lock queue for clear");
+        return;
     }
     
-    unlock();
+    size_t cleared = count_;
+    
+    // Reset ring buffer pointers
+    head_ = 0;
+    tail_ = 0;
+    count_ = 0;
+    
+    unlock_queue();
     
     if (cleared > 0) {
-        LOG_INFO(log_tag_, "Cleared %u messages from queue", cleared);
+        LOG_INFO("ESPNOW_QUEUE", "Cleared %u messages from queue", cleared);
+    }
+}
+
+void EspNowMessageQueue::handle_overflow() {
+    // Called when buffer is full and we need to make room
+    // Assumes lock is already held
+    
+    if (overflow_policy_ == QueueOverflowPolicy::DROP_OLDEST) {
+        // Remove oldest (tail) message to make room
+        tail_ = (tail_ + 1) % capacity_;
+        count_--;
+        metrics_.overflow_count++;
+        LOG_WARN("ESPNOW_QUEUE", "Queue full - dropped oldest message (policy: DROP_OLDEST)");
+    } else {
+        // REJECT policy - new message will not be added
+        metrics_.overflow_count++;
+        LOG_WARN("ESPNOW_QUEUE", "Queue full - new message rejected (policy: REJECT)");
     }
 }

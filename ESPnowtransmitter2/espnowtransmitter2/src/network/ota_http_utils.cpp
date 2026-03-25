@@ -26,15 +26,45 @@
 // ---------------------------------------------------------------------------
 namespace {
 
-constexpr size_t   OTA_PSK_MIN_LENGTH             = 32;
-constexpr const char* OTA_PSK_PLACEHOLDER         = "CHANGE_ME_OTA_PSK_32B_MIN";
-constexpr const char* OTA_PSK_NVS_NAMESPACE       = "security";
-constexpr const char* OTA_PSK_NVS_KEY             = "ota_psk";
+struct OtaPskPolicy {
+    size_t psk_min_length;
+    const char* psk_placeholder;
+    const char* psk_nvs_namespace;
+    const char* psk_nvs_key;
+    size_t generated_hex_chars;
+    size_t generated_buffer_chars;
+    size_t generated_random_bytes;
+};
 
-constexpr uint8_t  OTA_AUTH_MAX_FAILURES_PER_WINDOW = 5;
-constexpr uint32_t OTA_AUTH_FAILURE_WINDOW_MS       = 60000;
-constexpr uint32_t OTA_AUTH_BLOCK_MS                = 120000;
-constexpr size_t   OTA_AUTH_RATE_LIMIT_TRACKED_IPS  = 8;
+struct OtaAuthRateLimitPolicy {
+    uint8_t max_failures_per_window;
+    uint32_t failure_window_ms;
+    uint32_t auth_block_ms;
+    size_t tracked_ip_capacity;
+};
+
+struct OtaSecurityPolicy {
+    OtaPskPolicy psk;
+    OtaAuthRateLimitPolicy rate_limit;
+};
+
+constexpr OtaSecurityPolicy kOtaSecurityPolicy{
+    {
+        32,
+        "CHANGE_ME_OTA_PSK_32B_MIN",
+        "security",
+        "ota_psk",
+        64,
+        65,
+        32,
+    },
+    {
+        5,
+        60000,
+        120000,
+        8,
+    },
+};
 
 struct OtaAuthRateLimitEntry {
     char     ip[24]              = {0};
@@ -43,7 +73,7 @@ struct OtaAuthRateLimitEntry {
     uint32_t blocked_until_ms    = 0;
 };
 
-OtaAuthRateLimitEntry g_ota_auth_rate_limit[OTA_AUTH_RATE_LIMIT_TRACKED_IPS];
+OtaAuthRateLimitEntry g_ota_auth_rate_limit[kOtaSecurityPolicy.rate_limit.tracked_ip_capacity];
 
 // ---------------------------------------------------------------------------
 // Internal helpers (not exposed via ota_manager_internal.h)
@@ -73,7 +103,7 @@ OtaAuthRateLimitEntry* get_or_create_rate_limit_entry(const char* ip, uint32_t n
     OtaAuthRateLimitEntry* first_empty = nullptr;
     OtaAuthRateLimitEntry* oldest_entry = &g_ota_auth_rate_limit[0];
 
-    for (size_t i = 0; i < OTA_AUTH_RATE_LIMIT_TRACKED_IPS; ++i) {
+    for (size_t i = 0; i < kOtaSecurityPolicy.rate_limit.tracked_ip_capacity; ++i) {
         OtaAuthRateLimitEntry& entry = g_ota_auth_rate_limit[i];
 
         if (entry.ip[0] == '\0') {
@@ -101,19 +131,18 @@ OtaAuthRateLimitEntry* get_or_create_rate_limit_entry(const char* ip, uint32_t n
 }
 
 bool is_placeholder_psk(const char* value) {
-    return value && strcmp(value, OTA_PSK_PLACEHOLDER) == 0;
+    return value && strcmp(value, kOtaSecurityPolicy.psk.psk_placeholder) == 0;
 }
 
 void generate_random_psk_hex(char* out, size_t out_len) {
-    if (!out || out_len < 65) {
+    if (!out || out_len < kOtaSecurityPolicy.psk.generated_buffer_chars) {
         return;
     }
-    // 32 random bytes => 64 hex chars.
-    for (size_t i = 0; i < 32; ++i) {
+    for (size_t i = 0; i < kOtaSecurityPolicy.psk.generated_random_bytes; ++i) {
         const uint8_t r = static_cast<uint8_t>(esp_random() & 0xFF);
         (void)snprintf(&out[i * 2], 3, "%02x", r);
     }
-    out[64] = '\0';
+    out[kOtaSecurityPolicy.psk.generated_hex_chars] = '\0';
 }
 
 }  // namespace
@@ -350,7 +379,7 @@ void record_auth_failure(const char* ip, uint32_t now_ms) {
     }
 
     if (static_cast<uint32_t>(now_ms - entry->window_started_ms) >
-        OTA_AUTH_FAILURE_WINDOW_MS) {
+        kOtaSecurityPolicy.rate_limit.failure_window_ms) {
         entry->window_started_ms = now_ms;
         entry->failure_count     = 0;
     }
@@ -359,8 +388,8 @@ void record_auth_failure(const char* ip, uint32_t now_ms) {
         ++entry->failure_count;
     }
 
-    if (entry->failure_count >= OTA_AUTH_MAX_FAILURES_PER_WINDOW) {
-        entry->blocked_until_ms = now_ms + OTA_AUTH_BLOCK_MS;
+    if (entry->failure_count >= kOtaSecurityPolicy.rate_limit.max_failures_per_window) {
+        entry->blocked_until_ms = now_ms + kOtaSecurityPolicy.rate_limit.auth_block_ms;
     }
 }
 
@@ -454,11 +483,15 @@ bool load_ota_psk(char* out_psk, size_t out_psk_len, bool* out_is_provisioned) {
     if (out_is_provisioned) { *out_is_provisioned = false; }
 
     Preferences prefs;
-    if (!prefs.begin(OTA_PSK_NVS_NAMESPACE, false)) { return false; }
+    if (!prefs.begin(kOtaSecurityPolicy.psk.psk_nvs_namespace, false)) { return false; }
 
-    const String nvs_psk = prefs.getString(OTA_PSK_NVS_KEY, "");
-    if (nvs_psk.length() >= OTA_PSK_MIN_LENGTH) {
-        strlcpy(out_psk, nvs_psk.c_str(), out_psk_len);
+    char nvs_psk[96] = {0};
+    const size_t nvs_psk_len = prefs.getString(
+        kOtaSecurityPolicy.psk.psk_nvs_key,
+        nvs_psk,
+        sizeof(nvs_psk));
+    if (nvs_psk_len >= kOtaSecurityPolicy.psk.psk_min_length) {
+        strlcpy(out_psk, nvs_psk, out_psk_len);
         if (out_is_provisioned) { *out_is_provisioned = true; }
         prefs.end();
         return true;
@@ -466,9 +499,9 @@ bool load_ota_psk(char* out_psk, size_t out_psk_len, bool* out_is_provisioned) {
 
     // If a strong build-time PSK is configured, persist it once into NVS.
     if (config::security::OTA_PSK &&
-        strlen(config::security::OTA_PSK) >= OTA_PSK_MIN_LENGTH &&
+        strlen(config::security::OTA_PSK) >= kOtaSecurityPolicy.psk.psk_min_length &&
         !is_placeholder_psk(config::security::OTA_PSK)) {
-        prefs.putString(OTA_PSK_NVS_KEY, config::security::OTA_PSK);
+        prefs.putString(kOtaSecurityPolicy.psk.psk_nvs_key, config::security::OTA_PSK);
         strlcpy(out_psk, config::security::OTA_PSK, out_psk_len);
         if (out_is_provisioned) { *out_is_provisioned = true; }
         prefs.end();
@@ -476,14 +509,14 @@ bool load_ota_psk(char* out_psk, size_t out_psk_len, bool* out_is_provisioned) {
     }
 
     // First-boot auto-provision: generate a per-device random PSK and persist.
-    char generated_psk[65] = {0};
+    char generated_psk[kOtaSecurityPolicy.psk.generated_buffer_chars] = {0};
     generate_random_psk_hex(generated_psk, sizeof(generated_psk));
     if (generated_psk[0] == '\0') {
         prefs.end();
         return false;
     }
 
-    if (prefs.putString(OTA_PSK_NVS_KEY, generated_psk) == 0) {
+    if (prefs.putString(kOtaSecurityPolicy.psk.psk_nvs_key, generated_psk) == 0) {
         prefs.end();
         return false;
     }
@@ -491,7 +524,7 @@ bool load_ota_psk(char* out_psk, size_t out_psk_len, bool* out_is_provisioned) {
     strlcpy(out_psk, generated_psk, out_psk_len);
     if (out_is_provisioned) { *out_is_provisioned = true; }
     LOG_WARN("HTTP_OTA", "Auto-provisioned OTA PSK in NVS namespace '%s'",
-             OTA_PSK_NVS_NAMESPACE);
+             kOtaSecurityPolicy.psk.psk_nvs_namespace);
     prefs.end();
     return true;
 }

@@ -1,7 +1,7 @@
 #include "cellmonitor_page_content.h"
 
-String get_cellmonitor_page_content() {
-    return R"rawliteral(
+const char* get_cellmonitor_page_content() {
+    static const char kContent[] = R"rawliteral(
     <h1>Cell Monitor</h1>
     <div class='info-box' style='margin-bottom: 20px;'>
         <div style='display: flex; justify-content: space-between; align-items: center;'>
@@ -46,4 +46,5 @@ String get_cellmonitor_page_content() {
         <div id='voltageBar' style='display: flex; flex-direction: row; gap: 2px; height: 120px; width: 100%; background: #111; padding: 4px; align-items: flex-end; box-sizing: border-box;'></div>
     </div>
     )rawliteral";
+    return kContent;
 }

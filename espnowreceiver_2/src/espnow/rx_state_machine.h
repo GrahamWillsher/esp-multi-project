@@ -26,6 +26,7 @@ public:
         uint32_t stale_transitions = 0;
         uint32_t last_message_seq = 0;
         uint32_t last_message_ms = 0;
+        uint32_t lock_failures = 0;  ///< Mutex acquisition contention/timeout count
     };
 
     static RxStateMachine& instance();
@@ -55,4 +56,7 @@ private:
     Stats stats_{};
     uint8_t last_msg_type_{0};
     uint32_t last_config_update_ms_{0};  // Timestamp of last config update for grace window calculation
+    // Incremented without the mutex (benign on embedded single-core ISR paths;
+    // only used as a diagnostic metric, not a safety invariant).
+    mutable volatile uint32_t lock_failure_count_{0};
 };

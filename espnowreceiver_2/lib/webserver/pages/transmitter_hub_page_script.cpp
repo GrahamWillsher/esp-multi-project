@@ -1,6 +1,6 @@
 #include "transmitter_hub_page_script.h"
 
-String get_transmitter_hub_page_script() {
+const char* get_transmitter_hub_page_script() {
     return R"rawliteral(
         let txHubIntervalsStarted = false;
 

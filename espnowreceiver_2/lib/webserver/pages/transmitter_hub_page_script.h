@@ -3,6 +3,6 @@
 
 #include <Arduino.h>
 
-String get_transmitter_hub_page_script();
+const char* get_transmitter_hub_page_script();
 
 #endif

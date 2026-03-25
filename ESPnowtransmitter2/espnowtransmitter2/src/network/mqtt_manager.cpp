@@ -524,10 +524,13 @@ bool MqttManager::publish_event_logs() {
         const auto& item = ordered[i];
         const EVENTS_STRUCT_TYPE* evt = item.event_pointer;
         JsonObject obj = events.createNestedObject();
+        char event_message[384] = {0};
+        const bool have_event_message =
+            get_event_message(item.event_handle, event_message, sizeof(event_message));
         obj["timestamp"] = static_cast<uint64_t>(evt->timestamp);
         obj["level"] = map_event_level(evt->level);
         obj["data"] = evt->data;
-        obj["message"] = get_event_message_string(item.event_handle);
+        obj["message"] = have_event_message ? event_message : "";
         obj["event"] = get_event_enum_string(item.event_handle);
     }
 

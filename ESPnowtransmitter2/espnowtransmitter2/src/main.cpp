@@ -92,12 +92,46 @@
 // ones (see ordering contracts in each function).
 // =============================================================================
 
+static void log_timing_policy() {
+    LOG_INFO("TIMING", "Startup: serial=%lu wifi_stabilize=%lu post_init=%lu component=%lu",
+             static_cast<unsigned long>(TimingConfig::STARTUP.serial_init_delay_ms),
+             static_cast<unsigned long>(TimingConfig::STARTUP.wifi_radio_stabilization_ms),
+             static_cast<unsigned long>(TimingConfig::STARTUP.post_init_delay_ms),
+             static_cast<unsigned long>(TimingConfig::STARTUP.component_init_delay_ms));
+    LOG_INFO("TIMING", "Discovery: retry=%lu deferred=%lu announce=%lu probe=%lu tx_per_channel=%lu",
+             static_cast<unsigned long>(TimingConfig::DISCOVERY.retry_interval_ms),
+             static_cast<unsigned long>(TimingConfig::DISCOVERY.deferred_poll_ms),
+             static_cast<unsigned long>(TimingConfig::DISCOVERY.announcement_interval_ms),
+             static_cast<unsigned long>(TimingConfig::DISCOVERY.probe_interval_ms),
+             static_cast<unsigned long>(TimingConfig::DISCOVERY.transmit_duration_per_channel_ms));
+    LOG_INFO("TIMING", "Heartbeat: interval=%lu timeout=%lu tx_timeout=%lu connect=%lu",
+             static_cast<unsigned long>(TimingConfig::HEARTBEAT.interval_ms),
+             static_cast<unsigned long>(TimingConfig::HEARTBEAT.timeout_ms),
+             static_cast<unsigned long>(TimingConfig::HEARTBEAT.tx_timeout_ms),
+             static_cast<unsigned long>(TimingConfig::HEARTBEAT.espnow_connecting_timeout_ms));
+    LOG_INFO("TIMING", "Ethernet: init=%lu phy_reset=%lu ip_wait=%lu recovery=%lu",
+             static_cast<unsigned long>(TimingConfig::ETHERNET.init_delay_ms),
+             static_cast<unsigned long>(TimingConfig::ETHERNET.phy_reset_delay_ms),
+             static_cast<unsigned long>(TimingConfig::ETHERNET.ip_acquiring_timeout_ms),
+             static_cast<unsigned long>(TimingConfig::ETHERNET.recovery_timeout_ms));
+    LOG_INFO("TIMING", "MQTT: reconnect=%lu publish=%lu loop=%lu max_retry=%lu",
+             static_cast<unsigned long>(TimingConfig::MQTT.reconnect_interval_ms),
+             static_cast<unsigned long>(TimingConfig::MQTT.publish_interval_ms),
+             static_cast<unsigned long>(TimingConfig::MQTT.loop_delay_ms),
+             static_cast<unsigned long>(TimingConfig::MQTT.max_retry_delay_ms));
+    LOG_INFO("TIMING", "Loops: main=%lu eth_update=%lu state_validation=%lu metrics=%lu",
+             static_cast<unsigned long>(TimingConfig::LOOPS.main_loop_delay_ms),
+             static_cast<unsigned long>(TimingConfig::LOOPS.eth_state_machine_update_interval_ms),
+             static_cast<unsigned long>(TimingConfig::LOOPS.state_validation_interval_ms),
+             static_cast<unsigned long>(TimingConfig::LOOPS.metrics_report_interval_ms));
+}
+
 // --- Phase 1: Hardware -------------------------------------------------------
 // Initialise physical hardware: serial port, HAL GPIO, firmware metadata.
 // No subsystem dependencies.
 static void bootstrap_hardware() {
     Serial.begin(hardware::SERIAL_BAUD_RATE);
-    vTaskDelay(pdMS_TO_TICKS(TimingConfig::SERIAL_INIT_DELAY_MS));
+    vTaskDelay(pdMS_TO_TICKS(TimingConfig::STARTUP.serial_init_delay_ms));
     LOG_INFO("MAIN", "\n=== ESP-NOW Transmitter (Modular) ===");
 
     // Initialize hardware abstraction layer (GPIO configuration for Waveshare HAT)
@@ -115,6 +149,7 @@ static void bootstrap_hardware() {
 
     LOG_INFO("MAIN", "Device: %s", DEVICE_NAME);
     LOG_INFO("MAIN", "Protocol Version: %d", PROTOCOL_VERSION);
+    log_timing_policy();
 
     OtaBootGuard::begin("TX_BOOT_GUARD");
 }

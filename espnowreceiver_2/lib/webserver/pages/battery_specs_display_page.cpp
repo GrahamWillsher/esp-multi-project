@@ -1,7 +1,6 @@
 #include "battery_specs_display_page.h"
 #include "battery_specs_display_page_content.h"
 #include "battery_specs_display_page_script.h"
-#include "generic_specs_page.h"
 #include "../common/spec_page_layout.h"
 #include "../utils/transmitter_manager.h"
 #include "../page_definitions.h"
@@ -45,47 +44,32 @@ esp_err_t battery_specs_page_handler(httpd_req_t *req) {
         }
     }
 
-    // Retrieve page sections from module functions
-    String html_header         = get_battery_specs_page_html_header();
-    const char* html_specs_fmt = get_battery_specs_section_fmt();
-    String html_footer         = build_spec_page_html_footer(
-        get_battery_specs_page_nav_links_html(),
-        get_battery_specs_page_inline_script());
+    static const WebserverCommonSpecLayout::SpecPageNavLink kNavLinks[] = {
+        {"/", "&#8592; Back to Dashboard"},
+        {"/charger_settings.html", "Charger Specs &#8594;"},
+        {"/inverter_settings.html", "Inverter Specs &#8594;"},
+    };
 
-    // Allocate response buffer in PSRAM
-    size_t specs_section_max = 2048;
-    size_t total_size = html_header.length() + specs_section_max + html_footer.length() + 256;
+    const String inline_script = get_battery_specs_page_inline_script();
 
-    char* response = (char*)ps_malloc(total_size);
-    if (!response) {
-        LOG_ERROR("BATTERY_PAGE", "Failed to allocate %d bytes in PSRAM", total_size);
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Memory allocation failed");
-        return ESP_FAIL;
-    }
-
-    char specs_section[2048];
-    snprintf(specs_section, sizeof(specs_section), html_specs_fmt,
-             battery_type.c_str(),
-             nominal_capacity_wh,
-             max_design_voltage_dv / 10.0f,
-             min_design_voltage_dv / 10.0f,
-             number_of_cells,
-             max_charge_current_a / 10.0f,
-             max_discharge_current_a / 10.0f,
-             battery_chemistry);
-
-    size_t offset = 0;
-    offset += snprintf(response + offset, total_size - offset, "%s", html_header.c_str());
-    offset += snprintf(response + offset, total_size - offset, "%s", specs_section);
-    offset += snprintf(response + offset, total_size - offset, "%s", html_footer.c_str());
-
-    httpd_resp_set_type(req, "text/html; charset=utf-8");
-    httpd_resp_send(req, response, strlen(response));
-
-    free(response);
-    LOG_INFO("BATTERY_PAGE", "Battery specs page served (%d bytes)", offset);
-
-    return ESP_OK;
+    return WebserverCommonSpecLayout::send_spec_page_response(
+        req,
+        get_battery_specs_page_params(),
+        kNavLinks,
+        sizeof(kNavLinks) / sizeof(kNavLinks[0]),
+        inline_script.c_str(),
+        get_battery_specs_section_fmt(),
+        2048,
+        false,
+        "BATTERY_PAGE",
+        battery_type.c_str(),
+        nominal_capacity_wh,
+        max_design_voltage_dv / 10.0f,
+        min_design_voltage_dv / 10.0f,
+        number_of_cells,
+        max_charge_current_a / 10.0f,
+        max_discharge_current_a / 10.0f,
+        battery_chemistry);
 }
 
 esp_err_t register_battery_specs_page(httpd_handle_t server) {

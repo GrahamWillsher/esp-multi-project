@@ -1,7 +1,7 @@
 #include "monitor_page_script.h"
 #include <Arduino.h>
 
-String get_monitor_page_styles() {
+const char* get_monitor_page_styles() {
     return R"rawliteral(
         .info-box { text-align: center; }
         .data-value {
@@ -32,7 +32,7 @@ String get_monitor_page_styles() {
     )rawliteral";
 }
 
-String get_monitor_page_script() {
+const char* get_monitor_page_script() {
     return R"rawliteral(
         function updateData() {
             fetch('/api/monitor')

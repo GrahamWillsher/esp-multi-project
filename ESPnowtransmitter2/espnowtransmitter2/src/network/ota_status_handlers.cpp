@@ -20,11 +20,7 @@
 #include <cstring>
 
 #ifdef CONFIG_BATTERY_EMULATOR_ENABLED
-// Event system symbols are defined in the battery-emulator component.
-extern const EVENTS_STRUCT_TYPE* get_event_pointer(EVENTS_ENUM_TYPE event);
-extern const char* get_event_enum_string(EVENTS_ENUM_TYPE event);
-extern String get_event_message_string(EVENTS_ENUM_TYPE event);
-extern const char* get_event_level_string(EVENTS_ENUM_TYPE event);
+#include "../battery_emulator/devboard/utils/events.h"
 #endif
 
 // ---------------------------------------------------------------------------
@@ -158,11 +154,14 @@ esp_err_t OtaManager::event_logs_handler(httpd_req_t *req) {
         const EVENTS_STRUCT_TYPE* event_ptr = event_data.second;
 
         StaticJsonDocument<384> edoc;
+        char event_message[384] = {0};
+        const bool have_event_message =
+            get_event_message(event_handle, event_message, sizeof(event_message));
         edoc["type"]         = get_event_enum_string(event_handle);
         edoc["level"]        = get_event_level_string(event_handle);
         edoc["timestamp_ms"] = static_cast<uint32_t>(event_ptr->timestamp);
         edoc["count"]        = static_cast<uint32_t>(event_ptr->occurences);
-        edoc["message"]      = get_event_message_string(event_handle);
+        edoc["message"]      = have_event_message ? event_message : "";
 
         char event_json[384];
         const size_t event_json_len =

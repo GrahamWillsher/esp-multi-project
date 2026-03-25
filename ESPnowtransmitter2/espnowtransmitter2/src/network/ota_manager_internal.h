@@ -24,7 +24,20 @@ constexpr int HTTP_STATUS_TOO_MANY_REQUESTS      = 429;
 // ---------------------------------------------------------------------------
 // Upload constants
 // ---------------------------------------------------------------------------
-constexpr int    OTA_UPLOAD_MAX_RECV_TIMEOUTS = 60;
+struct OtaUploadPolicy {
+    size_t chunk_size_bytes;
+    size_t progress_log_cadence_bytes;
+    int timeout_warn_cadence;
+    int max_recv_timeouts;
+};
+
+constexpr OtaUploadPolicy kOtaUploadPolicy{
+    1024,
+    32768,
+    20,
+    60,
+};
+
 constexpr size_t OTA_IMAGE_SHA256_HEX_LEN     = 64;
 
 // ---------------------------------------------------------------------------

@@ -1,14 +1,17 @@
 #include "inverter_specs_display_page_content.h"
 #include "../common/spec_page_layout.h"
 
-String get_inverter_specs_page_html_header() {
-    return build_spec_page_html_header("Inverter Specifications",
-                                       "&#9889; Inverter Specifications",
-                                       "Inverter Configuration (Real-time from MQTT)",
-                                       "transmitter/BE/spec_data_2",
-                                       "#f093fb",
-                                       "#f5576c",
-                                       "#f5576c");
+const WebserverCommonSpecLayout::SpecPageParams& get_inverter_specs_page_params() {
+    static const WebserverCommonSpecLayout::SpecPageParams kParams = {
+        .page_title     = "Inverter Specifications",
+        .heading        = "&#9889; Inverter Specifications",
+        .subtitle       = "Inverter Configuration (Real-time from MQTT)",
+        .source_topic   = "transmitter/BE/spec_data_2",
+        .gradient_start = "#f093fb",
+        .gradient_end   = "#f5576c",
+        .accent_color   = "#f5576c",
+    };
+    return kParams;
 }
 
 const char* get_inverter_specs_section_fmt() {

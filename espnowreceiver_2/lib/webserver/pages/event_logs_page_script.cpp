@@ -1,7 +1,7 @@
 #include "event_logs_page_script.h"
 #include <Arduino.h>
 
-String get_event_logs_page_styles() {
+const char* get_event_logs_page_styles() {
     return R"rawliteral(
 .event-log { display: flex; flex-direction: column; gap: 8px; }
 .event-item { background: rgba(0,0,0,0.3); padding: 10px; border-radius: 6px; }
@@ -10,7 +10,7 @@ String get_event_logs_page_styles() {
 )rawliteral";
 }
 
-String get_event_logs_page_script() {
+const char* get_event_logs_page_script() {
     return R"rawliteral(
 async function loadEvents() {
     const status = document.getElementById('eventStatus');

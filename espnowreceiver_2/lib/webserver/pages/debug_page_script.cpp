@@ -1,7 +1,7 @@
 #include "debug_page_script.h"
 #include <Arduino.h>
 
-String get_debug_page_styles() {
+const char* get_debug_page_styles() {
     return R"rawliteral(
 .debug-control {
         background-color: #2C3539;
@@ -74,7 +74,7 @@ String get_debug_page_styles() {
 )rawliteral";
 }
 
-String get_debug_page_script() {
+const char* get_debug_page_script() {
     return R"rawliteral(
 const levelNames = ['EMERG', 'ALERT', 'CRIT', 'ERROR', 'WARNING', 'NOTICE', 'INFO', 'DEBUG'];
 

@@ -1,6 +1,6 @@
 #include "dashboard_page_script.h"
 
-String get_dashboard_page_script() {
+const char* get_dashboard_page_script() {
     return R"rawliteral(
         // Track last update time for "X seconds ago" display
         let lastUpdateTime = Date.now();

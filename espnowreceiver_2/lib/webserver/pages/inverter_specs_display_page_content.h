@@ -1,11 +1,13 @@
 #pragma once
 
-#include <Arduino.h>
+#include "../common/spec_page_layout.h"
 
 /**
- * @brief Build the shared-layout HTML header for Inverter Specifications page.
+ * @brief Static CSS/title parameters for the Inverter Specifications page.
+ *
+ * Returns a reference to a static SpecPageParams object. Never heap-allocates.
  */
-String get_inverter_specs_page_html_header();
+const WebserverCommonSpecLayout::SpecPageParams& get_inverter_specs_page_params();
 
 /**
  * @brief printf-compatible format template for the Inverter Specifications data grid.

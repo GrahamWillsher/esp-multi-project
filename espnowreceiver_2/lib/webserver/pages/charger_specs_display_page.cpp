@@ -44,13 +44,15 @@ esp_err_t charger_specs_page_handler(httpd_req_t *req) {
         }
     }
     
-    String html_header = build_spec_page_html_header("Charger Specifications",
-                                                      "🔌 Charger Specifications",
-                                                      "Charger Configuration (Real-time from MQTT)",
-                                                      "BE/battery_specs",
-                                                      "#fa709a",
-                                                      "#fee140",
-                                                      "#fa709a");
+    static const WebserverCommonSpecLayout::SpecPageParams kPageParams = {
+        .page_title     = "Charger Specifications",
+        .heading        = "🔌 Charger Specifications",
+        .subtitle       = "Charger Configuration (Real-time from MQTT)",
+        .source_topic   = "BE/battery_specs",
+        .gradient_start = "#fa709a",
+        .gradient_end   = "#fee140",
+        .accent_color   = "#fa709a",
+    };
 
     const char* html_specs_section = R"(
         <div class="specs-grid">
@@ -90,16 +92,16 @@ esp_err_t charger_specs_page_handler(httpd_req_t *req) {
         {"/system_settings.html", "System Specs →"},
     };
 
-    String html_footer = build_spec_page_html_footer(
-        ::build_spec_page_nav_links(kNavLinks, sizeof(kNavLinks) / sizeof(kNavLinks[0])));
-
-    GenericSpecsPage::RenderConfig render_config = {
-        .log_tag = "CHARGER_PAGE",
-        .specs_section_size = 2048,
-        .total_slack_bytes = 256,
-        .allocate_specs_section_in_psram = false,
-    };
-    return GenericSpecsPage::send_formatted_page(req, html_header, html_specs_section, html_footer, render_config,
+    return WebserverCommonSpecLayout::send_spec_page_response(
+        req,
+        kPageParams,
+        kNavLinks,
+        sizeof(kNavLinks) / sizeof(kNavLinks[0]),
+        nullptr,
+        html_specs_section,
+        2048,
+        false,
+        "CHARGER_PAGE",
         charger_type.c_str(),
         charger_manufacturer.c_str(),
         max_charge_power_w,

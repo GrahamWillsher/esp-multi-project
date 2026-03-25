@@ -1,6 +1,6 @@
 #include "cellmonitor_page_script.h"
 
-String get_cellmonitor_page_script() {
+const char* get_cellmonitor_page_script() {
     return R"rawliteral(
         let selectedCellIdx = -1;
         let selectedBarIdx = -1;

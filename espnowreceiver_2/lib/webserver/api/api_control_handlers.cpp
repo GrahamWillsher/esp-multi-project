@@ -19,6 +19,9 @@
 namespace {
 constexpr size_t OTA_IMAGE_SHA256_HEX_LEN = 64;
 constexpr size_t OTA_RESPONSE_BODY_MAX_LEN = 512;
+constexpr uint8_t OTA_CHALLENGE_FETCH_ATTEMPTS = 6;
+constexpr uint32_t OTA_CHALLENGE_FETCH_RETRY_DELAY_MS = 300;
+constexpr uint32_t OTA_CHALLENGE_HTTP_TIMEOUT_MS = 5000;
 
 struct OtaSessionChallenge {
     char session_id[40];
@@ -138,11 +141,12 @@ bool store_ota_challenge(OtaSessionChallenge* out_challenge,
            expires_at_ms > 0;
 }
 
-bool try_get_prearmed_ota_challenge(OtaSessionChallenge* out_challenge) {
+bool try_get_prearmed_ota_challenge(OtaSessionChallenge* out_challenge,
+                                    String* out_error_detail) {
     const String status_url = TransmitterManager::getURL() + "/api/ota_status";
     HTTPClient status_client;
     status_client.begin(status_url);
-    status_client.setTimeout(5000);
+    status_client.setTimeout(OTA_CHALLENGE_HTTP_TIMEOUT_MS);
 
     bool challenge_ready = false;
     int status_code = status_client.GET();
@@ -163,6 +167,13 @@ bool try_get_prearmed_ota_challenge(OtaSessionChallenge* out_challenge) {
                 LOG_INFO("OTA: Reusing pre-armed OTA challenge from /api/ota_status, id=%.8s...", out_challenge->session_id);
             }
         }
+    } else if (status_code < 0) {
+        if (out_error_detail) {
+            *out_error_detail = "Status fetch transport error (HTTP " + String(status_code) + ")";
+        }
+        LOG_WARN("OTA: Failed to fetch pre-armed challenge from %s (HTTP %d)",
+                 status_url.c_str(),
+                 status_code);
     }
 
     status_client.end();
@@ -173,9 +184,10 @@ bool try_arm_ota_challenge(OtaSessionChallenge* out_challenge, String* out_error
     const String arm_url = TransmitterManager::getURL() + "/api/ota_arm";
     HTTPClient arm_client;
     arm_client.begin(arm_url);
-    arm_client.setTimeout(5000);
+    arm_client.setTimeout(OTA_CHALLENGE_HTTP_TIMEOUT_MS);
+    arm_client.addHeader("Content-Type", "application/json");
 
-    const int arm_code = arm_client.sendRequest("POST", static_cast<uint8_t*>(nullptr), 0);
+    const int arm_code = arm_client.POST("{}");
     String arm_body = arm_client.getString();
     arm_client.end();
 
@@ -194,10 +206,14 @@ bool try_arm_ota_challenge(OtaSessionChallenge* out_challenge, String* out_error
             }
         }
 
+        if (arm_code < 0) {
+            detail = "Transport error contacting /api/ota_arm (HTTP " + String(arm_code) + ")";
+        }
+
         if (out_error_detail) {
             *out_error_detail = detail;
         }
-        LOG_ERROR("OTA: Failed to arm OTA session on transmitter (%s)", detail.c_str());
+        LOG_ERROR("OTA: Failed to arm OTA session on transmitter via %s (%s)", arm_url.c_str(), detail.c_str());
         return false;
     }
 
@@ -229,16 +245,42 @@ bool try_arm_ota_challenge(OtaSessionChallenge* out_challenge, String* out_error
 }
 
 bool acquire_ota_session_challenge(OtaSessionChallenge* out_challenge, String* out_error_detail) {
-    if (try_get_prearmed_ota_challenge(out_challenge)) {
-        return true;
+    String last_error;
+
+    for (uint8_t attempt = 1; attempt <= OTA_CHALLENGE_FETCH_ATTEMPTS; ++attempt) {
+        String status_error;
+        if (try_get_prearmed_ota_challenge(out_challenge, &status_error)) {
+            return true;
+        }
+
+        String arm_error;
+        if (try_arm_ota_challenge(out_challenge, &arm_error)) {
+            return true;
+        }
+
+        if (arm_error.length() > 0) {
+            last_error = arm_error;
+        } else if (status_error.length() > 0) {
+            last_error = status_error;
+        }
+
+        if (attempt < OTA_CHALLENGE_FETCH_ATTEMPTS) {
+            const String reason_suffix = last_error.length() > 0
+                                             ? (" (" + last_error + ")")
+                                             : "";
+            LOG_WARN("OTA: Challenge acquisition attempt %u/%u failed%s; retrying in %lu ms",
+                     attempt,
+                     OTA_CHALLENGE_FETCH_ATTEMPTS,
+                     reason_suffix.c_str(),
+                     static_cast<unsigned long>(OTA_CHALLENGE_FETCH_RETRY_DELAY_MS));
+            vTaskDelay(pdMS_TO_TICKS(OTA_CHALLENGE_FETCH_RETRY_DELAY_MS));
+        }
     }
 
-    if (try_arm_ota_challenge(out_challenge, out_error_detail)) {
-        return true;
-    }
-
-    if (out_error_detail && out_error_detail->length() == 0) {
-        *out_error_detail = "Unable to obtain OTA challenge from transmitter";
+    if (out_error_detail) {
+        *out_error_detail = last_error.length() > 0
+                                ? last_error
+                                : "Unable to obtain OTA challenge from transmitter";
     }
     return false;
 }

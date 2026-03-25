@@ -476,10 +476,11 @@ static esp_err_t root_handler(httpd_req_t *req) {
         });
     )rawliteral";
 
-    String html = renderPage("ESP-NOW Receiver - Transmitter Config", content, PageRenderOptions("", script));
-    httpd_resp_set_type(req, "text/html");
-    httpd_resp_send(req, html.c_str(), html.length());
-    return ESP_OK;
+    return send_rendered_page(req,
+                              "ESP-NOW Receiver - Transmitter Config",
+                              content,
+                              PageRenderOptions("", script),
+                              "text/html");
 }
 
 esp_err_t register_settings_page(httpd_handle_t server) {

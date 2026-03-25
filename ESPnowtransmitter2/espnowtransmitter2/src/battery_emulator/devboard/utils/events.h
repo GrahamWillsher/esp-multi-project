@@ -162,6 +162,7 @@ struct EventData {
 };
 
 const char* get_event_enum_string(EVENTS_ENUM_TYPE event);
+bool get_event_message(EVENTS_ENUM_TYPE event, char* out, size_t out_size);
 String get_event_message_string(EVENTS_ENUM_TYPE event);
 const char* get_event_level_string(EVENTS_ENUM_TYPE event);
 const char* get_event_level_string(EVENTS_LEVEL_TYPE event_level);

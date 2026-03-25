@@ -6,6 +6,9 @@
 
 namespace TransmitterNetwork {
 
+constexpr size_t kIpStringLength = 16;   // "255.255.255.255" + NUL
+constexpr size_t kUrlStringLength = 23;  // "http://255.255.255.255" + NUL
+
 void load_from_prefs(void* prefs_ptr);
 void save_to_prefs(void* prefs_ptr);
 
@@ -41,6 +44,11 @@ bool is_ip_known();
 bool is_static_ip();
 uint32_t get_network_config_version();
 void update_network_mode(bool is_static, uint32_t version);
+
+bool format_ip(const uint8_t* ip, char* out, size_t out_len);
+bool get_ip_string(char* out, size_t out_len);
+bool get_url(char* out, size_t out_len);
+
 String get_ip_string();
 String get_url();
 

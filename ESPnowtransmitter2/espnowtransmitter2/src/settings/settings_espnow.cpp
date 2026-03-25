@@ -12,6 +12,7 @@
 #include <esp_now.h>
 #include <esp32common/espnow/connection_manager.h>
 #include <esp32common/espnow/packet_utils.h>
+#include <cstring>
 
 void SettingsManager::handle_settings_update(const espnow_queue_msg_t& msg) {
     LOG_INFO("SETTINGS", "═══ Settings Update Message Received ═══");
@@ -27,13 +28,21 @@ void SettingsManager::handle_settings_update(const espnow_queue_msg_t& msg) {
     const settings_update_msg_t* update =
         (const settings_update_msg_t*)msg.data;
 
+    // Defensive copy: incoming transport strings are untrusted bytes and may
+    // not be NUL-terminated.
+    char safe_value_string[sizeof(update->value_string) + 1] = {0};
+    memcpy(safe_value_string,
+           update->value_string,
+           sizeof(update->value_string));
+    safe_value_string[sizeof(update->value_string)] = '\0';
+
     LOG_INFO("SETTINGS", "From: %02X:%02X:%02X:%02X:%02X:%02X",
              msg.mac[0], msg.mac[1], msg.mac[2],
              msg.mac[3], msg.mac[4], msg.mac[5]);
     LOG_INFO("SETTINGS", "Type=%d, Category=%d, Field=%d",
              update->type, update->category, update->field_id);
     LOG_INFO("SETTINGS", "Values - uint32=%u, float=%.2f, string='%s'",
-             update->value_uint32, update->value_float, update->value_string);
+             update->value_uint32, update->value_float, safe_value_string);
     LOG_INFO("SETTINGS", "Checksum: %u", update->checksum);
 
     // Verify XOR checksum
@@ -63,33 +72,33 @@ void SettingsManager::handle_settings_update(const espnow_queue_msg_t& msg) {
             success = save_battery_setting(update->field_id,
                                            update->value_uint32,
                                            update->value_float,
-                                           update->value_string);
+                                           safe_value_string);
             new_version = battery_settings_version_;
-            if (!success) { strcpy(error_msg, "Invalid value or NVS write failed"); }
+            if (!success) { strlcpy(error_msg, "Invalid value or NVS write failed", sizeof(error_msg)); }
             break;
 
         case SETTINGS_POWER:
             success = save_power_setting(update->field_id, update->value_uint32);
             new_version = power_settings_version_;
-            if (!success) { strcpy(error_msg, "Invalid value or NVS write failed"); }
+            if (!success) { strlcpy(error_msg, "Invalid value or NVS write failed", sizeof(error_msg)); }
             break;
 
         case SETTINGS_INVERTER:
             success = save_inverter_setting(update->field_id, update->value_uint32);
             new_version = inverter_settings_version_;
-            if (!success) { strcpy(error_msg, "Invalid value or NVS write failed"); }
+            if (!success) { strlcpy(error_msg, "Invalid value or NVS write failed", sizeof(error_msg)); }
             break;
 
         case SETTINGS_CAN:
             success = save_can_setting(update->field_id, update->value_uint32);
             new_version = can_settings_version_;
-            if (!success) { strcpy(error_msg, "Invalid value or NVS write failed"); }
+            if (!success) { strlcpy(error_msg, "Invalid value or NVS write failed", sizeof(error_msg)); }
             break;
 
         case SETTINGS_CONTACTOR:
             success = save_contactor_setting(update->field_id, update->value_uint32);
             new_version = contactor_settings_version_;
-            if (!success) { strcpy(error_msg, "Invalid value or NVS write failed"); }
+            if (!success) { strlcpy(error_msg, "Invalid value or NVS write failed", sizeof(error_msg)); }
             break;
 
         case SETTINGS_CHARGER:
@@ -98,12 +107,12 @@ void SettingsManager::handle_settings_update(const espnow_queue_msg_t& msg) {
         case SETTINGS_NETWORK:
             LOG_WARN("SETTINGS", "Category %d not yet implemented",
                      update->category);
-            strcpy(error_msg, "Category not implemented yet");
+            strlcpy(error_msg, "Category not implemented yet", sizeof(error_msg));
             break;
 
         default:
             LOG_ERROR("SETTINGS", "Unknown category: %d", update->category);
-            strcpy(error_msg, "Unknown settings category");
+                strlcpy(error_msg, "Unknown settings category", sizeof(error_msg));
             break;
     }
 
