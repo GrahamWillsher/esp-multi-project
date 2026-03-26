@@ -30,7 +30,7 @@ String get_dashboard_page_content(const String& tx_status,
                     <div style='margin: 20px 0; padding: 15px; background: rgba(0,0,0,0.3); border-radius: 8px;'>
                         <div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;'>
                             <div style='display: flex; align-items: center;'>
-                                <span style='width: 12px; height: 12px; border-radius: 50%; background: )rawliteral";
+                                <span id='txStatusDot' style='width: 12px; height: 12px; border-radius: 50%; background: )rawliteral";
     content += tx_status_color;
     content += R"rawliteral(; margin-right: 10px;'></span>
                                 <span style='font-weight: bold; color: #FFD700;'>Status:</span>

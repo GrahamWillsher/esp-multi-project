@@ -14,10 +14,10 @@
  * and system tools (Debug, OTA) at the bottom.
  */
 static esp_err_t dashboard_handler(httpd_req_t *req) {
-    // Get transmitter status
-    bool tx_connected = TransmitterManager::isMACKnown();
+    // Get transmitter Ethernet status for dashboard indicator
+    bool tx_connected = TransmitterManager::isEthernetConnected();
     String tx_status = "Disconnected";
-    String tx_status_color = "#ff6b35"; // Red/orange
+    String tx_status_color = "#ff6b35"; // Red
     String tx_ip = "Unknown";
     String tx_ip_mode = "";  // (D) or (S)
     String tx_version = "Unknown";
@@ -34,18 +34,18 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
             tx_ip_mode = TransmitterManager::isStaticIP() ? " (S)" : " (D)";
         }
         
-        if (TransmitterManager::hasMetadata()) {
-            uint8_t major, minor, patch;
-            TransmitterManager::getMetadataVersion(major, minor, patch);
-            char version_str[16];
-            snprintf(version_str, sizeof(version_str), "%d.%d.%d", major, minor, patch);
-            tx_version = String(version_str);
-            
-            // Get device name from env if available
-            const char* env = TransmitterManager::getMetadataEnv();
-            if (env && strlen(env) > 0) {
-                tx_device_name = String(env);
-            }
+    }
+
+    if (TransmitterManager::hasMetadata()) {
+        uint8_t major, minor, patch;
+        TransmitterManager::getMetadataVersion(major, minor, patch);
+        char version_str[16];
+        snprintf(version_str, sizeof(version_str), "%d.%d.%d", major, minor, patch);
+        tx_version = String(version_str);
+
+        const char* env = TransmitterManager::getMetadataEnv();
+        if (env && strlen(env) > 0) {
+            tx_device_name = String(env);
         }
     }
     

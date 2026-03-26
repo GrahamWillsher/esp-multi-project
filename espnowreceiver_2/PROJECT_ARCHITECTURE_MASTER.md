@@ -268,6 +268,36 @@ Recommended next step (granularity):
 - Route selected `WARN/ERROR` to both sinks where operationally useful.
 - Use `log_routed(LogSink::Local|Mqtt|Both, ...)` only for explicit per-call sink policy.
 
+### Runtime Feature Note (Mar 26, 2026): Dashboard Transmitter Ethernet 2-State Indicator
+
+Implemented a quick, operator-focused transmitter status indicator on the dashboard root page (`/`) using existing runtime Ethernet state data.
+
+Behavior:
+
+- `ethernet_connected=true` → **Connected** (Green text + Green status dot)
+- `ethernet_connected=false` → **Disconnected** (Red text + Red status dot)
+
+Implementation details:
+
+1. Dashboard API payload extension
+  - File: `lib/webserver/api/api_telemetry_handlers.cpp`
+  - Added `transmitter["ethernet_connected"] = TransmitterManager::isEthernetConnected();`
+
+2. Initial page render state source
+  - File: `lib/webserver/pages/dashboard_page.cpp`
+  - Root-page transmitter status now initializes from `TransmitterManager::isEthernetConnected()`.
+
+3. Dynamic card LED/text update
+  - File: `lib/webserver/pages/dashboard_page_content.cpp`
+  - Added `id='txStatusDot'` to transmitter status LED element.
+  - File: `lib/webserver/pages/dashboard_page_script.cpp`
+  - Polling update path now uses `tx.ethernet_connected` and updates both status text and dot color.
+
+Operational note:
+
+- Receiver already receives Ethernet runtime state from transmitter version beacon path (`version_beacon_t.ethernet_connected`) and caches it in `TransmitterState`.
+- The dashboard reflects latest cached beacon state.
+
 ---
 
 ## Technical References

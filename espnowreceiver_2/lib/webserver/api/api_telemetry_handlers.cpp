@@ -103,6 +103,7 @@ esp_err_t api_dashboard_data_handler(httpd_req_t *req) {
 
     JsonObject transmitter = ApiFieldBuilders::addTransmitterObject(doc);
     transmitter["connected"] = TransmitterManager::isTransmitterConnected();
+    transmitter["ethernet_connected"] = TransmitterManager::isEthernetConnected();
     transmitter["ip"] = TransmitterManager::getIPString();
     transmitter["is_static"] = TransmitterManager::isStaticIP();
     transmitter["mac"] = TransmitterManager::getMACString();

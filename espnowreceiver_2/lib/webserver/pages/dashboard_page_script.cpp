@@ -138,14 +138,19 @@ const char* get_dashboard_page_script() {
                 if (data.transmitter) {
                     const tx = data.transmitter;
                     const statusEl = document.getElementById('txStatus');
+                    const statusDotEl = document.getElementById('txStatusDot');
                     const txIPEl = document.getElementById('txIP');
                     const txIPModeEl = document.getElementById('txIPMode');
                     const txVersionEl = document.getElementById('txVersion');
                     const txMACEl = document.getElementById('txMAC');
+                    const ethernetConnected = !!tx.ethernet_connected;
                     
-                    if (tx.connected) {
+                    if (ethernetConnected) {
                         statusEl.textContent = 'Connected';
                         statusEl.style.color = '#4CAF50';
+                        if (statusDotEl) {
+                            statusDotEl.style.background = '#4CAF50';
+                        }
                         
                         // Update IP and mode (can change if transmitter reconfigures)
                         if (tx.ip && tx.ip !== 'Unknown' && tx.ip !== '0.0.0.0') {
@@ -164,6 +169,9 @@ const char* get_dashboard_page_script() {
                     } else {
                         statusEl.textContent = 'Disconnected';
                         statusEl.style.color = '#ff6b35';
+                        if (statusDotEl) {
+                            statusDotEl.style.background = '#ff6b35';
+                        }
                     }
                 }
                 
