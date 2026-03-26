@@ -7,8 +7,8 @@
 void on_espnow_sent(const uint8_t *mac, esp_now_send_status_t status) {
     TransmitterManager::updateSendStatus(status == ESP_NOW_SEND_SUCCESS);
     if (status != ESP_NOW_SEND_SUCCESS) {
-        Serial.printf("[ESP-NOW] Send failed to %02X:%02X:%02X:%02X:%02X:%02X\n",
-                     mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        LOG_WARN("ESP-NOW", "Send failed to %02X:%02X:%02X:%02X:%02X:%02X",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     }
 }
 
@@ -33,7 +33,7 @@ void on_data_recv(const uint8_t *mac, const uint8_t *data, int len) {
         uint32_t now = millis();
         if (now - last_drop_log_ms > 2000) {
             last_drop_log_ms = now;
-            Serial.println("[ESP-NOW] RX queue full - message dropped");
+            LOG_WARN("ESP-NOW", "RX queue full - message dropped");
         }
     } else {
         UBaseType_t waiting = uxQueueMessagesWaiting(ESPNow::queue);

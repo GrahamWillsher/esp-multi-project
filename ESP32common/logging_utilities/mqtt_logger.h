@@ -80,9 +80,3 @@ private:
 #define MQTT_LOG_NOTICE(tag, ...)  MqttLogger::instance().log(MQTT_LOG_NOTICE, tag, __VA_ARGS__)
 #define MQTT_LOG_INFO(tag, ...)    MqttLogger::instance().log(MQTT_LOG_INFO, tag, __VA_ARGS__)
 #define MQTT_LOG_DEBUG(tag, ...)   MqttLogger::instance().log(MQTT_LOG_DEBUG, tag, __VA_ARGS__)
-
-// Auto-tag from function name
-#define LOG_E(...) MQTT_LOG_ERROR(__func__, __VA_ARGS__)
-#define LOG_W(...) MQTT_LOG_WARNING(__func__, __VA_ARGS__)
-#define LOG_I(...) MQTT_LOG_INFO(__func__, __VA_ARGS__)
-#define LOG_D(...) MQTT_LOG_DEBUG(__func__, __VA_ARGS__)

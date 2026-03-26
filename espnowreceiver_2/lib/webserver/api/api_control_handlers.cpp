@@ -164,14 +164,14 @@ bool try_get_prearmed_ota_challenge(OtaSessionChallenge* out_challenge,
                                                   status_doc["signature"] | "",
                                                   expires_at_ms);
             if (challenge_ready) {
-                LOG_INFO("OTA: Reusing pre-armed OTA challenge from /api/ota_status, id=%.8s...", out_challenge->session_id);
+                LOG_INFO("OTA", "Reusing pre-armed OTA challenge from /api/ota_status, id=%.8s...", out_challenge->session_id);
             }
         }
     } else if (status_code < 0) {
         if (out_error_detail) {
             *out_error_detail = "Status fetch transport error (HTTP " + String(status_code) + ")";
         }
-        LOG_WARN("OTA: Failed to fetch pre-armed challenge from %s (HTTP %d)",
+        LOG_WARN("OTA", "Failed to fetch pre-armed challenge from %s (HTTP %d)",
                  status_url.c_str(),
                  status_code);
     }
@@ -213,7 +213,7 @@ bool try_arm_ota_challenge(OtaSessionChallenge* out_challenge, String* out_error
         if (out_error_detail) {
             *out_error_detail = detail;
         }
-        LOG_ERROR("OTA: Failed to arm OTA session on transmitter via %s (%s)", arm_url.c_str(), detail.c_str());
+        LOG_ERROR("OTA", "Failed to arm OTA session on transmitter via %s (%s)", arm_url.c_str(), detail.c_str());
         return false;
     }
 
@@ -222,7 +222,7 @@ bool try_arm_ota_challenge(OtaSessionChallenge* out_challenge, String* out_error
         if (out_error_detail) {
             *out_error_detail = "Invalid OTA arm response from transmitter";
         }
-        LOG_ERROR("OTA: Invalid OTA arm response from transmitter");
+        LOG_ERROR("OTA", "Invalid OTA arm response from transmitter");
         return false;
     }
 
@@ -233,14 +233,14 @@ bool try_arm_ota_challenge(OtaSessionChallenge* out_challenge, String* out_error
                                                      arm_doc["signature"] | "",
                                                      expires_at_ms);
     if (challenge_ready) {
-        LOG_INFO("OTA: Session armed, id=%.8s... expires_at=%s", out_challenge->session_id, out_challenge->expires_str);
+        LOG_INFO("OTA", "Session armed, id=%.8s... expires_at=%s", out_challenge->session_id, out_challenge->expires_str);
         return true;
     }
 
     if (out_error_detail) {
         *out_error_detail = "Invalid OTA arm challenge fields";
     }
-    LOG_ERROR("OTA: OTA arm response missing required challenge fields");
+    LOG_ERROR("OTA", "OTA arm response missing required challenge fields");
     return false;
 }
 
@@ -268,7 +268,7 @@ bool acquire_ota_session_challenge(OtaSessionChallenge* out_challenge, String* o
             const String reason_suffix = last_error.length() > 0
                                              ? (" (" + last_error + ")")
                                              : "";
-            LOG_WARN("OTA: Challenge acquisition attempt %u/%u failed%s; retrying in %lu ms",
+            LOG_WARN("OTA", "Challenge acquisition attempt %u/%u failed%s; retrying in %lu ms",
                      attempt,
                      OTA_CHALLENGE_FETCH_ATTEMPTS,
                      reason_suffix.c_str(),
@@ -332,7 +332,7 @@ OtaForwardResult forward_ota_stream_to_transmitter(httpd_req_t* req,
                 result.transmitter_status = early_status;
                 result.transmitter_body = early_body;
                 result.total_forwarded += offset;
-                LOG_ERROR("OTA: Transmitter replied early with HTTP %d while forwarding at byte %u",
+                LOG_ERROR("OTA", "Transmitter replied early with HTTP %d while forwarding at byte %u",
                           early_status,
                           static_cast<unsigned>(result.total_forwarded));
                 return result;
@@ -341,7 +341,7 @@ OtaForwardResult forward_ota_stream_to_transmitter(httpd_req_t* req,
             // No progress: allow generous retry window for transient socket backpressure
             // on WiFi/LWIP path during long OTA streams.
             if (!tx_client.connected() || (millis() - write_start_ms) > 60000) {
-                LOG_ERROR("OTA: Stream stall while forwarding at byte=%u chunk_offset=%u connected=%d",
+                LOG_ERROR("OTA", "Stream stall while forwarding at byte=%u chunk_offset=%u connected=%d",
                           static_cast<unsigned>(result.total_forwarded),
                           static_cast<unsigned>(offset),
                           tx_client.connected() ? 1 : 0);
@@ -435,16 +435,16 @@ esp_err_t api_reboot_handler(httpd_req_t *req) {
         reboot_t reboot_msg = { msg_reboot };
         esp_err_t result = esp_now_send(target_mac, (const uint8_t*)&reboot_msg, sizeof(reboot_msg));
         if (result == ESP_OK) {
-            LOG_INFO("REBOOT: Sent command to transmitter via %s", mac_source);
+            LOG_INFO("REBOOT", "Sent command to transmitter via %s", mac_source);
             return ApiResponseUtils::send_jsonf(req,
                                                 "{\"success\":true,\"message\":\"Reboot command sent\",\"source\":\"%s\"}",
                                                 mac_source);
         } else {
-            LOG_ERROR("REBOOT: Failed to send command: %s", esp_err_to_name(result));
+            LOG_ERROR("REBOOT", "Failed to send command: %s", esp_err_to_name(result));
             return ApiResponseUtils::send_error_message(req, esp_err_to_name(result));
         }
     } else {
-        LOG_WARN("REBOOT: Transmitter MAC unknown, cannot send command");
+        LOG_WARN("REBOOT", "Transmitter MAC unknown, cannot send command");
         return ApiResponseUtils::send_error_message(req, "Transmitter MAC unknown");
     }
 }
@@ -467,7 +467,7 @@ esp_err_t api_transmitter_ota_status_handler(httpd_req_t *req) {
         StaticJsonDocument<1024> doc;
         DeserializationError err = deserializeJson(doc, body);
         if (err) {
-            LOG_ERROR("OTA: Failed to parse transmitter OTA status JSON: %s", err.c_str());
+            LOG_ERROR("OTA", "Failed to parse transmitter OTA status JSON: %s", err.c_str());
             return ApiResponseUtils::send_jsonf(req,
                                                 "{\"success\":false,\"message\":\"Invalid OTA status JSON\",\"detail\":\"%s\"}",
                                                 err.c_str());
@@ -662,7 +662,7 @@ esp_err_t api_ota_upload_receiver_handler(httpd_req_t *req) {
 
 esp_err_t api_ota_upload_handler(httpd_req_t *req) {
     size_t remaining = req->content_len;
-    LOG_INFO("OTA: Receiving firmware upload, total size: %d bytes", remaining);
+    LOG_INFO("OTA", "Receiving firmware upload, total size: %d bytes", remaining);
 
     char image_sha256_hex[OTA_IMAGE_SHA256_HEX_LEN + 1] = {0};
     if (httpd_req_get_hdr_value_str(req,
@@ -676,7 +676,7 @@ esp_err_t api_ota_upload_handler(httpd_req_t *req) {
     char content_type[96] = {0};
     bool has_content_type = (httpd_req_get_hdr_value_str(req, "Content-Type", content_type, sizeof(content_type)) == ESP_OK);
     bool is_raw_upload = has_content_type && (strstr(content_type, "application/octet-stream") != nullptr);
-    LOG_INFO("OTA: Content-Type: %s (%s mode)", has_content_type ? content_type : "<none>", is_raw_upload ? "raw/stream" : "unsupported");
+    LOG_INFO("OTA", "Content-Type: %s (%s mode)", has_content_type ? content_type : "<none>", is_raw_upload ? "raw/stream" : "unsupported");
 
     if (!is_raw_upload) {
         return ApiResponseUtils::send_error_message(req, "Unsupported upload type. Use raw application/octet-stream");
@@ -700,7 +700,7 @@ esp_err_t api_ota_upload_handler(httpd_req_t *req) {
     OtaSessionChallenge challenge = {};
     String challenge_error;
     if (!acquire_ota_session_challenge(&challenge, &challenge_error)) {
-        LOG_ERROR("OTA: Unable to obtain OTA challenge from transmitter status/arm endpoints");
+        LOG_ERROR("OTA", "Unable to obtain OTA challenge from transmitter status/arm endpoints");
         if (challenge_error.indexOf("OTA secret not provisioned") >= 0) {
             return ApiResponseUtils::send_error_message(req, "Transmitter OTA secret not provisioned (set security/ota_psk in NVS)");
         }
@@ -747,7 +747,7 @@ esp_err_t api_ota_upload_handler(httpd_req_t *req) {
         return ApiResponseUtils::send_error_message(req, "Failed to parse transmitter OTA response");
     }
 
-    LOG_INFO("OTA: Streamed %u bytes to transmitter, HTTP status=%d",
+    LOG_INFO("OTA", "Streamed %u bytes to transmitter, HTTP status=%d",
              static_cast<unsigned>(forward_result.total_forwarded),
              response_result.status_code);
 

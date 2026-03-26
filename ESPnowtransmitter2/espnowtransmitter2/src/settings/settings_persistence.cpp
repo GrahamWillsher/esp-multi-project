@@ -284,6 +284,12 @@ bool read_blob_checked(Preferences& prefs,
     return true;
 }
 
+size_t get_blob_size_if_present(Preferences& prefs) {
+    return prefs.isKey(kSettingsBlobKey)
+               ? prefs.getBytesLength(kSettingsBlobKey)
+               : 0;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -300,7 +306,7 @@ bool SettingsManager::load_battery_settings() {
     }
 
     bool loaded_from_blob = false;
-    const size_t blob_size = prefs.getBytesLength(kSettingsBlobKey);
+    const size_t blob_size = get_blob_size_if_present(prefs);
     if (blob_size == sizeof(BatterySettingsBlob)) {
         BatterySettingsBlob blob{};
         if (read_blob_checked(prefs, "battery", &blob) &&
@@ -452,7 +458,7 @@ bool SettingsManager::load_power_settings() {
     }
 
     bool loaded_from_blob = false;
-    const size_t blob_size = prefs.getBytesLength(kSettingsBlobKey);
+    const size_t blob_size = get_blob_size_if_present(prefs);
     if (blob_size == sizeof(PowerSettingsBlob)) {
         PowerSettingsBlob blob{};
         if (read_blob_checked(prefs, "power", &blob) &&
@@ -538,7 +544,7 @@ bool SettingsManager::load_inverter_settings() {
     }
 
     bool loaded_from_blob = false;
-    const size_t blob_size = prefs.getBytesLength(kSettingsBlobKey);
+    const size_t blob_size = get_blob_size_if_present(prefs);
     if (blob_size == sizeof(InverterSettingsBlob)) {
         InverterSettingsBlob blob{};
         if (read_blob_checked(prefs, "inverter", &blob) &&
@@ -631,7 +637,7 @@ bool SettingsManager::load_can_settings() {
     }
 
     bool loaded_from_blob = false;
-    const size_t blob_size = prefs.getBytesLength(kSettingsBlobKey);
+    const size_t blob_size = get_blob_size_if_present(prefs);
     if (blob_size == sizeof(CanSettingsBlob)) {
         CanSettingsBlob blob{};
         if (read_blob_checked(prefs, "can", &blob) &&
@@ -716,7 +722,7 @@ bool SettingsManager::load_contactor_settings() {
     }
 
     bool loaded_from_blob = false;
-    const size_t blob_size = prefs.getBytesLength(kSettingsBlobKey);
+    const size_t blob_size = get_blob_size_if_present(prefs);
     if (blob_size == sizeof(ContactorSettingsBlob)) {
         ContactorSettingsBlob blob{};
         if (read_blob_checked(prefs, "contactor", &blob) &&

@@ -15,7 +15,7 @@ constexpr uint16_t INVERTER_SPECS_SCHEMA_VERSION = 1;
 template <typename... Args>
 inline void serialize_debug_printf(const char* format, Args... args) {
     if (ENABLE_SERIALIZE_DEBUG_LOGS) {
-        Serial.printf(format, args...);
+        LOG_DEBUG("SERIALIZE_DEBUG", format, args...);
     }
 }
 }  // namespace
@@ -319,7 +319,7 @@ size_t serialize_cell_data(char* buffer, size_t buffer_size) {
     
     // Debug: Check for truncation
     if (result >= buffer_size - 1) {
-        Serial.printf("[SERIALIZE_WARNING] JSON truncated! Result=%u, Buffer=%u\n", result, buffer_size);
+        LOG_WARN("SERIALIZE_WARNING", "JSON truncated! Result=%u, Buffer=%u", result, buffer_size);
     }
     
     // Debug: Log the serialized JSON (first/last 200 chars)

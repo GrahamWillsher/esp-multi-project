@@ -1,6 +1,7 @@
 #include "SUNGROW-CAN.h"
 #include "../communication/can/comm_can.h"
 #include "../datalayer/datalayer.h"
+#include "../../config/logging_config.h"
 
 /* TODO: 
 This protocol is still under development and should be considered beta quality.
@@ -326,7 +327,7 @@ void SungrowInverter::update_values() {
 
 #ifdef DEBUG_VIA_USB
   if (inverter_sends_000) {
-    Serial.println("Inverter sends 0x000");
+    LOG_INFO("SUNGROW", "Inverter sends 0x000");
   }
 #endif
 }

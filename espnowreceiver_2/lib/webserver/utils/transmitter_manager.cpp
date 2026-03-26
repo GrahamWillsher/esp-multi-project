@@ -164,7 +164,7 @@ const char* TransmitterManager::getMetadataBuildDate() {
 void TransmitterManager::storeBatterySettings(const BatterySettings& settings) {
     TransmitterSettingsCache::store_battery_settings(settings);
 
-    LOG_INFO("[TX_MGR] Battery settings stored: %uWh, %uS, %umV-%umV",
+    LOG_INFO("TX_MGR", "Battery settings stored: %uWh, %uS, %umV-%umV",
              settings.capacity_wh, settings.cell_count,
              settings.min_voltage_mv, settings.max_voltage_mv);
 

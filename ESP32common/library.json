@@ -23,9 +23,6 @@
       "+<firmware_metadata/>",
       "+<hal/>",
       "+<logging_utilities/>",
-      "+<webserver/>",
-      "-<webserver/receiver/>",
-      "-<webserver/receiver/*.cpp>",
       "+<config_sync/>"
     ],
     "includeDir": "include",

@@ -237,6 +237,37 @@ High-value review and migration records:
 - `IMPLEMENTATION_SUMMARY.md`
 - `MASTER_CHECKLIST.md`
 
+### Runtime Feature Note (Mar 26, 2026): Webserver Local-Only Logging
+
+To quickly validate observed HTTP UI latency and MQTT responsiveness regression, receiver
+webserver logging was switched to **Local-only (Serial)** for webserver paths.
+
+Implemented:
+
+1. Receiver webserver override
+  - File: `lib/webserver/logging.h`
+  - Added pre-include override:
+    - `#undef LOG_USE_MQTT` (if defined)
+    - `#define LOG_USE_MQTT 0`
+  - Effect: `lib/webserver/*` `LOG_*` calls stay local and do not route to MQTT logger.
+
+2. Shared logging guard hardening
+  - File: `../esp32common/logging_utilities/logging_config.h`
+  - Updated include/define flow to honor externally pre-defined `LOG_USE_MQTT`.
+  - Added conditional include for `mqtt_logger.h` when `LOG_USE_MQTT == 1`.
+  - Effect: override works cleanly without macro redefinition warnings.
+
+Validation:
+
+- `pio run -e receiver_tft -j 12` succeeds after change.
+- `LOG_USE_MQTT` redefinition warnings were eliminated.
+
+Recommended next step (granularity):
+
+- Keep hot request-path `INFO/DEBUG` local-only.
+- Route selected `WARN/ERROR` to both sinks where operationally useful.
+- Use `log_routed(LogSink::Local|Mqtt|Both, ...)` only for explicit per-call sink policy.
+
 ---
 
 ## Technical References

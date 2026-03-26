@@ -12,15 +12,15 @@
 extern TFT_eSPI tft;
 
 void initlittlefs() {
-    Serial.println("[INIT] Initializing LittleFS...");
+    LOG_INFO("INIT", "Initializing LittleFS...");
     Serial.flush();
     
     bool littlefs_ok = false;
     if (!LittleFS.begin(false)) {
-        Serial.println("[WARN] LittleFS mount failed, trying to format...");
+        LOG_WARN("INIT", "LittleFS mount failed, trying to format...");
         Serial.flush();
         if (!LittleFS.begin(true)) {
-            Serial.println("[ERROR] LittleFS initialization failed!");
+            LOG_ERROR("INIT", "LittleFS initialization failed");
             Serial.flush();
             tft.fillScreen(TFT_BLACK);
             tft.setTextColor(TFT_RED);
@@ -30,21 +30,21 @@ void initlittlefs() {
             smart_delay(4000);
             littlefs_ok = false;
         } else {
-            Serial.println("[INIT] LittleFS formatted and mounted successfully");
+            LOG_INFO("INIT", "LittleFS formatted and mounted successfully");
             Serial.flush();
             littlefs_ok = true;
         }
     } else {
-        Serial.println("[INIT] LittleFS mounted successfully");
+        LOG_INFO("INIT", "LittleFS mounted successfully");
         Serial.flush();
         littlefs_ok = true;
     }
     
     if (!littlefs_ok) {
-        Serial.println("[INIT] Skipping splash screen (LittleFS not available)");
+        LOG_WARN("INIT", "Skipping splash screen (LittleFS not available)");
         Serial.flush();
     } else {
-        Serial.println("[INIT] LittleFS ready - starting splash screen...");
+        LOG_INFO("INIT", "LittleFS ready - starting splash screen...");
         Serial.flush();
         
         #ifdef USE_LVGL
@@ -57,7 +57,7 @@ void initlittlefs() {
             displaySplashWithFade();
         #endif
         
-        Serial.println("[INIT] Splash screen complete");
+        LOG_INFO("INIT", "Splash screen complete");
         Serial.flush();
     }
 }

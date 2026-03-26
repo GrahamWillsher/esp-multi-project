@@ -55,7 +55,7 @@ void store_cell_data(const void* json_obj_ptr) {
     const JsonObject& cell_data = *static_cast<const JsonObject*>(json_obj_ptr);
 
     if (!cell_data.containsKey("number_of_cells")) {
-        LOG_ERROR("[CELL_CACHE] Invalid cell data: missing number_of_cells");
+        LOG_ERROR("CELL_CACHE", "Invalid cell data: missing number_of_cells");
         return;
     }
 
@@ -64,7 +64,7 @@ void store_cell_data(const void* json_obj_ptr) {
 
     ScopedMutex guard(cell_data_mutex_);
     if (!guard.locked()) {
-        LOG_WARN("[CELL_CACHE] Failed to lock cell data mutex");
+        LOG_WARN("CELL_CACHE", "Failed to lock cell data mutex");
         return;
     }
 
@@ -117,10 +117,10 @@ void store_cell_data(const void* json_obj_ptr) {
     cell_data_known_ = true;
 
     if (requested_count > MAX_CELL_COUNT) {
-        LOG_WARN("[CELL_CACHE] Clamped cell data from %u to %u cells", requested_count, MAX_CELL_COUNT);
+        LOG_WARN("CELL_CACHE", "Clamped cell data from %u to %u cells", requested_count, MAX_CELL_COUNT);
     }
 
-    LOG_INFO("[CELL_CACHE] Stored cell data: %d cells, min=%dmV, max=%dmV, source=%s",
+    LOG_INFO("CELL_CACHE", "Stored cell data: %d cells, min=%dmV, max=%dmV, source=%s",
              cell_count_, cell_min_voltage_mV_, cell_max_voltage_mV_, cell_data_source_);
 
     SSENotifier::notifyCellDataUpdated();

@@ -44,8 +44,6 @@ void init_stored_settings() {
 
   //settings.clear();  // If this clear function is executed, no settings will be read from storage. For dev
 
-  esp32hal->set_default_configuration_values();
-
   temp = settings.getUInt("BATTERY_WH_MAX", false);
   if (temp != 0) {
     datalayer.battery.info.total_capacity_Wh = temp;

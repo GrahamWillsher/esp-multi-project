@@ -24,11 +24,11 @@ bool ensure_peer_registered(const uint8_t* mac) {
     peer.ifidx = WIFI_IF_STA;
 
     if (esp_now_add_peer(&peer) == ESP_OK) {
-        LOG_INFO("[TX_PEER] Added as ESP-NOW peer");
+        LOG_INFO("TX_PEER", "Added as ESP-NOW peer");
         return true;
     }
 
-    LOG_ERROR("[TX_PEER] Failed to add as ESP-NOW peer");
+    LOG_ERROR("TX_PEER", "Failed to add as ESP-NOW peer");
     return false;
 }
 

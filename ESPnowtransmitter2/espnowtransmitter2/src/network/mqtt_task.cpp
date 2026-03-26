@@ -12,6 +12,7 @@
 #include <Arduino.h>
 #include <espnow_transmitter.h>
 #include <ethernet_utilities.h>
+#include <log_routed.h>
 #include <mqtt_logger.h>
 #include <esp32common/config/timing_config.h>
 
@@ -34,11 +35,14 @@ void initialize_mqtt_logger_if_needed(MqttManager& mqtt,
 
 void publish_on_connect_bundle(MqttManager& mqtt,
                                EthernetManager& ethernet) {
-    MQTT_LOG_NOTICE("MQTT", "MQTT broker connected successfully");
-    MQTT_LOG_INFO("SYSTEM", "ESP-NOW Transmitter online, uptime: %lu ms", millis());
-    MQTT_LOG_INFO("ETH", "IP: %s, Gateway: %s",
-                  ethernet.get_local_ip().toString().c_str(),
-                  ethernet.get_gateway_ip().toString().c_str());
+    log_routed(LogSink::Mqtt, RoutedLevel::Notice,
+               "MQTT", "MQTT broker connected successfully");
+    log_routed(LogSink::Mqtt, RoutedLevel::Info,
+               "SYSTEM", "ESP-NOW Transmitter online, uptime: %lu ms", millis());
+    log_routed(LogSink::Mqtt, RoutedLevel::Info,
+               "ETH", "IP: %s, Gateway: %s",
+               ethernet.get_local_ip().toString().c_str(),
+               ethernet.get_gateway_ip().toString().c_str());
 
     // Update battery specs from datalayer (refresh number_of_cells after battery setup)
     LOG_INFO("MQTT", "Refreshing battery specs from datalayer...");
@@ -108,7 +112,8 @@ void publish_periodic_runtime_data(MqttManager& mqtt,
         );
 
         // Test MQTT logger with periodic message
-        MQTT_LOG_INFO("TELEMETRY", "Data published: SOC=%d%%, Power=%ldW", tx_data.soc, tx_data.power);
+        log_routed(LogSink::Mqtt, RoutedLevel::Info,
+                   "TELEMETRY", "Data published: SOC=%d%%, Power=%ldW", tx_data.soc, tx_data.power);
     }
 
     // Publish cell data periodically (less frequent - every 1 second) when connected
@@ -183,6 +188,12 @@ void task_mqtt_loop(void* parameter) {
             was_connected,
             logger_initialized
         );
+
+        // Drain buffered MQTT logs from this single task context only.
+        // This avoids PubSubClient cross-task publish races.
+        if (is_connected_now) {
+            MqttLogger::instance().flush_buffer();
+        }
         
         // Log statistics periodically
         if (now - last_stats_log > TimingConfig::MQTT_STATS_LOG_INTERVAL_MS) {

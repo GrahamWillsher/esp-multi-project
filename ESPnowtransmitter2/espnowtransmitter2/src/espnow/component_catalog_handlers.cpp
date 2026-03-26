@@ -606,9 +606,14 @@ void handle_request_inverter_interfaces(const espnow_queue_msg_t& msg, uint8_t* 
     std::vector<type_catalog_entry_t> entries;
 
 #if CONFIG_CAN_ENABLED
-    if (esp32hal) {
-        const auto interfaces = esp32hal->available_interfaces();
-        for (const auto iface : interfaces) {
+    // Fixed transmitter hardware: only MCP2515 add-on CAN interface is valid.
+    // Do not derive this list from legacy Battery Emulator HAL.
+    {
+        constexpr comm_interface kTxInterfaces[] = {
+            comm_interface::CanAddonMcp2515,
+        };
+
+        for (const auto iface : kTxInterfaces) {
             const uint8_t wire_id = comm_interface_to_wire_id(iface);
             if (wire_id == 0xFF) {
                 continue;

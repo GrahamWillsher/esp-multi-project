@@ -4,13 +4,17 @@
 
 // Optional MQTT logger integration (only if available)
 #if defined(__has_include)
-    #if __has_include("mqtt_logger.h")
+    #if __has_include("mqtt_logger.h") && !defined(LOG_USE_MQTT)
         #include <mqtt_logger.h>
         #define LOG_USE_MQTT 1
     #endif
 #endif
 #ifndef LOG_USE_MQTT
     #define LOG_USE_MQTT 0
+#endif
+
+#if LOG_USE_MQTT
+    #include <mqtt_logger.h>
 #endif
 
 // ═══════════════════════════════════════════════════════════════════════

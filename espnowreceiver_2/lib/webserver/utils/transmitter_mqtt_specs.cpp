@@ -173,7 +173,7 @@ void store_mqtt_config(bool enabled,
         server_ip = fallback;
     }
 
-    LOG_INFO("[TX_MGR] MQTT config stored: %s, %d.%d.%d.%d:%d, v%u",
+    LOG_INFO("TX_MGR", "MQTT config stored: %s, %d.%d.%d.%d:%d, v%u",
              enabled ? "ENABLED" : "DISABLED",
              server_ip[0], server_ip[1], server_ip[2], server_ip[3], port,
              version);
@@ -239,7 +239,7 @@ void store_static_specs(const JsonObject& specs) {
 
     ScopedMutex guard(spec_cache_mutex);
     if (!guard.locked()) {
-        LOG_WARN("[SPEC_CACHE] Failed to lock spec cache mutex");
+        LOG_WARN("SPEC_CACHE", "Failed to lock spec cache mutex");
         return;
     }
 
@@ -262,7 +262,7 @@ void store_static_specs(const JsonObject& specs) {
     }
 
     spec_cache.static_specs_known = true;
-    LOG_INFO("[SPEC_CACHE] Stored static specs from MQTT");
+    LOG_INFO("SPEC_CACHE", "Stored static specs from MQTT");
 }
 
 void store_battery_specs(const JsonObject& specs) {
@@ -270,7 +270,7 @@ void store_battery_specs(const JsonObject& specs) {
 
     ScopedMutex guard(spec_cache_mutex);
     if (!guard.locked()) {
-        LOG_WARN("[SPEC_CACHE] Failed to lock spec cache mutex");
+        LOG_WARN("SPEC_CACHE", "Failed to lock spec cache mutex");
         return;
     }
 
@@ -280,11 +280,11 @@ void store_battery_specs(const JsonObject& specs) {
         uint16_t new_cell_count = specs["number_of_cells"];
         if (new_cell_count > 0) {
             TransmitterSettingsCache::update_battery_cell_count(new_cell_count);
-            LOG_INFO("[TX_MGR] Updated battery_settings.cell_count from MQTT: %u", new_cell_count);
+            LOG_INFO("TX_MGR", "Updated battery_settings.cell_count from MQTT: %u", new_cell_count);
         }
     }
 
-    LOG_INFO("[SPEC_CACHE] Stored battery specs from MQTT");
+    LOG_INFO("SPEC_CACHE", "Stored battery specs from MQTT");
 }
 
 void store_inverter_specs(const JsonObject& specs) {
@@ -292,12 +292,12 @@ void store_inverter_specs(const JsonObject& specs) {
 
     ScopedMutex guard(spec_cache_mutex);
     if (!guard.locked()) {
-        LOG_WARN("[SPEC_CACHE] Failed to lock spec cache mutex");
+        LOG_WARN("SPEC_CACHE", "Failed to lock spec cache mutex");
         return;
     }
 
     serialize_json_to_string(specs, spec_cache.inverter_specs_json);
-    LOG_INFO("[SPEC_CACHE] Stored inverter specs from MQTT");
+    LOG_INFO("SPEC_CACHE", "Stored inverter specs from MQTT");
 }
 
 void store_charger_specs(const JsonObject& specs) {
@@ -305,12 +305,12 @@ void store_charger_specs(const JsonObject& specs) {
 
     ScopedMutex guard(spec_cache_mutex);
     if (!guard.locked()) {
-        LOG_WARN("[SPEC_CACHE] Failed to lock spec cache mutex");
+        LOG_WARN("SPEC_CACHE", "Failed to lock spec cache mutex");
         return;
     }
 
     serialize_json_to_string(specs, spec_cache.charger_specs_json);
-    LOG_INFO("[SPEC_CACHE] Stored charger specs from MQTT");
+    LOG_INFO("SPEC_CACHE", "Stored charger specs from MQTT");
 }
 
 void store_system_specs(const JsonObject& specs) {
@@ -318,12 +318,12 @@ void store_system_specs(const JsonObject& specs) {
 
     ScopedMutex guard(spec_cache_mutex);
     if (!guard.locked()) {
-        LOG_WARN("[SPEC_CACHE] Failed to lock spec cache mutex");
+        LOG_WARN("SPEC_CACHE", "Failed to lock spec cache mutex");
         return;
     }
 
     serialize_json_to_string(specs, spec_cache.system_specs_json);
-    LOG_INFO("[SPEC_CACHE] Stored system specs from MQTT");
+    LOG_INFO("SPEC_CACHE", "Stored system specs from MQTT");
 }
 
 bool has_static_specs() {

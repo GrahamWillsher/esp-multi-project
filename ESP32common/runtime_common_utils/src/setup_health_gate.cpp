@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <runtime_common_utils/ota_boot_guard.h>
 #include <string.h>
+#include <logging_config.h>
 
 namespace {
 
@@ -62,7 +63,7 @@ Outcome apply(const char* log_tag,
     format_checks(checks, check_count, status_buf, sizeof(status_buf));
 
     if (OtaBootGuard::is_pending_verification() && !health_ok) {
-        Serial.printf("[%s] Setup health gate failed (%s); triggering rollback\n", tag, status_buf);
+        LOG_ERROR(tag, "Setup health gate failed (%s); triggering rollback", status_buf);
         const bool rollback_requested =
             OtaBootGuard::trigger_rollback_and_reboot(
                 (rollback_reason && rollback_reason[0] != '\0')
@@ -72,9 +73,7 @@ Outcome apply(const char* log_tag,
     }
 
     if (!health_ok) {
-        Serial.printf("[%s] Setup health gate suboptimal on normal boot (%s); confirming anyway\n",
-                      tag,
-                      status_buf);
+        LOG_WARN(tag, "Setup health gate suboptimal on normal boot (%s); confirming anyway", status_buf);
         if (!OtaBootGuard::confirm_running_app(
                 (confirm_reason && confirm_reason[0] != '\0')
                     ? confirm_reason
@@ -91,7 +90,7 @@ Outcome apply(const char* log_tag,
         return Outcome::Error;
     }
 
-    Serial.printf("[%s] Setup health gate passed (%s)\n", tag, status_buf);
+    LOG_INFO(tag, "Setup health gate passed (%s)", status_buf);
     return Outcome::ConfirmedHealthy;
 }
 

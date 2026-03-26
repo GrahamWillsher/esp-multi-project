@@ -28,8 +28,6 @@ class Esp32Hal {
   virtual int MODBUS_CORE() { return 0; }
   virtual int WIFICORE() { return 0; }
 
-  virtual void set_default_configuration_values() {}
-
   template <typename... Pins>
   bool alloc_pins(const char* name, Pins... pins) {
     std::vector<gpio_num_t> requested_pins = {static_cast<gpio_num_t>(pins)...};
@@ -205,9 +203,6 @@ class Esp32Hal {
 };
 
 extern Esp32Hal* esp32hal;
-
-// Needed for AsyncTCPSock library.
-#define WIFI_CORE (esp32hal->WIFICORE())
 
 void init_hal();
 

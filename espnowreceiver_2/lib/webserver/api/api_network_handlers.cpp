@@ -75,7 +75,7 @@ esp_err_t api_save_receiver_network_handler(httpd_req_t *req) {
     static const uint8_t kDefaultDnsPrimary[4] = {8, 8, 8, 8};
     static const uint8_t kDefaultDnsSecondary[4] = {8, 8, 4, 4};
 
-    LOG_INFO("API: save_receiver_network called, content_len=%d", req->content_len);
+    LOG_INFO("API", "save_receiver_network called, content_len=%d", req->content_len);
 
     StaticJsonDocument<512> doc;
     esp_err_t response_error = ESP_OK;
@@ -216,7 +216,7 @@ esp_err_t api_save_network_config_handler(httpd_req_t *req) {
     static const uint8_t kDefaultDnsPrimary[4] = {8, 8, 8, 8};
     static const uint8_t kDefaultDnsSecondary[4] = {8, 8, 4, 4};
 
-    LOG_INFO("API: save_network_config called, content_len=%d", req->content_len);
+    LOG_INFO("API", "save_network_config called, content_len=%d", req->content_len);
 
     StaticJsonDocument<512> doc;
     esp_err_t response_error = ESP_OK;
@@ -224,7 +224,7 @@ esp_err_t api_save_network_config_handler(httpd_req_t *req) {
         return response_error;
     }
 
-    LOG_INFO("API: Received network config JSON: %s", buf);
+    LOG_INFO("API", "Received network config JSON: %s", buf);
 
     if (!TransmitterManager::isMACKnown()) {
         return ApiResponseUtils::send_transmitter_mac_unknown(req);
@@ -251,10 +251,10 @@ esp_err_t api_save_network_config_handler(httpd_req_t *req) {
           ApiRequestUtils::parse_ipv4_or_default(dns1_str, msg.dns_primary, kDefaultDnsPrimary);
           ApiRequestUtils::parse_ipv4_or_default(dns2_str, msg.dns_secondary, kDefaultDnsSecondary);
 
-        LOG_INFO("API: Sending static IP config: %d.%d.%d.%d",
+        LOG_INFO("API", "Sending static IP config: %d.%d.%d.%d",
                  msg.ip[0], msg.ip[1], msg.ip[2], msg.ip[3]);
     } else {
-        LOG_INFO("API: Sending DHCP mode config");
+        LOG_INFO("API", "Sending DHCP mode config");
     }
 
     msg.config_version = 0;
@@ -262,16 +262,16 @@ esp_err_t api_save_network_config_handler(httpd_req_t *req) {
 
     esp_err_t result = esp_now_send(TransmitterManager::getMAC(), (const uint8_t*)&msg, sizeof(msg));
     if (result == ESP_OK) {
-        LOG_INFO("API: ✓ Network config sent to transmitter");
+        LOG_INFO("API", "✓ Network config sent to transmitter");
     } else {
-        LOG_ERROR("API: ✗ ESP-NOW send FAILED: %s", esp_err_to_name(result));
+        LOG_ERROR("API", "✗ ESP-NOW send FAILED: %s", esp_err_to_name(result));
     }
     return ApiResponseUtils::send_espnow_send_result(req, result, "Network config sent - awaiting transmitter response");
 }
 
 esp_err_t api_get_mqtt_config_handler(httpd_req_t *req) {
     if (!TransmitterManager::isMqttConfigKnown()) {
-        LOG_INFO("API: MQTT config not cached");
+        LOG_INFO("API", "MQTT config not cached");
         return ApiResponseUtils::send_error_message(req, "MQTT config not cached");
     }
 
@@ -289,7 +289,7 @@ esp_err_t api_get_mqtt_config_handler(httpd_req_t *req) {
     doc["client_id"]  = TransmitterManager::getMqttClientId();
     doc["connected"]  = TransmitterManager::isMqttConnected();
 
-    LOG_INFO("API: ✓ Returning cached MQTT config (enabled=%d, connected=%d)",
+    LOG_INFO("API", "✓ Returning cached MQTT config (enabled=%d, connected=%d)",
              TransmitterManager::isMqttEnabled(), TransmitterManager::isMqttConnected());
 
     return ApiResponseUtils::send_json_doc(req, doc);
@@ -298,7 +298,7 @@ esp_err_t api_get_mqtt_config_handler(httpd_req_t *req) {
 esp_err_t api_save_mqtt_config_handler(httpd_req_t *req) {
     char buf[512];
 
-    LOG_INFO("API: save_mqtt_config called, content_len=%d", req->content_len);
+    LOG_INFO("API", "save_mqtt_config called, content_len=%d", req->content_len);
 
     StaticJsonDocument<512> doc;
     esp_err_t response_error = ESP_OK;
@@ -306,7 +306,7 @@ esp_err_t api_save_mqtt_config_handler(httpd_req_t *req) {
         return response_error;
     }
 
-    LOG_INFO("API: Received MQTT config JSON: %s", buf);
+    LOG_INFO("API", "Received MQTT config JSON: %s", buf);
 
     if (!TransmitterManager::isMACKnown()) {
         return ApiResponseUtils::send_transmitter_mac_unknown(req);
@@ -340,16 +340,16 @@ esp_err_t api_save_mqtt_config_handler(httpd_req_t *req) {
     msg.config_version = 0;
     msg.checksum = 0;
 
-    LOG_INFO("API: Sending MQTT config: %s, %d.%d.%d.%d:%d",
+    LOG_INFO("API", "Sending MQTT config: %s, %d.%d.%d.%d:%d",
              msg.enabled ? "ENABLED" : "DISABLED",
              msg.server[0], msg.server[1], msg.server[2], msg.server[3],
              msg.port);
 
     esp_err_t result = esp_now_send(TransmitterManager::getMAC(), (const uint8_t*)&msg, sizeof(msg));
     if (result == ESP_OK) {
-        LOG_INFO("API: ✓ MQTT config sent to transmitter");
+        LOG_INFO("API", "✓ MQTT config sent to transmitter");
     } else {
-        LOG_ERROR("API: ✗ ESP-NOW send FAILED: %s", esp_err_to_name(result));
+        LOG_ERROR("API", "✗ ESP-NOW send FAILED: %s", esp_err_to_name(result));
     }
     return ApiResponseUtils::send_espnow_send_result(req, result, "MQTT config sent - awaiting transmitter response");
 }

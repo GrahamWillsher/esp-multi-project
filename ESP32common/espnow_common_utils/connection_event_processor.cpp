@@ -10,9 +10,10 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <Arduino.h>
+#include <logging_config.h>
 
 void connection_event_processor_task(void* param) {
-    Serial.printf("[PROC] Event processor task started\n");
+    LOG_INFO("PROC", "Event processor task started");
     
     // Give system time to stabilize
     vTaskDelay(pdMS_TO_TICKS(100));
@@ -44,10 +45,10 @@ TaskHandle_t create_connection_event_processor(uint8_t priority, uint8_t core) {
     );
     
     if (result != pdPASS) {
-        Serial.printf("[PROC] ERROR: Failed to create event processor task!\n");
+        LOG_ERROR("PROC", "Failed to create event processor task");
         return nullptr;
     }
     
-    Serial.printf("[PROC] Event processor task created (priority=%d, core=%d)\n", priority, core);
+    LOG_INFO("PROC", "Event processor task created (priority=%d, core=%d)", priority, core);
     return handle;
 }

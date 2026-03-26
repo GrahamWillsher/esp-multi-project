@@ -2,7 +2,6 @@
 #include "led_handler.h"
 #include <Arduino.h>
 #include "../../datalayer/datalayer.h"
-#include "../../devboard/hal/hal.h"
 #include "../../devboard/utils/logging.h"
 
 typedef struct {
@@ -491,10 +490,8 @@ bool get_event_message(EVENTS_ENUM_TYPE event, char* out, size_t out_size) {
       message = "BMS reset request failed - check contactors are open.";
       break;
     case EVENT_GPIO_CONFLICT: {
-      const String failed_allocator_str =
-        esp32hal ? esp32hal->failed_allocator() : String("unknown");
-      const String conflicting_allocator_str =
-        esp32hal ? esp32hal->conflicting_allocator() : String("unknown");
+      const String failed_allocator_str = String("unknown");
+      const String conflicting_allocator_str = String("unknown");
       const int n = snprintf(
           out, out_size,
           "GPIO Pin Conflict: The pin used by '%s' is already allocated by '%s'. Please check your configuration and assign different pins.",
@@ -502,8 +499,7 @@ bool get_event_message(EVENTS_ENUM_TYPE event, char* out, size_t out_size) {
       return n > 0;
     }
     case EVENT_GPIO_NOT_DEFINED: {
-      const String failed_allocator_str =
-        esp32hal ? esp32hal->failed_allocator() : String("unknown");
+      const String failed_allocator_str = String("unknown");
       const int n = snprintf(
           out, out_size,
           "Missing GPIO Assignment: The component '%s' requires a GPIO pin that isn't configured. Please define a valid pin number in your settings.",

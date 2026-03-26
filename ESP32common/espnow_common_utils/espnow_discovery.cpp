@@ -8,7 +8,7 @@
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp32common/espnow/common.h>
-#include <mqtt_logger.h>
+#include <logging_config.h>
 
 EspnowDiscovery& EspnowDiscovery::instance() {
     static EspnowDiscovery instance;
@@ -20,7 +20,7 @@ void EspnowDiscovery::start(std::function<bool()> is_connected_callback,
                            uint8_t task_priority,
                            uint32_t stack_size) {
     if (task_handle_ != nullptr) {
-        MQTT_LOG_WARNING("DISCOVERY", "Task already running");
+        LOG_WARN("DISCOVERY", "Task already running");
         return;
     }
     
@@ -45,9 +45,9 @@ void EspnowDiscovery::start(std::function<bool()> is_connected_callback,
     );
     
     if (result == pdPASS) {
-        MQTT_LOG_INFO("DISCOVERY", "Announcement task started");
+        LOG_INFO("DISCOVERY", "Announcement task started");
     } else {
-        MQTT_LOG_ERROR("DISCOVERY", "Failed to create announcement task");
+        LOG_ERROR("DISCOVERY", "Failed to create announcement task");
         delete config_;
         config_ = nullptr;
     }
@@ -64,28 +64,28 @@ void EspnowDiscovery::stop() {
         }
         
         suspended_ = false;
-        MQTT_LOG_INFO("DISCOVERY", "Announcement task stopped");
+        LOG_INFO("DISCOVERY", "Announcement task stopped");
     }
 }
 
 void EspnowDiscovery::suspend() {
     if (task_handle_ != nullptr && !suspended_) {
         suspended_ = true;
-        MQTT_LOG_INFO("DISCOVERY", "Announcements suspended (task kept alive)");
+        LOG_INFO("DISCOVERY", "Announcements suspended (task kept alive)");
     }
 }
 
 void EspnowDiscovery::resume() {
     if (task_handle_ != nullptr && suspended_) {
         suspended_ = false;
-        MQTT_LOG_INFO("DISCOVERY", "Announcements resumed");
+        LOG_INFO("DISCOVERY", "Announcements resumed");
     } else if (task_handle_ == nullptr) {
-        MQTT_LOG_WARNING("DISCOVERY", "Cannot resume - task not running");
+        LOG_WARN("DISCOVERY", "Cannot resume - task not running");
     }
 }
 
 void EspnowDiscovery::restart() {
-    MQTT_LOG_INFO("DISCOVERY", "Restarting discovery task");
+    LOG_INFO("DISCOVERY", "Restarting discovery task");
     
     // Stop existing task if running
     stop();
@@ -95,18 +95,18 @@ void EspnowDiscovery::restart() {
         start(last_is_connected_callback_, last_interval_ms_, 
               last_task_priority_, last_stack_size_);
     } else {
-        MQTT_LOG_ERROR("DISCOVERY", "Cannot restart - no saved configuration");
+        LOG_ERROR("DISCOVERY", "Cannot restart - no saved configuration");
     }
 }
 
 void EspnowDiscovery::task_impl(void* parameter) {
     TaskConfig* config = static_cast<TaskConfig*>(parameter);
     
-    MQTT_LOG_INFO("DISCOVERY", "Periodic announcement started (bidirectional discovery)");
+    LOG_INFO("DISCOVERY", "Periodic announcement started (bidirectional discovery)");
     
     // Add broadcast peer for sending announcements
     if (!EspnowPeerManager::add_broadcast_peer()) {
-        MQTT_LOG_ERROR("DISCOVERY", "Failed to add broadcast peer");
+        LOG_ERROR("DISCOVERY", "Failed to add broadcast peer");
         vTaskDelete(nullptr);
         return;
     }
@@ -123,7 +123,7 @@ void EspnowDiscovery::task_impl(void* parameter) {
         
         // Check if peer is connected (via callback)
         if (config->is_connected && config->is_connected()) {
-            MQTT_LOG_INFO("DISCOVERY", "Peer connected - suspending announcements");
+            LOG_INFO("DISCOVERY", "Peer connected - suspending announcements");
             instance().suspended_ = true;
             continue;  // Keep task alive, just suspend
         }
@@ -136,10 +136,10 @@ void EspnowDiscovery::task_impl(void* parameter) {
                                        sizeof(announce));
         
         if (result == ESP_OK) {
-            MQTT_LOG_DEBUG("DISCOVERY", "Sent announcement (seq=%u) on channel %d", 
+            LOG_DEBUG("DISCOVERY", "Sent announcement (seq=%u) on channel %d", 
                           announce.seq, WiFi.channel());
         } else {
-            MQTT_LOG_WARNING("DISCOVERY", "Send failed: %s", esp_err_to_name(result));
+            LOG_WARN("DISCOVERY", "Send failed: %s", esp_err_to_name(result));
         }
         
         vTaskDelay(interval_ticks);

@@ -166,7 +166,22 @@ const char* name_for_chemistry(battery_chemistry_enum chem) {
 }
 
 const char* name_for_comm_interface(comm_interface comm) {
-  return esp32hal->name_for_comm_interface(comm);
+  switch (comm) {
+    case comm_interface::Modbus:
+      return "Modbus";
+    case comm_interface::RS485:
+      return "RS485";
+    case comm_interface::CanNative:
+      return "CAN (Native)";
+    case comm_interface::CanFdNative:
+      return "";
+    case comm_interface::CanAddonMcp2515:
+      return "CAN (MCP2515 add-on)";
+    case comm_interface::CanFdAddonMcp2518:
+      return "CAN FD (MCP2518 add-on)";
+    default:
+      return nullptr;
+  }
 }
 
 const char* name_for_battery_type(BatteryType type) {
@@ -711,7 +726,7 @@ void setup_battery() {
       case BatteryType::BmwI3:
 #if SUPPORT_BATT_BMW_I3
         battery2 = new BmwI3Battery(&datalayer.battery2, &datalayer.system.status.battery2_allowed_contactor_closing,
-                                    can_config.battery_double, esp32hal->WUP_PIN2());
+                  can_config.battery_double, GPIO_NUM_NC);
 #endif
         break;
       case BatteryType::CmfaEv:

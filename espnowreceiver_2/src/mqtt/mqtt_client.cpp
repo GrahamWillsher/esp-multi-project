@@ -223,9 +223,9 @@ void MqttClient::subscribeToTopics() {
     // Only subscribe to cell_data if not paused (subscription optimization)
     if (cell_data_state_ != PAUSED) {
         mqtt_client_.subscribe("transmitter/BE/cell_data");
-        LOG_INFO("[SUBSCRIPTION]", "Subscribed to all topics including cell_data");
+        LOG_INFO("SUBSCRIPTION", "Subscribed to all topics including cell_data");
     } else {
-        LOG_INFO("[SUBSCRIPTION]", "Subscribed to spec topics only (cell_data paused)");
+        LOG_INFO("SUBSCRIPTION", "Subscribed to spec topics only (cell_data paused)");
     }
 }
 
@@ -250,12 +250,18 @@ void MqttClient::handleSpecData(const char* json_payload, size_t length) {
 void MqttClient::handleSpecData2(const char* json_payload, size_t length) {
     LOG_DEBUG("MQTT", "Processing transmitter/BE/spec_data_2");
     
-    // Parse inverter-specific data
-    DynamicJsonDocument doc(512);
+    // Parse inverter-specific data.
+    // Use payload-driven capacity to avoid NoMemory on larger retained payloads.
+    // TX publish buffer is currently <= 768 bytes, but ArduinoJson needs overhead.
+    const size_t doc_capacity = std::min<size_t>(4096, std::max<size_t>(1024, length * 3));
+    DynamicJsonDocument doc(doc_capacity);
     DeserializationError error = deserializeJson(doc, json_payload, length);
     
     if (error) {
-        LOG_ERROR("MQTT", "Failed to parse spec_data_2: %s", error.c_str());
+        LOG_ERROR("MQTT", "Failed to parse spec_data_2: %s (len=%u cap=%u)",
+                  error.c_str(),
+                  static_cast<unsigned>(length),
+                  static_cast<unsigned>(doc_capacity));
         return;
     }
 
@@ -462,7 +468,7 @@ void MqttClient::incrementCellDataSubscribers() {
             xTimerStop(cell_data_pause_timer_, pdMS_TO_TICKS(100));
             xTimerDelete(cell_data_pause_timer_, pdMS_TO_TICKS(100));
             cell_data_pause_timer_ = nullptr;
-            LOG_INFO("[SUBSCRIPTION]", "Cancelled grace period - SSE client reconnected");
+            LOG_INFO("SUBSCRIPTION", "Cancelled grace period - SSE client reconnected");
         }
         
         // Ensure subscription is active (if we were paused)
@@ -471,17 +477,17 @@ void MqttClient::incrementCellDataSubscribers() {
                 // Set state BEFORE calling subscribeToTopics() so it knows to subscribe to cell_data
                 cell_data_state_ = SUBSCRIBED;
                 subscribeToTopics();
-                LOG_INFO("[SUBSCRIPTION]", "Resumed cell_data subscription (subscriber count: 1→%d)", 
+                LOG_INFO("SUBSCRIPTION", "Resumed cell_data subscription (subscriber count: 1→%d)", 
                          cell_data_subscribers_);
             } else {
-                LOG_WARN("[SUBSCRIPTION]", "Cannot resume cell_data - MQTT not connected");
+                LOG_WARN("SUBSCRIPTION", "Cannot resume cell_data - MQTT not connected");
             }
         } else {
-            LOG_INFO("[SUBSCRIPTION]", "First SSE client connected (count: 0→%d, state: %s)", 
+            LOG_INFO("SUBSCRIPTION", "First SSE client connected (count: 0→%d, state: %s)", 
                      cell_data_subscribers_, getCellDataSubscriptionState());
         }
     } else {
-        LOG_DEBUG("[SUBSCRIPTION]", "SSE client connected (count: %d→%d)", 
+        LOG_DEBUG("SUBSCRIPTION", "SSE client connected (count: %d→%d)", 
                   cell_data_subscribers_ - 1, cell_data_subscribers_);
     }
 }
@@ -520,12 +526,12 @@ void MqttClient::decrementCellDataSubscribers() {
         if (cell_data_pause_timer_ != nullptr) {
             xTimerStart(cell_data_pause_timer_, pdMS_TO_TICKS(100));
             cell_data_state_ = PAUSING;
-            LOG_INFO("[SUBSCRIPTION]", "Last SSE client disconnected - grace period started (5s timeout)");
+            LOG_INFO("SUBSCRIPTION", "Last SSE client disconnected - grace period started (5s timeout)");
         } else {
-            LOG_ERROR("[SUBSCRIPTION]", "Failed to create grace period timer!");
+            LOG_ERROR("SUBSCRIPTION", "Failed to create grace period timer!");
         }
     } else {
-        LOG_DEBUG("[SUBSCRIPTION]", "SSE client disconnected (count: %d→%d)", 
+        LOG_DEBUG("SUBSCRIPTION", "SSE client disconnected (count: %d→%d)", 
                   cell_data_subscribers_ + 1, cell_data_subscribers_);
     }
 }
@@ -560,7 +566,7 @@ const char* MqttClient::getCellDataSubscriptionState() {
 void MqttClient::incrementEventLogSubscribers() {
     bool was_zero = (event_log_subscribers_ == 0);
     event_log_subscribers_++;
-    LOG_INFO("[MQTT]", "Event log subscriber count: %d", event_log_subscribers_);
+    LOG_INFO("MQTT", "Event log subscriber count: %d", event_log_subscribers_);
 
     // Notify transmitter to start publishing event logs (ESP-NOW) on first subscriber
     if (was_zero) {
@@ -571,7 +577,7 @@ void MqttClient::incrementEventLogSubscribers() {
 void MqttClient::decrementEventLogSubscribers() {
     if (event_log_subscribers_ > 0) {
         event_log_subscribers_--;
-        LOG_INFO("[MQTT]", "Event log subscriber count: %d", event_log_subscribers_);
+        LOG_INFO("MQTT", "Event log subscriber count: %d", event_log_subscribers_);
         
         if (event_log_subscribers_ == 0) {
             // Notify transmitter to stop publishing (ESP-NOW)
@@ -602,14 +608,14 @@ void MqttClient::cellDataGracePeriodCallback(TimerHandle_t xTimer) {
             mqtt_client_.unsubscribe("transmitter/BE/cell_data");
             
             cell_data_state_ = PAUSED;
-            LOG_INFO("[SUBSCRIPTION]", "Paused cell_data subscription after grace period");
-            LOG_INFO("[SUBSCRIPTION]", "Expected savings: ~30MB/month bandwidth, 43,200 JSON ops/day");
+            LOG_INFO("SUBSCRIPTION", "Paused cell_data subscription after grace period");
+            LOG_INFO("SUBSCRIPTION", "Expected savings: ~30MB/month bandwidth, 43,200 JSON ops/day");
         } else {
-            LOG_WARN("[SUBSCRIPTION]", "Cannot pause - not connected to MQTT");
+            LOG_WARN("SUBSCRIPTION", "Cannot pause - not connected to MQTT");
             cell_data_state_ = ERROR;
         }
     } else {
-        LOG_INFO("[SUBSCRIPTION]", "Grace period expired but new SSE clients connected (%d active) - keeping subscription active",
+        LOG_INFO("SUBSCRIPTION", "Grace period expired but new SSE clients connected (%d active) - keeping subscription active",
                  cell_data_subscribers_);
     }
     

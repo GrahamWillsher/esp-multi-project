@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <vector>
 #include <firmware_version.h>
+#include <mqtt_logger.h>
 
 namespace {
 constexpr uint16_t MAX_CATALOG_BASE_VERSION = 32767;
@@ -164,6 +165,7 @@ void MqttManager::on_connection_success() {
     transition_to(MqttState::CONNECTED);
     connected_ = true;  // Legacy flag
     total_connections_++;
+    MqttLogger::instance().set_mqtt_available(true);
     
     // Reset retry delay on success
     current_retry_delay_ = INITIAL_RETRY_DELAY_MS;
@@ -184,6 +186,7 @@ void MqttManager::on_connection_failed() {
 
     // Ensure underlying socket is fully closed before backoff/retry
     client_.disconnect();
+    MqttLogger::instance().set_mqtt_available(false);
     
     transition_to(MqttState::CONNECTION_FAILED);
     connected_ = false;  // Legacy flag
@@ -205,6 +208,7 @@ void MqttManager::on_network_error() {
     LOG_WARN("MQTT", "Network unavailable");
     transition_to(MqttState::NETWORK_ERROR);
     connected_ = false;  // Legacy flag
+    MqttLogger::instance().set_mqtt_available(false);
 }
 
 void MqttManager::transition_to(MqttState new_state) {
@@ -294,6 +298,12 @@ void MqttManager::disconnect() {
         delay(100);
         LOG_INFO("MQTT", "Disconnected gracefully");
     }
+
+    // Ethernet-triggered disconnect is intentional: force stable network-error state
+    // and reset reconnect backoff baseline for next cable restore.
+    transition_to(MqttState::NETWORK_ERROR);
+    current_retry_delay_ = INITIAL_RETRY_DELAY_MS;
+    MqttLogger::instance().set_mqtt_available(false);
 }
 
 bool MqttManager::publish_status(const char* message, bool retained) {
@@ -366,7 +376,7 @@ bool MqttManager::publish_cell_data() {
             LOG_DEBUG("MQTT", "Published cell data (%u bytes)", len);
         }
     } else {
-        Serial.println("[MQTT_DEBUG] serialize returned 0 bytes, not publishing");
+        LOG_DEBUG("MQTT", "serialize returned 0 bytes, not publishing");
     }
 
     return success;

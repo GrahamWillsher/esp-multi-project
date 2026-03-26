@@ -71,8 +71,8 @@ void init_led_gradients() {
 
     led_last_background_color = Display::tft_background;
     led_gradients_initialized = true;
-    Serial.printf("[LED] Gradients initialized for background color 0x%04X (%d steps per color)\n",
-                  Display::tft_background, LED_FADE_STEPS);
+    LOG_INFO("LED", "Gradients initialized for background color 0x%04X (%d steps per color)",
+             Display::tft_background, LED_FADE_STEPS);
 }
 
 // Flash LED with fade effect

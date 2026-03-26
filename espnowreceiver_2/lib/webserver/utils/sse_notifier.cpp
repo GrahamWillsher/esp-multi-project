@@ -9,9 +9,9 @@ void SSENotifier::init() {
     if (event_group == nullptr) {
         event_group = xEventGroupCreate();
         if (event_group != nullptr) {
-            LOG_INFO("[SSE] Event group created");
+            LOG_INFO("SSE", "Event group created");
         } else {
-            LOG_ERROR("[SSE] Failed to create event group");
+            LOG_ERROR("SSE", "Failed to create event group");
         }
     }
 }

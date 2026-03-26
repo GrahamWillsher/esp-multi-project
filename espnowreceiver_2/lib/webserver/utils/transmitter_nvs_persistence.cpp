@@ -23,7 +23,7 @@ namespace {
     void persist_to_nvs_now() {
         Preferences prefs;
         if (!prefs.begin(kTxCacheNamespace, false)) {
-            LOG_ERROR("[TX_NVS]", "prefs.begin failed — NVS save skipped (namespace=%s)",
+            LOG_ERROR("TX_NVS", "prefs.begin failed — NVS save skipped (namespace=%s)",
                       kTxCacheNamespace);
             return;
         }
@@ -35,7 +35,7 @@ namespace {
 
         prefs.end();
         g_nvs_save_pending = false;
-        LOG_DEBUG("[TX_NVS]", "NVS persist complete");
+        LOG_DEBUG("TX_NVS", "NVS persist complete");
     }
 
     void nvs_save_timer_callback(TimerHandle_t timer) {
@@ -48,7 +48,7 @@ namespace {
 
         if (g_nvs_save_timer == nullptr) {
             // Timer was never created (allocation failed at init); persist immediately.
-            LOG_WARN("[TX_NVS]", "NVS save timer unavailable — persisting synchronously");
+                LOG_WARN("TX_NVS", "NVS save timer unavailable — persisting synchronously");
             persist_to_nvs_now();
             return;
         }
@@ -59,7 +59,7 @@ namespace {
                 : xTimerStart(g_nvs_save_timer, pdMS_TO_TICKS(50));
 
         if (ok != pdPASS) {
-            LOG_WARN("[TX_NVS]", "NVS save timer schedule failed — persisting synchronously");
+            LOG_WARN("TX_NVS", "NVS save timer schedule failed — persisting synchronously");
             persist_to_nvs_now();
         }
     }
@@ -75,7 +75,7 @@ void TransmitterNvsPersistence::init() {
             nvs_save_timer_callback
         );
         if (g_nvs_save_timer == nullptr) {
-            LOG_ERROR("[TX_NVS] Failed to create NVS debounce timer");
+            LOG_ERROR("TX_NVS", "Failed to create NVS debounce timer");
         }
     }
 

@@ -47,7 +47,7 @@
 #include "network/time_manager.h"
 #include <mqtt_manager.h>  // For MqttConfigManager
 
-// Battery Emulator HAL (for GPIO configuration)
+// Battery Emulator HAL (single fixed TransmitterHal for Olimex ESP32-POE2)
 #include "battery_emulator/devboard/hal/hal.h"
 
 // ESP-NOW handlers
@@ -134,9 +134,9 @@ static void bootstrap_hardware() {
     vTaskDelay(pdMS_TO_TICKS(TimingConfig::STARTUP.serial_init_delay_ms));
     LOG_INFO("MAIN", "\n=== ESP-NOW Transmitter (Modular) ===");
 
-    // Initialize hardware abstraction layer (GPIO configuration for Waveshare HAT)
+    // Initialize hardware abstraction layer (fixed TransmitterHal for Olimex ESP32-POE2)
     init_hal();
-    LOG_INFO("HAL", "Hardware abstraction layer initialized: %s", esp32hal->name());
+    LOG_INFO("HAL", "Board: Olimex ESP32-POE2");
 
     // Display firmware metadata (embedded in binary)
     char fwInfo[128];

@@ -1,5 +1,6 @@
 #include "receiver_config_manager.h"
 #include <Arduino.h>
+#include <logging_config.h>
 
 // Initialize static members
 char ReceiverNetworkConfig::hostname_[32] = {0};
@@ -99,14 +100,14 @@ ReceiverNetworkConfig::ValidationResult ReceiverNetworkConfig::validateInterface
 bool ReceiverNetworkConfig::loadConfig() {
     Preferences prefs;
     if (!prefs.begin(NVS_NAMESPACE, true)) {  // true = read-only
-        Serial.println("[ReceiverConfig] Failed to open NVS namespace");
+        LOG_ERROR("RECEIVER_CFG", "Failed to open NVS namespace");
         return false;
     }
     
     // Load SSID first - if not present, no valid config exists
     size_t ssid_len = prefs.getString(NVS_KEY_SSID, ssid_, sizeof(ssid_));
     if (ssid_len == 0 || ssid_[0] == '\0') {
-        Serial.println("[ReceiverConfig] No SSID found - AP mode required");
+        LOG_WARN("RECEIVER_CFG", "No SSID found - AP mode required");
         prefs.end();
         return false;
     }
@@ -131,7 +132,7 @@ bool ReceiverNetworkConfig::loadConfig() {
     
     // Validate static IP configuration if it's enabled
     if (use_static_ip_ && (ip_size != 4 || gw_size != 4 || sn_size != 4)) {
-        Serial.println("[ReceiverConfig] Incomplete static IP config - falling back to DHCP");
+        LOG_WARN("RECEIVER_CFG", "Incomplete static IP config - falling back to DHCP");
         use_static_ip_ = false;
     }
     
@@ -159,17 +160,16 @@ bool ReceiverNetworkConfig::loadConfig() {
     
     prefs.end();
     
-    Serial.println("[ReceiverConfig] Configuration loaded successfully from NVS");
-    Serial.printf("  Hostname: %s\n", hostname_);
-    Serial.printf("  SSID: %s\n", ssid_);
-    Serial.printf("  Password length: %d\n", strlen(password_));
-    Serial.printf("  Mode: %s\n", use_static_ip_ ? "Static IP" : "DHCP");
+    LOG_INFO("RECEIVER_CFG", "Configuration loaded successfully from NVS");
+    LOG_INFO("RECEIVER_CFG", "  Hostname: %s", hostname_);
+    LOG_INFO("RECEIVER_CFG", "  SSID: %s", ssid_);
+    LOG_INFO("RECEIVER_CFG", "  Password length: %d", (int)strlen(password_));
+    LOG_INFO("RECEIVER_CFG", "  Mode: %s", use_static_ip_ ? "Static IP" : "DHCP");
     if (use_static_ip_) {
-        Serial.printf("  IP: %d.%d.%d.%d\n", static_ip_[0], static_ip_[1], static_ip_[2], static_ip_[3]);
-        Serial.printf("  Gateway: %d.%d.%d.%d\n", gateway_[0], gateway_[1], gateway_[2], gateway_[3]);
-        Serial.printf("  Subnet: %d.%d.%d.%d\n", subnet_[0], subnet_[1], subnet_[2], subnet_[3]);
+        LOG_INFO("RECEIVER_CFG", "  IP: %d.%d.%d.%d", static_ip_[0], static_ip_[1], static_ip_[2], static_ip_[3]);
+        LOG_INFO("RECEIVER_CFG", "  Gateway: %d.%d.%d.%d", gateway_[0], gateway_[1], gateway_[2], gateway_[3]);
+        LOG_INFO("RECEIVER_CFG", "  Subnet: %d.%d.%d.%d", subnet_[0], subnet_[1], subnet_[2], subnet_[3]);
     }
-    Serial.println("[ReceiverConfig] NVS read complete");
     
     return true;
 }
@@ -193,49 +193,49 @@ bool ReceiverNetworkConfig::saveConfig(
     // Validation
     auto ssid_validation = validateSSID(ssid);
     if (!ssid_validation.valid) {
-        Serial.printf("[ReceiverConfig] %s\n", ssid_validation.error_message);
+        LOG_ERROR("RECEIVER_CFG", "%s", ssid_validation.error_message);
         return false;
     }
 
     auto hostname_validation = validateHostname(hostname);
     if (!hostname_validation.valid) {
-        Serial.printf("[ReceiverConfig] %s\n", hostname_validation.error_message);
+        LOG_ERROR("RECEIVER_CFG", "%s", hostname_validation.error_message);
         return false;
     }
 
     auto password_validation = validatePassword(password);
     if (!password_validation.valid) {
-        Serial.printf("[ReceiverConfig] %s\n", password_validation.error_message);
+        LOG_ERROR("RECEIVER_CFG", "%s", password_validation.error_message);
         return false;
     }
 
     auto mqtt_port_validation = validatePort(mqtt_port);
     if (!mqtt_port_validation.valid) {
-        Serial.printf("[ReceiverConfig] MQTT %s\n", mqtt_port_validation.error_message);
+        LOG_ERROR("RECEIVER_CFG", "MQTT %s", mqtt_port_validation.error_message);
         return false;
     }
 
     if (use_static_ip && (!static_ip || !gateway || !subnet)) {
-        Serial.println("[ReceiverConfig] Static IP mode requires IP, gateway, and subnet");
+        LOG_ERROR("RECEIVER_CFG", "Static IP mode requires IP, gateway, and subnet");
         return false;
     }
 
     if (use_static_ip) {
         auto ip_validation = validateIPAddress(static_ip);
         if (!ip_validation.valid) {
-            Serial.printf("[ReceiverConfig] Static IP invalid: %s\n", ip_validation.error_message);
+            LOG_ERROR("RECEIVER_CFG", "Static IP invalid: %s", ip_validation.error_message);
             return false;
         }
 
         auto gateway_validation = validateIPAddress(gateway);
         if (!gateway_validation.valid) {
-            Serial.printf("[ReceiverConfig] Gateway invalid: %s\n", gateway_validation.error_message);
+            LOG_ERROR("RECEIVER_CFG", "Gateway invalid: %s", gateway_validation.error_message);
             return false;
         }
 
         auto subnet_validation = validateIPAddress(subnet);
         if (!subnet_validation.valid) {
-            Serial.printf("[ReceiverConfig] Subnet invalid: %s\n", subnet_validation.error_message);
+            LOG_ERROR("RECEIVER_CFG", "Subnet invalid: %s", subnet_validation.error_message);
             return false;
         }
     }
@@ -243,14 +243,14 @@ bool ReceiverNetworkConfig::saveConfig(
     if (mqtt_enabled && mqtt_server) {
         auto mqtt_server_validation = validateIPAddress(mqtt_server);
         if (!mqtt_server_validation.valid) {
-            Serial.printf("[ReceiverConfig] MQTT server invalid: %s\n", mqtt_server_validation.error_message);
+            LOG_ERROR("RECEIVER_CFG", "MQTT server invalid: %s", mqtt_server_validation.error_message);
             return false;
         }
     }
     
     Preferences prefs;
     if (!prefs.begin(NVS_NAMESPACE, false)) {  // false = read-write
-        Serial.println("[ReceiverConfig] Failed to open NVS namespace for writing");
+        LOG_ERROR("RECEIVER_CFG", "Failed to open NVS namespace for writing");
         return false;
     }
     
@@ -270,11 +270,11 @@ bool ReceiverNetworkConfig::saveConfig(
     // Save password ONLY if a new password is provided
     // If password is empty, keep the existing password in NVS (don't overwrite it)
     if (password && password[0] != '\0') {
-        Serial.printf("[ReceiverConfig] Updating password (length: %d)\n", strlen(password));
+        LOG_INFO("RECEIVER_CFG", "Updating password (length: %d)", (int)strlen(password));
         prefs.putString(NVS_KEY_PASSWORD, password);
         strcpy(password_, password);
     } else {
-        Serial.println("[ReceiverConfig] No password provided - keeping existing password");
+        LOG_INFO("RECEIVER_CFG", "No password provided - keeping existing password");
         // Load existing password from NVS into memory
         prefs.getString(NVS_KEY_PASSWORD, password_, sizeof(password_));
     }
@@ -334,17 +334,16 @@ bool ReceiverNetworkConfig::saveConfig(
     
     prefs.end();
     
-    Serial.println("[ReceiverConfig] Configuration saved successfully to NVS");
-    Serial.printf("  Hostname: %s\n", hostname_);
-    Serial.printf("  SSID: %s\n", ssid_);
-    Serial.printf("  Password: %s\n", password_[0] ? "(set)" : "(empty)");
-    Serial.printf("  Mode: %s\n", use_static_ip_ ? "Static IP" : "DHCP");
+    LOG_INFO("RECEIVER_CFG", "Configuration saved successfully to NVS");
+    LOG_INFO("RECEIVER_CFG", "  Hostname: %s", hostname_);
+    LOG_INFO("RECEIVER_CFG", "  SSID: %s", ssid_);
+    LOG_INFO("RECEIVER_CFG", "  Password: %s", password_[0] ? "(set)" : "(empty)");
+    LOG_INFO("RECEIVER_CFG", "  Mode: %s", use_static_ip_ ? "Static IP" : "DHCP");
     if (use_static_ip_) {
-        Serial.printf("  IP: %d.%d.%d.%d\n", static_ip_[0], static_ip_[1], static_ip_[2], static_ip_[3]);
-        Serial.printf("  Gateway: %d.%d.%d.%d\n", gateway_[0], gateway_[1], gateway_[2], gateway_[3]);
-        Serial.printf("  Subnet: %d.%d.%d.%d\n", subnet_[0], subnet_[1], subnet_[2], subnet_[3]);
+        LOG_INFO("RECEIVER_CFG", "  IP: %d.%d.%d.%d", static_ip_[0], static_ip_[1], static_ip_[2], static_ip_[3]);
+        LOG_INFO("RECEIVER_CFG", "  Gateway: %d.%d.%d.%d", gateway_[0], gateway_[1], gateway_[2], gateway_[3]);
+        LOG_INFO("RECEIVER_CFG", "  Subnet: %d.%d.%d.%d", subnet_[0], subnet_[1], subnet_[2], subnet_[3]);
     }
-    Serial.println("[ReceiverConfig] NVS write complete");
     
     return true;
 }
@@ -367,7 +366,7 @@ void ReceiverNetworkConfig::clearConfig() {
     if (prefs.begin(NVS_NAMESPACE, false)) {
         prefs.clear();
         prefs.end();
-        Serial.println("[ReceiverConfig] Configuration cleared - factory reset complete");
+        LOG_INFO("RECEIVER_CFG", "Configuration cleared - factory reset complete");
     }
     
     // Clear in-memory state
@@ -394,9 +393,9 @@ void ReceiverNetworkConfig::setBatteryType(uint8_t type) {
     if (prefs.begin(NVS_NAMESPACE, false)) {
         prefs.putUChar(NVS_KEY_BATTERY_TYPE, type);
         prefs.end();
-        Serial.printf("[ReceiverConfig] Battery type saved: %d\n", type);
+        LOG_INFO("RECEIVER_CFG", "Battery type saved: %d", type);
     } else {
-        Serial.println("[ReceiverConfig] Failed to save battery type to NVS");
+        LOG_ERROR("RECEIVER_CFG", "Failed to save battery type to NVS");
     }
 }
 
@@ -407,16 +406,16 @@ void ReceiverNetworkConfig::setInverterType(uint8_t type) {
     if (prefs.begin(NVS_NAMESPACE, false)) {
         prefs.putUChar(NVS_KEY_INVERTER_TYPE, type);
         prefs.end();
-        Serial.printf("[ReceiverConfig] Inverter type saved: %d\n", type);
+        LOG_INFO("RECEIVER_CFG", "Inverter type saved: %d", type);
     } else {
-        Serial.println("[ReceiverConfig] Failed to save inverter type to NVS");
+        LOG_ERROR("RECEIVER_CFG", "Failed to save inverter type to NVS");
     }
 }
 
 void ReceiverNetworkConfig::setBatteryInterface(uint8_t interface) {
     auto validation = validateInterface(interface);
     if (!validation.valid) {
-        Serial.printf("[ReceiverConfig] Invalid battery interface (%d): %s\n", interface, validation.error_message);
+        LOG_ERROR("RECEIVER_CFG", "Invalid battery interface (%d): %s", interface, validation.error_message);
         return;
     }
 
@@ -426,16 +425,16 @@ void ReceiverNetworkConfig::setBatteryInterface(uint8_t interface) {
     if (prefs.begin(NVS_NAMESPACE, false)) {
         prefs.putUChar(NVS_KEY_BATTERY_INTERFACE, interface);
         prefs.end();
-        Serial.printf("[ReceiverConfig] Battery interface saved: %d\n", interface);
+        LOG_INFO("RECEIVER_CFG", "Battery interface saved: %d", interface);
     } else {
-        Serial.println("[ReceiverConfig] Failed to save battery interface to NVS");
+        LOG_ERROR("RECEIVER_CFG", "Failed to save battery interface to NVS");
     }
 }
 
 void ReceiverNetworkConfig::setInverterInterface(uint8_t interface) {
     auto validation = validateInterface(interface);
     if (!validation.valid) {
-        Serial.printf("[ReceiverConfig] Invalid inverter interface (%d): %s\n", interface, validation.error_message);
+        LOG_ERROR("RECEIVER_CFG", "Invalid inverter interface (%d): %s", interface, validation.error_message);
         return;
     }
 
@@ -445,9 +444,9 @@ void ReceiverNetworkConfig::setInverterInterface(uint8_t interface) {
     if (prefs.begin(NVS_NAMESPACE, false)) {
         prefs.putUChar(NVS_KEY_INVERTER_INTERFACE, interface);
         prefs.end();
-        Serial.printf("[ReceiverConfig] Inverter interface saved: %d\n", interface);
+        LOG_INFO("RECEIVER_CFG", "Inverter interface saved: %d", interface);
     } else {
-        Serial.println("[ReceiverConfig] Failed to save inverter interface to NVS");
+        LOG_ERROR("RECEIVER_CFG", "Failed to save inverter interface to NVS");
     }
 }
 
@@ -458,8 +457,8 @@ void ReceiverNetworkConfig::setSimulationMode(bool enabled) {
     if (prefs.begin(NVS_NAMESPACE, false)) {
         prefs.putBool(NVS_KEY_SIMULATION_MODE, enabled);
         prefs.end();
-        Serial.printf("[ReceiverConfig] Simulation mode saved: %s\n", enabled ? "ON" : "OFF");
+        LOG_INFO("RECEIVER_CFG", "Simulation mode saved: %s", enabled ? "ON" : "OFF");
     } else {
-        Serial.println("[ReceiverConfig] Failed to save simulation mode to NVS");
+        LOG_ERROR("RECEIVER_CFG", "Failed to save simulation mode to NVS");
     }
 }

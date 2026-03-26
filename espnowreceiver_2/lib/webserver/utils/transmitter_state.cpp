@@ -55,11 +55,11 @@ void update_runtime_status(bool mqtt_conn, bool eth_conn) {
     runtime_status.last_beacon_time_ms = millis();
 
     if (eth_changed) {
-        LOG_INFO("[STATUS_CACHE] Runtime: ETH=%s", eth_conn ? "CONNECTED" : "DISCONNECTED");
+        LOG_INFO("STATUS_CACHE", "Runtime: ETH=%s", eth_conn ? "CONNECTED" : "DISCONNECTED");
     }
 
     if (mqtt_changed || eth_changed) {
-        LOG_INFO("[TX_MGR] Runtime status updated: MQTT=%s, ETH=%s",
+        LOG_INFO("TX_MGR", "Runtime status updated: MQTT=%s, ETH=%s",
                  mqtt_conn ? "CONNECTED" : "DISCONNECTED",
                  eth_conn ? "CONNECTED" : "DISCONNECTED");
     }
@@ -137,10 +137,10 @@ void store_metadata(bool valid,
     }
 
     char indicator = valid ? '@' : '*';
-    LOG_INFO("[STATUS_CACHE] Metadata: %s %s v%d.%d.%d %c",
+    LOG_INFO("STATUS_CACHE", "Metadata: %s %s v%d.%d.%d %c",
              metadata.device, metadata.env, major, minor, patch, indicator);
     if (build_date != nullptr && strlen(build_date) > 0) {
-        LOG_INFO("[STATUS_CACHE]   Built: %s", metadata.build_date);
+        LOG_INFO("STATUS_CACHE", "  Built: %s", metadata.build_date);
     }
 
     SSENotifier::notifyDataUpdated();

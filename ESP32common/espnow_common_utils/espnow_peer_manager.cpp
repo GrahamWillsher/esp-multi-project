@@ -4,7 +4,7 @@
  */
 
 #include "espnow_peer_manager.h"
-#include <mqtt_logger.h>
+#include <logging_config.h>
 
 namespace EspnowPeerManager {
 
@@ -28,12 +28,12 @@ bool add_peer(const uint8_t* mac, uint8_t channel) {
     if (result == ESP_OK) {
         char mac_str[18];
         format_mac(mac, mac_str);
-        MQTT_LOG_DEBUG("PEER_MGR", "Added peer: %s (channel %d)", mac_str, channel);
+        LOG_DEBUG("PEER_MGR", "Added peer: %s (channel %d)", mac_str, channel);
         return true;
     } else {
         char mac_str[18];
         format_mac(mac, mac_str);
-        MQTT_LOG_ERROR("PEER_MGR", "Failed to add peer %s: %s", mac_str, esp_err_to_name(result));
+        LOG_ERROR("PEER_MGR", "Failed to add peer %s: %s", mac_str, esp_err_to_name(result));
         return false;
     }
 }
@@ -51,12 +51,12 @@ bool remove_peer(const uint8_t* mac) {
     if (result == ESP_OK) {
         char mac_str[18];
         format_mac(mac, mac_str);
-        MQTT_LOG_DEBUG("PEER_MGR", "Removed peer: %s", mac_str);
+        LOG_DEBUG("PEER_MGR", "Removed peer: %s", mac_str);
         return true;
     } else {
         char mac_str[18];
         format_mac(mac, mac_str);
-        MQTT_LOG_ERROR("PEER_MGR", "Failed to remove peer %s: %s", mac_str, esp_err_to_name(result));
+        LOG_ERROR("PEER_MGR", "Failed to remove peer %s: %s", mac_str, esp_err_to_name(result));
         return false;
     }
 }
@@ -83,10 +83,10 @@ bool add_broadcast_peer() {
     
     esp_err_t result = esp_now_add_peer(&broadcast_peer);
     if (result == ESP_OK) {
-        MQTT_LOG_DEBUG("PEER_MGR", "Broadcast peer added");
+        LOG_DEBUG("PEER_MGR", "Broadcast peer added");
         return true;
     } else {
-        MQTT_LOG_ERROR("PEER_MGR", "Failed to add broadcast peer: %s", esp_err_to_name(result));
+        LOG_ERROR("PEER_MGR", "Failed to add broadcast peer: %s", esp_err_to_name(result));
         return false;
     }
 }

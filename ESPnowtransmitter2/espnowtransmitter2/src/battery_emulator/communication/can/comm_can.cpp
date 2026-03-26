@@ -8,6 +8,7 @@
 #include "../../devboard/safety/safety.h"
 #include "../../devboard/sdcard/sdcard.h"
 #include "../../devboard/utils/logging.h"
+#include "../../../config/logging_config.h"
 
 #include <esp_arduino_version.h>
 #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
@@ -397,28 +398,23 @@ void receive_frame_canfd_addon() {  // This section checks if we have a complete
 void print_can_frame(CAN_frame frame, CAN_Interface interface, frameDirection msgDir) {
 
   if (datalayer.system.info.CAN_usb_logging_active) {
-    uint8_t i = 0;
-    Serial.print("(");
-    Serial.print(millis() / 1000.0);
-    if (msgDir == MSG_RX) {
-      Serial.print(") RX");
-      Serial.print((int)(interface * 2));
-    } else {
-      Serial.print(") TX");
-      Serial.print((int)(interface * 2) + 1);
+    char payload[200] = {0};
+    size_t payload_len = 0;
+    for (uint8_t i = 0; i < frame.DLC && i < sizeof(frame.data.u8); i++) {
+      const int written = snprintf(payload + payload_len,
+                                   sizeof(payload) - payload_len,
+                                   "%s%02X",
+                                   (i == 0) ? "" : " ",
+                                   frame.data.u8[i]);
+      if (written <= 0 || (size_t)written >= (sizeof(payload) - payload_len)) {
+        break;
+      }
+      payload_len += static_cast<size_t>(written);
     }
-    Serial.print(" ");
-    Serial.print(frame.ID, HEX);
-    Serial.print(" [");
-    Serial.print(frame.DLC);
-    Serial.print("] ");
-    for (i = 0; i < frame.DLC; i++) {
-      Serial.print(frame.data.u8[i] < 16 ? "0" : "");
-      Serial.print(frame.data.u8[i], HEX);
-      if (i < frame.DLC - 1)
-        Serial.print(" ");
-    }
-    Serial.println("");
+
+    const char* dir = (msgDir == MSG_RX) ? "RX" : "TX";
+    const int bus = (msgDir == MSG_RX) ? (int)(interface * 2) : ((int)(interface * 2) + 1);
+    LOG_INFO("CAN_USB", "(%.3f) %s%d %X [%u] %s", millis() / 1000.0, dir, bus, frame.ID, frame.DLC, payload);
   }
 
   if (datalayer.system.info.can_logging_active) {  // If user clicked on CAN Logging page in webserver, start recording

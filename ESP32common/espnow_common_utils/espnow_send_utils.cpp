@@ -4,7 +4,7 @@
  */
 
 #include "espnow_send_utils.h"
-#include <mqtt_logger.h>
+#include <log_routed.h>
 
 // Static member initialization
 uint8_t EspnowSendUtils::consecutive_failures_ = 0;
@@ -39,7 +39,7 @@ bool EspnowSendUtils::send_with_retry(
     
     // Only log first failure and every 5th failure to reduce spam
     if (consecutive_failures_ == 1 || consecutive_failures_ % 5 == 0) {
-        MQTT_LOG_WARNING("SEND", "%s failed: %s (failures: %d/%d)", 
+        LOG_WARN("SEND", "%s failed: %s (failures: %d/%d)", 
                          msg_name, esp_err_to_name(result), consecutive_failures_, max_failures);
     }
     
@@ -49,7 +49,7 @@ bool EspnowSendUtils::send_with_retry(
         uint32_t pause_duration = backoff_ms << (consecutive_failures_ / max_failures - 1);
         if (pause_duration > 30000) pause_duration = 30000;  // Cap at 30 seconds
         
-        MQTT_LOG_ERROR("SEND", "Too many failures (%d) - pausing sends for %u ms", 
+        LOG_ERROR("SEND", "Too many failures (%d) - pausing sends for %u ms", 
                       consecutive_failures_, pause_duration);
         send_paused_ = true;
         
@@ -70,7 +70,7 @@ bool EspnowSendUtils::send_with_retry(
         if (unpause_timer_ != nullptr) {
             xTimerStart(unpause_timer_, 0);
         } else {
-            MQTT_LOG_ERROR("SEND", "Failed to create unpause timer - backoff will not auto-clear");
+            LOG_ERROR("SEND", "Failed to create unpause timer - backoff will not auto-clear");
         }
     }
     
@@ -85,7 +85,7 @@ void EspnowSendUtils::reset_failure_counter() {
         xTimerStop(unpause_timer_, 0);
     }
     
-    MQTT_LOG_INFO("SEND", "Failure counter reset");
+    LOG_INFO("SEND", "Failure counter reset");
 }
 
 uint8_t EspnowSendUtils::get_failure_count() {
@@ -108,6 +108,7 @@ void EspnowSendUtils::handle_deferred_logging() {
     if (needs_unpause_log_) {
         needs_unpause_log_ = false;
         // This runs in a task context with adequate stack for MQTT logging
-        MQTT_LOG_INFO("SEND", "Resuming sends after backoff period");
+        // Use MQTT-only sink: Serial was already written in the timer callback
+        log_routed(LogSink::Mqtt, RoutedLevel::Info, "SEND", "Resuming sends after backoff period");
     }
 }

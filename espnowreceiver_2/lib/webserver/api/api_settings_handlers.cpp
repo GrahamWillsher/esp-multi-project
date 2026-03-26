@@ -50,30 +50,30 @@ esp_err_t api_get_battery_settings_handler(httpd_req_t *req) {
 esp_err_t api_save_setting_handler(httpd_req_t *req) {
     char buf[512];
 
-    LOG_INFO("API: ===== API SAVE SETTING CALLED =====");
-    LOG_INFO("API: save_setting called, content_len=%d", req->content_len);
+    LOG_INFO("API", "===== API SAVE SETTING CALLED =====");
+    LOG_INFO("API", "save_setting called, content_len=%d", req->content_len);
 
     StaticJsonDocument<256> doc;
     esp_err_t response_error = ESP_OK;
     const char* parse_error = nullptr;
     if (!ApiRequestUtils::read_json_body_or_respond(req, buf, sizeof(buf), doc, &response_error, &parse_error)) {
         if (parse_error) {
-            LOG_ERROR("API: JSON parse error: %s", parse_error);
+            LOG_ERROR("API", "JSON parse error: %s", parse_error);
         }
         return response_error;
     }
 
-    LOG_INFO("API: Received JSON: %s", buf);
+    LOG_INFO("API", "Received JSON: %s", buf);
 
     if (!doc.containsKey("category") || !doc.containsKey("field") || !doc.containsKey("value")) {
-        LOG_ERROR("API: Missing required fields in JSON");
+        LOG_ERROR("API", "Missing required fields in JSON");
         return ApiResponseUtils::send_error_message(req, "Missing required fields (category, field, value)");
     }
 
     uint8_t category = doc["category"];
     uint8_t field = doc["field"];
 
-    LOG_INFO("API: Parsed - category=%d, field=%d", category, field);
+    LOG_INFO("API", "Parsed - category=%d, field=%d", category, field);
 
     settings_update_msg_t msg;
     memset(&msg, 0, sizeof(msg));
@@ -84,18 +84,18 @@ esp_err_t api_save_setting_handler(httpd_req_t *req) {
     JsonVariant value = doc["value"];
     if (value.is<bool>()) {
         msg.value_uint32 = value.as<bool>() ? 1u : 0u;
-        LOG_INFO("API: Value type=bool, value=%u", msg.value_uint32);
+        LOG_INFO("API", "Value type=bool, value=%u", msg.value_uint32);
     } else if (value.is<int>() || value.is<uint32_t>()) {
         msg.value_uint32 = value.as<uint32_t>();
-        LOG_INFO("API: Value type=uint32, value=%u", msg.value_uint32);
+        LOG_INFO("API", "Value type=uint32, value=%u", msg.value_uint32);
     } else if (value.is<float>() || value.is<double>()) {
         msg.value_float = value.as<float>();
-        LOG_INFO("API: Value type=float, value=%.2f", msg.value_float);
+        LOG_INFO("API", "Value type=float, value=%.2f", msg.value_float);
     } else if (value.is<const char*>()) {
         strncpy(msg.value_string, value.as<const char*>(), sizeof(msg.value_string) - 1);
-        LOG_INFO("API: Value type=string, value=%s", msg.value_string);
+        LOG_INFO("API", "Value type=string, value=%s", msg.value_string);
     } else {
-        LOG_ERROR("API: Unsupported value type in save_setting request");
+        LOG_ERROR("API", "Unsupported value type in save_setting request");
         return ApiResponseUtils::send_error_message(req, "Unsupported value type for field update");
     }
 
@@ -105,19 +105,19 @@ esp_err_t api_save_setting_handler(httpd_req_t *req) {
         msg.checksum ^= bytes[i];
     }
 
-    LOG_INFO("API: Message prepared - type=%d, category=%d, field=%d, checksum=%u, size=%d bytes",
+    LOG_INFO("API", "Message prepared - type=%d, category=%d, field=%d, checksum=%u, size=%d bytes",
              msg.type, msg.category, msg.field_id, msg.checksum, sizeof(msg));
 
     if (!TransmitterManager::isMACKnown()) {
-        LOG_ERROR("API: Transmitter not connected");
+        LOG_ERROR("API", "Transmitter not connected");
         return ApiResponseUtils::send_error_message(req, "Transmitter not connected");
     }
 
-    LOG_INFO("API: Sending to transmitter MAC: %s", TransmitterManager::getMACString().c_str());
+    LOG_INFO("API", "Sending to transmitter MAC: %s", TransmitterManager::getMACString().c_str());
 
     esp_err_t result = esp_now_send(TransmitterManager::getMAC(), (const uint8_t*)&msg, sizeof(msg));
     if (result == ESP_OK) {
-        LOG_INFO("API: ✓ ESP-NOW send SUCCESS (category=%d, field=%d)", category, field);
+        LOG_INFO("API", "✓ ESP-NOW send SUCCESS (category=%d, field=%d)", category, field);
         if (category == SETTINGS_BATTERY) {
             auto emu = TransmitterManager::getBatteryEmulatorSettings();
             switch (field) {
@@ -174,8 +174,8 @@ esp_err_t api_save_setting_handler(httpd_req_t *req) {
             TransmitterManager::storeContactorSettings(contactor);
         }
     } else {
-        LOG_ERROR("API: ✗ ESP-NOW send FAILED: %s (0x%x)", esp_err_to_name(result), result);
-        LOG_ERROR("API: Failed details - category=%d, field=%d, msg_size=%d", category, field, sizeof(msg));
+        LOG_ERROR("API", "✗ ESP-NOW send FAILED: %s (0x%x)", esp_err_to_name(result), result);
+        LOG_ERROR("API", "Failed details - category=%d, field=%d, msg_size=%d", category, field, sizeof(msg));
     }
     return ApiResponseUtils::send_espnow_send_result(req, result, "Setting sent to transmitter");
 }

@@ -31,7 +31,7 @@ void register_mac(const uint8_t* transmitter_mac) {
         strncpy(mac_str, "Unknown", sizeof(mac_str) - 1);
         mac_str[sizeof(mac_str) - 1] = '\0';
     }
-    LOG_INFO("[TX_MGR] MAC registered: %s", mac_str);
+    LOG_INFO("TX_MGR", "MAC registered: %s", mac_str);
 
     SSENotifier::notifyDataUpdated();
     (void)TransmitterPeerRegistry::ensure_peer_registered(cached);

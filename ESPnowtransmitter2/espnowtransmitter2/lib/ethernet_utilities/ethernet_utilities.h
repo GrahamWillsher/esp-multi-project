@@ -40,7 +40,7 @@
 #define INTERNET_CHECK_INTERVAL_MS (60 * 1000)  // 60 seconds (for periodic ping)
 
 // Task configuration
-#define ETHERNET_UTILS_TASK_STACK_SIZE 4096
+#define ETHERNET_UTILS_TASK_STACK_SIZE 8192
 #define ETHERNET_UTILS_TASK_PRIORITY 1
 #define ETHERNET_UTILS_TASK_CORE 0
 

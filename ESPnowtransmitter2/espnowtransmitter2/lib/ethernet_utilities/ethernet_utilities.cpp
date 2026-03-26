@@ -15,9 +15,9 @@
 
 #include "ethernet_utilities.h"
 #include "../src/config/logging_config.h"
+#include <log_routed.h>
 #include <ArduinoJson.h>
 #include <WiFiClient.h>
-#include <mqtt_logger.h>
 
 // ═══════════════════════════════════════════════════════════════════════
 // GLOBAL VARIABLES
@@ -50,6 +50,24 @@ static unsigned long last_public_ip_check = 0;
 static String detected_timezone_name = "";
 static String detected_timezone_abbreviation = "";
 
+constexpr uint32_t kGeoLookupPerProviderTimeoutMs = 5000;
+constexpr uint32_t kGeoLookupIdleTimeoutMs = 1000;
+constexpr size_t kGeoResponseCapacity = 768;
+
+struct TimezoneLookupResult {
+    char timezone_name[64]{};
+    char timezone_abbreviation[16]{};
+    char city[48]{};
+    char country[48]{};
+    char public_ip[32]{};
+};
+
+struct GeoProvider {
+    const char* host;
+    const char* path;
+    bool (*parser)(JsonDocument&, TimezoneLookupResult&);
+};
+
 // ═══════════════════════════════════════════════════════════════════════
 // PRIVATE HELPER FUNCTIONS
 // ═══════════════════════════════════════════════════════════════════════
@@ -79,234 +97,194 @@ static bool send_ntp_packet(const char* server) {
     return (ntp_udp.endPacket() != 0);
 }
 
-/**
- * @brief Get public IP address and timezone information from ipapi.co service
- * @param timezone_out Output parameter for timezone name (e.g., "Europe/London")
- * @param country_out Output parameter for country name
- * @param city_out Output parameter for city name
- * @return Public IP address as string, or empty string if failed
- */
-static String get_public_ip_and_timezone(String& timezone_out, String& country_out, String& city_out) {
-    if (!is_network_connected()) {
-        LOG_ERROR("IP_DETECT", "No network connection!");
-        MQTT_LOG_ERROR("IP", "No network connection");
-        return "";
+static bool read_http_body(WiFiClient& client,
+                           char* body,
+                           size_t body_capacity,
+                           uint32_t total_timeout_ms,
+                           uint32_t idle_timeout_ms) {
+    if (body == nullptr || body_capacity < 2) {
+        return false;
     }
-    
-    const char* host = "ip-api.com";
-    const char* path = "/json/?fields=status,timezone";
-    
-    LOG_INFO("IP_DETECT", "===== PUBLIC IP & TIMEZONE DETECTION START =====");
-    LOG_INFO("IP_DETECT", "Connecting to %s...", host);
-    MQTT_LOG_INFO("IP", "Connecting to ip-api.com...");
-    
-    // Check Ethernet is up
-    if (!ETH.linkUp()) {
-        LOG_ERROR("IP_DETECT", "✗ Ethernet not connected!");
-        MQTT_LOG_ERROR("IP", "Ethernet not connected");
-        return "";
-    }
-    
-    // Verify we have a valid local IP
-    IPAddress local_ip = ETH.localIP();
-    if (local_ip == IPAddress(0, 0, 0, 0)) {
-        LOG_ERROR("IP_DETECT", "✗ Ethernet has no valid IP address!");
-        MQTT_LOG_ERROR("IP", "No valid Ethernet IP");
-        return "";
-    }
-    
-    LOG_INFO("IP_DETECT", "Using Ethernet connection (IP: %s)", local_ip.toString().c_str());
-    
-    // WiFiClient works for Ethernet on ESP32
-    WiFiClient client;
-    
-    LOG_INFO("IP_DETECT", "Attempting to connect to %s:80...", host);
-    if (!client.connect(host, 80)) {
-        LOG_ERROR("IP_DETECT", "✗ Connection to ip-api.com FAILED!");
-        MQTT_LOG_ERROR("IP", "Connection to ip-api.com failed");
-        return "";
-    }
-    
-    LOG_INFO("IP_DETECT", "✓ Connected! Sending HTTP request...");
-    
-    // Small delay to ensure connection is stable
-    delay(10);
-    
-    // Send HTTP GET request
-    client.print("GET ");
-    client.print(path);
-    client.println(" HTTP/1.1");
-    client.print("Host: ");
-    client.println(host);
-    client.println("Connection: close");
-    client.println();
-    
-    LOG_INFO("IP_DETECT", "Request sent, waiting for response...");
-    
-    // Read response
-    String response = "";
-    bool headersPassed = false;
-    unsigned long timeout = millis() + 10000;  // 10 seconds
-    int headerCount = 0;
-    unsigned long startWait = millis();
-    
-    // Wait for data to arrive
-    while (!client.available() && millis() - startWait < 5000) {
-        delay(10);
-    }
-    
-    if (!client.available()) {
-        LOG_ERROR("IP_DETECT", "No data received from server after 5 seconds!");
-        client.stop();
-        return "";
-    }
-    
-    LOG_INFO("IP_DETECT", "Data available, reading response...");
-    
-    // Read until timeout or no more data (connection can close but data still in buffer)
-    while (millis() < timeout) {
-        if (client.available()) {
-            String line = client.readStringUntil('\n');
-            if (!headersPassed) {
-                headerCount++;
-                if (headerCount == 1) {
-                    LOG_INFO("IP_DETECT", "HTTP Status: %s", line.c_str());
+
+    bool headers_passed = false;
+    size_t body_length = 0;
+    char header_line[192]{};
+    size_t header_len = 0;
+
+    const unsigned long start_time = millis();
+    unsigned long last_data_time = start_time;
+
+    while ((millis() - start_time) < total_timeout_ms) {
+        while (client.available()) {
+            const char ch = static_cast<char>(client.read());
+            last_data_time = millis();
+
+            if (!headers_passed) {
+                if (ch == '\n') {
+                    if (header_len == 0) {
+                        headers_passed = true;
+                    }
+                    header_len = 0;
+                } else if (ch != '\r') {
+                    if (header_len < (sizeof(header_line) - 1)) {
+                        header_line[header_len++] = ch;
+                    }
                 }
-                MQTT_LOG_DEBUG("IP", "Header: %s", line.c_str());
-                // Check for blank line (headers/body separator) - can be "\r" or empty after trim
-                line.trim();
-                if (line.length() == 0) {
-                    headersPassed = true;
-                    LOG_INFO("IP_DETECT", "Headers complete, reading body...");
-                    continue;
-                }
-            } else {
-                // We're in the body section
-                LOG_INFO("IP_DETECT", "Body line read: %d chars", line.length());
-                response += line;
+                continue;
             }
-        } else {
-            // No data available right now
-            if (!client.connected()) {
-                // Connection closed and no data left
-                LOG_INFO("IP_DETECT", "Connection closed, no more data");
-                break;
+
+            if ((body_length + 1) >= body_capacity) {
+                LOG_WARN("TZ_LOOKUP", "Body truncated (capacity=%u)", static_cast<unsigned>(body_capacity));
+                return false;
             }
-            delay(10);  // Small delay when no data available
+            body[body_length++] = ch;
         }
+
+        if (headers_passed && !client.connected() && !client.available()) {
+            break;
+        }
+
+        if ((millis() - last_data_time) > idle_timeout_ms) {
+            break;
+        }
+
+        delay(5);
     }
-    
-    LOG_INFO("IP_DETECT", "Loop exited. Response bytes: %d", response.length());
-    client.stop();
-    
-    LOG_INFO("IP_DETECT", "Response received: %d bytes", response.length());
-    LOG_INFO("IP_DETECT", "Raw response (first 200 chars): '%s'", response.substring(0, 200).c_str());
-    
-    if (response.length() == 0) {
-        LOG_ERROR("IP_DETECT", "✗ Empty response from ipapi.co (timeout?)");
-        MQTT_LOG_ERROR("IP", "Empty response from ipapi.co");
-        return "";
-    }
-    
-    // Clean up response (remove whitespace/carriage returns)
-    response.trim();
-    
-    // Parse JSON response from ipapi.co
-    // Example response: {"ip":"1.2.3.4","city":"London","region":"England",
-    //                    "country":"GB","country_name":"United Kingdom",
-    //                    "timezone":"Europe/London","latitude":51.5074,"longitude":-0.1278}
-    LOG_INFO("IP_DETECT", "Parsing JSON...");
-    DynamicJsonDocument doc(1024);  // ipapi.co has smaller responses
-    DeserializationError error = deserializeJson(doc, response);
-    
-    if (error) {
-        LOG_ERROR("IP_DETECT", "✗ JSON parse error: %s", error.c_str());
-        LOG_ERROR("IP_DETECT", "Response was: %s", response.substring(0, 200).c_str());
-        MQTT_LOG_ERROR("IP", "JSON parse error: %s", error.c_str());
-        return "";
-    }
-    
-    String ip = doc["ip"].as<String>();
-    String timezone = doc["timezone"].as<String>();
-    String country = doc["country_name"].as<String>();
-    String city = doc["city"].as<String>();
-    
-    if (ip.length() == 0) {
-        LOG_ERROR("IP_DETECT", "✗ No 'ipAddress' field in JSON response");
-        MQTT_LOG_ERROR("IP", "No IP field in response");
-        return "";
-    }
-    
-    if (timezone.length() == 0) {
-        LOG_WARN("IP_DETECT", "No timezone in response, will use UTC");
-        timezone = "UTC";
-    }
-    
-    // Return parsed values
-    timezone_out = timezone;
-    country_out = country;
-    city_out = city;
-    
-    LOG_INFO("IP_DETECT", "✓✓✓ SUCCESS! Public IP: %s ✓✓✓", ip.c_str());
-    LOG_INFO("IP_DETECT", "✓ Location: %s, %s", city.c_str(), country.c_str());
-    LOG_INFO("IP_DETECT", "✓ Timezone: %s", timezone.c_str());
-    LOG_INFO("IP_DETECT", "===== PUBLIC IP & TIMEZONE DETECTION END =====");
-    MQTT_LOG_NOTICE("IP", "Detected: %s in %s, %s (TZ: %s)", ip.c_str(), city.c_str(), country.c_str(), timezone.c_str());
-    
-    return ip;
+
+    body[body_length] = '\0';
+    return headers_passed && body_length > 0;
 }
 
+static bool parse_ip_api_response(JsonDocument& doc, TimezoneLookupResult& out) {
+    const char* status = doc["status"] | "";
+    if (strcmp(status, "success") != 0) {
+        return false;
+    }
 
+    strlcpy(out.timezone_name, doc["timezone"] | "", sizeof(out.timezone_name));
+    strlcpy(out.city, doc["city"] | "", sizeof(out.city));
+    strlcpy(out.country, doc["country"] | "", sizeof(out.country));
+    strlcpy(out.public_ip, doc["query"] | "", sizeof(out.public_ip));
+    out.timezone_abbreviation[0] = '\0';
 
-/**
- * @brief Get timezone information using only ipapi.co
- * @return Timezone name (e.g., "Europe/London"), or "UTC" if failed
- */
-static String get_timezone_from_location() {
-    if (!is_network_connected()) {
-        LOG_WARN("TZ_DETECT", "No network connection for timezone detection");
-        MQTT_LOG_WARNING("TZ", "No network connection available");
-        return "UTC";
+    return out.timezone_name[0] != '\0';
+}
+
+static bool parse_worldtime_response(JsonDocument& doc, TimezoneLookupResult& out) {
+    strlcpy(out.timezone_name, doc["timezone"] | "", sizeof(out.timezone_name));
+    strlcpy(out.timezone_abbreviation, doc["abbreviation"] | "", sizeof(out.timezone_abbreviation));
+    strlcpy(out.public_ip, doc["client_ip"] | "", sizeof(out.public_ip));
+    return out.timezone_name[0] != '\0';
+}
+
+static bool http_get_json(const GeoProvider& provider,
+                          StaticJsonDocument<768>& doc,
+                          TimezoneLookupResult& out_result) {
+    WiFiClient client;
+    if (!client.connect(provider.host, 80)) {
+        LOG_WARN("TZ_LOOKUP", "Connect failed: %s", provider.host);
+        return false;
     }
-    
-    LOG_INFO("TZ_DETECT", "===== Starting timezone detection =====");
-    MQTT_LOG_INFO("TZ", "Detecting timezone from public IP");
-    
-    // Get public IP and timezone info from ip-api.com (all in one call)
-    LOG_INFO("TZ_DETECT", "Getting IP and timezone from ip-api.com...");
-    String timezone_name = "";
-    String country = "";
-    String city = "";
-    
-    String ip = get_public_ip_and_timezone(timezone_name, country, city);
-    
-    if (ip.length() == 0) {
-        LOG_ERROR("TZ_DETECT", "Failed to get public IP from ip-api.com");
-        MQTT_LOG_ERROR("TZ", "Failed to get public IP");
-        return "UTC";
+
+    client.print("GET ");
+    client.print(provider.path);
+    client.println(" HTTP/1.1");
+    client.print("Host: ");
+    client.println(provider.host);
+    client.println("Connection: close");
+    client.println();
+
+    static char body[kGeoResponseCapacity];
+    body[0] = '\0';
+    if (!read_http_body(client,
+                        body,
+                        sizeof(body),
+                        kGeoLookupPerProviderTimeoutMs,
+                        kGeoLookupIdleTimeoutMs)) {
+        client.stop();
+        LOG_WARN("TZ_LOOKUP", "No valid body from %s", provider.host);
+        return false;
     }
-    
-    // Update global public IP
-    public_ip_address = ip;
-    last_public_ip_check = millis();
-    
-    if (timezone_name.length() == 0) {
-        LOG_ERROR("TZ_DETECT", "Failed to get timezone name from ip-api.com");
-        MQTT_LOG_ERROR("TZ", "Timezone detection failed");
-        return "UTC";
+    client.stop();
+
+    DeserializationError error = deserializeJson(doc, body);
+    if (error) {
+        LOG_WARN("TZ_LOOKUP", "JSON parse failed for %s: %s", provider.host, error.c_str());
+        return false;
     }
-    
-    detected_timezone_name = timezone_name;
-    detected_timezone_abbreviation = "";  // Will be set after configureTime()
-    
-    LOG_INFO("TZ_DETECT", "✓✓✓ SUCCESS! ✓✓✓");
-    LOG_INFO("TZ_DETECT", "✓ Public IP: %s", public_ip_address.c_str());
-    LOG_INFO("TZ_DETECT", "✓ Location: %s, %s", city.c_str(), country.c_str());
-    LOG_INFO("TZ_DETECT", "✓ Timezone: %s", timezone_name.c_str());
-    LOG_INFO("TZ_DETECT", "===== TIMEZONE DETECTION END =====");
-    MQTT_LOG_NOTICE("TZ", "Detected: %s in %s, %s", timezone_name.c_str(), city.c_str(), country.c_str());
-    
-    return timezone_name;
+
+    return provider.parser(doc, out_result);
+}
+
+static bool lookup_timezone_with_fallback(TimezoneLookupResult& out) {
+    static const GeoProvider kProviders[] = {
+        {"ip-api.com", "/json/?fields=status,timezone,country,city,query", parse_ip_api_response},
+        {"worldtimeapi.org", "/api/ip", parse_worldtime_response},
+        {"timeapi.world", "/api/ip", parse_worldtime_response},
+    };
+
+    for (const auto& provider : kProviders) {
+        StaticJsonDocument<768> doc;
+        TimezoneLookupResult candidate{};
+
+        LOG_INFO("TZ_LOOKUP", "Trying provider: %s", provider.host);
+        if (http_get_json(provider, doc, candidate)) {
+            out = candidate;
+            LOG_INFO("TZ_LOOKUP", "Provider success: %s -> %s", provider.host, out.timezone_name);
+            return true;
+        }
+
+        LOG_WARN("TZ_LOOKUP", "Provider failed: %s", provider.host);
+    }
+
+    return false;
+}
+
+static bool map_timezone_name_to_posix(const char* tz_name,
+                                       char* posix_tz,
+                                       size_t posix_tz_len,
+                                       char* tz_abbrev,
+                                       size_t tz_abbrev_len) {
+    if (tz_name == nullptr || posix_tz == nullptr || tz_abbrev == nullptr ||
+        posix_tz_len == 0 || tz_abbrev_len == 0) {
+        return false;
+    }
+
+    struct Mapping {
+        const char* prefix;
+        const char* posix;
+        const char* abbrev;
+    };
+
+    static const Mapping kMappings[] = {
+        {"Europe/London", "GMT0BST,M3.5.0/1,M10.5.0", "GMT"},
+        {"Europe/Paris", "CET-1CEST,M3.5.0,M10.5.0/3", "CET"},
+        {"Europe/Berlin", "CET-1CEST,M3.5.0,M10.5.0/3", "CET"},
+        {"Europe/Rome", "CET-1CEST,M3.5.0,M10.5.0/3", "CET"},
+        {"Europe/Madrid", "CET-1CEST,M3.5.0,M10.5.0/3", "CET"},
+        {"America/New_York", "EST5EDT,M3.2.0,M11.1.0", "EST"},
+        {"America/Chicago", "CST6CDT,M3.2.0,M11.1.0", "CST"},
+        {"America/Denver", "MST7MDT,M3.2.0,M11.1.0", "MST"},
+        {"America/Los_Angeles", "PST8PDT,M3.2.0,M11.1.0", "PST"},
+        {"Australia/Sydney", "AEST-10AEDT,M10.1.0,M4.1.0/3", "AEST"},
+        {"Asia/Tokyo", "JST-9", "JST"},
+        {"Asia/Shanghai", "CST-8", "CST"},
+        {"Asia/Hong_Kong", "CST-8", "CST"},
+        {"Asia/Dubai", "GST-4", "GST"},
+        {"UTC", "UTC0", "UTC"},
+    };
+
+    for (const auto& mapping : kMappings) {
+        if (strncmp(tz_name, mapping.prefix, strlen(mapping.prefix)) == 0) {
+            strlcpy(posix_tz, mapping.posix, posix_tz_len);
+            strlcpy(tz_abbrev, mapping.abbrev, tz_abbrev_len);
+            return true;
+        }
+    }
+
+    strlcpy(posix_tz, "UTC0", posix_tz_len);
+    strlcpy(tz_abbrev, "UTC", tz_abbrev_len);
+    return false;
 }
 
 /**
@@ -340,9 +318,12 @@ static void ethernet_utilities_task(void* parameter) {
             if (time_since_last_attempt >= TIMEZONE_RETRY_DELAY_MS || last_timezone_attempt == 0) {
                 last_timezone_attempt = millis();
                 timezone_retry_count++;
+
+                UBaseType_t stack_words = uxTaskGetStackHighWaterMark(nullptr);
+                LOG_INFO("NET_UTILS", "Task stack headroom before TZ lookup: %u bytes",
+                         static_cast<unsigned>(stack_words * sizeof(StackType_t)));
                 
                 LOG_INFO("NET_UTILS", "===== Timezone & IP detection attempt #%d =====", timezone_retry_count);
-                MQTT_LOG_INFO("TZ", "Detection attempt #%d", timezone_retry_count);
                 
                 // Show local IP addresses
                 IPAddress eth_ip = ETH.localIP();
@@ -359,16 +340,18 @@ static void ethernet_utilities_task(void* parameter) {
                     LOG_INFO("NET_UTILS", "✓✓✓ SUCCESS! Timezone configured: %s (%s) ✓✓✓",
                              detected_timezone_name.c_str(),
                              detected_timezone_abbreviation.c_str());
-                    MQTT_LOG_NOTICE("TZ", "Configured: %s (%s)",
-                                    detected_timezone_name.c_str(),
-                                    detected_timezone_abbreviation.c_str());
+                    log_routed(LogSink::Mqtt,
+                               RoutedLevel::Notice,
+                               "TZ",
+                               "Configured: %s (%s)",
+                               detected_timezone_name.c_str(),
+                               detected_timezone_abbreviation.c_str());
                     // Re-sync time to apply new timezone
                     last_ntp_sync = 0;
                     get_ntp_time();
                 } else {
                     LOG_WARN("NET_UTILS", "Timezone detection attempt #%d FAILED - will retry in %d seconds",
                              timezone_retry_count, TIMEZONE_RETRY_DELAY_MS/1000);
-                    MQTT_LOG_WARNING("TZ", "Detection failed, retry #%d", timezone_retry_count);
                 }
             }
         }
@@ -512,15 +495,6 @@ bool get_ntp_time() {
                          local_time->tm_sec,
                          tz_display);
             
-            MQTT_LOG_INFO("NTP", "Time synced: %04d-%02d-%02d %02d:%02d:%02d %s",
-                          local_time->tm_year + 1900,
-                          local_time->tm_mon + 1,
-                          local_time->tm_mday,
-                          local_time->tm_hour,
-                          local_time->tm_min,
-                          local_time->tm_sec,
-                          tz_display);
-            
             time_initialized = true;
             last_ntp_sync = millis();
             return true;
@@ -557,68 +531,46 @@ bool is_internet_reachable() {
 }
 
 bool configure_timezone_from_location() {
-    LOG_INFO("TZ_CONFIG", "Getting timezone from location...");
-    String tz_name = get_timezone_from_location();
-    
-    LOG_INFO("TZ_CONFIG", "Received timezone name: '%s'", tz_name.c_str());
-    
-    if (tz_name.length() == 0 || tz_name == "UTC") {
-        LOG_ERROR("TZ_CONFIG", "REJECTED: Got default UTC (detection failed)");
-        MQTT_LOG_ERROR("TZ", "Detection failed - got UTC default");
+    LOG_INFO("TZ_CONFIG", "Getting timezone from location with fallback...");
+
+    if (!is_network_connected()) {
+        LOG_WARN("TZ_CONFIG", "No network connection for timezone lookup");
         return false;
     }
-    
-    // ESP32 supports POSIX timezone strings directly
-    // We can use configTime() with the timezone name, or map common timezones to POSIX strings
-    // For simplicity, use common POSIX timezone strings based on the timezone name
-    
-    String posix_tz = "";
-    
-    // Map common timezone names to POSIX format
-    // Format: STD offset [DST [offset],start[/time],end[/time]]
-    if (tz_name.startsWith("Europe/London")) {
-        posix_tz = "GMT0BST,M3.5.0/1,M10.5.0";
-        detected_timezone_abbreviation = "GMT";
-    } else if (tz_name.startsWith("Europe/Paris") || tz_name.startsWith("Europe/Berlin") || 
-               tz_name.startsWith("Europe/Rome") || tz_name.startsWith("Europe/Madrid")) {
-        posix_tz = "CET-1CEST,M3.5.0,M10.5.0/3";
-        detected_timezone_abbreviation = "CET";
-    } else if (tz_name.startsWith("America/New_York")) {
-        posix_tz = "EST5EDT,M3.2.0,M11.1.0";
-        detected_timezone_abbreviation = "EST";
-    } else if (tz_name.startsWith("America/Chicago")) {
-        posix_tz = "CST6CDT,M3.2.0,M11.1.0";
-        detected_timezone_abbreviation = "CST";
-    } else if (tz_name.startsWith("America/Denver")) {
-        posix_tz = "MST7MDT,M3.2.0,M11.1.0";
-        detected_timezone_abbreviation = "MST";
-    } else if (tz_name.startsWith("America/Los_Angeles")) {
-        posix_tz = "PST8PDT,M3.2.0,M11.1.0";
-        detected_timezone_abbreviation = "PST";
-    } else if (tz_name.startsWith("Australia/Sydney")) {
-        posix_tz = "AEST-10AEDT,M10.1.0,M4.1.0/3";
-        detected_timezone_abbreviation = "AEST";
-    } else if (tz_name.startsWith("Asia/Tokyo")) {
-        posix_tz = "JST-9";
-        detected_timezone_abbreviation = "JST";
-    } else if (tz_name.startsWith("Asia/Shanghai") || tz_name.startsWith("Asia/Hong_Kong")) {
-        posix_tz = "CST-8";
-        detected_timezone_abbreviation = "CST";
-    } else if (tz_name.startsWith("Asia/Dubai")) {
-        posix_tz = "GST-4";
-        detected_timezone_abbreviation = "GST";
-    } else {
-        // For unknown timezones, just use UTC
-        LOG_WARN("TZ_CONFIG", "Unknown timezone '%s', using UTC", tz_name.c_str());
-        posix_tz = "UTC0";
-        detected_timezone_abbreviation = "UTC";
+
+    TimezoneLookupResult result{};
+    if (!lookup_timezone_with_fallback(result)) {
+        LOG_ERROR("TZ_CONFIG", "All timezone providers failed");
+        return false;
     }
-    
-    // Apply detected timezone
-    setenv("TZ", posix_tz.c_str(), 1);
+
+    char posix_tz[64]{};
+    char tz_abbrev[16]{};
+    const bool known_mapping = map_timezone_name_to_posix(result.timezone_name,
+                                                           posix_tz,
+                                                           sizeof(posix_tz),
+                                                           tz_abbrev,
+                                                           sizeof(tz_abbrev));
+
+    if (!known_mapping) {
+        LOG_WARN("TZ_CONFIG", "Unknown timezone mapping: %s (fallback UTC0)", result.timezone_name);
+    }
+
+    setenv("TZ", posix_tz, 1);
     tzset();
-    LOG_INFO("TZ_CONFIG", "✓ Timezone configured: %s -> %s", tz_name.c_str(), posix_tz.c_str());
-    MQTT_LOG_NOTICE("TZ", "Configured: %s (%s)", tz_name.c_str(), posix_tz.c_str());
+
+    detected_timezone_name = result.timezone_name;
+    detected_timezone_abbreviation = tz_abbrev;
+    public_ip_address = result.public_ip;
+    last_public_ip_check = millis();
+
+    LOG_INFO("TZ_CONFIG", "Timezone configured: %s -> %s", result.timezone_name, posix_tz);
+    log_routed(LogSink::Mqtt,
+               RoutedLevel::Notice,
+               "TZ",
+               "Configured: %s (%s)",
+               result.timezone_name,
+               posix_tz);
     return true;
 }
 

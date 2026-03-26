@@ -8,6 +8,7 @@
 
 #include "connection_manager.h"
 #include <Arduino.h>
+#include <logging_config.h>
 
 // Global event queue (created on init)
 QueueHandle_t g_connection_event_queue = nullptr;
@@ -37,13 +38,13 @@ EspNowConnectionManager::EspNowConnectionManager()
 }
 
 bool EspNowConnectionManager::init() {
-    Serial.printf("[CONN_MGR] Initializing ESP-NOW Connection Manager\n");
+    LOG_INFO("CONN_MGR", "Initializing ESP-NOW Connection Manager");
     
     // Create event queue
     g_connection_event_queue = xQueueCreate(10, sizeof(EspNowStateChange));
     
     if (g_connection_event_queue == nullptr) {
-        Serial.printf("[CONN_MGR] ERROR: Failed to create event queue!\n");
+        LOG_ERROR("CONN_MGR", "Failed to create event queue!");
         return false;
     }
     
@@ -56,39 +57,39 @@ bool EspNowConnectionManager::init() {
     heartbeat_timeout_ms_ = 5000;
     heartbeat_timeout_reported_ = false;
     
-    Serial.printf("[CONN_MGR] ✓ Connection Manager initialized\n");
-    Serial.printf("[CONN_MGR]   State: IDLE\n");
-    Serial.printf("[CONN_MGR]   Event queue: created (10 events)\n");
+    LOG_INFO("CONN_MGR", "Connection Manager initialized");
+    LOG_INFO("CONN_MGR", "State: IDLE");
+    LOG_INFO("CONN_MGR", "Event queue: created (10 events)");
     
     return true;
 }
 
 void EspNowConnectionManager::register_state_callback(StateChangeCallback callback) {
     state_callbacks_.push_back(callback);
-    Serial.printf("[CONN_MGR] Registered state change callback (total: %d)\n", state_callbacks_.size());
+    LOG_INFO("CONN_MGR", "Registered state change callback (total: %d)", state_callbacks_.size());
 }
 
 void EspNowConnectionManager::set_auto_reconnect(bool enable) {
     auto_reconnect_enabled_ = enable;
-    Serial.printf("[CONN_MGR] Auto-reconnect: %s\n", enable ? "ENABLED" : "DISABLED");
+    LOG_INFO("CONN_MGR", "Auto-reconnect: %s", enable ? "ENABLED" : "DISABLED");
 }
 
 void EspNowConnectionManager::set_connecting_timeout_ms(uint32_t timeout_ms) {
     connecting_timeout_ms_ = timeout_ms;
-    Serial.printf("[CONN_MGR] CONNECTING timeout: %ldms\n", timeout_ms);
+    LOG_INFO("CONN_MGR", "CONNECTING timeout: %ldms", timeout_ms);
 }
 
 void EspNowConnectionManager::set_heartbeat_timeout_enabled(bool enable) {
     heartbeat_timeout_enabled_ = enable;
     heartbeat_timeout_reported_ = false;
-    Serial.printf("[CONN_MGR] Heartbeat timeout ownership: %s\n", enable ? "ENABLED" : "DISABLED");
+    LOG_INFO("CONN_MGR", "Heartbeat timeout ownership: %s", enable ? "ENABLED" : "DISABLED");
 }
 
 void EspNowConnectionManager::set_heartbeat_timeout_ms(uint32_t timeout_ms) {
     heartbeat_timeout_ms_ = timeout_ms;
     heartbeat_monitor_ = EspNowHeartbeatMonitor(timeout_ms);
     heartbeat_timeout_reported_ = false;
-    Serial.printf("[CONN_MGR] Heartbeat timeout threshold: %ldms\n", timeout_ms);
+    LOG_INFO("CONN_MGR", "Heartbeat timeout threshold: %ldms", timeout_ms);
 }
 
 bool EspNowConnectionManager::post_event(EspNowEvent event, const uint8_t* mac) {
@@ -108,9 +109,9 @@ void EspNowConnectionManager::process_events() {
     
     // Process all pending events
     while (xQueueReceive(event_queue_, &event, 0) == pdTRUE) {
-        Serial.printf("[CONN_MGR-DEBUG] Processing event: %s (state: %s)\n",
-                 event_to_string(event.event),
-                 espnow_state_to_string(current_state_));
+        LOG_DEBUG("CONN_MGR", "Processing event: %s (state: %s)",
+                  event_to_string(event.event),
+                  espnow_state_to_string(current_state_));
         
         handle_event(event);
     }
@@ -119,7 +120,7 @@ void EspNowConnectionManager::process_events() {
     if (current_state_ == EspNowConnectionState::CONNECTING && 
         connecting_timeout_ms_ > 0 && 
         get_state_time_ms() > connecting_timeout_ms_) {
-        Serial.printf("[CONN_MGR] CONNECTING timeout (%ldms) exceeded → IDLE\n", connecting_timeout_ms_);
+        LOG_WARN("CONN_MGR", "CONNECTING timeout (%ldms) exceeded -> IDLE", connecting_timeout_ms_);
         transition_to_state(EspNowConnectionState::IDLE);
     }
     
@@ -128,8 +129,8 @@ void EspNowConnectionManager::process_events() {
         current_state_ == EspNowConnectionState::CONNECTED &&
         heartbeat_monitor_.connection_lost() &&
         !heartbeat_timeout_reported_) {
-        Serial.printf("[CONN_MGR] Heartbeat/activity timeout (%ldms since last) → CONNECTION_LOST\n",
-                     heartbeat_monitor_.ms_since_last_heartbeat());
+        LOG_WARN("CONN_MGR", "Heartbeat/activity timeout (%ldms since last) -> CONNECTION_LOST",
+                 heartbeat_monitor_.ms_since_last_heartbeat());
         heartbeat_timeouts_++;
         heartbeat_timeout_reported_ = true;
         post_event(EspNowEvent::CONNECTION_LOST);
@@ -155,13 +156,13 @@ void EspNowConnectionManager::handle_event(const EspNowStateChange& event) {
 void EspNowConnectionManager::handle_idle_event(const EspNowStateChange& event) {
     switch (event.event) {
         case EspNowEvent::CONNECTION_START:
-            Serial.printf("[CONN_MGR] CONNECTION_START → Transitioning to CONNECTING\n");
+            LOG_INFO("CONN_MGR", "CONNECTION_START -> Transitioning to CONNECTING");
             transition_to_state(EspNowConnectionState::CONNECTING);
             break;
             
         case EspNowEvent::PEER_FOUND:
             // Can go directly from IDLE to CONNECTING if peer appears
-            Serial.printf("[CONN_MGR] PEER_FOUND (in IDLE) → Transitioning to CONNECTING\n");
+            LOG_INFO("CONN_MGR", "PEER_FOUND (in IDLE) -> Transitioning to CONNECTING");
             memcpy(peer_mac_, event.peer_mac, 6);
             transition_to_state(EspNowConnectionState::CONNECTING);
             break;
@@ -172,7 +173,7 @@ void EspNowConnectionManager::handle_idle_event(const EspNowStateChange& event) 
             break;
             
         default:
-            Serial.printf("[CONN_MGR-WARN] Unexpected event in IDLE: %s\n", event_to_string(event.event));
+            LOG_WARN("CONN_MGR", "Unexpected event in IDLE: %s", event_to_string(event.event));
             break;
     }
 }
@@ -180,24 +181,24 @@ void EspNowConnectionManager::handle_idle_event(const EspNowStateChange& event) 
 void EspNowConnectionManager::handle_connecting_event(const EspNowStateChange& event) {
     switch (event.event) {
         case EspNowEvent::PEER_FOUND:
-            Serial.printf("[CONN_MGR] PEER_FOUND → Waiting for peer registration\n");
+            LOG_INFO("CONN_MGR", "PEER_FOUND -> Waiting for peer registration");
             memcpy(peer_mac_, event.peer_mac, 6);
             break;
             
         case EspNowEvent::PEER_REGISTERED:
-            Serial.printf("[CONN_MGR] PEER_REGISTERED → Transitioning to CONNECTED\n");
+            LOG_INFO("CONN_MGR", "PEER_REGISTERED -> Transitioning to CONNECTED");
             memcpy(peer_mac_, event.peer_mac, 6);
             transition_to_state(EspNowConnectionState::CONNECTED);
             break;
             
         case EspNowEvent::CONNECTION_LOST:
         case EspNowEvent::RESET_CONNECTION:
-            Serial.printf("[CONN_MGR] Connection reset/lost → Back to IDLE\n");
+            LOG_WARN("CONN_MGR", "Connection reset/lost -> Back to IDLE");
             transition_to_state(EspNowConnectionState::IDLE);
             break;
             
         default:
-            Serial.printf("[CONN_MGR-WARN] Unexpected event in CONNECTING: %s\n", event_to_string(event.event));
+            LOG_WARN("CONN_MGR", "Unexpected event in CONNECTING: %s", event_to_string(event.event));
             break;
     }
 }
@@ -205,26 +206,26 @@ void EspNowConnectionManager::handle_connecting_event(const EspNowStateChange& e
 void EspNowConnectionManager::handle_connected_event(const EspNowStateChange& event) {
     switch (event.event) {
         case EspNowEvent::DATA_RECEIVED:
-            Serial.printf("[CONN_MGR-DEBUG] DATA_RECEIVED (remaining connected)\n");
+            LOG_DEBUG("CONN_MGR", "DATA_RECEIVED (remaining connected)");
             break;
             
         case EspNowEvent::CONNECTION_LOST:
-            Serial.printf("[CONN_MGR-WARN] CONNECTION_LOST → Back to IDLE\n");
+            LOG_WARN("CONN_MGR", "CONNECTION_LOST -> Back to IDLE");
             transition_to_state(EspNowConnectionState::IDLE);
             break;
             
         case EspNowEvent::RESET_CONNECTION:
-            Serial.printf("[CONN_MGR] RESET_CONNECTION → Back to IDLE\n");
+            LOG_INFO("CONN_MGR", "RESET_CONNECTION -> Back to IDLE");
             transition_to_state(EspNowConnectionState::IDLE);
             break;
             
         case EspNowEvent::CONNECTION_START:
         case EspNowEvent::PEER_FOUND:
-            Serial.printf("[CONN_MGR-DEBUG] Already connected, ignoring %s event\n", event_to_string(event.event));
+            LOG_DEBUG("CONN_MGR", "Already connected, ignoring %s event", event_to_string(event.event));
             break;
             
         default:
-            Serial.printf("[CONN_MGR-WARN] Unexpected event in CONNECTED: %s\n", event_to_string(event.event));
+            LOG_WARN("CONN_MGR", "Unexpected event in CONNECTED: %s", event_to_string(event.event));
             break;
     }
 }
@@ -237,8 +238,7 @@ void EspNowConnectionManager::transition_to_state(EspNowConnectionState new_stat
     uint32_t state_duration = millis() - state_enter_time_;
     EspNowConnectionState old_state = current_state_;
     
-    Serial.printf("[CONN_MGR] ═══ STATE TRANSITION ═══\n");
-    Serial.printf("[CONN_MGR]   %s → %s (duration: %ldms)\n",
+    LOG_INFO("CONN_MGR", "State transition: %s -> %s (duration: %ldms)",
              espnow_state_to_string(current_state_),
              espnow_state_to_string(new_state),
              state_duration);
@@ -255,16 +255,16 @@ void EspNowConnectionManager::transition_to_state(EspNowConnectionState new_stat
     // Additional logging for specific transitions
     if (new_state == EspNowConnectionState::IDLE) {
         memset(peer_mac_, 0, 6);
-        Serial.printf("[CONN_MGR]   Peer MAC cleared\n");
+        LOG_INFO("CONN_MGR", "Peer MAC cleared");
         heartbeat_timeout_reported_ = false;
         
         // Auto-reconnect if enabled
         if (auto_reconnect_enabled_ && old_state == EspNowConnectionState::CONNECTED) {
-            Serial.printf("[CONN_MGR]   Auto-reconnect enabled → posting CONNECTION_START\n");
+            LOG_INFO("CONN_MGR", "Auto-reconnect enabled -> posting CONNECTION_START");
             post_event(EspNowEvent::CONNECTION_START);
         }
     } else if (new_state == EspNowConnectionState::CONNECTED) {
-        Serial.printf("[CONN_MGR]   Peer: %02X:%02X:%02X:%02X:%02X:%02X\n",
+        LOG_INFO("CONN_MGR", "Peer: %02X:%02X:%02X:%02X:%02X:%02X",
                  peer_mac_[0], peer_mac_[1], peer_mac_[2],
                  peer_mac_[3], peer_mac_[4], peer_mac_[5]);
         

@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <esp_ota_ops.h>
+#include <logging_config.h>
 
 namespace {
 OtaBootGuard::State g_state = OtaBootGuard::State::Unknown;
@@ -42,7 +43,7 @@ void begin(const char* log_tag) {
         g_pending_verify = false;
         g_state = State::Error;
         set_reason("running partition unavailable");
-        Serial.printf("[%s] Error: running partition unavailable\n", g_log_tag);
+        LOG_ERROR(g_log_tag, "running partition unavailable");
         return;
     }
 
@@ -52,7 +53,7 @@ void begin(const char* log_tag) {
         g_pending_verify = false;
         g_state = State::Error;
         set_reason("esp_ota_get_state_partition failed");
-        Serial.printf("[%s] Error: esp_ota_get_state_partition failed (%d)\n", g_log_tag, (int)err);
+        LOG_ERROR(g_log_tag, "esp_ota_get_state_partition failed (%d)", (int)err);
         return;
     }
 
@@ -61,11 +62,11 @@ void begin(const char* log_tag) {
     if (g_pending_verify) {
         g_state = State::PendingVerification;
         set_reason("running image pending verify");
-        Serial.printf("[%s] Running image is pending verify\n", g_log_tag);
+           LOG_INFO(g_log_tag, "Running image is pending verify");
     } else {
         g_state = State::NotPending;
         set_reason("running image not pending verify");
-        Serial.printf("[%s] Running image state=%d (no pending verify)\n", g_log_tag, (int)ota_state);
+           LOG_INFO(g_log_tag, "Running image state=%d (no pending verify)", (int)ota_state);
     }
 }
 
@@ -85,13 +86,13 @@ bool confirm_running_app(const char* reason) {
         g_pending_verify = false;
         g_state = State::Confirmed;
         set_reason(reason ? reason : "app marked valid");
-        Serial.printf("[%s] OTA app marked valid; rollback cancelled\n", g_log_tag);
+        LOG_INFO(g_log_tag, "OTA app marked valid; rollback cancelled");
         return true;
     }
 
     g_state = State::Error;
     set_reason(reason ? reason : "failed to mark app valid");
-    Serial.printf("[%s] Failed to mark app valid (%d)\n", g_log_tag, (int)err);
+    LOG_ERROR(g_log_tag, "Failed to mark app valid (%d)", (int)err);
     return false;
 }
 
@@ -99,19 +100,19 @@ bool trigger_rollback_and_reboot(const char* reason) {
     if (!g_pending_verify) {
         g_state = State::Error;
         set_reason(reason ? reason : "rollback requested while not pending verify");
-        Serial.printf("[%s] Rollback requested but app is not pending verify\n", g_log_tag);
+        LOG_WARN(g_log_tag, "Rollback requested but app is not pending verify");
         return false;
     }
 
     g_state = State::RollbackTriggered;
     set_reason(reason ? reason : "health gate failed; rollback requested");
-    Serial.printf("[%s] Triggering rollback and reboot\n", g_log_tag);
+    LOG_WARN(g_log_tag, "Triggering rollback and reboot");
 
     const esp_err_t err = esp_ota_mark_app_invalid_rollback_and_reboot();
     if (err != ESP_OK) {
         g_state = State::Error;
         set_reason("esp_ota_mark_app_invalid_rollback_and_reboot failed");
-        Serial.printf("[%s] Rollback API failed (%d)\n", g_log_tag, (int)err);
+        LOG_ERROR(g_log_tag, "Rollback API failed (%d)", (int)err);
         return false;
     }
 

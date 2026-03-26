@@ -48,7 +48,7 @@ void store_event_logs(const JsonObject& logs) {
 
     ScopedMutex guard(event_logs_mutex);
     if (!guard.locked()) {
-        LOG_WARN("[EVENT_LOG_CACHE] Failed to lock event logs mutex");
+        LOG_WARN("EVENT_LOG_CACHE", "Failed to lock event logs mutex");
         return;
     }
 
@@ -56,7 +56,7 @@ void store_event_logs(const JsonObject& logs) {
 
     if (!logs.containsKey("events") || !logs["events"].is<JsonArray>()) {
         event_logs_known = false;
-        LOG_WARN("[EVENT_LOG_CACHE] Event logs missing 'events' array");
+        LOG_WARN("EVENT_LOG_CACHE", "Event logs missing 'events' array");
         return;
     }
 
@@ -82,7 +82,7 @@ void store_event_logs(const JsonObject& logs) {
 
     event_logs_known = true;
     event_logs_last_update_ms = millis();
-    LOG_INFO("[EVENT_LOG_CACHE] Stored %u event logs", static_cast<unsigned>(event_logs.size()));
+    LOG_INFO("EVENT_LOG_CACHE", "Stored %u event logs", static_cast<unsigned>(event_logs.size()));
     SSENotifier::notifyDataUpdated();
 }
 

@@ -6,6 +6,7 @@
 #include "espnow_message_router.h"
 #include <Arduino.h>
 #include <cstring>
+#include <logging_config.h>
 
 EspnowMessageRouter::EspnowMessageRouter()
     : packet_any_head_(NO_ROUTE),
@@ -83,7 +84,7 @@ EspnowMessageRouter& EspnowMessageRouter::instance() {
 void EspnowMessageRouter::register_route(uint8_t type, MessageHandler handler,
                                         uint8_t subtype, void* context) {
     if (route_count_ >= MAX_ROUTES) {
-        Serial.println("[ROUTER] ERROR: Maximum routes reached!");
+        LOG_ERROR("ROUTER", "Maximum routes reached");
         return;
     }
 
@@ -101,8 +102,8 @@ void EspnowMessageRouter::register_route(uint8_t type, MessageHandler handler,
         append_type_route(type, route_index);
     }
     
-    Serial.printf("[ROUTER] Registered route: type=0x%02X, subtype=0x%02X (%d total routes)\n",
-                 type, subtype, route_count_);
+    LOG_INFO("ROUTER", "Registered route: type=0x%02X, subtype=0x%02X (%d total routes)",
+             type, subtype, route_count_);
 }
 
 void EspnowMessageRouter::register_routes(const MessageRoute* routes, size_t count) {
@@ -131,5 +132,5 @@ bool EspnowMessageRouter::route_message(const espnow_queue_msg_t& msg) {
 void EspnowMessageRouter::clear_routes() {
     route_count_ = 0;
     reset_route_indexes();
-    Serial.println("[ROUTER] All routes cleared");
+    LOG_INFO("ROUTER", "All routes cleared");
 }

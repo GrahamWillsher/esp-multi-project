@@ -1,62 +1,24 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// logging.h — Logging shim for the receiver webserver library.
+//
+// Previously defined Serial-only LOG_*(fmt,...) macros (no tag parameter).
+// Now delegates to the shared esp32common logging infrastructure which routes
+// to both Serial and MQTT depending on build configuration.
+//
+// All log calls in this library use the tagged form:
+//   LOG_ERROR(tag, fmt, ...)
+//   LOG_WARN(tag,  fmt, ...)
+//   LOG_INFO(tag,  fmt, ...)
+//   LOG_DEBUG(tag, fmt, ...)
+//   LOG_TRACE(tag, fmt, ...)
+// ─────────────────────────────────────────────────────────────────────────────
 #pragma once
 
-#include <Arduino.h>
-
-// Logging levels (higher number = more verbose)
-enum LogLevel { 
-    LOG_NONE = 0,   // Disable all logging
-    LOG_ERROR = 1,  // Critical errors only
-    LOG_WARN = 2,   // Warnings and errors
-    LOG_INFO = 3,   // Important information
-    LOG_DEBUG = 4,  // Detailed debug information
-    LOG_TRACE = 5   // Very verbose trace information
-};
-
-// Compile-time log level (set via platformio.ini)
-#ifndef COMPILE_LOG_LEVEL
-    #define COMPILE_LOG_LEVEL LOG_INFO
+// Webserver hot-path logging must remain local-only to avoid adding MQTT
+// publish overhead to HTTP/SSE request handling.
+#ifdef LOG_USE_MQTT
+#undef LOG_USE_MQTT
 #endif
+#define LOG_USE_MQTT 0
 
-// Runtime log level (can be changed dynamically)
-extern LogLevel current_log_level;
-
-// Logging macros with compile-time optimization
-#if COMPILE_LOG_LEVEL >= LOG_ERROR
-    #define LOG_ERROR(fmt, ...) \
-        if (current_log_level >= LOG_ERROR) \
-            Serial.printf("[ERROR] " fmt "\n", ##__VA_ARGS__)
-#else
-    #define LOG_ERROR(fmt, ...) ((void)0)
-#endif
-
-#if COMPILE_LOG_LEVEL >= LOG_WARN
-    #define LOG_WARN(fmt, ...) \
-        if (current_log_level >= LOG_WARN) \
-            Serial.printf("[WARN] " fmt "\n", ##__VA_ARGS__)
-#else
-    #define LOG_WARN(fmt, ...) ((void)0)
-#endif
-
-#if COMPILE_LOG_LEVEL >= LOG_INFO
-    #define LOG_INFO(fmt, ...) \
-        if (current_log_level >= LOG_INFO) \
-            Serial.printf("[INFO] " fmt "\n", ##__VA_ARGS__)
-#else
-    #define LOG_INFO(fmt, ...) ((void)0)
-#endif
-
-#if COMPILE_LOG_LEVEL >= LOG_DEBUG
-    #define LOG_DEBUG(fmt, ...) \
-        if (current_log_level >= LOG_DEBUG) \
-            Serial.printf("[DEBUG] " fmt "\n", ##__VA_ARGS__)
-#else
-    #define LOG_DEBUG(fmt, ...) ((void)0)
-#endif
-
-#if COMPILE_LOG_LEVEL >= LOG_TRACE
-    #define LOG_TRACE(fmt, ...) \
-        if (current_log_level >= LOG_TRACE) \
-            Serial.printf("[TRACE] " fmt "\n", ##__VA_ARGS__)
-#else
-    #define LOG_TRACE(fmt, ...) ((void)0)
-#endif
+#include <esp32common/logging/logging_config.h>

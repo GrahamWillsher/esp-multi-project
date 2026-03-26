@@ -98,7 +98,7 @@ bool store_ip_data(const uint8_t* transmitter_ip,
 
     if (is_zero_ip(transmitter_ip)) {
         network_cache.ip_known = false;
-        LOG_WARN("[NET_CACHE] Received empty IP data - transmitter Ethernet not connected yet");
+            LOG_WARN("NET_CACHE", "Received empty IP data - transmitter Ethernet not connected yet");
         return false;
     }
 
@@ -115,7 +115,7 @@ bool store_ip_data(const uint8_t* transmitter_ip,
         ip_str[sizeof(ip_str) - 1] = '\0';
     }
 
-    LOG_INFO("[NET_CACHE] IP data: %s (%s), Gateway: %d.%d.%d.%d, Subnet: %d.%d.%d.%d, Version: %u",
+    LOG_INFO("NET_CACHE", "IP data: %s (%s), Gateway: %d.%d.%d.%d, Subnet: %d.%d.%d.%d, Version: %u",
              ip_str,
              network_cache.is_static_ip ? "Static" : "DHCP",
              network_cache.current_gateway[0], network_cache.current_gateway[1], network_cache.current_gateway[2], network_cache.current_gateway[3],
@@ -143,7 +143,7 @@ bool store_network_config(const uint8_t* curr_ip,
 
     if (is_zero_ip(curr_ip)) {
         network_cache.ip_known = false;
-        LOG_WARN("[NET_CACHE] Received empty current IP - transmitter Ethernet not connected yet");
+            LOG_WARN("NET_CACHE", "Received empty current IP - transmitter Ethernet not connected yet");
         return false;
     }
 
@@ -161,15 +161,15 @@ bool store_network_config(const uint8_t* curr_ip,
     network_cache.is_static_ip = is_static;
     network_cache.network_config_version = config_version;
 
-    LOG_INFO("[NET_CACHE] Network config stored");
-    LOG_INFO("[NET_CACHE] Current: %d.%d.%d.%d (%s)",
+        LOG_INFO("NET_CACHE", "Network config stored");
+        LOG_INFO("NET_CACHE", "Current: %d.%d.%d.%d (%s)",
              network_cache.current_ip[0], network_cache.current_ip[1], network_cache.current_ip[2], network_cache.current_ip[3],
              network_cache.is_static_ip ? "Static" : "DHCP");
-    LOG_INFO("[NET_CACHE] Static saved: %d.%d.%d.%d / %d.%d.%d.%d / %d.%d.%d.%d",
+        LOG_INFO("NET_CACHE", "Static saved: %d.%d.%d.%d / %d.%d.%d.%d / %d.%d.%d.%d",
              network_cache.static_ip[0], network_cache.static_ip[1], network_cache.static_ip[2], network_cache.static_ip[3],
              network_cache.static_gateway[0], network_cache.static_gateway[1], network_cache.static_gateway[2], network_cache.static_gateway[3],
              network_cache.static_subnet[0], network_cache.static_subnet[1], network_cache.static_subnet[2], network_cache.static_subnet[3]);
-    LOG_INFO("[NET_CACHE] DNS: %d.%d.%d.%d / %d.%d.%d.%d, Version: %u",
+        LOG_INFO("NET_CACHE", "DNS: %d.%d.%d.%d / %d.%d.%d.%d, Version: %u",
              network_cache.static_dns_primary[0], network_cache.static_dns_primary[1], network_cache.static_dns_primary[2], network_cache.static_dns_primary[3],
              network_cache.static_dns_secondary[0], network_cache.static_dns_secondary[1], network_cache.static_dns_secondary[2], network_cache.static_dns_secondary[3],
              network_cache.network_config_version);
@@ -225,7 +225,7 @@ uint32_t get_network_config_version() {
 void update_network_mode(bool is_static, uint32_t version) {
     network_cache.is_static_ip = is_static;
     network_cache.network_config_version = version;
-    LOG_INFO("[NET_CACHE] Network mode updated: %s (version %u)", is_static ? "Static" : "DHCP", version);
+        LOG_INFO("NET_CACHE", "Network mode updated: %s (version %u)", is_static ? "Static" : "DHCP", version);
 }
 
 bool format_ip(const uint8_t* ip, char* out, size_t out_len) {

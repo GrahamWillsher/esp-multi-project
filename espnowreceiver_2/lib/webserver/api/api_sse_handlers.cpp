@@ -93,7 +93,7 @@ esp_err_t api_cell_data_sse_handler(httpd_req_t *req) {
     portEXIT_CRITICAL(&g_sse_metrics_mux);
 
     MqttClient::incrementCellDataSubscribers();
-    LOG_DEBUG("[SSE]", "SSE client connected (subscribers: %d)", MqttClient::getCellDataSubscriberCount());
+    LOG_DEBUG("SSE", "SSE client connected (subscribers: %d)", MqttClient::getCellDataSubscriberCount());
 
     if (HttpSseUtils::begin_sse(req) != ESP_OK || HttpSseUtils::send_retry_hint(req) != ESP_OK) {
         MqttClient::decrementCellDataSubscribers();
@@ -153,7 +153,7 @@ esp_err_t api_cell_data_sse_handler(httpd_req_t *req) {
     HttpSseUtils::end_sse(req);
     MqttClient::decrementCellDataSubscribers();
     recordCellSessionEnd(millis() - session_start_ms);
-    LOG_DEBUG("[SSE]", "SSE client disconnected (subscribers: %d)", MqttClient::getCellDataSubscriberCount());
+    LOG_DEBUG("SSE", "SSE client disconnected (subscribers: %d)", MqttClient::getCellDataSubscriberCount());
 
     return ESP_OK;
 }
@@ -177,7 +177,7 @@ esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
         request_data_t req_msg = { msg_request_data, data_subtype };
         esp_err_t result = esp_now_send(TransmitterManager::getMAC(), (const uint8_t*)&req_msg, sizeof(req_msg));
         if (result == ESP_OK) {
-            LOG_DEBUG("SSE: Sent REQUEST_DATA (subtype=%d) to transmitter", data_subtype);
+            LOG_DEBUG("SSE", "Sent REQUEST_DATA (subtype=%d) to transmitter", data_subtype);
         }
     }
 
@@ -243,7 +243,7 @@ esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
     if (TransmitterManager::isMACKnown()) {
         abort_data_t abort_msg = { msg_abort_data, data_subtype };
         esp_now_send(TransmitterManager::getMAC(), (const uint8_t*)&abort_msg, sizeof(abort_msg));
-        LOG_DEBUG("SSE: Sent ABORT_DATA (subtype=%d) to transmitter", data_subtype);
+        LOG_DEBUG("SSE", "Sent ABORT_DATA (subtype=%d) to transmitter", data_subtype);
     }
 
     HttpSseUtils::end_sse(req);

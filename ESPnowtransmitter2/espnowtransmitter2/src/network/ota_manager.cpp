@@ -151,9 +151,7 @@ bool OtaManager::validate_ota_auth_headers(httpd_req_t* req) {
             if (has_client_ip) {
                 clear_auth_failures(client_ip, now_ms);
             }
-            // Keep this path lightweight: avoid formatted logger call on httpd task
-            // stack immediately before large OTA upload handling.
-            Serial.println("[HTTP_OTA] OTA auth validated");
+            LOG_INFO("HTTP_OTA", "OTA auth validated");
             return true;
         case OtaSessionUtils::ValidationResult::NotArmed:
             if (has_client_ip) {

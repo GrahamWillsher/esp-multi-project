@@ -93,26 +93,21 @@ void MqttLogger::log(MqttLogLevel level, const char* tag, const char* format, ..
         Serial.printf("%s [%s][%s] %s\n", prefix, level_to_string(level), tag, buffer);
     }
     
-    // Publish to MQTT
-    if (is_mqtt_available()) {
-        publish_message(level, tag, buffer);
-        
-        // Flush any buffered messages
-        if (buffer_count_ > 0) {
-            flush_buffer();
-        }
-    } else {
-        // Buffer message if MQTT not available
-        if (buffer_count_ < BUFFER_SIZE) {
-            buffer_[buffer_head_].level = level;
-            buffer_[buffer_head_].tag = tag;
-            buffer_[buffer_head_].message = buffer;
-            buffer_[buffer_head_].timestamp = millis();
-            buffer_head_ = (buffer_head_ + 1) % BUFFER_SIZE;
-            buffer_count_++;
-        }
-        
-        // Fallback to Serial
+    // Always enqueue for MQTT publication.
+    // IMPORTANT: PubSubClient is not thread-safe; direct publish from arbitrary
+    // tasks/event callbacks can race with mqtt_task::client.loop/connect/disconnect
+    // and cause connection instability after link flaps.
+    if (buffer_count_ < BUFFER_SIZE) {
+        buffer_[buffer_head_].level = level;
+        buffer_[buffer_head_].tag = tag;
+        buffer_[buffer_head_].message = buffer;
+        buffer_[buffer_head_].timestamp = millis();
+        buffer_head_ = (buffer_head_ + 1) % BUFFER_SIZE;
+        buffer_count_++;
+    }
+
+    // Fallback to Serial while MQTT is unavailable.
+    if (!is_mqtt_available()) {
         Serial.printf("%s [%s][%s] %s\n", prefix, level_to_string(level), tag, buffer);
     }
 }
@@ -165,6 +160,10 @@ bool MqttLogger::get_retained(MqttLogLevel level) const {
 }
 
 void MqttLogger::flush_buffer() {
+    if (!is_mqtt_available()) {
+        return;
+    }
+
     size_t flushed = 0;
     
     for (size_t i = 0; i < buffer_count_ && flushed < 5; i++) {
@@ -172,14 +171,15 @@ void MqttLogger::flush_buffer() {
         publish_message(buffer_[idx].level, 
                        buffer_[idx].tag.c_str(), 
                        buffer_[idx].message.c_str());
+        if (!is_mqtt_available()) {
+            // Stop immediately on first publish failure; keep remaining buffer.
+            break;
+        }
         flushed++;
     }
     
     buffer_count_ = (buffer_count_ > flushed) ? (buffer_count_ - flushed) : 0;
     
-    if (buffer_count_ == 0) {
-        Serial.printf("[MQTT_LOG] Buffer flushed (%u messages)\n", flushed);
-    }
 }
 
 void MqttLogger::set_level(MqttLogLevel min_level) {

@@ -27,7 +27,7 @@ esp_err_t send_formatted_page(httpd_req_t* req,
     if (config.specs_section_size > sizeof(stack_specs_buffer) || config.allocate_specs_section_in_psram) {
         specs_section = static_cast<char*>(ps_malloc(config.specs_section_size));
         if (!specs_section) {
-            LOG_ERROR("[%s] Failed to allocate specs buffer in PSRAM", config.log_tag);
+            LOG_ERROR(config.log_tag, "Failed to allocate specs buffer in PSRAM");
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Memory allocation failed");
             return ESP_FAIL;
         }
@@ -52,13 +52,11 @@ esp_err_t send_formatted_page(httpd_req_t* req,
     }
 
     if (send_result != ESP_OK) {
-        LOG_ERROR("[%s] Failed to send chunked HTML response", config.log_tag);
+        LOG_ERROR(config.log_tag, "Failed to send chunked HTML response");
         return ESP_FAIL;
     }
 
-    LOG_INFO("[%s] Specs page served (%d bytes)",
-             config.log_tag,
-             static_cast<int>(sent_bytes));
+    LOG_INFO(config.log_tag, "Specs page served (%d bytes)", static_cast<int>(sent_bytes));
     return ESP_OK;
 }
 
