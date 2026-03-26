@@ -268,6 +268,23 @@ Recommended next step (granularity):
 - Route selected `WARN/ERROR` to both sinks where operationally useful.
 - Use `log_routed(LogSink::Local|Mqtt|Both, ...)` only for explicit per-call sink policy.
 
+### Runtime Note (Mar 26, 2026): Webserver Responsiveness Investigation Parked
+
+Status: **Parked / unresolved for now** (operationally acceptable).
+
+Context:
+
+- Investigation in `../esp32common/docs/systemworks/MQTT_LOGGING_RESPONSIVENESS_FINDINGS_AND_OPTIONS_2026_03_26.md`
+  identified SSE/httpd interaction as the likely primary factor for UI latency under active monitor pages.
+- A short-timeout SSE tuning trial (Option B in that findings doc) was tested and then **reverted** after
+  regression feedback (`/cellmonitor` failed to appear as expected).
+
+Current decision:
+
+- Keep current stable SSE behavior unchanged.
+- Treat this as a deferred engineering item and revisit when dedicated test time is available.
+- Operational guidance remains: use dashboard `/` for quick checks; only open monitor views when required.
+
 ### Runtime Feature Note (Mar 26, 2026): Dashboard Transmitter Ethernet 2-State Indicator
 
 Implemented a quick, operator-focused transmitter status indicator on the dashboard root page (`/`) using existing runtime Ethernet state data.

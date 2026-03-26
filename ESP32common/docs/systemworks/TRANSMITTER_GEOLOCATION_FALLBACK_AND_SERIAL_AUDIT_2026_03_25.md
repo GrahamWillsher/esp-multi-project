@@ -25,6 +25,7 @@ Serial audit scope is only:
 3. The fallback design should be normalized to strict NTP-style sequential provider handling with bounded timeout and explicit success/failure semantics.
 4. Direct `Serial.print/println/printf` remains in transmitter, receiver, and common modules.
 5. Your observation about repeated `LOG_*` + `MQTT_LOG_*` lines is valid; this should be consolidated behind a routed common helper (bitmask sink selection).
+6. **Current re-check (2026-03-26):** geolocation fallback implementation is active in transmitter `ethernet_utilities.cpp` (provider list + bounded timeout + explicit success/failure); no `LOG_E/LOG_W/LOG_I/LOG_D` aliases remain in active transmitter/receiver/common source headers or implementations.
 
 ---
 
@@ -53,6 +54,17 @@ Serial audit scope is only:
 ### 1.3 Architecture conclusion
 
 The correct active owner for transmitter geolocation/timezone lookup is `lib/ethernet_utilities/ethernet_utilities.cpp`.
+
+### 1.4 Current implementation state (re-verified 2026-03-26)
+
+Geolocation fallback is now implemented in active transmitter code:
+
+- `kGeoLookupPerProviderTimeoutMs = 5000`
+- fixed response buffer (`kGeoResponseCapacity = 768`)
+- ordered `GeoProvider` list (`ip-api.com` → `worldtimeapi.org` → `timeapi.world`)
+- `lookup_timezone_with_fallback(...)` + `configure_timezone_from_location()` bool-return flow
+
+This confirms the report's fallback design intent is reflected in current runtime code, not only proposal text.
 
 ---
 
@@ -819,10 +831,16 @@ Done as one pass to minimise churn and keep the diff reviewable as a single unit
 - ✅ Clean transmitter build passes (`pio run -t clean` then `pio run -j 12`)
 - ✅ Clean `receiver_tft` build passes (`pio run -e receiver_tft -t clean` then `pio run -e receiver_tft -j 12`)
 - ✅ No `LOG_E / LOG_W / LOG_I / LOG_D` alias call-sites remain in active source roots (`ESPnowtransmitter2/espnowtransmitter2/src+lib`, `espnowreceiver_2/src+lib`, `esp32common` excluding docs/build artifacts)
+- ✅ Re-check confirms no alias macro definitions remain in active headers (`#define LOG_E/LOG_W/LOG_I/LOG_D` not present in transmitter/receiver/common code)
 - ✅ No mixed `LOG_*` + explicit `MQTT_LOG_*` call-site files remain in active roots (only intentional infrastructure router file: `esp32common/logging_utilities/logging_config.h`)
 - ✅ No legacy external hardware-path dependencies remain in active scoped roots
 - ✅ Uncompiled dead-code webserver mirrors removed from `esp32common`
 - ✅ Residual `Serial.*` outside infrastructure is limited to intentional infrastructure/timer-callback safety paths
+
+Alias audit note:
+
+- Historical alias lines still appear in this document as explanatory snippets only.
+- They do **not** appear in active `.h/.cpp` code under transmitter/receiver/common roots.
 
 **Verification commands:**
 ```powershell
