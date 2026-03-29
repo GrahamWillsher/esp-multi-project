@@ -105,7 +105,6 @@ void transition_to_state(SystemState new_state) {
                 Display::tft_background = TFT_BLACK;  // Update background color variable
                 // Don't clear screen here - data display will fill it as it arrives
                 // tft.fillScreen(TFT_BLACK);
-                init_led_gradients();
                 xSemaphoreGive(RTOS::tft_mutex);
             }
             break;
@@ -167,12 +166,16 @@ void handle_error(ErrorSeverity severity, const char* component, const char* mes
             xSemaphoreGive(RTOS::tft_mutex);
         }
 
-        // Flash LED directly (no queue)
+        // Blink LED directly (no queue)
         while (true) {
-            flash_led(LED_RED, 500);
+            set_led(LED_RED);
+            smart_delay(500);
+            clear_led();
             smart_delay(500);
         }
     } else if (severity == ErrorSeverity::ERROR) {
-        flash_led(LED_ORANGE, 1000);
+        set_led(LED_ORANGE);
+        smart_delay(200);
+        clear_led();
     }
 }

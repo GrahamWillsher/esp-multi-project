@@ -26,23 +26,42 @@ esp_err_t api_get_battery_settings_handler(httpd_req_t *req) {
 
     const bool known = TransmitterManager::hasBatterySettings();
     auto settings = TransmitterManager::getBatterySettings();
+    auto power_settings = TransmitterManager::getPowerSettings();
+    auto can_settings = TransmitterManager::getCanSettings();
+    auto contactor_settings = TransmitterManager::getContactorSettings();
     const uint8_t led_mode = TransmitterManager::hasBatteryEmulatorSettings()
         ? TransmitterManager::getBatteryEmulatorSettings().led_mode
         : 0;
 
-    StaticJsonDocument<256> doc;
-    doc["success"]                  = known;
-    doc["requested"]                = requested;
-    doc["capacity_wh"]              = settings.capacity_wh;
-    doc["max_voltage_mv"]           = settings.max_voltage_mv;
-    doc["min_voltage_mv"]           = settings.min_voltage_mv;
-    doc["max_charge_current_a"]     = serialized(String(settings.max_charge_current_a, 1));
-    doc["max_discharge_current_a"]  = serialized(String(settings.max_discharge_current_a, 1));
-    doc["soc_high_limit"]           = settings.soc_high_limit;
-    doc["soc_low_limit"]            = settings.soc_low_limit;
-    doc["cell_count"]               = settings.cell_count;
-    doc["chemistry"]                = settings.chemistry;
-    doc["led_mode"]                 = led_mode;
+    StaticJsonDocument<512> doc;
+    doc["success"]                   = known;
+    doc["requested"]                 = requested;
+    doc["capacity_wh"]               = settings.capacity_wh;
+    doc["max_voltage_mv"]            = settings.max_voltage_mv;
+    doc["min_voltage_mv"]            = settings.min_voltage_mv;
+    doc["max_charge_current_a"]      = serialized(String(settings.max_charge_current_a, 1));
+    doc["max_discharge_current_a"]   = serialized(String(settings.max_discharge_current_a, 1));
+    doc["soc_high_limit"]            = settings.soc_high_limit;
+    doc["soc_low_limit"]             = settings.soc_low_limit;
+    doc["cell_count"]                = settings.cell_count;
+    doc["chemistry"]                 = settings.chemistry;
+    doc["led_mode"]                  = led_mode;
+    doc["max_precharge_ms"]          = power_settings.max_precharge_ms;
+    doc["precharge_duration_ms"]     = power_settings.precharge_duration_ms;
+    doc["external_precharge_enabled"] = power_settings.external_precharge_enabled;
+    doc["no_inverter_disconnect_contactor"] = power_settings.no_inverter_disconnect_contactor;
+    doc["can_frequency_khz"]         = can_settings.frequency_khz;
+    doc["can_fd_frequency_mhz"]      = can_settings.fd_frequency_mhz;
+    doc["use_canfd_as_classic"]      = can_settings.use_canfd_as_classic;
+    doc["contactor_control_enabled"]  = contactor_settings.control_enabled;
+    doc["contactor_nc_mode"]          = contactor_settings.nc_contactor;
+    doc["contactor_pwm_frequency_hz"] = contactor_settings.pwm_frequency_hz;
+    doc["contactor_pwm_enabled"]      = contactor_settings.pwm_control_enabled;
+    doc["contactor_pwm_hold_duty"]    = contactor_settings.pwm_hold_duty;
+    doc["periodic_bms_reset"]         = contactor_settings.periodic_bms_reset;
+    doc["bms_first_align_enabled"]    = contactor_settings.bms_first_align_enabled;
+    doc["bms_first_align_target_minutes"] = contactor_settings.bms_first_align_target_minutes;
+    doc["equipment_stop_type"]        = power_settings.equipment_stop_type;
 
     return ApiResponseUtils::send_json_doc(req, doc);
 }
@@ -138,6 +157,9 @@ esp_err_t api_save_setting_handler(httpd_req_t *req) {
                 case POWER_DISCHARGE_W: power.discharge_w = msg.value_uint32; break;
                 case POWER_MAX_PRECHARGE_MS: power.max_precharge_ms = msg.value_uint32; break;
                 case POWER_PRECHARGE_DURATION_MS: power.precharge_duration_ms = msg.value_uint32; break;
+                case POWER_EQUIPMENT_STOP_TYPE: power.equipment_stop_type = static_cast<uint8_t>(msg.value_uint32); break;
+                case POWER_EXTERNAL_PRECHARGE_ENABLED: power.external_precharge_enabled = msg.value_uint32 ? true : false; break;
+                case POWER_NO_INVERTER_DISCONNECT_CONTACTOR: power.no_inverter_disconnect_contactor = msg.value_uint32 ? true : false; break;
                 default: break;
             }
             TransmitterManager::storePowerSettings(power);
@@ -160,6 +182,7 @@ esp_err_t api_save_setting_handler(httpd_req_t *req) {
                 case CAN_FD_FREQUENCY_MHZ: can.fd_frequency_mhz = msg.value_uint32; break;
                 case CAN_SOFAR_ID: can.sofar_id = msg.value_uint32; break;
                 case CAN_PYLON_SEND_INTERVAL_MS: can.pylon_send_interval_ms = msg.value_uint32; break;
+                case CAN_USE_CANFD_AS_CLASSIC: can.use_canfd_as_classic = msg.value_uint32 ? true : false; break;
                 default: break;
             }
             TransmitterManager::storeCanSettings(can);
@@ -169,6 +192,11 @@ esp_err_t api_save_setting_handler(httpd_req_t *req) {
                 case CONTACTOR_CONTROL_ENABLED: contactor.control_enabled = msg.value_uint32 ? true : false; break;
                 case CONTACTOR_NC_MODE: contactor.nc_contactor = msg.value_uint32 ? true : false; break;
                 case CONTACTOR_PWM_FREQUENCY_HZ: contactor.pwm_frequency_hz = msg.value_uint32; break;
+                case CONTACTOR_PWM_ENABLED: contactor.pwm_control_enabled = msg.value_uint32 ? true : false; break;
+                case CONTACTOR_PWM_HOLD_DUTY: contactor.pwm_hold_duty = msg.value_uint32; break;
+                case CONTACTOR_PERIODIC_BMS_RESET: contactor.periodic_bms_reset = msg.value_uint32 ? true : false; break;
+                case CONTACTOR_BMS_FIRST_ALIGN_ENABLED: contactor.bms_first_align_enabled = msg.value_uint32 ? true : false; break;
+                case CONTACTOR_BMS_FIRST_ALIGN_TARGET_MINUTES: contactor.bms_first_align_target_minutes = msg.value_uint32; break;
                 default: break;
             }
             TransmitterManager::storeContactorSettings(contactor);

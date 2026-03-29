@@ -25,6 +25,17 @@ static void request_category_refresh(const uint8_t* mac, uint8_t category, const
                 result = esp_now_send(mac, (const uint8_t*)&req, sizeof(req));
             }
             break;
+
+        case SETTINGS_POWER:
+        case SETTINGS_CAN:
+        case SETTINGS_CONTACTOR:
+            // These categories are transported via the same battery config/settings payload currently.
+            LOG_INFO(kLogTag, "Requesting hardware settings refresh %s (category=%u)", reason, static_cast<unsigned>(category));
+            {
+                request_data_t req = { msg_request_data, subtype_battery_config };
+                result = esp_now_send(mac, (const uint8_t*)&req, sizeof(req));
+            }
+            break;
             
         case SETTINGS_CHARGER:
             // TODO Phase 3: Request charger settings only
@@ -62,9 +73,12 @@ void handle_settings_update_ack(const espnow_queue_msg_t* msg) {
     
     const settings_update_ack_msg_t* ack = reinterpret_cast<const settings_update_ack_msg_t*>(msg->data);
     
-    const char* category_str = (ack->category == SETTINGS_BATTERY) ? "BATTERY" : 
-                               (ack->category == SETTINGS_CHARGER) ? "CHARGER" : 
-                               (ack->category == SETTINGS_INVERTER) ? "INVERTER" : "UNKNOWN";
+    const char* category_str = (ack->category == SETTINGS_BATTERY) ? "BATTERY" :
+                               (ack->category == SETTINGS_CHARGER) ? "CHARGER" :
+                               (ack->category == SETTINGS_INVERTER) ? "INVERTER" :
+                               (ack->category == SETTINGS_POWER) ? "POWER" :
+                               (ack->category == SETTINGS_CAN) ? "CAN" :
+                               (ack->category == SETTINGS_CONTACTOR) ? "CONTACTOR" : "UNKNOWN";
     
     if (ack->success) {
         LOG_INFO(kLogTag, "✓ Settings update ACK: category=%s, field=%d, version=%u", 
@@ -106,9 +120,12 @@ void handle_settings_changed(const espnow_queue_msg_t* msg) {
         return;
     }
     
-    const char* category_str = (change->category == SETTINGS_BATTERY) ? "BATTERY" : 
-                               (change->category == SETTINGS_CHARGER) ? "CHARGER" : 
-                               (change->category == SETTINGS_INVERTER) ? "INVERTER" : "UNKNOWN";
+    const char* category_str = (change->category == SETTINGS_BATTERY) ? "BATTERY" :
+                               (change->category == SETTINGS_CHARGER) ? "CHARGER" :
+                               (change->category == SETTINGS_INVERTER) ? "INVERTER" :
+                               (change->category == SETTINGS_POWER) ? "POWER" :
+                               (change->category == SETTINGS_CAN) ? "CAN" :
+                               (change->category == SETTINGS_CONTACTOR) ? "CONTACTOR" : "UNKNOWN";
     
     LOG_INFO(kLogTag, "⚡ Settings changed notification: category=%s, new_version=%u", category_str, change->new_version);
     

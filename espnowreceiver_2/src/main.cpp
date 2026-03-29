@@ -84,15 +84,10 @@ static void log_timing_policy() {
 static void task_led_renderer(void* parameter) {
     (void)parameter;
 
-    // Initialize gradients once display/mutex are ready
-    if (xSemaphoreTake(RTOS::tft_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        init_led_gradients();
-        xSemaphoreGive(RTOS::tft_mutex);
-    }
-
     bool first_frame = true;
     bool led_is_on = false;
     uint32_t next_toggle_ms = 0;
+    uint8_t heartbeat_phase = 0;  // 0=beat1_on, 1=interbeat_off, 2=beat2_on, 3=pause_off
     LEDColor last_color = LED_ORANGE;
     LEDEffect last_effect = LED_EFFECT_FLASH;
 
@@ -105,6 +100,7 @@ static void task_led_renderer(void* parameter) {
         if (first_frame || color != last_color || effect != last_effect) {
             led_is_on = false;
             next_toggle_ms = now_ms;
+            heartbeat_phase = 0;
         }
 
         switch (effect) {
@@ -121,17 +117,35 @@ static void task_led_renderer(void* parameter) {
             }
 
             case LED_EFFECT_HEARTBEAT: {
-                // Brief pulse (on ~180ms, off ~1020ms), non-blocking
+                // Profile 1: beat1_on(120) -> interbeat_off(100) -> beat2_on(120) -> pause_off(760)
                 if (now_ms >= next_toggle_ms) {
                     if (xSemaphoreTake(RTOS::tft_mutex, pdMS_TO_TICKS(20)) == pdTRUE) {
-                        if (led_is_on) {
-                            clear_led();
-                            led_is_on = false;
-                            next_toggle_ms = now_ms + 1020;
-                        } else {
-                            set_led(color);
-                            led_is_on = true;
-                            next_toggle_ms = now_ms + 180;
+                        switch (heartbeat_phase) {
+                            case 0: // beat 1 on
+                                set_led(color);
+                                led_is_on = true;
+                                next_toggle_ms = now_ms + LedPatternTiming::kConfig.heartbeat.beat1_on_ms;
+                                heartbeat_phase = 1;
+                                break;
+                            case 1: // interbeat off
+                                clear_led();
+                                led_is_on = false;
+                                next_toggle_ms = now_ms + LedPatternTiming::kConfig.heartbeat.interbeat_off_ms;
+                                heartbeat_phase = 2;
+                                break;
+                            case 2: // beat 2 on
+                                set_led(color);
+                                led_is_on = true;
+                                next_toggle_ms = now_ms + LedPatternTiming::kConfig.heartbeat.beat2_on_ms;
+                                heartbeat_phase = 3;
+                                break;
+                            case 3: // long pause off
+                            default:
+                                clear_led();
+                                led_is_on = false;
+                                next_toggle_ms = now_ms + LedPatternTiming::kConfig.heartbeat.pause_off_ms;
+                                heartbeat_phase = 0;
+                                break;
                         }
                         xSemaphoreGive(RTOS::tft_mutex);
                     }
@@ -151,7 +165,9 @@ static void task_led_renderer(void* parameter) {
                             set_led(color);
                             led_is_on = true;
                         }
-                        next_toggle_ms = now_ms + 500;
+                        next_toggle_ms = now_ms + (led_is_on
+                            ? LedPatternTiming::kConfig.flash.on_ms
+                            : LedPatternTiming::kConfig.flash.off_ms);
                         xSemaphoreGive(RTOS::tft_mutex);
                     }
                 }

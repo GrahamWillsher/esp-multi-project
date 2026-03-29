@@ -110,7 +110,7 @@ static constexpr char COMMON_STYLES[] = R"rawliteral(
     }
     
     /* Editable fields (Static IP mode, user input) */
-    .editable-field,
+    .editable-field:not(select):not([type="checkbox"]),
     input[type="text"]:not(:disabled),
     input[type="password"]:not(:disabled),
     input.octet:not(:disabled) {
@@ -118,6 +118,16 @@ static constexpr char COMMON_STYLES[] = R"rawliteral(
         color: #212121 !important;           /* Material Grey 900 */
         border: 1px solid #BDBDBD !important; /* Material Grey 400 */
         cursor: text !important;
+    }
+
+    /* Checkboxes should always show a pointer when enabled */
+    input[type="checkbox"]:not(:disabled) {
+        cursor: pointer !important;
+    }
+
+    /* Select dropdowns should show pointer when enabled */
+    select:not(:disabled) {
+        cursor: pointer !important;
     }
     
     /* Focus state for editable fields */

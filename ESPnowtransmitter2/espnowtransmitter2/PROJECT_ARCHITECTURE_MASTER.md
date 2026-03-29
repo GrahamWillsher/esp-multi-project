@@ -21,6 +21,7 @@
 7. [Post-Release Improvements](#post-release-improvements)
 8. [Implementation Checklist](#implementation-checklist)
 9. [Current Codebase Snapshot (Mar 2026)](#current-codebase-snapshot-mar-2026)
+10. [Periodic BMS Reset Scheduling (Design Specification)](#periodic-bms-reset-scheduling-design-specification)
 
 ---
 
@@ -329,6 +330,33 @@ MQTT Task (if Ethernet ready)
 **Update Rate**: ~5 Hz from CAN, batched for wireless transmission
 
 **Reference**: Phase 4a documentation (Battery Emulator Integration)
+
+---
+
+### 6. Periodic BMS Reset Scheduling (Scheduled-Time + Fallback)
+
+**Purpose**: Keep periodic BMS power-reset behavior deterministic while preserving a safe default when wall-clock time is unavailable.
+
+**User-Facing Configuration (Receiver UI)**:
+- `Periodic BMS reset` enable/disable
+- `Reset target time` (`HH:MM`, local time)
+
+**Internal Behavior (Transmitter Runtime)**:
+- Baseline behavior remains **elapsed 24h reset** when valid clock context is not available.
+- When valid time is available, runtime can align reset execution to configured local target time.
+- First-alignment logic is internal (not user-facing) and persists in transmitter NVS.
+- DST support uses a lightweight persisted transition-queue approach; if timezone/DST context is missing, logic reverts to elapsed 24h behavior.
+
+**Persistence Requirements**:
+- Reset configuration is persisted in transmitter NVS (contactor settings blob).
+- NVS key names are constrained to safe short keys for Preferences compatibility.
+
+**Safety Contract**:
+- No NTP / no timezone / no DST data must **never disable periodic resets**.
+- In all degraded-time cases, system falls back to robust elapsed 24h scheduling.
+
+**Detailed Design Notes**:
+- Full investigation and implementation notes: [../../esp32common/docs/systemworks/TRANSMITTER_PERIODIC_BMS_RESET_SCHEDULED_TIME_REVIEW_2026_03_27.md](../../esp32common/docs/systemworks/TRANSMITTER_PERIODIC_BMS_RESET_SCHEDULED_TIME_REVIEW_2026_03_27.md)
 
 ---
 

@@ -562,7 +562,10 @@ enum PowerSettingsField : uint8_t {
     POWER_CHARGE_W = 0,
     POWER_DISCHARGE_W = 1,
     POWER_MAX_PRECHARGE_MS = 2,
-    POWER_PRECHARGE_DURATION_MS = 3
+    POWER_PRECHARGE_DURATION_MS = 3,
+    POWER_EQUIPMENT_STOP_TYPE = 4,  // 0=Not connected, 1=Latching, 2=Momentary
+    POWER_EXTERNAL_PRECHARGE_ENABLED = 5,
+    POWER_NO_INVERTER_DISCONNECT_CONTACTOR = 6
 };
 
 // Inverter settings field IDs
@@ -580,14 +583,20 @@ enum CanSettingsField : uint8_t {
     CAN_FREQUENCY_KHZ = 0,
     CAN_FD_FREQUENCY_MHZ = 1,
     CAN_SOFAR_ID = 2,
-    CAN_PYLON_SEND_INTERVAL_MS = 3
+    CAN_PYLON_SEND_INTERVAL_MS = 3,
+    CAN_USE_CANFD_AS_CLASSIC = 4
 };
 
 // Contactor control field IDs
 enum ContactorSettingsField : uint8_t {
     CONTACTOR_CONTROL_ENABLED = 0,
     CONTACTOR_NC_MODE = 1,
-    CONTACTOR_PWM_FREQUENCY_HZ = 2
+    CONTACTOR_PWM_FREQUENCY_HZ = 2,
+    CONTACTOR_PWM_ENABLED = 3,
+    CONTACTOR_PWM_HOLD_DUTY = 4,
+    CONTACTOR_PERIODIC_BMS_RESET = 5,
+    CONTACTOR_BMS_FIRST_ALIGN_ENABLED = 6,
+    CONTACTOR_BMS_FIRST_ALIGN_TARGET_MINUTES = 7
 };
 
 // Settings update message - Receiver → Transmitter

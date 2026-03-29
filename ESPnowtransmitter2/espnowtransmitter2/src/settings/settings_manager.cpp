@@ -1,6 +1,9 @@
 #include "settings_manager.h"
 #include "../config/logging_config.h"
 #include "../datalayer/datalayer.h"
+#include "../battery_emulator/communication/can/comm_can.h"
+#include "../battery_emulator/communication/contactorcontrol/comm_contactorcontrol.h"
+#include "../battery_emulator/communication/precharge_control/precharge_control.h"
 // Companion translation units:
 //   settings_persistence.cpp  – NVS blob save/load (all categories)
 //   settings_field_setters.cpp – per-field value validation and dispatch
@@ -12,6 +15,24 @@ SettingsManager& SettingsManager::instance() {
 }
 
 SettingsManager::SettingsManager() {
+}
+
+void SettingsManager::apply_runtime_static_settings() {
+    contactor_control_enabled = contactor_control_enabled_;
+    contactor_control_inverted_logic = contactor_nc_mode_;
+    precharge_time_ms = power_precharge_duration_ms_;
+    pwm_contactor_control = contactor_pwm_control_enabled_;
+    pwm_frequency = contactor_pwm_frequency_hz_;
+    pwm_hold_duty = contactor_pwm_hold_duty_;
+    periodic_bms_reset = contactor_periodic_bms_reset_;
+    bms_first_align_enabled = contactor_bms_first_align_enabled_;
+    bms_first_align_target_minutes = contactor_bms_first_align_target_minutes_;
+
+    use_canfd_as_can = can_use_canfd_as_classic_;
+
+    precharge_control_enabled = power_external_precharge_enabled_;
+    precharge_inverter_normally_open_contactor = power_no_inverter_disconnect_contactor_;
+    precharge_max_precharge_time_before_fault = power_max_precharge_ms_;
 }
 
 SettingsManager::ValidationResult SettingsManager::validate_battery_settings() const {
@@ -61,6 +82,12 @@ SettingsManager::ValidationResult SettingsManager::validate_power_settings() con
         result.error_message = "Precharge duration cannot exceed max precharge duration";
         return result;
     }
+    if (power_equipment_stop_type_ > 2) {
+        ValidationResult result;
+        result.is_valid = false;
+        result.error_message = "Equipment stop type out of range (0-2)";
+        return result;
+    }
     return ValidationResult{};
 }
 
@@ -95,6 +122,18 @@ SettingsManager::ValidationResult SettingsManager::validate_contactor_settings()
         ValidationResult result;
         result.is_valid = false;
         result.error_message = "Contactor PWM frequency out of range";
+        return result;
+    }
+    if (contactor_pwm_hold_duty_ < 1 || contactor_pwm_hold_duty_ > 1023) {
+        ValidationResult result;
+        result.is_valid = false;
+        result.error_message = "Contactor PWM hold duty out of range (1-1023)";
+        return result;
+    }
+    if (contactor_bms_first_align_target_minutes_ > 1439) {
+        ValidationResult result;
+        result.is_valid = false;
+        result.error_message = "BMS first-align target minutes out of range (0-1439)";
         return result;
     }
     return ValidationResult{};
@@ -145,6 +184,7 @@ bool SettingsManager::init() {
 
     // Keep runtime LED mode aligned with authoritative managed settings.
     datalayer.battery.status.led_mode = static_cast<led_mode_enum>(battery_led_mode_);
+    apply_runtime_static_settings();
 
     LOG_INFO("SETTINGS", "Settings manager initialized");
     return true;

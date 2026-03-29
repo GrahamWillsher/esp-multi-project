@@ -19,6 +19,28 @@ enum LEDEffect {
     LED_EFFECT_HEARTBEAT = 2
 };
 
+struct LedPatternTimingConfig {
+    struct {
+        uint32_t on_ms;
+        uint32_t off_ms;
+    } flash;
+
+    struct {
+        uint32_t beat1_on_ms;
+        uint32_t interbeat_off_ms;
+        uint32_t beat2_on_ms;
+        uint32_t pause_off_ms;
+    } heartbeat;
+};
+
+namespace LedPatternTiming {
+    // Profile 1 (balanced): 120 / 100 / 120 / 760 ms
+    constexpr LedPatternTimingConfig kConfig{
+        .flash{500, 500},
+        .heartbeat{120, 100, 120, 760}
+    };
+}
+
 // Backward compatibility alias
 constexpr LEDEffect LED_EFFECT_SOLID = LED_EFFECT_CONTINUOUS;
 

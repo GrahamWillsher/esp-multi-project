@@ -16,10 +16,10 @@ namespace {
 constexpr const char* kSettingsBlobKey = "blob_v1";
 
 constexpr uint16_t kBatteryBlobSchemaVersion = 1;
-constexpr uint16_t kPowerBlobSchemaVersion = 1;
+constexpr uint16_t kPowerBlobSchemaVersion = 3;
 constexpr uint16_t kInverterBlobSchemaVersion = 1;
-constexpr uint16_t kCanBlobSchemaVersion = 1;
-constexpr uint16_t kContactorBlobSchemaVersion = 1;
+constexpr uint16_t kCanBlobSchemaVersion = 2;
+constexpr uint16_t kContactorBlobSchemaVersion = 5;
 
 struct __attribute__((packed)) BatterySettingsBlob {
     uint16_t schema_version;
@@ -49,6 +49,9 @@ struct __attribute__((packed)) PowerSettingsBlob {
     uint16_t discharge_w;
     uint16_t max_precharge_ms;
     uint16_t precharge_duration_ms;
+    uint8_t  equipment_stop_type;
+    bool     external_precharge_enabled;
+    bool     no_inverter_disconnect_contactor;
     uint32_t version;
     uint32_t crc32;
 };
@@ -71,6 +74,7 @@ struct __attribute__((packed)) CanSettingsBlob {
     uint16_t fd_frequency_mhz;
     uint16_t sofar_id;
     uint16_t pylon_send_interval_ms;
+    bool     use_canfd_as_classic;
     uint32_t version;
     uint32_t crc32;
 };
@@ -80,6 +84,11 @@ struct __attribute__((packed)) ContactorSettingsBlob {
     bool     control_enabled;
     bool     nc_mode;
     uint16_t pwm_frequency_hz;
+    bool     pwm_control_enabled;
+    uint16_t pwm_hold_duty;
+    bool     periodic_bms_reset;
+    bool     bms_first_align_enabled;
+    uint16_t bms_first_align_target_minutes;
     uint32_t version;
     uint32_t crc32;
 };
@@ -109,6 +118,9 @@ struct PowerLegacyDefaults {
     uint16_t discharge_w;
     uint16_t max_precharge_ms;
     uint16_t precharge_duration_ms;
+    uint8_t  equipment_stop_type;
+    bool external_precharge_enabled;
+    bool no_inverter_disconnect_contactor;
     uint32_t version;
 };
 
@@ -127,6 +139,7 @@ struct CanLegacyDefaults {
     uint16_t fd_frequency_mhz;
     uint16_t sofar_id;
     uint16_t pylon_send_interval_ms;
+    bool use_canfd_as_classic;
     uint32_t version;
 };
 
@@ -134,6 +147,11 @@ struct ContactorLegacyDefaults {
     bool control_enabled;
     bool nc_mode;
     uint16_t pwm_frequency_hz;
+    bool pwm_control_enabled;
+    uint16_t pwm_hold_duty;
+    bool periodic_bms_reset;
+    bool bms_first_align_enabled;
+    uint16_t bms_first_align_target_minutes;
     uint32_t version;
 };
 
@@ -164,7 +182,10 @@ constexpr PowerLegacyDefaults kPowerLegacyDefaults{
     3000,
     15000,
     100,
-    0,
+    0,  // equipment_stop_type
+    false,
+    false,
+    0,  // version
 };
 
 constexpr InverterLegacyDefaults kInverterLegacyDefaults{
@@ -182,6 +203,7 @@ constexpr CanLegacyDefaults kCanLegacyDefaults{
     40,
     0,
     0,
+    false,
     0,
 };
 
@@ -189,7 +211,12 @@ constexpr ContactorLegacyDefaults kContactorLegacyDefaults{
     false,
     false,
     20000,
-    0,
+    false,
+    250,  // pwm_hold_duty
+    false,
+    false,
+    120,  // 02:00
+    0,    // version
 };
 
 bool log_nvs_write_failure(const char* settings_ns,
@@ -468,6 +495,9 @@ bool SettingsManager::load_power_settings() {
             power_discharge_w_            = blob.discharge_w;
             power_max_precharge_ms_       = blob.max_precharge_ms;
             power_precharge_duration_ms_  = blob.precharge_duration_ms;
+            power_equipment_stop_type_    = blob.equipment_stop_type;
+            power_external_precharge_enabled_ = blob.external_precharge_enabled;
+            power_no_inverter_disconnect_contactor_ = blob.no_inverter_disconnect_contactor;
             power_settings_version_       = blob.version;
             loaded_from_blob = true;
         } else {
@@ -481,6 +511,9 @@ bool SettingsManager::load_power_settings() {
         power_discharge_w_           = prefs.getUShort("discharge_w", kPowerLegacyDefaults.discharge_w);
         power_max_precharge_ms_      = prefs.getUShort("max_precharge_ms", kPowerLegacyDefaults.max_precharge_ms);
         power_precharge_duration_ms_ = prefs.getUShort("precharge_ms", kPowerLegacyDefaults.precharge_duration_ms);
+        power_equipment_stop_type_   = prefs.getUChar("eq_stop_type", kPowerLegacyDefaults.equipment_stop_type);
+        power_external_precharge_enabled_ = prefs.getBool("ext_precharge", kPowerLegacyDefaults.external_precharge_enabled);
+        power_no_inverter_disconnect_contactor_ = prefs.getBool("no_inv_disc", kPowerLegacyDefaults.no_inverter_disconnect_contactor);
         power_settings_version_      = prefs.getUInt("version", kPowerLegacyDefaults.version);
     }
 
@@ -515,6 +548,9 @@ bool SettingsManager::save_power_settings() {
     writes_ok &= write_u16_checked(prefs, "power", "discharge_w", power_discharge_w_);
     writes_ok &= write_u16_checked(prefs, "power", "max_precharge_ms", power_max_precharge_ms_);
     writes_ok &= write_u16_checked(prefs, "power", "precharge_ms", power_precharge_duration_ms_);
+    writes_ok &= write_u8_checked(prefs, "power", "eq_stop_type", power_equipment_stop_type_);
+    writes_ok &= write_bool_checked(prefs, "power", "ext_precharge", power_external_precharge_enabled_);
+    writes_ok &= write_bool_checked(prefs, "power", "no_inv_disc", power_no_inverter_disconnect_contactor_);
     writes_ok &= write_u32_checked(prefs, "power", "version", power_settings_version_);
 
     PowerSettingsBlob blob{};
@@ -523,6 +559,9 @@ bool SettingsManager::save_power_settings() {
     blob.discharge_w           = power_discharge_w_;
     blob.max_precharge_ms      = power_max_precharge_ms_;
     blob.precharge_duration_ms = power_precharge_duration_ms_;
+    blob.equipment_stop_type   = power_equipment_stop_type_;
+    blob.external_precharge_enabled = power_external_precharge_enabled_;
+    blob.no_inverter_disconnect_contactor = power_no_inverter_disconnect_contactor_;
     blob.version               = power_settings_version_;
     blob.crc32 = EspnowPacketUtils::calculate_message_crc32_zeroed(&blob);
     writes_ok &= write_blob_checked(prefs, "power", &blob, sizeof(blob));
@@ -647,6 +686,7 @@ bool SettingsManager::load_can_settings() {
             can_fd_frequency_mhz_       = blob.fd_frequency_mhz;
             can_sofar_id_               = blob.sofar_id;
             can_pylon_send_interval_ms_ = blob.pylon_send_interval_ms;
+            can_use_canfd_as_classic_   = blob.use_canfd_as_classic;
             can_settings_version_       = blob.version;
             loaded_from_blob = true;
         } else {
@@ -660,6 +700,7 @@ bool SettingsManager::load_can_settings() {
         can_fd_frequency_mhz_       = prefs.getUShort("fd_freq_mhz", kCanLegacyDefaults.fd_frequency_mhz);
         can_sofar_id_               = prefs.getUShort("sofar_id", kCanLegacyDefaults.sofar_id);
         can_pylon_send_interval_ms_ = prefs.getUShort("pylon_send_ms", kCanLegacyDefaults.pylon_send_interval_ms);
+        can_use_canfd_as_classic_   = prefs.getBool("canfd_classic", kCanLegacyDefaults.use_canfd_as_classic);
         can_settings_version_       = prefs.getUInt("version", kCanLegacyDefaults.version);
     }
 
@@ -694,6 +735,7 @@ bool SettingsManager::save_can_settings() {
     writes_ok &= write_u16_checked(prefs, "can", "fd_freq_mhz", can_fd_frequency_mhz_);
     writes_ok &= write_u16_checked(prefs, "can", "sofar_id", can_sofar_id_);
     writes_ok &= write_u16_checked(prefs, "can", "pylon_send_ms", can_pylon_send_interval_ms_);
+    writes_ok &= write_bool_checked(prefs, "can", "canfd_classic", can_use_canfd_as_classic_);
     writes_ok &= write_u32_checked(prefs, "can", "version", can_settings_version_);
 
     CanSettingsBlob blob{};
@@ -702,6 +744,7 @@ bool SettingsManager::save_can_settings() {
     blob.fd_frequency_mhz       = can_fd_frequency_mhz_;
     blob.sofar_id               = can_sofar_id_;
     blob.pylon_send_interval_ms = can_pylon_send_interval_ms_;
+    blob.use_canfd_as_classic   = can_use_canfd_as_classic_;
     blob.version                = can_settings_version_;
     blob.crc32 = EspnowPacketUtils::calculate_message_crc32_zeroed(&blob);
     writes_ok &= write_blob_checked(prefs, "can", &blob, sizeof(blob));
@@ -728,10 +771,15 @@ bool SettingsManager::load_contactor_settings() {
         if (read_blob_checked(prefs, "contactor", &blob) &&
             EspnowPacketUtils::verify_message_crc32(&blob) &&
             blob.schema_version == kContactorBlobSchemaVersion) {
-            contactor_control_enabled_  = blob.control_enabled;
-            contactor_nc_mode_          = blob.nc_mode;
-            contactor_pwm_frequency_hz_ = blob.pwm_frequency_hz;
-            contactor_settings_version_ = blob.version;
+            contactor_control_enabled_      = blob.control_enabled;
+            contactor_nc_mode_              = blob.nc_mode;
+            contactor_pwm_frequency_hz_     = blob.pwm_frequency_hz;
+            contactor_pwm_control_enabled_  = blob.pwm_control_enabled;
+            contactor_pwm_hold_duty_        = blob.pwm_hold_duty;
+            contactor_periodic_bms_reset_   = blob.periodic_bms_reset;
+            contactor_bms_first_align_enabled_ = blob.bms_first_align_enabled;
+            contactor_bms_first_align_target_minutes_ = blob.bms_first_align_target_minutes;
+            contactor_settings_version_     = blob.version;
             loaded_from_blob = true;
         } else {
             LOG_WARN("SETTINGS",
@@ -740,10 +788,16 @@ bool SettingsManager::load_contactor_settings() {
     }
 
     if (!loaded_from_blob) {
-        contactor_control_enabled_  = prefs.getBool("control_enabled", kContactorLegacyDefaults.control_enabled);
-        contactor_nc_mode_          = prefs.getBool("nc_mode", kContactorLegacyDefaults.nc_mode);
-        contactor_pwm_frequency_hz_ = prefs.getUShort("pwm_hz", kContactorLegacyDefaults.pwm_frequency_hz);
-        contactor_settings_version_ = prefs.getUInt("version", kContactorLegacyDefaults.version);
+        contactor_control_enabled_      = prefs.getBool("control_enabled", kContactorLegacyDefaults.control_enabled);
+        contactor_nc_mode_              = prefs.getBool("nc_mode", kContactorLegacyDefaults.nc_mode);
+        contactor_pwm_frequency_hz_     = prefs.getUShort("pwm_hz", kContactorLegacyDefaults.pwm_frequency_hz);
+        contactor_pwm_control_enabled_  = prefs.getBool("pwm_ctrl", kContactorLegacyDefaults.pwm_control_enabled);
+        contactor_pwm_hold_duty_        = prefs.getUShort("pwm_hold", kContactorLegacyDefaults.pwm_hold_duty);
+        // Prefer short key for NVS key-length safety, fallback to legacy long key
+        contactor_periodic_bms_reset_   = prefs.getBool("per_bms", prefs.getBool("periodic_bms_reset", kContactorLegacyDefaults.periodic_bms_reset));
+        contactor_bms_first_align_enabled_ = prefs.getBool("bms1st_en", kContactorLegacyDefaults.bms_first_align_enabled);
+        contactor_bms_first_align_target_minutes_ = prefs.getUShort("bms1st_min", kContactorLegacyDefaults.bms_first_align_target_minutes);
+        contactor_settings_version_     = prefs.getUInt("version", kContactorLegacyDefaults.version);
     }
 
     prefs.end();
@@ -776,14 +830,25 @@ bool SettingsManager::save_contactor_settings() {
     writes_ok &= write_bool_checked(prefs, "contactor", "control_enabled", contactor_control_enabled_);
     writes_ok &= write_bool_checked(prefs, "contactor", "nc_mode", contactor_nc_mode_);
     writes_ok &= write_u16_checked(prefs, "contactor", "pwm_hz", contactor_pwm_frequency_hz_);
+    writes_ok &= write_bool_checked(prefs, "contactor", "pwm_ctrl", contactor_pwm_control_enabled_);
+    writes_ok &= write_u16_checked(prefs, "contactor", "pwm_hold", contactor_pwm_hold_duty_);
+    // Keep key short to avoid KEY_TOO_LONG on ESP32 NVS
+    writes_ok &= write_bool_checked(prefs, "contactor", "per_bms", contactor_periodic_bms_reset_);
+    writes_ok &= write_bool_checked(prefs, "contactor", "bms1st_en", contactor_bms_first_align_enabled_);
+    writes_ok &= write_u16_checked(prefs, "contactor", "bms1st_min", contactor_bms_first_align_target_minutes_);
     writes_ok &= write_u32_checked(prefs, "contactor", "version", contactor_settings_version_);
 
     ContactorSettingsBlob blob{};
-    blob.schema_version  = kContactorBlobSchemaVersion;
-    blob.control_enabled  = contactor_control_enabled_;
-    blob.nc_mode          = contactor_nc_mode_;
-    blob.pwm_frequency_hz = contactor_pwm_frequency_hz_;
-    blob.version          = contactor_settings_version_;
+    blob.schema_version       = kContactorBlobSchemaVersion;
+    blob.control_enabled      = contactor_control_enabled_;
+    blob.nc_mode              = contactor_nc_mode_;
+    blob.pwm_frequency_hz     = contactor_pwm_frequency_hz_;
+    blob.pwm_control_enabled  = contactor_pwm_control_enabled_;
+    blob.pwm_hold_duty        = contactor_pwm_hold_duty_;
+    blob.periodic_bms_reset   = contactor_periodic_bms_reset_;
+    blob.bms_first_align_enabled = contactor_bms_first_align_enabled_;
+    blob.bms_first_align_target_minutes = contactor_bms_first_align_target_minutes_;
+    blob.version              = contactor_settings_version_;
     blob.crc32 = EspnowPacketUtils::calculate_message_crc32_zeroed(&blob);
     writes_ok &= write_blob_checked(prefs, "contactor", &blob, sizeof(blob));
     prefs.end();

@@ -79,6 +79,9 @@ public:
     uint16_t get_power_discharge_w() const { return power_discharge_w_; }
     uint16_t get_power_max_precharge_ms() const { return power_max_precharge_ms_; }
     uint16_t get_power_precharge_duration_ms() const { return power_precharge_duration_ms_; }
+    uint8_t get_power_equipment_stop_type() const { return power_equipment_stop_type_; }
+    bool get_power_external_precharge_enabled() const { return power_external_precharge_enabled_; }
+    bool get_power_no_inverter_disconnect_contactor() const { return power_no_inverter_disconnect_contactor_; }
 
     // Inverter settings getters
     uint8_t get_inverter_cells() const { return inverter_cells_; }
@@ -93,11 +96,17 @@ public:
     uint16_t get_can_fd_frequency_mhz() const { return can_fd_frequency_mhz_; }
     uint16_t get_can_sofar_id() const { return can_sofar_id_; }
     uint16_t get_can_pylon_send_interval_ms() const { return can_pylon_send_interval_ms_; }
+    bool get_can_use_canfd_as_classic() const { return can_use_canfd_as_classic_; }
 
     // Contactor settings getters
     bool get_contactor_control_enabled() const { return contactor_control_enabled_; }
     bool get_contactor_nc_mode() const { return contactor_nc_mode_; }
     uint16_t get_contactor_pwm_frequency_hz() const { return contactor_pwm_frequency_hz_; }
+    bool get_contactor_pwm_control_enabled() const { return contactor_pwm_control_enabled_; }
+    uint16_t get_contactor_pwm_hold_duty() const { return contactor_pwm_hold_duty_; }
+    bool get_contactor_periodic_bms_reset() const { return contactor_periodic_bms_reset_; }
+    bool get_contactor_bms_first_align_enabled() const { return contactor_bms_first_align_enabled_; }
+    uint16_t get_contactor_bms_first_align_target_minutes() const { return contactor_bms_first_align_target_minutes_; }
     
     // Version getters
     uint32_t get_battery_settings_version() const { return battery_settings_version_; }
@@ -181,6 +190,7 @@ private:
     ValidationResult validate_can_settings() const;
     ValidationResult validate_contactor_settings() const;
     ValidationResult validate_all_settings() const;
+    void apply_runtime_static_settings();
 
     // Battery settings storage
     uint32_t battery_capacity_wh_{30000};              // 30kWh default
@@ -205,6 +215,9 @@ private:
     uint16_t power_discharge_w_{3000};                 // 3kW default
     uint16_t power_max_precharge_ms_{15000};           // 15s default
     uint16_t power_precharge_duration_ms_{100};        // 100ms default
+    uint8_t  power_equipment_stop_type_{0};            // 0=Not connected
+    bool power_external_precharge_enabled_{false};
+    bool power_no_inverter_disconnect_contactor_{false};
 
     // Inverter settings storage
     uint8_t inverter_cells_{0};
@@ -219,11 +232,17 @@ private:
     uint16_t can_fd_frequency_mhz_{40};
     uint16_t can_sofar_id_{0};
     uint16_t can_pylon_send_interval_ms_{0};
+    bool can_use_canfd_as_classic_{false};
 
     // Contactor settings storage
     bool contactor_control_enabled_{false};
     bool contactor_nc_mode_{false};
     uint16_t contactor_pwm_frequency_hz_{20000};
+    bool contactor_pwm_control_enabled_{false};
+    uint16_t contactor_pwm_hold_duty_{250};            // PWM hold duty (1-1023)
+    bool contactor_periodic_bms_reset_{false};
+    bool contactor_bms_first_align_enabled_{false};
+    uint16_t contactor_bms_first_align_target_minutes_{120}; // 02:00 default
     
     // Version tracking
     uint32_t battery_settings_version_{0};             // Incremented on any change

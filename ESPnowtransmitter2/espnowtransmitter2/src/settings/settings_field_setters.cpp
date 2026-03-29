@@ -66,6 +66,9 @@ constexpr UIntRange kRangeCanSofarId{0, 65535};
 constexpr UIntRange kRangeCanPylonSendIntervalMs{0, 60000};
 
 constexpr UIntRange kRangeContactorPwmFrequencyHz{100, 50000};
+constexpr UIntRange kRangeContactorPwmHoldDuty{1, 1023};
+constexpr UIntRange kRangeContactorFirstAlignTargetMinutes{0, 1439};
+constexpr UIntRange kRangePowerEquipmentStopType{0, 2};
 
 // --- Battery ---
 constexpr UIntFieldDescriptor kBatteryUIntFieldDescriptors[] = {
@@ -94,6 +97,7 @@ constexpr UIntFieldDescriptor kPowerUIntFieldDescriptors[] = {
     {POWER_DISCHARGE_W,           "power_discharge_w",           kRangePowerWatts.min,               kRangePowerWatts.max},
     {POWER_MAX_PRECHARGE_MS,      "power_max_precharge_ms",      kRangePowerMaxPrechargeMs.min,      kRangePowerMaxPrechargeMs.max},
     {POWER_PRECHARGE_DURATION_MS, "power_precharge_duration_ms", kRangePowerPrechargeDurationMs.min, kRangePowerPrechargeDurationMs.max},
+    {POWER_EQUIPMENT_STOP_TYPE,   "power_equipment_stop_type",   kRangePowerEquipmentStopType.min,   kRangePowerEquipmentStopType.max},
 };
 
 // --- Inverter ---
@@ -117,6 +121,8 @@ constexpr UIntFieldDescriptor kCanUIntFieldDescriptors[] = {
 // --- Contactor (bool fields excluded — any 0/1 is valid) ---
 constexpr UIntFieldDescriptor kContactorUIntFieldDescriptors[] = {
     {CONTACTOR_PWM_FREQUENCY_HZ, "contactor_pwm_frequency_hz", kRangeContactorPwmFrequencyHz.min, kRangeContactorPwmFrequencyHz.max},
+    {CONTACTOR_PWM_HOLD_DUTY,    "contactor_pwm_hold_duty",    kRangeContactorPwmHoldDuty.min,    kRangeContactorPwmHoldDuty.max},
+    {CONTACTOR_BMS_FIRST_ALIGN_TARGET_MINUTES, "contactor_bms_first_align_target_minutes", kRangeContactorFirstAlignTargetMinutes.min, kRangeContactorFirstAlignTargetMinutes.max},
 };
 
 constexpr const char* kBatteryChemistryLabels[] = {"NCA", "NMC", "LFP", "LTO"};
@@ -412,6 +418,27 @@ bool SettingsManager::save_power_setting(uint8_t field_id,
             LOG_INFO("SETTINGS", "Precharge duration updated: %ums",
                      static_cast<unsigned>(power_precharge_duration_ms_));
             break;
+        case POWER_EQUIPMENT_STOP_TYPE:
+            if (!validate_uint_field(field_id, value_uint32, kPowerUIntFieldDescriptors)) {
+                return false;
+            }
+            power_equipment_stop_type_ = static_cast<uint8_t>(value_uint32);
+            changed = true;
+            LOG_INFO("SETTINGS", "Equipment stop type updated: %u",
+                     static_cast<unsigned>(power_equipment_stop_type_));
+            break;
+        case POWER_EXTERNAL_PRECHARGE_ENABLED:
+            power_external_precharge_enabled_ = value_uint32 ? true : false;
+            changed = true;
+            LOG_INFO("SETTINGS", "External precharge updated: %s",
+                     power_external_precharge_enabled_ ? "ENABLED" : "DISABLED");
+            break;
+        case POWER_NO_INVERTER_DISCONNECT_CONTACTOR:
+            power_no_inverter_disconnect_contactor_ = value_uint32 ? true : false;
+            changed = true;
+            LOG_INFO("SETTINGS", "Inverter disconnect contactor logic updated: %s",
+                     power_no_inverter_disconnect_contactor_ ? "NO" : "NC");
+            break;
         default:
             LOG_ERROR("SETTINGS", "Unknown power field ID: %d", field_id);
             return false;
@@ -421,6 +448,7 @@ bool SettingsManager::save_power_setting(uint8_t field_id,
         increment_power_version();
         const bool saved = save_power_settings();
         if (saved) {
+            apply_runtime_static_settings();
             send_settings_changed_notification(SETTINGS_POWER,
                                                power_settings_version_);
         }
@@ -556,6 +584,12 @@ bool SettingsManager::save_can_setting(uint8_t field_id,
             LOG_INFO("SETTINGS", "CAN Pylon send interval updated: %ums",
                      static_cast<unsigned>(can_pylon_send_interval_ms_));
             break;
+        case CAN_USE_CANFD_AS_CLASSIC:
+            can_use_canfd_as_classic_ = value_uint32 ? true : false;
+            changed = true;
+            LOG_INFO("SETTINGS", "Use CAN-FD as classic CAN updated: %s",
+                     can_use_canfd_as_classic_ ? "ENABLED" : "DISABLED");
+            break;
         default:
             LOG_ERROR("SETTINGS", "Unknown CAN field ID: %d", field_id);
             return false;
@@ -565,6 +599,7 @@ bool SettingsManager::save_can_setting(uint8_t field_id,
         increment_can_version();
         const bool saved = save_can_settings();
         if (saved) {
+            apply_runtime_static_settings();
             send_settings_changed_notification(SETTINGS_CAN,
                                                can_settings_version_);
         }
@@ -604,6 +639,43 @@ bool SettingsManager::save_contactor_setting(uint8_t field_id,
             LOG_INFO("SETTINGS", "Contactor PWM frequency updated: %uHz",
                      static_cast<unsigned>(contactor_pwm_frequency_hz_));
             break;
+        case CONTACTOR_PWM_ENABLED:
+            contactor_pwm_control_enabled_ = value_uint32 ? true : false;
+            changed = true;
+            LOG_INFO("SETTINGS", "Contactor PWM control updated: %s",
+                     contactor_pwm_control_enabled_ ? "ENABLED" : "DISABLED");
+            break;
+        case CONTACTOR_PWM_HOLD_DUTY:
+            if (!validate_uint_field(field_id, value_uint32, kContactorUIntFieldDescriptors)) {
+                return false;
+            }
+            contactor_pwm_hold_duty_ = value_uint32;
+            changed = true;
+            LOG_INFO("SETTINGS", "Contactor PWM hold duty updated: %u",
+                     static_cast<unsigned>(contactor_pwm_hold_duty_));
+            break;
+        case CONTACTOR_PERIODIC_BMS_RESET:
+            contactor_periodic_bms_reset_ = value_uint32 ? true : false;
+            changed = true;
+            LOG_INFO("SETTINGS", "Periodic BMS reset updated: %s",
+                     contactor_periodic_bms_reset_ ? "ENABLED" : "DISABLED");
+            break;
+        case CONTACTOR_BMS_FIRST_ALIGN_ENABLED:
+            contactor_bms_first_align_enabled_ = value_uint32 ? true : false;
+            changed = true;
+            LOG_INFO("SETTINGS", "BMS first-align updated: %s",
+                     contactor_bms_first_align_enabled_ ? "ENABLED" : "DISABLED");
+            break;
+        case CONTACTOR_BMS_FIRST_ALIGN_TARGET_MINUTES:
+            if (!validate_uint_field(field_id, value_uint32, kContactorUIntFieldDescriptors)) {
+                return false;
+            }
+            contactor_bms_first_align_target_minutes_ = static_cast<uint16_t>(value_uint32);
+            changed = true;
+            LOG_INFO("SETTINGS", "BMS first-align target updated: %02u:%02u",
+                     static_cast<unsigned>(contactor_bms_first_align_target_minutes_ / 60),
+                     static_cast<unsigned>(contactor_bms_first_align_target_minutes_ % 60));
+            break;
         default:
             LOG_ERROR("SETTINGS", "Unknown contactor field ID: %d", field_id);
             return false;
@@ -613,6 +685,7 @@ bool SettingsManager::save_contactor_setting(uint8_t field_id,
         increment_contactor_version();
         const bool saved = save_contactor_settings();
         if (saved) {
+            apply_runtime_static_settings();
             send_settings_changed_notification(SETTINGS_CONTACTOR,
                                                contactor_settings_version_);
         }

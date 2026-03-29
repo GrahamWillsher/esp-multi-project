@@ -11,6 +11,8 @@ extern bool contactor_control_enabled_double_battery;
 extern bool pwm_contactor_control;
 extern bool periodic_bms_reset;
 extern bool remote_bms_reset;
+extern bool bms_first_align_enabled;
+extern uint16_t bms_first_align_target_minutes;
 extern uint16_t precharge_time_ms;
 extern uint16_t pwm_frequency;
 extern uint16_t pwm_hold_duty;

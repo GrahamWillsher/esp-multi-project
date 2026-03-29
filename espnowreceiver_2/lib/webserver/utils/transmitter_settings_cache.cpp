@@ -51,7 +51,10 @@ namespace {
             .charge_w = 3000,
             .discharge_w = 3000,
             .max_precharge_ms = 15000,
-            .precharge_duration_ms = 100
+            .precharge_duration_ms = 100,
+            .equipment_stop_type = 0,
+            .external_precharge_enabled = false,
+            .no_inverter_disconnect_contactor = false
         };
         bool power_settings_known = false;
 
@@ -69,14 +72,20 @@ namespace {
             .frequency_khz = 8,
             .fd_frequency_mhz = 40,
             .sofar_id = 0,
-            .pylon_send_interval_ms = 0
+            .pylon_send_interval_ms = 0,
+            .use_canfd_as_classic = false
         };
         bool can_settings_known = false;
 
         ContactorSettings contactor_settings = {
             .control_enabled = false,
             .nc_contactor = false,
-            .pwm_frequency_hz = 20000
+            .pwm_frequency_hz = 20000,
+            .pwm_control_enabled = false,
+            .pwm_hold_duty = 250,
+            .periodic_bms_reset = false,
+            .bms_first_align_enabled = false,
+            .bms_first_align_target_minutes = 120
         };
         bool contactor_settings_known = false;
     };

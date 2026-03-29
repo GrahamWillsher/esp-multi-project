@@ -32,6 +32,9 @@ struct PowerSettings {
     uint16_t discharge_w;
     uint16_t max_precharge_ms;
     uint16_t precharge_duration_ms;
+    uint8_t  equipment_stop_type;  // 0=Not connected, 1=Latching, 2=Momentary
+    bool external_precharge_enabled;
+    bool no_inverter_disconnect_contactor;
 };
 
 struct InverterSettings {
@@ -48,12 +51,18 @@ struct CanSettings {
     uint16_t fd_frequency_mhz;
     uint16_t sofar_id;
     uint16_t pylon_send_interval_ms;
+    bool use_canfd_as_classic;
 };
 
 struct ContactorSettings {
     bool control_enabled;
     bool nc_contactor;
     uint16_t pwm_frequency_hz;
+    bool pwm_control_enabled;
+    uint16_t pwm_hold_duty;  // PWM hold duty cycle (1-1023)
+    bool periodic_bms_reset;
+    bool bms_first_align_enabled;
+    uint16_t bms_first_align_target_minutes;
 };
 
 #endif // TRANSMITTER_SETTINGS_TYPES_H
