@@ -536,7 +536,7 @@ bool MqttManager::publish_event_logs() {
         JsonObject obj = events.createNestedObject();
         char event_message[384] = {0};
         const bool have_event_message =
-            get_event_message(item.event_handle, event_message, sizeof(event_message));
+            get_event_message(item.event_handle, event_message, sizeof(event_message), evt->data);
         obj["timestamp"] = static_cast<uint64_t>(evt->timestamp);
         obj["level"] = map_event_level(evt->level);
         obj["data"] = evt->data;

@@ -17,11 +17,11 @@
 3. [Core Systems](#core-systems)
 4. [Technical References](#technical-references)
 5. [Hardware & GPIO Allocation](#hardware--gpio-allocation)
-6. [First Release Timeline](#first-release-timeline)
-7. [Post-Release Improvements](#post-release-improvements)
-8. [Implementation Checklist](#implementation-checklist)
-9. [Current Codebase Snapshot (Mar 2026)](#current-codebase-snapshot-mar-2026)
-10. [Periodic BMS Reset Scheduling (Design Specification)](#periodic-bms-reset-scheduling-design-specification)
+6. [Periodic BMS Reset Scheduling (Design Specification)](#periodic-bms-reset-scheduling-design-specification)
+7. [First Release Timeline](#first-release-timeline)
+8. [Post-Release Improvements](#post-release-improvements)
+9. [Implementation Checklist](#implementation-checklist)
+10. [Current Codebase Snapshot (Mar 2026)](#current-codebase-snapshot-mar-2026)
 
 ---
 
@@ -356,7 +356,7 @@ MQTT Task (if Ethernet ready)
 - In all degraded-time cases, system falls back to robust elapsed 24h scheduling.
 
 **Detailed Design Notes**:
-- Full investigation and implementation notes: [../../esp32common/docs/systemworks/TRANSMITTER_PERIODIC_BMS_RESET_SCHEDULED_TIME_REVIEW_2026_03_27.md](../../esp32common/docs/systemworks/TRANSMITTER_PERIODIC_BMS_RESET_SCHEDULED_TIME_REVIEW_2026_03_27.md)
+- Full investigation and implementation notes: [TRANSMITTER_PERIODIC_BMS_RESET_SCHEDULED_TIME_REVIEW_2026_03_27.md](TRANSMITTER_PERIODIC_BMS_RESET_SCHEDULED_TIME_REVIEW_2026_03_27.md)
 
 ---
 

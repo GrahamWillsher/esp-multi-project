@@ -112,6 +112,7 @@
   XX(EVENT_SD_INIT_FAILED)              \
   XX(EVENT_PERIODIC_BMS_RESET)          \
   XX(EVENT_PERIODIC_BMS_RESET_FAILURE)  \
+  XX(EVENT_BMS_RESET_ALIGNMENT_STATUS)  \
   XX(EVENT_BMS_RESET_REQ_SUCCESS)       \
   XX(EVENT_BMS_RESET_REQ_FAIL)          \
   XX(EVENT_BATTERY_TEMP_DEVIATION_HIGH) \
@@ -162,7 +163,7 @@ struct EventData {
 };
 
 const char* get_event_enum_string(EVENTS_ENUM_TYPE event);
-bool get_event_message(EVENTS_ENUM_TYPE event, char* out, size_t out_size);
+bool get_event_message(EVENTS_ENUM_TYPE event, char* out, size_t out_size, uint8_t data = 0);
 String get_event_message_string(EVENTS_ENUM_TYPE event);
 const char* get_event_level_string(EVENTS_ENUM_TYPE event);
 const char* get_event_level_string(EVENTS_LEVEL_TYPE event_level);

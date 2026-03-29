@@ -128,6 +128,7 @@ void init_events(void) {
   events.entries[EVENT_EQUIPMENT_STOP].level = EVENT_LEVEL_ERROR;
   events.entries[EVENT_SD_INIT_FAILED].level = EVENT_LEVEL_WARNING;
   events.entries[EVENT_PERIODIC_BMS_RESET].level = EVENT_LEVEL_INFO;
+  events.entries[EVENT_BMS_RESET_ALIGNMENT_STATUS].level = EVENT_LEVEL_INFO;
   events.entries[EVENT_BMS_RESET_REQ_SUCCESS].level = EVENT_LEVEL_INFO;
   events.entries[EVENT_BMS_RESET_REQ_FAIL].level = EVENT_LEVEL_INFO;
   events.entries[EVENT_BATTERY_TEMP_DEVIATION_HIGH].level = EVENT_LEVEL_WARNING;
@@ -170,7 +171,7 @@ void set_event_MQTTpublished(EVENTS_ENUM_TYPE event) {
   events.entries[event].MQTTpublished = true;
 }
 
-bool get_event_message(EVENTS_ENUM_TYPE event, char* out, size_t out_size) {
+bool get_event_message(EVENTS_ENUM_TYPE event, char* out, size_t out_size, uint8_t data) {
   if (!out || out_size == 0) {
     return false;
   }
@@ -483,6 +484,33 @@ bool get_event_message(EVENTS_ENUM_TYPE event, char* out, size_t out_size) {
     case EVENT_PERIODIC_BMS_RESET_FAILURE:
       message = "BMS reset aborted - contactors were still under load.";
       break;
+    case EVENT_BMS_RESET_ALIGNMENT_STATUS: {
+      const uint8_t status = static_cast<uint8_t>((data >> 4) & 0x0F);
+      const uint8_t queue_count = static_cast<uint8_t>(data & 0x0F);
+      const char* details = "BST/DST queue status unknown.";
+
+      switch (status) {
+        case 1:
+          details = "BST/DST queue empty. Next alignment change: none scheduled.";
+          break;
+        case 2:
+          details = "BST/DST queue present. Next alignment change is within 24h.";
+          break;
+        case 3:
+          details = "BST/DST queue present. Next alignment change is beyond 24h.";
+          break;
+        case 4:
+          details = "BST/DST queue present, but wall-clock time is not yet synced.";
+          break;
+        default:
+          details = "BST/DST queue status unknown.";
+          break;
+      }
+
+      const int n = snprintf(out, out_size, "BMS reset alignment snapshot: queue_count=%u. %s",
+                             static_cast<unsigned>(queue_count), details);
+      return n > 0;
+    }
     case EVENT_BMS_RESET_REQ_SUCCESS:
       message = "BMS reset request completed successfully.";
       break;
@@ -522,7 +550,9 @@ bool get_event_message(EVENTS_ENUM_TYPE event, char* out, size_t out_size) {
 
 String get_event_message_string(EVENTS_ENUM_TYPE event) {
   char message[384] = {0};
-  if (!get_event_message(event, message, sizeof(message))) {
+  const EVENTS_STRUCT_TYPE* event_ptr = get_event_pointer(event);
+  const uint8_t data = event_ptr ? event_ptr->data : 0;
+  if (!get_event_message(event, message, sizeof(message), data)) {
     return "";
   }
   return String(message);

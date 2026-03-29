@@ -43,6 +43,10 @@ bool is_valid_interface_id(uint8_t id) {
     return id <= 5;
 }
 
+bool is_disabled_placeholder_label(const char* label) {
+    return (label != nullptr) && (strstr(label, "(disabled)") != nullptr);
+}
+
 void load_interface_selection(uint8_t& battery_interface, uint8_t& inverter_interface) {
     battery_interface = 0;
     inverter_interface = 0;
@@ -575,26 +579,58 @@ void handle_request_inverter_types(const espnow_queue_msg_t& msg, uint8_t* recei
 
     std::vector<type_catalog_entry_t> entries;
 
+    // Keep this list complete and stable for receiver UX regardless of build-time
+    // protocol enablement. Runtime support is still validated separately on apply.
+    const char* fallback_names[] = {
+        "None",
+        "Afore battery over CAN",
+        "BYD Battery-Box Premium HVS over CAN Bus",
+        "BYD 11kWh HVM battery over Modbus RTU",
+        "Ferroamp Pylon battery over CAN bus",
+        "FoxESS compatible HV2600/ECS4100 battery",
+        "Growatt High Voltage protocol via CAN",
+        "Growatt Low Voltage (48V) protocol via CAN",
+        "Growatt WIT compatible battery via CAN",
+        "BYD battery via Kostal RS485",
+        "Pylontech HV battery over CAN bus",
+        "Pylontech LV battery over CAN bus",
+        "Schneider V2 SE BMS CAN",
+        "SMA compatible BYD H",
+        "SMA compatible BYD Battery-Box HVS",
+        "SMA Low Voltage (48V) protocol via CAN",
+        "SMA Tripower CAN",
+        "Sofar BMS (Extended) via CAN, Battery ID",
+        "SolaX Triple Power LFP over CAN bus",
+        "Solxpow compatible battery",
+        "Sol-Ark LV protocol over CAN bus",
+        "Sungrow SBRXXX emulation over CAN bus"
+    };
+
+    for (uint8_t id = 0; id < static_cast<uint8_t>(InverterProtocolType::Highest); ++id) {
+        const char* selected_name = nullptr;
+
 #if CONFIG_CAN_ENABLED
-    for (int id = 0; id < static_cast<int>(InverterProtocolType::Highest); ++id) {
         const InverterProtocolType type = static_cast<InverterProtocolType>(id);
-        const char* name = name_for_inverter_type(type);
-        if (!name || name[0] == '\0') {
+        const char* runtime_name = name_for_inverter_type(type);
+    if (runtime_name && runtime_name[0] != '\0' && !is_disabled_placeholder_label(runtime_name)) {
+            selected_name = runtime_name;
+        }
+#endif
+
+        if (!selected_name && id < (sizeof(fallback_names) / sizeof(fallback_names[0]))) {
+            selected_name = fallback_names[id];
+        }
+
+        if (!selected_name || selected_name[0] == '\0') {
             continue;
         }
 
         type_catalog_entry_t entry{};
-        entry.id = static_cast<uint8_t>(id);
-        strncpy(entry.name, name, sizeof(entry.name) - 1);
+        entry.id = id;
+        strncpy(entry.name, selected_name, sizeof(entry.name) - 1);
         entry.name[sizeof(entry.name) - 1] = '\0';
         entries.push_back(entry);
     }
-#else
-    type_catalog_entry_t fallback{};
-    fallback.id = 0;
-    strncpy(fallback.name, "None", sizeof(fallback.name) - 1);
-    entries.push_back(fallback);
-#endif
 
     send_type_catalog_fragments(msg.mac, msg_inverter_types_fragment, entries, "inverter_types_fragment");
     LOG_INFO("TYPE_CATALOG", "Sent inverter catalog (%u entries)", (unsigned)entries.size());
@@ -605,51 +641,35 @@ void handle_request_inverter_interfaces(const espnow_queue_msg_t& msg, uint8_t* 
 
     std::vector<type_catalog_entry_t> entries;
 
+    struct InterfaceWireMap {
+        uint8_t wire_id;
+        comm_interface iface;
+        const char* fallback_name;
+    };
+
+    static const InterfaceWireMap kInterfaceMap[] = {
+        {0, comm_interface::Modbus, "Modbus"},
+        {1, comm_interface::RS485, "RS485"},
+        {2, comm_interface::CanNative, "CAN (Native)"},
+        {3, comm_interface::CanFdNative, "CAN-FD (Native)"},
+        {4, comm_interface::CanAddonMcp2515, "CAN (MCP2515 add-on)"},
+        {5, comm_interface::CanFdAddonMcp2518, "CAN-FD (MCP2518 add-on)"}
+    };
+
+    for (const auto& map_entry : kInterfaceMap) {
+        type_catalog_entry_t entry{};
+        entry.id = map_entry.wire_id;
+
 #if CONFIG_CAN_ENABLED
-    // Fixed transmitter hardware: only MCP2515 add-on CAN interface is valid.
-    // Do not derive this list from legacy Battery Emulator HAL.
-    {
-        constexpr comm_interface kTxInterfaces[] = {
-            comm_interface::CanAddonMcp2515,
-        };
-
-        for (const auto iface : kTxInterfaces) {
-            const uint8_t wire_id = comm_interface_to_wire_id(iface);
-            if (wire_id == 0xFF) {
-                continue;
-            }
-
-            const char* name = name_for_comm_interface(iface);
-            if (!name || name[0] == '\0') {
-                continue;
-            }
-
-            type_catalog_entry_t entry{};
-            entry.id = wire_id;
-            strncpy(entry.name, name, sizeof(entry.name) - 1);
-            entry.name[sizeof(entry.name) - 1] = '\0';
-            entries.push_back(entry);
-        }
-    }
+        const char* runtime_name = name_for_comm_interface(map_entry.iface);
+        const char* selected_name = (runtime_name && runtime_name[0] != '\0') ? runtime_name : map_entry.fallback_name;
+#else
+        const char* selected_name = map_entry.fallback_name;
 #endif
 
-    if (entries.empty()) {
-        const char* fallback_names[] = {
-            "Modbus",
-            "RS485",
-            "CAN (Native)",
-            "CAN-FD (Native)",
-            "CAN (MCP2515 add-on)",
-            "CAN-FD (MCP2518 add-on)"
-        };
-
-        for (uint8_t id = 0; id < 6; ++id) {
-            type_catalog_entry_t entry{};
-            entry.id = id;
-            strncpy(entry.name, fallback_names[id], sizeof(entry.name) - 1);
-            entry.name[sizeof(entry.name) - 1] = '\0';
-            entries.push_back(entry);
-        }
+        strncpy(entry.name, selected_name, sizeof(entry.name) - 1);
+        entry.name[sizeof(entry.name) - 1] = '\0';
+        entries.push_back(entry);
     }
 
     send_type_catalog_fragments(msg.mac, msg_inverter_interfaces_fragment, entries, "inverter_interfaces_fragment");

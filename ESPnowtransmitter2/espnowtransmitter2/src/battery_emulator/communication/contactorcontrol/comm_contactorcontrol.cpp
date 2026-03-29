@@ -69,6 +69,38 @@ static uint64_t lastDstRefillAttemptEpoch = 0;
 static constexpr uint64_t kSecondsPerDay = 24ULL * 60ULL * 60ULL;
 static constexpr uint64_t kDstRefillRetryIntervalSec = 12ULL * 60ULL * 60ULL;
 
+static void log_bst_dst_queue_status(uint64_t now_epoch, const char* reason) {
+  if (!reason) {
+    reason = "unspecified";
+  }
+
+  if (dstQueueCount == 0) {
+    logging.printf("BMS reset (%s): BST/DST array is empty (no pending transitions). Next alignment change: none scheduled.\n",
+                   reason);
+    return;
+  }
+
+  logging.printf("BMS reset (%s): BST/DST array count=%u\n",
+                 reason,
+                 static_cast<unsigned>(dstQueueCount));
+
+  for (uint8_t i = 0; i < dstQueueCount; ++i) {
+    const time_t epoch = static_cast<time_t>(dstQueueEpochs[i]);
+    struct tm tm_local{};
+    localtime_r(&epoch, &tm_local);
+
+    char local_buf[32] = {0};
+    strftime(local_buf, sizeof(local_buf), "%Y-%m-%d %H:%M:%S", &tm_local);
+
+    const uint64_t seconds_until = (now_epoch != 0 && dstQueueEpochs[i] > now_epoch) ? (dstQueueEpochs[i] - now_epoch) : 0;
+    logging.printf("  BST/DST[%u]: epoch=%llu local=%s in=%llus\n",
+                   static_cast<unsigned>(i),
+                   static_cast<unsigned long long>(dstQueueEpochs[i]),
+                   local_buf,
+                   static_cast<unsigned long long>(seconds_until));
+  }
+}
+
 static int local_isdst_for_epoch(time_t epoch) {
   struct tm tm_local{};
   localtime_r(&epoch, &tm_local);
@@ -118,6 +150,9 @@ static void load_dst_queue_from_nvs() {
 
   prefs.end();
   dstQueueLoaded = true;
+
+  const uint64_t now_epoch = TimeManager::instance().get_unix_time();
+  log_bst_dst_queue_status(now_epoch, "nvs-load");
 }
 
 static void pop_dst_queue_head() {
@@ -131,6 +166,9 @@ static void pop_dst_queue_head() {
   dstQueueEpochs[dstQueueCount - 1] = 0;
   dstQueueCount--;
   save_dst_queue_to_nvs();
+
+  const uint64_t now_epoch = TimeManager::instance().get_unix_time();
+  log_bst_dst_queue_status(now_epoch, "queue-pop");
 }
 
 static uint64_t find_dst_transition_epoch(time_t range_start, time_t range_end, int start_isdst) {
@@ -184,6 +222,7 @@ static void refill_dst_queue_if_needed(uint64_t now_epoch) {
   }
 
   save_dst_queue_to_nvs();
+  log_bst_dst_queue_status(now_epoch, "queue-refill");
 }
 
 static bool arm_alignment_to_target_from_ntp(unsigned long now_ms, AlignArmReason reason, const char* log_prefix) {
@@ -252,10 +291,41 @@ static void maybe_arm_dst_realign(unsigned long now_ms, uint64_t now_epoch) {
     return;
   }
 
+  log_bst_dst_queue_status(now_epoch, "dst-check-within-24h");
+
   if (arm_alignment_to_target_from_ntp(now_ms, AlignArmReason::DST_REALIGN, "dst-realign")) {
     dstEntryPendingPop = true;
     dstPendingEpoch = next_transition;
   }
+}
+
+static uint8_t encode_bms_alignment_snapshot_data(uint64_t now_epoch) {
+  const uint8_t queue_count = (dstQueueCount > 0x0F) ? 0x0F : dstQueueCount;
+  uint8_t status_nibble = 0;  // unknown
+
+  if (dstQueueCount == 0) {
+    status_nibble = 1;  // empty queue, no transition scheduled
+  } else if (now_epoch == 0) {
+    status_nibble = 4;  // unsynced wall-clock
+  } else {
+    const uint64_t next_transition = dstQueueEpochs[0];
+    if (next_transition <= now_epoch) {
+      status_nibble = 2;  // due now (treat as within 24h)
+    } else if ((next_transition - now_epoch) <= kSecondsPerDay) {
+      status_nibble = 2;  // within 24h
+    } else {
+      status_nibble = 3;  // beyond 24h
+    }
+  }
+
+  return static_cast<uint8_t>((status_nibble << 4) | queue_count);
+}
+
+static void emit_bms_alignment_snapshot_event() {
+  const uint64_t now_epoch = TimeManager::instance().get_unix_time();
+  const uint8_t snapshot_data = encode_bms_alignment_snapshot_data(now_epoch);
+  set_event(EVENT_BMS_RESET_ALIGNMENT_STATUS, snapshot_data);
+  clear_event(EVENT_BMS_RESET_ALIGNMENT_STATUS);
 }
 
 void set(uint8_t pin, bool direction, uint32_t pwm_freq = 0xFFFF) {
@@ -560,6 +630,7 @@ void handle_BMSpower() {
         datalayer.system.status.bms_reset_status = BMS_RESET_IDLE;
         set_event(EVENT_PERIODIC_BMS_RESET_FAILURE, 0);
         clear_event(EVENT_PERIODIC_BMS_RESET_FAILURE);
+        emit_bms_alignment_snapshot_event();
       }
     } else if (datalayer.system.status.bms_reset_status == BMS_RESET_POWERED_OFF) {
       // Check if the user configured duration has passed
@@ -600,6 +671,7 @@ void handle_BMSpower() {
         datalayer.system.status.bms_reset_status = BMS_RESET_IDLE;
         set_event(EVENT_PERIODIC_BMS_RESET, 0);
         clear_event(EVENT_PERIODIC_BMS_RESET);
+        emit_bms_alignment_snapshot_event();
       }
     }
   }
