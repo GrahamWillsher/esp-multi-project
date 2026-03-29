@@ -35,9 +35,22 @@ static TypeEntry battery_interfaces[] = {
     {5, "CAN-FD (MCP2518 add-on)"}
 };
 
+static TypeEntry inverter_interface_defaults[] = {
+    {0, "Modbus"},
+    {1, "RS485"},
+    {2, "CAN (Native)"},
+    {3, "CAN-FD (Native)"},
+    {4, "CAN (MCP2515 add-on)"},
+    {5, "CAN-FD (MCP2518 add-on)"}
+};
+
 static constexpr size_t kMaxTypeEntries = 128;
 using CatalogCopyFn = size_t (*)(TypeCatalogCache::TypeEntry*, size_t);
 using CatalogRequestFn = bool (*)();
+
+static bool is_disabled_placeholder_label(const char* label) {
+    return (label != nullptr) && (strstr(label, "(disabled)") != nullptr);
+}
 
 static String generate_sorted_type_json(TypeEntry* types, size_t count) {
     if (count > kMaxTypeEntries) {
@@ -103,6 +116,7 @@ static esp_err_t serve_cached_type_catalog(httpd_req_t *req,
     delete[] cache_entries;
     return HttpJsonUtils::send_json(req, json_response.c_str());
 }
+
 
 static const char* component_apply_state_to_string(ComponentApplyTracker::State state) {
     switch (state) {
