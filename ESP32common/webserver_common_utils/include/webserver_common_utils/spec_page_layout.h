@@ -24,6 +24,7 @@ struct SpecPageParams {
     const char* accent_color;    ///< CSS accent colour used for borders, buttons, and badges
 };
 
+[[deprecated("Legacy String builder API; prefer send_spec_page_response()")]]
 String build_spec_page_html_header(const String& page_title,
                                    const String& heading,
                                    const String& subtitle,
@@ -32,9 +33,11 @@ String build_spec_page_html_header(const String& page_title,
                                    const String& gradient_end,
                                    const String& accent_color);
 
+[[deprecated("Legacy String builder API; prefer send_spec_page_response()")]]
 String build_spec_page_html_footer(const String& nav_links_html,
                                    const String& inline_script = String());
 
+[[deprecated("Legacy String builder API; prefer send_spec_page_response()")]]
 String build_spec_page_nav_links(const SpecPageNavLink* links,
                                  size_t link_count);
 

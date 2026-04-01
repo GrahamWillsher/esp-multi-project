@@ -50,8 +50,11 @@ void MqttLogger::set_mqtt_available(bool available) {
 
 void MqttLogger::init(PubSubClient* mqtt_client, const char* device_id) {
     mqtt_client_ = mqtt_client;
-    device_id_ = device_id;
-    topic_prefix_ = String(device_id_) + "/debug/";
+    snprintf(device_id_,    sizeof(device_id_),    "%s", device_id);
+    snprintf(topic_prefix_, sizeof(topic_prefix_), "%s/debug/", device_id_);
+    if (!buffer_mutex_) {
+        buffer_mutex_ = xSemaphoreCreateMutex();
+    }
     initialized_ = true;
     mqtt_available_cached_ = false;
     
@@ -97,13 +100,16 @@ void MqttLogger::log(MqttLogLevel level, const char* tag, const char* format, ..
     // IMPORTANT: PubSubClient is not thread-safe; direct publish from arbitrary
     // tasks/event callbacks can race with mqtt_task::client.loop/connect/disconnect
     // and cause connection instability after link flaps.
-    if (buffer_count_ < BUFFER_SIZE) {
-        buffer_[buffer_head_].level = level;
-        buffer_[buffer_head_].tag = tag;
-        buffer_[buffer_head_].message = buffer;
-        buffer_[buffer_head_].timestamp = millis();
-        buffer_head_ = (buffer_head_ + 1) % BUFFER_SIZE;
-        buffer_count_++;
+    if (buffer_mutex_ && xSemaphoreTake(buffer_mutex_, pdMS_TO_TICKS(5)) == pdTRUE) {
+        if (buffer_count_ < BUFFER_SIZE) {
+            buffer_[buffer_head_].level = level;
+            snprintf(buffer_[buffer_head_].tag,     sizeof(buffer_[buffer_head_].tag),     "%s", tag);
+            snprintf(buffer_[buffer_head_].message, sizeof(buffer_[buffer_head_].message), "%s", buffer);
+            buffer_[buffer_head_].timestamp = millis();
+            buffer_head_ = (buffer_head_ + 1) % BUFFER_SIZE;
+            buffer_count_++;
+        }
+        xSemaphoreGive(buffer_mutex_);
     }
 
     // Fallback to Serial while MQTT is unavailable.
@@ -114,36 +120,40 @@ void MqttLogger::log(MqttLogLevel level, const char* tag, const char* format, ..
 
 void MqttLogger::publish_message(MqttLogLevel level, const char* tag, const char* message) {
     // Build topic
-    String topic = topic_prefix_ + level_to_string(level);
-    
+    char topic[96];
+    snprintf(topic, sizeof(topic), "%s%s", topic_prefix_, level_to_string(level));
+
     // Format uptime
     char uptime_str[32];
     format_uptime(uptime_str, sizeof(uptime_str), millis());
-    
+
     // Try to get date and time
     char date_str[16] = {0};
     char time_str[16] = {0};
     bool has_datetime = get_datetime_strings(date_str, time_str, 16);
-    
-    // Build message with date/time first (if available), then uptime in brackets
-    String formatted_msg = "";
+
+    // Build timestamped message
+    char formatted_msg[320];
     if (has_datetime) {
-        formatted_msg = String("[") + date_str + " " + time_str + "] ";
+        snprintf(formatted_msg, sizeof(formatted_msg), "[%s %s] [%s] %s",
+                 date_str, time_str, uptime_str, message);
+    } else {
+        snprintf(formatted_msg, sizeof(formatted_msg), "[%s] %s", uptime_str, message);
     }
-    formatted_msg += String("[") + uptime_str + "] " + message;
-    
+
     // Build JSON payload with metadata
-    String payload = String("{\"tag\":\"") + tag + 
-                    "\",\"msg\":\"" + formatted_msg + 
-                    "\",\"heap\":" + String(ESP.getFreeHeap()) + "}";
-    
+    char payload[512];
+    snprintf(payload, sizeof(payload),
+             "{\"tag\":\"%s\",\"msg\":\"%s\",\"heap\":%lu}",
+             tag, formatted_msg, (unsigned long)ESP.getFreeHeap());
+
     // Publish with appropriate QoS and retain flag
-    bool published = mqtt_client_->publish(topic.c_str(), payload.c_str(), get_retained(level));
-    
+    bool published = mqtt_client_->publish(topic, payload, get_retained(level));
+
     if (!published) {
         // Stop immediate retries until next probe interval
         mqtt_available_cached_ = false;
-        Serial.printf("[MQTT_LOG] Failed to publish: %s\n", topic.c_str());
+        Serial.printf("[MQTT_LOG] Failed to publish: %s\n", topic);
     }
 }
 
@@ -160,31 +170,48 @@ bool MqttLogger::get_retained(MqttLogLevel level) const {
 }
 
 void MqttLogger::flush_buffer() {
-    if (!is_mqtt_available()) {
+    if (!is_mqtt_available() || !buffer_mutex_) {
+        return;
+    }
+
+    if (xSemaphoreTake(buffer_mutex_, pdMS_TO_TICKS(10)) != pdTRUE) {
         return;
     }
 
     size_t flushed = 0;
-    
+
     for (size_t i = 0; i < buffer_count_ && flushed < 5; i++) {
         size_t idx = (buffer_head_ - buffer_count_ + i) % BUFFER_SIZE;
-        publish_message(buffer_[idx].level, 
-                       buffer_[idx].tag.c_str(), 
-                       buffer_[idx].message.c_str());
+        // Capture fields before releasing mutex for the publish call
+        MqttLogLevel  lvl = buffer_[idx].level;
+        char          tag_copy[32];
+        char          msg_copy[256];
+        snprintf(tag_copy, sizeof(tag_copy), "%s", buffer_[idx].tag);
+        snprintf(msg_copy, sizeof(msg_copy), "%s", buffer_[idx].message);
+        xSemaphoreGive(buffer_mutex_);
+
+        publish_message(lvl, tag_copy, msg_copy);
+
         if (!is_mqtt_available()) {
-            // Stop immediately on first publish failure; keep remaining buffer.
-            break;
+            // publish_message() cleared mqtt_available_cached_ on failure; stop here.
+            buffer_count_ = (buffer_count_ > flushed) ? (buffer_count_ - flushed) : 0;
+            return;
         }
         flushed++;
+
+        if (xSemaphoreTake(buffer_mutex_, pdMS_TO_TICKS(10)) != pdTRUE) {
+            // Lost mutex re-acquire; leave remaining count intact for next flush.
+            return;
+        }
     }
-    
+
     buffer_count_ = (buffer_count_ > flushed) ? (buffer_count_ - flushed) : 0;
-    
+    xSemaphoreGive(buffer_mutex_);
 }
 
 void MqttLogger::set_level(MqttLogLevel min_level) {
     if (min_level != min_level_) {
-        Serial.printf("[MQTT_LOG] Level changed: %s → %s\n", 
+        Serial.printf("[MQTT_LOG] Level changed: %s -> %s\n", 
                      level_to_string(min_level_), 
                      level_to_string(min_level));
         min_level_ = min_level;
@@ -194,32 +221,36 @@ void MqttLogger::set_level(MqttLogLevel min_level) {
 
 void MqttLogger::publish_status() {
     if (!is_mqtt_available()) return;
-    
-    String topic = topic_prefix_ + "level";
-    mqtt_client_->publish(topic.c_str(), level_to_string(min_level_), true);
-    
+
+    char topic[96];
+    snprintf(topic, sizeof(topic), "%slevel", topic_prefix_);
+    mqtt_client_->publish(topic, level_to_string(min_level_), true);
+
     // Format uptime
     char uptime_str[32];
     format_uptime(uptime_str, sizeof(uptime_str), millis());
-    
+
     // Try to get date and time
     char date_str[16] = {0};
     char time_str[16] = {0};
     bool has_datetime = get_datetime_strings(date_str, time_str, 16);
-    
-    // Build status message with date/time first (if available), then uptime in brackets
-    String status_msg = "";
+
+    // Build timestamped status string
+    char status_msg[64];
     if (has_datetime) {
-        status_msg = String("[") + date_str + " " + time_str + "] ";
+        snprintf(status_msg, sizeof(status_msg), "[%s %s] [%s]", date_str, time_str, uptime_str);
+    } else {
+        snprintf(status_msg, sizeof(status_msg), "[%s]", uptime_str);
     }
-    status_msg += String("[") + uptime_str + "]";
-    
+
     // Publish detailed status
-    String status_topic = topic_prefix_ + "status";
-    String status = String("{\"level\":\"") + level_to_string(min_level_) + 
-                   "\",\"device\":\"" + device_id_ + 
-                   "\",\"status\":\"" + status_msg + "\"}";
-    mqtt_client_->publish(status_topic.c_str(), status.c_str(), true);
+    char status_topic[96];
+    snprintf(status_topic, sizeof(status_topic), "%sstatus", topic_prefix_);
+    char status[256];
+    snprintf(status, sizeof(status),
+             "{\"level\":\"%s\",\"device\":\"%s\",\"status\":\"%s\"}",
+             level_to_string(min_level_), device_id_, status_msg);
+    mqtt_client_->publish(status_topic, status, true);
 }
 
 const char* MqttLogger::level_to_string(MqttLogLevel level) const {

@@ -7,6 +7,18 @@
 
 extern TFT_eSPI tft;
 
+namespace {
+struct ScopedBuffer {
+    uint8_t* data = nullptr;
+    ~ScopedBuffer() {
+        if (data) {
+            free(data);
+            data = nullptr;
+        }
+    }
+};
+} // namespace
+
 // Optimized JPEG display function - fast rendering from LittleFS
 void displaySplashJpeg2(const char* filename) {
     if (!LittleFS.exists(filename)) {
@@ -22,17 +34,17 @@ void displaySplashJpeg2(const char* filename) {
     
     size_t fileSize = f.size();
     LOG_INFO("DISPLAY", "Loading JPEG: %s (%d bytes)", filename, fileSize);
-    
-    uint8_t* buffer = (uint8_t*)malloc(fileSize);
-    if (!buffer) {
+
+    ScopedBuffer jpeg_buffer;
+    jpeg_buffer.data = static_cast<uint8_t*>(malloc(fileSize));
+    if (!jpeg_buffer.data) {
         LOG_ERROR("DISPLAY", "JPEG memory allocation failed");
         f.close();
         return;
     }
-    
-    if (f.read(buffer, fileSize) != fileSize) {
+
+    if (f.read(jpeg_buffer.data, fileSize) != fileSize) {
         LOG_ERROR("DISPLAY", "JPEG file read error");
-        free(buffer);
         f.close();
         return;
     }
@@ -40,10 +52,9 @@ void displaySplashJpeg2(const char* filename) {
     
     // Set up JPEGDecoder with TFT output
     JpegDec.setJpgScale(1);
-    
-    if (!JpegDec.decodeArray(buffer, fileSize)) {
+
+    if (!JpegDec.decodeArray(jpeg_buffer.data, fileSize)) {
         LOG_ERROR("DISPLAY", "JPEG decode failed");
-        free(buffer);
         return;
     }
     
@@ -74,7 +85,6 @@ void displaySplashJpeg2(const char* filename) {
         }
     }
     
-    free(buffer);
     LOG_INFO("DISPLAY", "JPEG displayed: %dx%d at (%d,%d)", JpegDec.width, JpegDec.height, xOffset, yOffset);
 }
 

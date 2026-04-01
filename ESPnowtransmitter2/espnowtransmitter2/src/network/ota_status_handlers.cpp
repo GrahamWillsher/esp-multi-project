@@ -7,6 +7,7 @@
 #include "ota_manager_internal.h"
 #include "ethernet_manager.h"
 #include "mqtt_manager.h"
+#include "time_manager.h"
 #include "../config/logging_config.h"
 #include "../test_data/test_data_config.h"
 #include <esp32common/espnow/connection_manager.h>
@@ -25,13 +26,66 @@
 
 // ---------------------------------------------------------------------------
 
+namespace {
+constexpr int kEventLogsDefaultLimit = 50;
+constexpr int kEventLogsMinLimit = 1;
+constexpr int kEventLogsMaxLimit = 500;
+
+constexpr size_t kHealthDocBytes = 512;
+constexpr size_t kHealthJsonBytes = 512;
+constexpr size_t kEventLogsQueryBufferBytes = 128;
+constexpr size_t kEventLogsLimitBufferBytes = 16;
+constexpr size_t kEventLogsPrefixBytes = 96;
+constexpr size_t kEventDocBytes = 384;
+constexpr size_t kEventMessageBytes = 384;
+constexpr size_t kEventJsonBytes = 384;
+constexpr size_t kStatusDocBytes = 896;
+constexpr size_t kStatusJsonBytes = 896;
+constexpr size_t kFirmwareInfoDocBytes = 384;
+constexpr size_t kFirmwareInfoJsonBytes = 384;
+constexpr size_t kTestConfigJsonBytes = 1024;
+constexpr size_t kTestConfigResponseBytes = 1152;
+constexpr size_t kTestConfigPostBodyBytes = 1024;
+
+static esp_err_t send_response_checked(httpd_req_t* req,
+                                       const char* payload,
+                                       ssize_t len,
+                                       const char* tag) {
+    const esp_err_t rc = httpd_resp_send(req, payload, len);
+    if (rc != ESP_OK) {
+        LOG_WARN("HTTP_OTA", "%s: httpd_resp_send failed (%d)", tag, static_cast<int>(rc));
+    }
+    return rc;
+}
+
+static esp_err_t send_response_str_checked(httpd_req_t* req,
+                                           const char* payload,
+                                           const char* tag) {
+    return send_response_checked(req, payload, HTTPD_RESP_USE_STRLEN, tag);
+}
+
+static esp_err_t send_chunk_checked(httpd_req_t* req,
+                                    const char* payload,
+                                    ssize_t len,
+                                    const char* tag) {
+    const esp_err_t rc = httpd_resp_send_chunk(req, payload, len);
+    if (rc != ESP_OK) {
+        LOG_WARN("HTTP_OTA", "%s: httpd_resp_send_chunk failed (%d)", tag, static_cast<int>(rc));
+    }
+    return rc;
+}
+} // namespace
+
 esp_err_t OtaManager::root_handler(httpd_req_t *req) {
     if (reject_unexpected_request_body(req, "/") != ESP_OK) {
         return ESP_FAIL;
     }
     httpd_resp_set_type(req, "text/plain");
-    httpd_resp_sendstr(req, "ESP-NOW Transmitter - Ready for OTA");
-    return ESP_OK;
+    return (send_response_str_checked(req,
+                                      "ESP-NOW Transmitter - Ready for OTA",
+                                      "root_handler") == ESP_OK)
+               ? ESP_OK
+               : ESP_FAIL;
 }
 
 esp_err_t OtaManager::health_handler(httpd_req_t *req) {
@@ -48,11 +102,12 @@ esp_err_t OtaManager::health_handler(httpd_req_t *req) {
     char psk_tmp[96]            = {0};
     const bool ota_psk_available =
         load_ota_psk(psk_tmp, sizeof(psk_tmp), &ota_psk_provisioned);
-
-    StaticJsonDocument<512> doc;
+    StaticJsonDocument<kHealthDocBytes> doc;
     doc["success"]               = true;
     doc["status"]                = "ok";
     doc["uptime_ms"]             = static_cast<unsigned long>(millis());
+    doc["unix_time"]             = static_cast<unsigned long long>(TimeManager::instance().get_unix_time());
+    doc["time_source"]           = TimeManager::instance().get_time_source_byte();
     doc["heap_free"]             = static_cast<unsigned>(ESP.getFreeHeap());
     doc["heap_max_alloc"]        = static_cast<unsigned>(ESP.getMaxAllocHeap());
     doc["eth_connected"]         = eth_connected;
@@ -71,7 +126,7 @@ esp_err_t OtaManager::health_handler(httpd_req_t *req) {
     doc["boot_guard_passed"]     =
         (OtaBootGuard::state() == OtaBootGuard::State::Confirmed);
 
-    char json[512];
+    char json[kHealthJsonBytes];
     const size_t json_len = serializeJson(doc, json, sizeof(json));
     if (json_len == 0 || json_len >= sizeof(json)) {
         return send_json_error(req, HTTPD_500_INTERNAL_SERVER_ERROR,
@@ -80,8 +135,9 @@ esp_err_t OtaManager::health_handler(httpd_req_t *req) {
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    httpd_resp_send(req, json, json_len);
-    return ESP_OK;
+    return (send_response_checked(req, json, static_cast<ssize_t>(json_len), "health_handler") == ESP_OK)
+               ? ESP_OK
+               : ESP_FAIL;
 }
 
 esp_err_t OtaManager::event_logs_handler(httpd_req_t *req) {
@@ -90,19 +146,19 @@ esp_err_t OtaManager::event_logs_handler(httpd_req_t *req) {
     }
 
     // Query parameters: limit (default 50)
-    char buf[128];
-    int limit = 50;
+    char buf[kEventLogsQueryBufferBytes];
+    int limit = kEventLogsDefaultLimit;
 
     if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) == ESP_OK) {
-        char limit_str[16];
+        char limit_str[kEventLogsLimitBufferBytes];
         if (httpd_query_key_value(buf, "limit", limit_str,
                                   sizeof(limit_str)) == ESP_OK) {
             uint32_t parsed_limit = 0;
             if (parse_uint32_strict(limit_str, &parsed_limit) &&
-                parsed_limit >= 1 && parsed_limit <= 500) {
+                parsed_limit >= kEventLogsMinLimit && parsed_limit <= kEventLogsMaxLimit) {
                 limit = static_cast<int>(parsed_limit);
             }
-            // Invalid or out-of-range values silently keep the default of 50.
+            // Invalid or out-of-range values silently keep the default.
         }
     }
 
@@ -132,19 +188,19 @@ esp_err_t OtaManager::event_logs_handler(httpd_req_t *req) {
     int event_count = static_cast<int>(active_events.size());
     if (event_count > limit) { event_count = limit; }
 
-    char prefix[96];
+    char prefix[kEventLogsPrefixBytes];
     const int prefix_len = snprintf(prefix, sizeof(prefix),
                                     "{\"success\":true,\"event_count\":%d,"
                                     "\"events\":[",
                                     event_count);
     if (prefix_len <= 0 ||
-        httpd_resp_send_chunk(req, prefix, prefix_len) != ESP_OK) {
+        send_chunk_checked(req, prefix, prefix_len, "event_logs_handler_prefix") != ESP_OK) {
         return ESP_FAIL;
     }
 
     for (int i = 0; i < event_count; i++) {
         if (i > 0) {
-            if (httpd_resp_send_chunk(req, ",", 1) != ESP_OK) {
+            if (send_chunk_checked(req, ",", 1, "event_logs_handler_separator") != ESP_OK) {
                 return ESP_FAIL;
             }
         }
@@ -153,8 +209,8 @@ esp_err_t OtaManager::event_logs_handler(httpd_req_t *req) {
         EVENTS_ENUM_TYPE event_handle = event_data.first;
         const EVENTS_STRUCT_TYPE* event_ptr = event_data.second;
 
-        StaticJsonDocument<384> edoc;
-        char event_message[384] = {0};
+        StaticJsonDocument<kEventDocBytes> edoc;
+        char event_message[kEventMessageBytes] = {0};
         const bool have_event_message =
             get_event_message(event_handle, event_message, sizeof(event_message), event_ptr->data);
         edoc["type"]         = get_event_enum_string(event_handle);
@@ -163,11 +219,11 @@ esp_err_t OtaManager::event_logs_handler(httpd_req_t *req) {
         edoc["count"]        = static_cast<uint32_t>(event_ptr->occurences);
         edoc["message"]      = have_event_message ? event_message : "";
 
-        char event_json[384];
+        char event_json[kEventJsonBytes];
         const size_t event_json_len =
             serializeJson(edoc, event_json, sizeof(event_json));
         if (event_json_len == 0 ||
-            httpd_resp_send_chunk(req, event_json, event_json_len) != ESP_OK) {
+            send_chunk_checked(req, event_json, event_json_len, "event_logs_handler_event") != ESP_OK) {
             return ESP_FAIL;
         }
     }
@@ -175,12 +231,13 @@ esp_err_t OtaManager::event_logs_handler(httpd_req_t *req) {
     const char* no_emulator_json =
         "{\"success\":false,\"error\":\"Battery emulator not enabled\","
         "\"events\":[]}";
-    httpd_resp_send(req, no_emulator_json, HTTPD_RESP_USE_STRLEN);
-    return ESP_OK;
+    return (send_response_str_checked(req, no_emulator_json, "event_logs_handler_no_emulator") == ESP_OK)
+               ? ESP_OK
+               : ESP_FAIL;
 #endif
 
-    if (httpd_resp_send_chunk(req, "]}", 2) != ESP_OK) { return ESP_FAIL; }
-    if (httpd_resp_send_chunk(req, nullptr, 0) != ESP_OK) { return ESP_FAIL; }
+    if (send_chunk_checked(req, "]}", 2, "event_logs_handler_suffix") != ESP_OK) { return ESP_FAIL; }
+    if (send_chunk_checked(req, nullptr, 0, "event_logs_handler_finalize") != ESP_OK) { return ESP_FAIL; }
     return ESP_OK;
 }
 
@@ -229,7 +286,7 @@ esp_err_t OtaManager::ota_status_handler(httpd_req_t *req) {
         }
     }
 
-    StaticJsonDocument<896> doc;
+    StaticJsonDocument<kStatusDocBytes> doc;
     doc["success"]           = true;
     doc["in_progress"]       = mgr.ota_in_progress_;
     doc["ready_for_reboot"]  = mgr.ota_ready_for_reboot_;
@@ -273,7 +330,7 @@ esp_err_t OtaManager::ota_status_handler(httpd_req_t *req) {
     doc["boot_guard_passed"]   = boot_guard_passed;
     doc["rollback_reason"]     = rollback_reason;
 
-    char json[896];
+    char json[kStatusJsonBytes];
     const size_t json_len = serializeJson(doc, json, sizeof(json));
     if (json_len == 0 || json_len >= sizeof(json)) {
         send_json_error(req, HTTPD_500_INTERNAL_SERVER_ERROR,
@@ -283,8 +340,9 @@ esp_err_t OtaManager::ota_status_handler(httpd_req_t *req) {
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    httpd_resp_send(req, json, json_len);
-    return ESP_OK;
+    return (send_response_checked(req, json, static_cast<ssize_t>(json_len), "ota_status_handler") == ESP_OK)
+               ? ESP_OK
+               : ESP_FAIL;
 }
 
 esp_err_t OtaManager::firmware_info_handler(httpd_req_t *req) {
@@ -292,7 +350,7 @@ esp_err_t OtaManager::firmware_info_handler(httpd_req_t *req) {
         return ESP_FAIL;
     }
 
-    StaticJsonDocument<384> doc;
+    StaticJsonDocument<kFirmwareInfoDocBytes> doc;
 
     if (FirmwareMetadata::isValid(FirmwareMetadata::metadata)) {
         char version_str[16];
@@ -317,7 +375,7 @@ esp_err_t OtaManager::firmware_info_handler(httpd_req_t *req) {
         doc["build_date"]  = build_date_str;
     }
 
-    char json[384];
+    char json[kFirmwareInfoJsonBytes];
     const size_t json_len = serializeJson(doc, json, sizeof(json));
     if (json_len == 0 || json_len >= sizeof(json)) {
         send_json_error(req, HTTPD_500_INTERNAL_SERVER_ERROR,
@@ -327,8 +385,9 @@ esp_err_t OtaManager::firmware_info_handler(httpd_req_t *req) {
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    httpd_resp_send(req, json, json_len);
-    return ESP_OK;
+    return (send_response_checked(req, json, static_cast<ssize_t>(json_len), "firmware_info_handler") == ESP_OK)
+               ? ESP_OK
+               : ESP_FAIL;
 }
 
 // ---------------------------------------------------------------------------
@@ -340,10 +399,10 @@ esp_err_t OtaManager::test_data_config_get_handler(httpd_req_t *req) {
         return ESP_FAIL;
     }
 
-    char json_buffer[1024];
+    char json_buffer[kTestConfigJsonBytes];
 
     if (TestDataConfig::get_config_json(json_buffer, sizeof(json_buffer))) {
-        char response[1152];
+        char response[kTestConfigResponseBytes];
         int response_len = snprintf(response, sizeof(response),
                                     "{\"success\":true,\"config\":%s}",
                                     json_buffer);
@@ -355,8 +414,9 @@ esp_err_t OtaManager::test_data_config_get_handler(httpd_req_t *req) {
         }
         httpd_resp_set_type(req, "application/json");
         httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-        httpd_resp_send(req, response, response_len);
-        return ESP_OK;
+        return (send_response_checked(req, response, response_len, "test_data_config_get_handler") == ESP_OK)
+                   ? ESP_OK
+                   : ESP_FAIL;
     } else {
         send_json_error(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                         "Failed to generate configuration JSON");
@@ -368,7 +428,7 @@ esp_err_t OtaManager::test_data_config_post_handler(httpd_req_t *req) {
     if (check_request_content_type(req, "application/json") != ESP_OK) {
         return ESP_FAIL;
     }
-    char content[1024];
+    char content[kTestConfigPostBodyBytes];
     if (read_request_body_strict(req, content, sizeof(content)) != ESP_OK) {
         return ESP_FAIL;
     }

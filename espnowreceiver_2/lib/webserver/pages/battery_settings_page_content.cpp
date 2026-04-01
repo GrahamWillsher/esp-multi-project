@@ -80,19 +80,18 @@ String get_battery_settings_page_content() {
     
     <div class='settings-card'>
         <h3>Battery Type Selection</h3>
-        <p style='color: #666; font-size: 14px;'>Select the battery profile to use. The transmitter will switch to the selected profile.</p>
         <p style='color: #ff6b35; font-size: 14px; font-weight: bold;'>⚠️ Changing the battery type or interface will reboot the transmitter to apply changes.</p>
         
         <div class='settings-row'>
             <label for='batteryType'>Battery Type:</label>
-            <select id='batteryType' onchange='updateBatteryType()'>
+            <select id='batteryType'>
                 <option value=''>Loading...</option>
             </select>
         </div>
 
         <div class='settings-row'>
             <label for='batteryInterface'>Battery Interface:</label>
-            <select id='batteryInterface' onchange='updateBatteryInterface()'>
+            <select id='batteryInterface'>
                 <option value=''>Loading...</option>
             </select>
         </div>

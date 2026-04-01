@@ -174,7 +174,10 @@ String get_dashboard_page_content(const String& tx_status,
     
     <!-- Transmitter Time & Uptime Display -->
     <div class='info-box' style='margin: 20px 0;'>
-        <h3 style='margin: 0 0 15px 0; color: #2196F3;'>⏰ Transmitter Time & Uptime</h3>
+        <div style='display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin: 0 0 15px 0;'>
+            <h3 style='margin: 0; color: #2196F3;'>⏰ Transmitter Time & Uptime</h3>
+            <span id='txGeoStatus' style='font-size: 12px; color: #888;'>Waiting...</span>
+        </div>
         <div style='display: grid; grid-template-columns: 1fr 1fr; gap: 15px;'>
             <div>
                 <div style='display: flex; justify-content: space-between; align-items: center; margin: 8px 0;'>

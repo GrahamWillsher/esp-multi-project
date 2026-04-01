@@ -43,7 +43,13 @@ struct OtaUploadResources {
     }
 
     bool allocate_buffer(size_t size) {
-        buffer = static_cast<uint8_t*>(malloc(size));
+        // Prefer PSRAM for OTA transfer staging to keep internal heap stable.
+        buffer = static_cast<uint8_t*>(ps_malloc(size));
+        if (!buffer) {
+            LOG_WARN("HTTP_OTA", "PSRAM allocation failed for %u-byte OTA buffer, falling back to internal heap",
+                     static_cast<unsigned>(size));
+            buffer = static_cast<uint8_t*>(malloc(size));
+        }
         if (!buffer) {
             return false;
         }
@@ -401,8 +407,13 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
         const size_t ok_json_len = serializeJson(ok_doc, ok_json, sizeof(ok_json));
         httpd_resp_set_type(req, "application/json");
         httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-        httpd_resp_send(req, ok_json,
-                        ok_json_len > 0 ? ok_json_len : HTTPD_RESP_USE_STRLEN);
+        const esp_err_t send_rc = httpd_resp_send(
+            req, ok_json, ok_json_len > 0 ? ok_json_len : HTTPD_RESP_USE_STRLEN);
+        if (send_rc != ESP_OK) {
+            LOG_WARN("HTTP_OTA", "ota_upload_handler: final success response send failed (%d)",
+                     static_cast<int>(send_rc));
+            return ESP_FAIL;
+        }
         return ESP_OK;
     } else {
         LOG_ERROR("HTTP_OTA", "Update.end failed: %s", Update.errorString());

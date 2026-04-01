@@ -106,6 +106,21 @@ namespace TaskConfig {
      * Very low priority - announcement is not time-critical.
      */
     constexpr uint8_t ANNOUNCEMENT_PRIORITY = 1;
+
+    /**
+     * @brief Memory sampler task stack size
+     *
+     * Runs at the lowest priority; samples internal and PSRAM heap metrics
+     * at 30 s baseline / 1 s burst cadence.
+     */
+    constexpr uint32_t MEMORY_SAMPLER_STACK = 2560;
+
+    /**
+     * @brief Memory sampler task priority
+     *
+     * Lowest priority — background sampling must never preempt ingest paths.
+     */
+    constexpr uint8_t MEMORY_SAMPLER_PRIORITY = 0;
     
     // ========================================
     // Task Core Affinity

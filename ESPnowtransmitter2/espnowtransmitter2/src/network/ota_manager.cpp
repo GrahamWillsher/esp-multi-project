@@ -287,7 +287,12 @@ esp_err_t OtaManager::ota_arm_handler(httpd_req_t *req) {
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    httpd_resp_send(req, response, response_len);
+    const esp_err_t send_rc = httpd_resp_send(req, response, response_len);
+    if (send_rc != ESP_OK) {
+        LOG_ERROR("OTA", "Failed to send OTA arm response: %s", esp_err_to_name(send_rc));
+        return ESP_FAIL;
+    }
+
     return ESP_OK;
 }
 

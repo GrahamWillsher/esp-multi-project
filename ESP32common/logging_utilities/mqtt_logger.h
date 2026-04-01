@@ -1,7 +1,9 @@
 #pragma once
 
 #include <PubSubClient.h>
-#include <Arduino.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <stdarg.h>
 
 enum MqttLogLevel {
     MQTT_LOG_EMERG   = 0,  // System unusable
@@ -45,8 +47,8 @@ private:
     MqttLogger() = default;
     
     PubSubClient* mqtt_client_ = nullptr;
-    String device_id_;
-    String topic_prefix_;
+    char device_id_[32];
+    char topic_prefix_[64];
     MqttLogLevel min_level_ = MQTT_LOG_INFO;
     bool initialized_ = false;
     
@@ -54,8 +56,8 @@ private:
     static const size_t BUFFER_SIZE = 20;
     struct BufferedMessage {
         MqttLogLevel level;
-        String tag;
-        String message;
+        char tag[32];
+        char message[256];
         unsigned long timestamp;
     };
     BufferedMessage buffer_[BUFFER_SIZE];
@@ -64,6 +66,9 @@ private:
 
     // MQTT availability cache (managed by MQTT task/state machine)
     bool mqtt_available_cached_ = false;
+
+    // Mutex protecting buffer_ / buffer_head_ / buffer_count_
+    SemaphoreHandle_t buffer_mutex_ = nullptr;
     
     bool is_mqtt_available();
     void publish_message(MqttLogLevel level, const char* tag, const char* message);

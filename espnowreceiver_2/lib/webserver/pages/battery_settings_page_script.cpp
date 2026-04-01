@@ -10,11 +10,12 @@ const char* get_battery_settings_page_script() {
         window.onload = function() {
             // Load current settings from transmitter
             loadBatterySettings();
-            // Phase 3.1: Load battery types for selector
+            // Load battery types for selector
             loadBatteryTypes();
             // Battery interface selection
             loadBatteryInterfaces();
         };
+
         
         // Map field names to BatterySettingsField enum values
         const BATTERY_FIELDS = {
@@ -336,8 +337,8 @@ const char* get_battery_settings_page_script() {
                 selectedKey: 'battery_interface',
                 selectId: 'batteryInterface',
                 loadingText: 'Loading...',
-                emptyText: 'No data available',
-                maxRetries: 0,
+                emptyText: 'No data (check transmitter link)',
+                maxRetries: 15,
                 logLabel: 'battery interfaces',
                 onSelectedLoaded: (selectedValue, selected) => {
                     initialValues['batteryInterface'] = selectedValue;
@@ -346,22 +347,34 @@ const char* get_battery_settings_page_script() {
                 },
                 onError: (error) => {
                     console.error('Error loading battery interfaces:', error);
+                    // Fallback: still provide deterministic interface options so the UI
+                    // never stays stuck on "Loading...".
+                    const selectEl = document.getElementById('batteryInterface');
+                    if (!selectEl) return;
+
+                    const fallback = [
+                        { id: 0, name: 'Modbus' },
+                        { id: 1, name: 'RS485' },
+                        { id: 2, name: 'CAN (Native)' },
+                        { id: 3, name: 'CAN-FD (Native)' },
+                        { id: 4, name: 'CAN (MCP2515 add-on)' },
+                        { id: 5, name: 'CAN-FD (MCP2518 add-on)' }
+                    ];
+                    CatalogLoader.populateSelect(selectEl, fallback);
+
+                    fetch('/api/get_selected_interfaces')
+                        .then(response => response.json())
+                        .then(selected => {
+                            const selectedValue = String(selected.battery_interface);
+                            selectEl.value = selectedValue;
+                            initialValues['batteryInterface'] = selectedValue;
+                            updateButtonText(getChangedCount());
+                        })
+                        .catch(err => {
+                            console.error('Failed to load selected battery interface:', err);
+                        });
                 }
             });
-        }
-        
-        function updateBatteryType() {
-            const typeSelect = document.getElementById('batteryType');
-            const selectedOption = typeSelect.options[typeSelect.selectedIndex];
-            console.log(`Selected: ID=${typeSelect.value}, Name=${selectedOption.text}`);
-            updateButtonText(getChangedCount());
-        }
-
-        function updateBatteryInterface() {
-            const interfaceSelect = document.getElementById('batteryInterface');
-            const selectedOption = interfaceSelect.options[interfaceSelect.selectedIndex];
-            console.log(`Selected: ID=${interfaceSelect.value}, Name=${selectedOption.text}`);
-            updateButtonText(getChangedCount());
         }
         
         function updateButtonText(changedCount) {

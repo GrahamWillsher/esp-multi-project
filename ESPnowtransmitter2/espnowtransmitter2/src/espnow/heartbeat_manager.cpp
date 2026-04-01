@@ -9,6 +9,7 @@
 #include "../config/logging_config.h"
 #include "../network/time_manager.h"
 #include "../network/ethernet_manager.h"
+#include "../../lib/ethernet_utilities/ethernet_utilities.h"
 
 void HeartbeatManager::init() {
     if (m_initialized) {
@@ -72,12 +73,13 @@ void HeartbeatManager::send_heartbeat() {
     heartbeat_t hb;
     hb.type = msg_heartbeat;
     hb.seq = ++m_heartbeat_seq;
-    hb.uptime_ms = millis();
-    hb.unix_time = TimeManager::instance().get_unix_time();
-    hb.time_source = static_cast<uint8_t>(TimeManager::instance().get_time_source());
+    hb.uptime_ms      = millis();
+    hb.unix_time      = TimeManager::instance().get_unix_time();
+    hb.utc_offset_min = get_cached_utc_offset_min();
+    hb.time_source    = static_cast<uint8_t>(TimeManager::instance().get_time_source());
     hb.state = static_cast<uint8_t>(TxStateMachine::instance().state());
     hb.rssi = 0;  // TODO: Get last RSSI if available
-    hb.flags = 0;
+    hb.flags = is_geolocation_configured() ? HEARTBEAT_FLAG_GEOLOCATION_VALID : 0;
     
     // Calculate CRC32 over all fields except trailing checksum
     hb.checksum = EspnowPacketUtils::calculate_message_crc32_zeroed(&hb);

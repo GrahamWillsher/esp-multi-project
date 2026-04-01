@@ -26,6 +26,16 @@ esp_err_t battery_specs_page_handler(httpd_req_t *req) {
     float max_discharge_current_a = 0;
     uint8_t battery_chemistry = 0;
 
+    auto chemistry_label = [](uint8_t chemistry) -> const char* {
+        switch (chemistry) {
+            case 0: return "NCA";
+            case 1: return "NMC";
+            case 2: return "LFP";
+            case 3: return "LTO";
+            default: return "Unknown";
+        }
+    };
+
     if (specs_json.length() > 0) {
         DeserializationError error = deserializeJson(doc, specs_json);
         if (!error) {
@@ -69,7 +79,7 @@ esp_err_t battery_specs_page_handler(httpd_req_t *req) {
         number_of_cells,
         max_charge_current_a / 10.0f,
         max_discharge_current_a / 10.0f,
-        battery_chemistry);
+        chemistry_label(battery_chemistry));
 }
 
 esp_err_t register_battery_specs_page(httpd_handle_t server) {

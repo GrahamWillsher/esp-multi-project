@@ -117,5 +117,5 @@ void TimeManager::time_sync_notification_cb(struct timeval *tv) {
     char time_str[64];
     strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", &timeinfo);
     
-    LOG_INFO("TIME", "NTP sync successful: %s UTC", time_str);
+    LOG_INFO("TIME", "NTP sync successful: %s local", time_str);
 }

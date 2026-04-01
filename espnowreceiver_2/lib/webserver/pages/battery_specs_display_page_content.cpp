@@ -48,7 +48,7 @@ const char* get_battery_specs_section_fmt() {
             </div>
             <div class="spec-card">
                 <div class="spec-label">Chemistry</div>
-                <div class="spec-value" id="chemistryValue">%d</div>
+                <div class="spec-value" id="chemistryValue">%s</div>
             </div>
         </div>
 )";

@@ -22,6 +22,8 @@
 #include <esp32common/espnow/common.h>
 #include <freertos/queue.h>
 #include "../../src/mqtt/mqtt_client.h"
+#include <esp_heap_caps.h>
+#include "../../src/memory/memory_sampler.h"
 
 extern bool test_mode_enabled;
 extern volatile int g_test_soc;
@@ -252,19 +254,17 @@ esp_err_t api_transmitter_health_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_TRANSMITTER_HEALTH);
     StaticJsonDocument<256> doc;
 
-    uint64_t uptime_ms = TransmitterManager::getUptimeMs();
-    uint64_t unix_time = TransmitterManager::getUnixTime();
-    uint8_t time_source = TransmitterManager::getTimeSource();
-
-    doc["success"] = true;
-    doc["uptime_ms"] = uptime_ms;
-    doc["unix_time"] = unix_time;
-    doc["time_source"] = time_source;
-    doc["mqtt_connected"] = TransmitterManager::isMqttConnected();
+    doc["success"]            = true;
+    doc["uptime_ms"]          = TransmitterManager::getUptimeMs();
+    doc["unix_time"]          = TransmitterManager::getUnixTime();
+    doc["utc_offset_min"]     = TransmitterManager::getUtcOffsetMin();
+    doc["time_source"]        = TransmitterManager::getTimeSource();
+    doc["geolocation_valid"]  = TransmitterManager::isGeolocationValid();
+    doc["mqtt_connected"]     = TransmitterManager::isMqttConnected();
     doc["ethernet_connected"] = TransmitterManager::isEthernetConnected();
 
     String json;
-    json.reserve(160);
+    json.reserve(192);
     serializeJson(doc, json);
     return HttpJsonUtils::send_json(req, json.c_str());
 }
@@ -373,7 +373,7 @@ esp_err_t api_get_event_logs_handler(httpd_req_t *req) {
 
 esp_err_t api_system_metrics_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_SYSTEM_METRICS);
-    DynamicJsonDocument doc(2048);
+    DynamicJsonDocument doc(2560);
 
     const uint32_t callback_count = ESPNow::rx_callback_count;
     const uint32_t drop_count = ESPNow::rx_queue_drop_count;
@@ -394,7 +394,26 @@ esp_err_t api_system_metrics_handler(httpd_req_t *req) {
     heap["min_free"] = ESP.getMinFreeHeap();
     heap["max_alloc"] = ESP.getMaxAllocHeap();
 
+    const uint32_t int_free    = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    const uint32_t int_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    JsonObject heap_internal = doc.createNestedObject("heap_internal");
+    heap_internal["free"] = int_free;
+    heap_internal["largest_block"] = int_largest;
+    heap_internal["frag_est"] = (int_free > 0)
+                                    ? (1.0f - static_cast<float>(int_largest) / static_cast<float>(int_free))
+                                    : 0.0f;
+
+    const uint32_t ps_free    = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    const uint32_t ps_largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+    JsonObject heap_psram = doc.createNestedObject("heap_psram");
+    heap_psram["free"] = ps_free;
+    heap_psram["largest_block"] = ps_largest;
+    heap_psram["frag_est"] = (ps_free > 0)
+                                  ? (1.0f - static_cast<float>(ps_largest) / static_cast<float>(ps_free))
+                                  : 0.0f;
+
     JsonObject wifi = doc.createNestedObject("wifi");
+
     wifi["connected"] = WiFi.isConnected();
     wifi["rssi"] = WiFi.RSSI();
     wifi["channel"] = WiFi.channel();
@@ -488,6 +507,38 @@ esp_err_t api_system_metrics_handler(httpd_req_t *req) {
 
     String json;
     json.reserve(1024);
+    serializeJson(doc, json);
+    return HttpJsonUtils::send_json(req, json.c_str());
+}
+
+esp_err_t api_memory_samples_handler(httpd_req_t *req) {
+    HttpHandlerTimer handler_timer(HM_SYSTEM_METRICS);
+
+    MemorySampler::memory_sample_t samples[MemorySampler::SAMPLE_RING_SIZE];
+    const size_t count = MemorySampler::copy_samples(samples, MemorySampler::SAMPLE_RING_SIZE);
+    const uint32_t now_ms = millis();
+
+    // Each sample ~120 bytes of JSON; 20 samples + envelope fits in 2560 bytes.
+    DynamicJsonDocument doc(2560);
+    doc["success"] = true;
+    doc["count"] = count;
+    doc["now_ms"] = now_ms;
+
+    JsonArray arr = doc.createNestedArray("samples");
+    for (size_t i = 0; i < count; i++) {
+        const MemorySampler::memory_sample_t& s = samples[i];
+        JsonObject obj = arr.createNestedObject();
+        obj["ts_ms"] = s.timestamp_ms;
+        obj["int_free"] = s.internal_free;
+        obj["int_largest"] = s.internal_largest;
+        obj["int_frag_est"] = s.internal_frag_est;
+        obj["ps_free"] = s.psram_free;
+        obj["ps_largest"] = s.psram_largest;
+        obj["ps_frag_est"] = s.psram_frag_est;
+    }
+
+    String json;
+    json.reserve(512);
     serializeJson(doc, json);
     return HttpJsonUtils::send_json(req, json.c_str());
 }

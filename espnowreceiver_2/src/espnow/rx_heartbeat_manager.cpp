@@ -69,7 +69,8 @@ void RxHeartbeatManager::on_heartbeat(const heartbeat_t* hb, const uint8_t* mac)
              hb->seq, m_heartbeats_received, (unsigned long long)hb->uptime_ms, hb->state);
     
     // Update TransmitterManager with time data from heartbeat
-    TransmitterManager::updateTimeData(hb->uptime_ms, hb->unix_time, hb->time_source);
+    TransmitterManager::updateTimeData(hb->uptime_ms, hb->unix_time, hb->utc_offset_min, hb->time_source);
+    TransmitterManager::updateHeartbeatFlags(hb->flags);
     
     // Send ACK
     send_ack(hb->seq, mac);

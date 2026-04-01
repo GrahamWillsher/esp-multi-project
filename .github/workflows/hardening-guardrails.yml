@@ -1,0 +1,24 @@
+name: Hardening Guardrails
+
+on:
+  push:
+    branches:
+      - main
+      - feature/**
+  pull_request:
+
+jobs:
+  guardrails:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run hardening guardrail checks
+        run: python esp32common/scripts/hardening_guardrails.py --root "$GITHUB_WORKSPACE"

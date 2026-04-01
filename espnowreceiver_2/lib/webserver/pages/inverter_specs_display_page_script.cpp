@@ -1,18 +1,35 @@
 #include "inverter_specs_display_page_script.h"
-#include "../common/spec_page_layout.h"
-
-String get_inverter_specs_page_nav_links_html() {
-    static const SpecPageNavLink kNavLinks[] = {
-        {"/", "&#8592; Back to Dashboard"},
-        {"/battery_settings.html", "&#8592; Battery Specs"},
-        {"/charger_settings.html", "Charger Specs &#8594;"},
-    };
-    return ::build_spec_page_nav_links(kNavLinks, sizeof(kNavLinks) / sizeof(kNavLinks[0]));
-}
 
 String get_inverter_specs_page_inline_script() {
     return R"(
 window.addEventListener('load', () => {
+    function loadLabel(catalogEndpoint, selectedEndpoint, selectedKey, targetId, fallbackText, unavailableText, replaceIfCurrentIn) {
+        const targetEl = document.getElementById(targetId);
+        if (!targetEl) return Promise.resolve();
+
+        return fetch(selectedEndpoint)
+            .then(response => response.json())
+            .then(selected => {
+                const selectedId = Number(selected[selectedKey]);
+                return fetch(catalogEndpoint)
+                    .then(response => response.json())
+                    .then(data => {
+                        const types = Array.isArray(data.types) ? data.types : [];
+                        const match = types.find(t => Number(t.id) === selectedId);
+                        const label = match ? String(match.name) : fallbackText;
+
+                        const current = (targetEl.textContent || '').trim();
+                        const allowed = Array.isArray(replaceIfCurrentIn) ? replaceIfCurrentIn : null;
+                        if (!allowed || allowed.includes(current)) {
+                            targetEl.textContent = label;
+                        }
+                    });
+            })
+            .catch(() => {
+                targetEl.textContent = unavailableText;
+            });
+    }
+
     const protocolEl = document.getElementById('inverterProtocolValue');
     const typeIdEl = document.getElementById('inverterTypeIdValue');
     const transmitterTypeId = typeIdEl ? parseInt((typeIdEl.textContent || '').trim(), 10) : NaN;
@@ -32,25 +49,26 @@ window.addEventListener('load', () => {
         : Promise.resolve();
 
     resolveByTransmitterTypeId.finally(() => {
-        CatalogLoader.loadCatalogLabel({
-            catalogEndpoint: '/api/get_inverter_types',
-            selectedEndpoint: '/api/get_selected_types',
-            selectedKey: 'inverter_type',
-            targetId: 'inverterProtocolValue',
-            fallbackText: 'Unknown',
-            unavailableText: 'Unknown',
-            replaceIfCurrentIn: ['Unknown']
-        });
+        loadLabel(
+            '/api/get_inverter_types',
+            '/api/get_selected_types',
+            'inverter_type',
+            'inverterProtocolValue',
+            'Unknown',
+            'Unknown',
+            ['Unknown']
+        );
     });
 
-    CatalogLoader.loadCatalogLabel({
-        catalogEndpoint: '/api/get_inverter_interfaces',
-        selectedEndpoint: '/api/get_selected_interfaces',
-        selectedKey: 'inverter_interface',
-        targetId: 'inverterInterfaceValue',
-        fallbackText: 'Unknown',
-        unavailableText: 'Unavailable'
-    });
+    loadLabel(
+        '/api/get_inverter_interfaces',
+        '/api/get_selected_interfaces',
+        'inverter_interface',
+        'inverterInterfaceValue',
+        'Unknown',
+        'Unavailable',
+        null
+    );
 });
 )";
 }

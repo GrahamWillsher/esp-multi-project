@@ -11,6 +11,7 @@
 #include "../mqtt/mqtt_task.h"
 
 #include <espnow_discovery.h>
+#include "../memory/memory_sampler.h"
 
 namespace RuntimeTaskStartup {
 
@@ -80,6 +81,8 @@ void start_runtime_tasks(TaskFunction_t led_renderer_task_fn) {
         { task_mqtt_client, "MqttClient", TaskConfig::MQTT_CLIENT_STACK, TaskConfig::MQTT_CLIENT_PRIORITY, NULL },
         // Task: LED Renderer (always-on effect loop)
         { led_renderer_task_fn, "LedRenderer", TaskConfig::LED_RENDERER_STACK, TaskConfig::LED_RENDERER_PRIORITY, &RTOS::task_indicator },
+        // Task: Memory Sampler (background heap health monitoring)
+        { MemorySampler::task_memory_sampler, "MemSampler", TaskConfig::MEMORY_SAMPLER_STACK, TaskConfig::MEMORY_SAMPLER_PRIORITY, NULL },
     };
 
     for (const auto& task : tasks) {

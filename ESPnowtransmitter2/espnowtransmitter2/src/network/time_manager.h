@@ -30,7 +30,8 @@ public:
     /**
      * @brief Initialize time manager and start NTP sync
      * @param ntp_server Primary NTP server (default: "pool.ntp.org")
-     * @param tz_offset Timezone offset in seconds (default: 0 UTC)
+    * @param tz_offset Legacy fixed timezone offset in seconds.
+    *        System local time is currently owned by ethernet_utilities via POSIX TZ rules.
      */
     void init(const char* ntp_server = "pool.ntp.org", long tz_offset = 0);
     

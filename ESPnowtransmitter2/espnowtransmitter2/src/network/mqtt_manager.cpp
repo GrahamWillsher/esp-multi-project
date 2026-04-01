@@ -19,6 +19,10 @@
 namespace {
 constexpr uint16_t MAX_CATALOG_BASE_VERSION = 32767;
 
+bool is_disabled_placeholder_label(const char* label) {
+    return (label != nullptr) && (strstr(label, "(disabled)") != nullptr);
+}
+
 uint16_t catalog_base_version() {
     const uint32_t fw = FW_VERSION_NUMBER;
     return static_cast<uint16_t>((fw > MAX_CATALOG_BASE_VERSION) ? MAX_CATALOG_BASE_VERSION : fw);
@@ -30,6 +34,39 @@ uint16_t mqtt_battery_type_catalog_version() {
 
 uint16_t mqtt_inverter_type_catalog_version() {
     return static_cast<uint16_t>((catalog_base_version() * 2u) + 1u);
+}
+
+const char* inverter_catalog_fallback_name(uint8_t id) {
+    static const char* fallback_names[] = {
+        "None",
+        "Afore battery over CAN",
+        "BYD Battery-Box Premium HVS over CAN Bus",
+        "BYD 11kWh HVM battery over Modbus RTU",
+        "Ferroamp Pylon battery over CAN bus",
+        "FoxESS compatible HV2600/ECS4100 battery",
+        "Growatt High Voltage protocol via CAN",
+        "Growatt Low Voltage (48V) protocol via CAN",
+        "Growatt WIT compatible battery via CAN",
+        "BYD battery via Kostal RS485",
+        "Pylontech HV battery over CAN bus",
+        "Pylontech LV battery over CAN bus",
+        "Schneider V2 SE BMS CAN",
+        "SMA compatible BYD H",
+        "SMA compatible BYD Battery-Box HVS",
+        "SMA Low Voltage (48V) protocol via CAN",
+        "SMA Tripower CAN",
+        "Sofar BMS (Extended) via CAN, Battery ID",
+        "SolaX Triple Power LFP over CAN bus",
+        "Solxpow compatible battery",
+        "Sol-Ark LV protocol over CAN bus",
+        "Sungrow SBRXXX emulation over CAN bus"
+    };
+
+    if (id >= (sizeof(fallback_names) / sizeof(fallback_names[0]))) {
+        return nullptr;
+    }
+
+    return fallback_names[id];
 }
 }
 
@@ -453,6 +490,9 @@ bool MqttManager::publish_inverter_type_catalog() {
 #if CONFIG_CAN_ENABLED
     for (int id = 0; id < static_cast<int>(InverterProtocolType::Highest); ++id) {
         const char* name = name_for_inverter_type(static_cast<InverterProtocolType>(id));
+        if (is_disabled_placeholder_label(name)) {
+            name = inverter_catalog_fallback_name(static_cast<uint8_t>(id));
+        }
         if (!name || name[0] == '\0') {
             continue;
         }

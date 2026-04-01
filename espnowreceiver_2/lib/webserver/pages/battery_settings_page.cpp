@@ -6,9 +6,7 @@
 
 /**
  * @brief Handler for the /battery_settings page
- * 
- * Phase 2: Bidirectional settings page with Save buttons
- * Users can view and modify battery settings that are sent to the transmitter
+ * Users can view and modify battery settings that are sent to the transmitter.
  */
 static esp_err_t battery_settings_handler(httpd_req_t *req) {
     String content = get_battery_settings_page_content();

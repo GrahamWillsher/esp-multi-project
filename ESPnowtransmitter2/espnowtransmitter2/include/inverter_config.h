@@ -3,14 +3,13 @@
 
 /**
  * Transmitter Inverter Support Configuration
- * 
+ *
  * This file defines which Battery Emulator inverter types are compiled
- * for the transmitter. Modbus-based inverters require eModbus library
- * and are excluded by default to reduce dependencies.
- * 
+ * for the transmitter.
+ *
  * Supported Inverter Categories:
- * - CAN-based inverters: Fully supported (no external dependencies)
- * - Modbus-based inverters: Excluded (require eModbus library not in scope for Phase 1)
+ * - CAN-based inverters: enabled by default
+ * - Modbus/RS485 inverters: selectively enabled based on project scope
  */
 
 // ============================================
@@ -38,14 +37,12 @@
 #define SUPPORT_SUNGROW_CAN 1
 
 // ============================================
-// MODBUS-BASED INVERTERS (Excluded for Phase 1)
+// MODBUS / RS485 INVERTERS
 // ============================================
-// These require eModbus library which is not
-// in the transmitter's scope. They can be added
-// in Phase 2 if needed.
+// Requires eModbus support library.
 
-#define SUPPORT_BYD_MODBUS 0        // Needs eModbus
-#define SUPPORT_KOSTAL_RS485 0      // Needs eModbus
+#define SUPPORT_BYD_MODBUS 1
+#define SUPPORT_KOSTAL_RS485 1
 #define SUPPORT_GROWATT_MODBUS 0    // Needs eModbus
 #define SUPPORT_FRONIUS_MODBUS 0    // Needs eModbus
 #define SUPPORT_SOLARMAX_RS485 0    // Needs eModbus

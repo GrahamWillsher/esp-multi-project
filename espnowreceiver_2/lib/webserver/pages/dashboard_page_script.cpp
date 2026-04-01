@@ -7,31 +7,23 @@ const char* get_dashboard_page_script() {
         let lastSeenUptimeMs = 0;  // Track previous uptime value to detect actual updates
         let hasHealthSample = false;
         
-        // Time formatting functions
-        function formatTimeWithTimezone(unixTime, timeZone = 'GMT') {
-            if (!unixTime || unixTime === 0) return '-- -- ----';
-            try {
-                const date = new Date(unixTime * 1000);
-                const formatter = new Intl.DateTimeFormat('en-GB', {
-                    year: 'numeric',
-                    month: '2-digit',
-                    day: '2-digit',
-                    hour: '2-digit',
-                    minute: '2-digit',
-                    second: '2-digit',
-                    timeZone: 'UTC'
-                });
-                const parts = formatter.formatToParts(date);
-                const values = {};
-                parts.forEach(part => {
-                    if (part.type !== 'literal') {
-                        values[part.type] = part.value;
-                    }
-                });
-                return `${values.day}-${values.month}-${values.year} ${values.hour}:${values.minute}:${values.second} ${timeZone}`;
-            } catch (e) {
-                return '-- -- ----';
-            }
+        // Transmitter time is the single source of truth.
+        // Converts the transmitter's UTC epoch + UTC offset (both from ESP-NOW heartbeat)
+        // to a local wall-clock time string. Returns '---' if the clock is not yet synced.
+        function resolveTransmitterTimeDisplay(timeData) {
+            if (!timeData || !timeData.time_source || timeData.time_source === 0) return '---';
+            const unix = timeData.unix_time;
+            if (!unix) return '---';
+            const offsetMin = timeData.utc_offset_min || 0;
+            const localMs = (unix + offsetMin * 60) * 1000;
+            const d = new Date(localMs);
+            const day  = String(d.getUTCDate()).padStart(2, '0');
+            const mon  = String(d.getUTCMonth() + 1).padStart(2, '0');
+            const year = d.getUTCFullYear();
+            const hh   = String(d.getUTCHours()).padStart(2, '0');
+            const mm   = String(d.getUTCMinutes()).padStart(2, '0');
+            const ss   = String(d.getUTCSeconds()).padStart(2, '0');
+            return `${day}/${mon}/${year} ${hh}:${mm}:${ss}`;
         }
         
         function formatUptime(ms) {
@@ -182,13 +174,27 @@ const char* get_dashboard_page_script() {
                     
                     if (timeData && timeData.uptime_ms !== undefined) {
                         // Update time display
-                        document.getElementById('txTime').textContent = formatTimeWithTimezone(timeData.unix_time, 'GMT');
+                        document.getElementById('txTime').textContent =
+                            resolveTransmitterTimeDisplay(timeData);
                         document.getElementById('txUptime').textContent = formatUptime(timeData.uptime_ms);
                         
                         // Update time source
                         const sourceEl = document.getElementById('txTimeSource');
                         sourceEl.textContent = getTimeSourceLabel(timeData.time_source);
                         sourceEl.style.color = getTimeSourceColor(timeData.time_source);
+
+                        const geoEl = document.getElementById('txGeoStatus');
+                        if (geoEl) {
+                            if (timeData.geolocation_valid) {
+                                geoEl.textContent = '🌍 Geolocation confirmed';
+                                geoEl.style.color = '#4CAF50';
+                                geoEl.title = 'Timezone has been confirmed by geolocation service.';
+                            } else {
+                                geoEl.textContent = '⚠ Default (UTC) - geolocation pending';
+                                geoEl.style.color = '#FF9800';
+                                geoEl.title = 'Transmitter is currently using fallback timezone. DST transitions are unavailable until geolocation succeeds.';
+                            }
+                        }
                         
                         // Only update "last update" time if uptime_ms has actually changed (new data from transmitter)
                         if (timeData.uptime_ms !== lastSeenUptimeMs) {
@@ -304,11 +310,25 @@ const char* get_dashboard_page_script() {
                 const timeData = await timeResponse.json();
                 
                 if (timeData && timeData.uptime_ms !== undefined) {
-                    document.getElementById('txTime').textContent = formatTimeWithTimezone(timeData.unix_time, 'GMT');
+                    document.getElementById('txTime').textContent =
+                        resolveTransmitterTimeDisplay(timeData);
                     document.getElementById('txUptime').textContent = formatUptime(timeData.uptime_ms);
                     const sourceEl = document.getElementById('txTimeSource');
                     sourceEl.textContent = getTimeSourceLabel(timeData.time_source);
                     sourceEl.style.color = getTimeSourceColor(timeData.time_source);
+
+                    const geoEl = document.getElementById('txGeoStatus');
+                    if (geoEl) {
+                        if (timeData.geolocation_valid) {
+                            geoEl.textContent = '🌍 Geolocation confirmed';
+                            geoEl.style.color = '#4CAF50';
+                            geoEl.title = 'Timezone has been confirmed by geolocation service.';
+                        } else {
+                            geoEl.textContent = '⚠ Default (UTC) - geolocation pending';
+                            geoEl.style.color = '#FF9800';
+                            geoEl.title = 'Transmitter is currently using fallback timezone. DST transitions are unavailable until geolocation succeeds.';
+                        }
+                    }
                     lastSeenUptimeMs = timeData.uptime_ms;
                     lastUpdateTime = Date.now();
                     hasHealthSample = true;

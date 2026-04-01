@@ -41,6 +41,10 @@ namespace EthernetConfig {
         constexpr const char* SERVER_2 = "time.nist.gov";
         constexpr long GMT_OFFSET_SEC = 0;           // Adjust for your timezone
         constexpr int DAYLIGHT_OFFSET_SEC = 0;       // Adjust for daylight saving
+        // POSIX timezone rule used before geolocation succeeds.
+        // Keep this neutral/universal; runtime geolocation now applies region-specific rules or offsets.
+        constexpr const char* DEFAULT_POSIX_TZ = "UTC0";
+        constexpr const char* DEFAULT_TIMEZONE_NAME = "UTC";
     }
 }
 

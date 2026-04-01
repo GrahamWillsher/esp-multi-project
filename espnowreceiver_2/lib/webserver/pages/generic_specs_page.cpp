@@ -28,7 +28,11 @@ esp_err_t send_formatted_page(httpd_req_t* req,
         specs_section = static_cast<char*>(ps_malloc(config.specs_section_size));
         if (!specs_section) {
             LOG_ERROR(config.log_tag, "Failed to allocate specs buffer in PSRAM");
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Memory allocation failed");
+            const esp_err_t err_rc = httpd_resp_send_err(
+                req, HTTPD_500_INTERNAL_SERVER_ERROR, "Memory allocation failed");
+            if (err_rc != ESP_OK) {
+                LOG_WARN(config.log_tag, "Failed to send 500 error response: %d", err_rc);
+            }
             return ESP_FAIL;
         }
         free_specs_section = true;

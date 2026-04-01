@@ -80,6 +80,7 @@ enum msg_type : uint8_t {
     // Version beacon messages
     msg_version_beacon,             // Periodic version sync beacon (transmitter → receiver)
     msg_config_section_request,     // Request specific config section (receiver → transmitter)
+    msg_time_transitions_snapshot,  // Timezone/DST transition snapshot (transmitter → receiver, event-driven)
     
     // =========================================================================
     // SECTION 11: Transmitter-Active Architecture
@@ -255,11 +256,14 @@ typedef struct __attribute__((packed)) {
 // ============================================================================
 
 // Heartbeat message (bidirectional keep-alive with sequence tracking)
+constexpr uint8_t HEARTBEAT_FLAG_GEOLOCATION_VALID = 0x01;
+
 typedef struct __attribute__((packed)) {
     uint8_t  type;          // msg_heartbeat
     uint32_t seq;           // Monotonic sequence number (detects loss/resets)
     uint64_t uptime_ms;     // Sender uptime in milliseconds (64-bit to avoid overflow after 49 days)
     uint64_t unix_time;     // Unix timestamp in seconds (NTP-synchronized)
+    int16_t  utc_offset_min; // UTC offset in whole minutes (e.g. BST=+60, EST=-300); cached, refreshed on NTP sync
     uint8_t  time_source;   // 0=unsynced, 1=NTP, 2=manual, 3=GPS
     uint8_t  state;         // Connection state enum
     uint8_t  rssi;          // Last RX RSSI (if known, 0 if N/A)
@@ -742,6 +746,35 @@ typedef struct __attribute__((packed)) {
     uint8_t version_patch;              // Patch version
     char build_date[48];                // Build timestamp (e.g., "13-03-2026 14:22:00")
 } version_beacon_t;  // Total: 107 bytes (well under ESP-NOW's 250 byte limit)
+
+// Time transition support (timezone/DST transition schedule)
+constexpr uint8_t TIME_TRANSITION_MAX = 4;
+constexpr uint8_t TIME_TRANSITIONS_FLAG_GEOLOCATION_VALID = 0x01;
+
+typedef struct __attribute__((packed)) {
+    uint32_t transition_unix_utc;       // UTC epoch seconds where offset changes
+    int16_t offset_before_min;          // UTC offset in minutes before transition
+    int16_t offset_after_min;           // UTC offset in minutes after transition
+} time_transition_t;
+
+// Event-driven snapshot: sent at boot (once time is valid) and whenever snapshot changes
+typedef struct __attribute__((packed)) {
+    uint8_t type;                       // msg_time_transitions_snapshot
+    uint8_t flags;                      // TIME_TRANSITIONS_FLAG_* bitmask
+    uint8_t transition_count;           // 0..TIME_TRANSITION_MAX
+    uint16_t revision;                  // Monotonic revision (increments on content change)
+    uint32_t generated_unix_utc;        // UTC epoch when this snapshot was generated
+    char timezone_name[40];             // e.g. "Europe/London"
+    char timezone_abbrev[8];            // e.g. "BST" / "GMT"
+    int16_t current_utc_offset_min;     // Current UTC offset in minutes
+    time_transition_t transitions[TIME_TRANSITION_MAX];
+    uint32_t checksum;                  // CRC32 over all fields except this checksum
+} time_transitions_snapshot_t;
+
+#ifdef __cplusplus
+static_assert(sizeof(time_transitions_snapshot_t) <= 250,
+              "time_transitions_snapshot_t exceeds ESP-NOW payload");
+#endif
 
 // Config section request (receiver → transmitter when version mismatch detected)
 typedef struct __attribute__((packed)) {

@@ -3,6 +3,7 @@
 #include "api_response_utils.h"
 #include "../utils/transmitter_manager.h"
 #include "../logging.h"
+#include "../../src/memory/memory_sampler.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -22,6 +23,31 @@ constexpr size_t OTA_RESPONSE_BODY_MAX_LEN = 512;
 constexpr uint8_t OTA_CHALLENGE_FETCH_ATTEMPTS = 6;
 constexpr uint32_t OTA_CHALLENGE_FETCH_RETRY_DELAY_MS = 300;
 constexpr uint32_t OTA_CHALLENGE_HTTP_TIMEOUT_MS = 5000;
+// Throughput tuning (conservative): use shorter poll sleeps and larger stream chunks
+// to reduce upload wall time without removing backpressure handling.
+constexpr uint32_t OTA_HTTP_READ_POLL_DELAY_MS = 2;
+constexpr uint32_t OTA_FORWARD_RETRY_POLL_DELAY_MS = 1;
+constexpr uint32_t OTA_RESPONSE_WAIT_POLL_DELAY_MS = 5;
+constexpr uint32_t OTA_STREAM_STALL_TIMEOUT_MS = 60000;
+constexpr uint32_t OTA_TX_SOCKET_TIMEOUT_MS = 60000;
+constexpr uint32_t OTA_RESPONSE_WAIT_TIMEOUT_MS = 70000;
+constexpr uint32_t OTA_EARLY_RESPONSE_TIMEOUT_MS = 1200;
+constexpr uint32_t OTA_FINAL_RESPONSE_PARSE_TIMEOUT_MS = 3000;
+constexpr uint32_t OTA_START_CONTROL_SETTLE_DELAY_MS = 200;
+constexpr uint32_t OTA_RX_REBOOT_DELAY_MS = 250;
+constexpr size_t OTA_UPLOAD_CHUNK_BYTES = 2048;
+
+// RAII guard: increments the burst-mode reference count on construction and
+// releases it on destruction. Placed at the top of OTA upload handlers so
+// every return path (success, validation failure, forward error) automatically
+// deactivates burst mode when the upload session ends.
+struct BurstModeGuard {
+    BurstModeGuard()  { MemorySampler::burst_clients_add(); }
+    ~BurstModeGuard() { MemorySampler::burst_clients_release(); }
+    // Non-copyable
+    BurstModeGuard(const BurstModeGuard&) = delete;
+    BurstModeGuard& operator=(const BurstModeGuard&) = delete;
+};
 
 struct OtaSessionChallenge {
     char session_id[40];
@@ -113,7 +139,7 @@ bool read_http_response_from_transmitter(WiFiClient& client,
         if (body.length() > body_cap) {
             break;
         }
-        vTaskDelay(pdMS_TO_TICKS(5));
+        vTaskDelay(pdMS_TO_TICKS(OTA_HTTP_READ_POLL_DELAY_MS));
     }
 
     *out_status = status_code;
@@ -294,7 +320,7 @@ OtaForwardResult forward_ota_stream_to_transmitter(httpd_req_t* req,
         return result;
     }
 
-    char buf[1024];
+    char buf[OTA_UPLOAD_CHUNK_BYTES];
     size_t remaining = firmware_size;
 
     while (remaining > 0) {
@@ -325,7 +351,7 @@ OtaForwardResult forward_ota_stream_to_transmitter(httpd_req_t* req,
             if (read_http_response_from_transmitter(tx_client,
                                                     &early_status,
                                                     &early_body,
-                                                    1200,
+                                                    OTA_EARLY_RESPONSE_TIMEOUT_MS,
                                                     OTA_RESPONSE_BODY_MAX_LEN,
                                                     true)) {
                 result.error = OtaForwardError::TransmitterRejectedEarly;
@@ -340,7 +366,7 @@ OtaForwardResult forward_ota_stream_to_transmitter(httpd_req_t* req,
 
             // No progress: allow generous retry window for transient socket backpressure
             // on WiFi/LWIP path during long OTA streams.
-            if (!tx_client.connected() || (millis() - write_start_ms) > 60000) {
+            if (!tx_client.connected() || (millis() - write_start_ms) > OTA_STREAM_STALL_TIMEOUT_MS) {
                 LOG_ERROR("OTA", "Stream stall while forwarding at byte=%u chunk_offset=%u connected=%d",
                           static_cast<unsigned>(result.total_forwarded),
                           static_cast<unsigned>(offset),
@@ -349,7 +375,7 @@ OtaForwardResult forward_ota_stream_to_transmitter(httpd_req_t* req,
                 result.total_forwarded += offset;
                 return result;
             }
-            vTaskDelay(pdMS_TO_TICKS(5));
+            vTaskDelay(pdMS_TO_TICKS(OTA_FORWARD_RETRY_POLL_DELAY_MS));
         }
 
         remaining -= static_cast<size_t>(read_len);
@@ -365,7 +391,7 @@ bool open_ota_transmitter_connection(WiFiClient& tx_client,
                                       size_t firmware_size) {
     const uint8_t* ip = TransmitterManager::getIP();
     IPAddress tx_ip(ip[0], ip[1], ip[2], ip[3]);
-    tx_client.setTimeout(60000);
+    tx_client.setTimeout(OTA_TX_SOCKET_TIMEOUT_MS);
 
     if (!tx_client.connect(tx_ip, 80)) {
         return false;
@@ -404,8 +430,8 @@ OtaResponseResult await_and_parse_ota_response(WiFiClient& tx_client) {
     OtaResponseResult result;
 
     unsigned long wait_start = millis();
-    while (!tx_client.available() && tx_client.connected() && (millis() - wait_start < 70000)) {
-        vTaskDelay(pdMS_TO_TICKS(10));
+    while (!tx_client.available() && tx_client.connected() && (millis() - wait_start < OTA_RESPONSE_WAIT_TIMEOUT_MS)) {
+        vTaskDelay(pdMS_TO_TICKS(OTA_RESPONSE_WAIT_POLL_DELAY_MS));
     }
 
     if (!tx_client.available()) {
@@ -416,7 +442,7 @@ OtaResponseResult await_and_parse_ota_response(WiFiClient& tx_client) {
     if (!read_http_response_from_transmitter(tx_client,
                                              &result.status_code,
                                              &result.body,
-                                             3000,
+                                             OTA_FINAL_RESPONSE_PARSE_TIMEOUT_MS,
                                              OTA_RESPONSE_BODY_MAX_LEN,
                                              false)) {
         result.state = OtaResponseResult::State::ParseFailed;
@@ -511,6 +537,7 @@ esp_err_t api_transmitter_ota_status_handler(httpd_req_t *req) {
 }
 
 esp_err_t api_ota_upload_receiver_handler(httpd_req_t *req) {
+    const BurstModeGuard burst_guard;
     if (req->content_len <= 0) {
         return ApiResponseUtils::send_error_message(req, "Firmware payload required");
     }
@@ -538,7 +565,7 @@ esp_err_t api_ota_upload_receiver_handler(httpd_req_t *req) {
         return ApiResponseUtils::send_error_message(req, Update.errorString());
     }
 
-    char buf[1024];
+    char buf[OTA_UPLOAD_CHUNK_BYTES];
     size_t remaining = static_cast<size_t>(req->content_len);
     size_t written_total = 0;
     mbedtls_sha256_context sha_ctx;
@@ -655,12 +682,13 @@ esp_err_t api_ota_upload_receiver_handler(httpd_req_t *req) {
     return ApiResponseUtils::send_success_message(req, "Receiver firmware uploaded. Rebooting...");
 
     // Note: unreachable, but kept for clarity
-    vTaskDelay(pdMS_TO_TICKS(250));
+    vTaskDelay(pdMS_TO_TICKS(OTA_RX_REBOOT_DELAY_MS));
     ESP.restart();
     return ESP_OK;
 }
 
 esp_err_t api_ota_upload_handler(httpd_req_t *req) {
+    const BurstModeGuard burst_guard;
     size_t remaining = req->content_len;
     LOG_INFO("OTA", "Receiving firmware upload, total size: %d bytes", remaining);
 
@@ -691,7 +719,7 @@ esp_err_t api_ota_upload_handler(httpd_req_t *req) {
     if (TransmitterManager::isMACKnown()) {
         ota_start_t ota_msg = { msg_ota_start, (uint32_t)firmware_size };
         esp_now_send(TransmitterManager::getMAC(), (const uint8_t*)&ota_msg, sizeof(ota_msg));
-        vTaskDelay(pdMS_TO_TICKS(500));
+        vTaskDelay(pdMS_TO_TICKS(OTA_START_CONTROL_SETTLE_DELAY_MS));
     }
 
     // Fetch OTA session challenge from transmitter so auth headers can be sent with the upload.

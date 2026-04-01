@@ -20,6 +20,18 @@
 
 namespace Display {
 
+namespace {
+struct ScopedJpegBuffer {
+    uint8_t* data = nullptr;
+    ~ScopedJpegBuffer() {
+        if (data) {
+            free(data);
+            data = nullptr;
+        }
+    }
+};
+} // namespace
+
 // Static storage for splash image - MUST persist until screen transition completes
 static lv_img_dsc_t s_splash_img_dsc;
 static lv_color_t* s_splash_img_data = nullptr;
@@ -130,21 +142,21 @@ static bool load_splash_image(const char* filepath) {
 
     size_t fileSize = f.size();
     LOG_INFO("SPLASH", "File size: %u bytes", fileSize);
-    
-    uint8_t* jpegBuffer = (uint8_t*)malloc(fileSize);
-    if (!jpegBuffer) {
+
+    ScopedJpegBuffer jpeg_buffer;
+    jpeg_buffer.data = static_cast<uint8_t*>(malloc(fileSize));
+    if (!jpeg_buffer.data) {
         LOG_ERROR("SPLASH", "Failed to allocate JPEG buffer (%u bytes)", fileSize);
         f.close();
         return false;
     }
     LOG_DEBUG("SPLASH", "JPEG buffer allocated: %u bytes", fileSize);
 
-    size_t bytesRead = f.read(jpegBuffer, fileSize);
+    size_t bytesRead = f.read(jpeg_buffer.data, fileSize);
     LOG_INFO("SPLASH", "Read %u bytes from file", bytesRead);
     
     if (bytesRead != fileSize) {
         LOG_ERROR("SPLASH", "Failed to read JPEG file (got %u, expected %u)", bytesRead, fileSize);
-        free(jpegBuffer);
         f.close();
         return false;
     }
@@ -153,13 +165,11 @@ static bool load_splash_image(const char* filepath) {
 
     // Decode JPEG
     LOG_INFO("SPLASH", "Starting JPEG decode...");
-    if (!JpegDec.decodeArray(jpegBuffer, fileSize)) {
+    if (!JpegDec.decodeArray(jpeg_buffer.data, fileSize)) {
         LOG_ERROR("SPLASH", "JPEG decode failed");
-        free(jpegBuffer);
         return false;
     }
     LOG_INFO("SPLASH", "JPEG decode SUCCESS");
-    free(jpegBuffer);
     LOG_DEBUG("SPLASH", "JPEG buffer freed");
 
     uint16_t img_w = JpegDec.width;

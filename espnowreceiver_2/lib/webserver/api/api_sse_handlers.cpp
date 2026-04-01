@@ -9,12 +9,19 @@
 #include "../../src/mqtt/mqtt_client.h"
 #include "../../src/espnow/espnow_send.h"
 #include "../page_definitions.h"
+#include "../../src/memory/memory_sampler.h"
 
 #include <Arduino.h>
 #include <esp_now.h>
 #include <esp32common/espnow/common.h>
 
 namespace {
+constexpr uint32_t kSseSessionMaxDurationMs = 300000; // 5 minutes
+constexpr uint32_t kCellUpdateWaitMs = 15000;
+constexpr uint32_t kMonitorUpdateWaitMs = 500;
+constexpr size_t kMonitorEventBufferBytes = 512;
+constexpr size_t kSseEventReserveOverheadBytes = 12;
+
 struct SseMetricsInternal {
     volatile uint32_t cell_connects = 0;
     volatile uint32_t cell_disconnects = 0;
@@ -47,6 +54,7 @@ void recordCellSessionEnd(uint32_t duration_ms) {
         g_sse_metrics.cell_max_session_ms = duration_ms;
     }
     portEXIT_CRITICAL(&g_sse_metrics_mux);
+    MemorySampler::burst_clients_release();
 }
 
 void recordMonitorSessionEnd(uint32_t duration_ms) {
@@ -60,6 +68,7 @@ void recordMonitorSessionEnd(uint32_t duration_ms) {
         g_sse_metrics.monitor_max_session_ms = duration_ms;
     }
     portEXIT_CRITICAL(&g_sse_metrics_mux);
+    MemorySampler::burst_clients_release();
 }
 
 }
@@ -91,6 +100,7 @@ esp_err_t api_cell_data_sse_handler(httpd_req_t *req) {
     g_sse_metrics.cell_connects++;
     g_sse_metrics.cell_active_clients++;
     portEXIT_CRITICAL(&g_sse_metrics_mux);
+    MemorySampler::burst_clients_add();
 
     MqttClient::incrementCellDataSubscribers();
     LOG_DEBUG("SSE", "SSE client connected (subscribers: %d)", MqttClient::getCellDataSubscriberCount());
@@ -106,7 +116,7 @@ esp_err_t api_cell_data_sse_handler(httpd_req_t *req) {
         if (CellDataCache::get_cell_data_snapshot(snapshot) && snapshot.known) {
             String json = TelemetrySnapshotUtils::serialize_cell_data(snapshot);
             String event = "data: " + json + "\n\n";
-            event.reserve(json.length() + 12);
+            event.reserve(json.length() + kSseEventReserveOverheadBytes);
             const bool ok = (httpd_resp_send_chunk(req, event.c_str(), event.length()) == ESP_OK);
             if (!ok) {
                 portENTER_CRITICAL(&g_sse_metrics_mux);
@@ -134,10 +144,10 @@ esp_err_t api_cell_data_sse_handler(httpd_req_t *req) {
     }
 
     TickType_t start_time = xTaskGetTickCount();
-    const TickType_t max_duration = pdMS_TO_TICKS(300000);
+    const TickType_t max_duration = pdMS_TO_TICKS(kSseSessionMaxDurationMs);
 
     while ((xTaskGetTickCount() - start_time) < max_duration) {
-        const bool changed = SSENotifier::waitForCellDataUpdate(15000);
+        const bool changed = SSENotifier::waitForCellDataUpdate(kCellUpdateWaitMs);
         if (changed) {
             if (!sendCellData()) {
                 break;
@@ -165,6 +175,7 @@ esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
     g_sse_metrics.monitor_connects++;
     g_sse_metrics.monitor_active_clients++;
     portEXIT_CRITICAL(&g_sse_metrics_mux);
+    MemorySampler::burst_clients_add();
 
     if (HttpSseUtils::begin_sse(req) != ESP_OK || HttpSseUtils::send_retry_hint(req) != ESP_OK) {
         recordMonitorSessionEnd(millis() - session_start_ms);
@@ -185,7 +196,7 @@ esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
     int32_t last_power = INT32_MAX;
     uint32_t last_voltage = 0;
 
-    char event_data[512];
+    char event_data[kMonitorEventBufferBytes];
     uint8_t current_soc = 0;
     int32_t current_power = 0;
     uint32_t current_voltage = 0;
@@ -208,10 +219,10 @@ esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
     last_voltage = current_voltage;
 
     TickType_t start_time = xTaskGetTickCount();
-    const TickType_t max_duration = pdMS_TO_TICKS(300000);
+    const TickType_t max_duration = pdMS_TO_TICKS(kSseSessionMaxDurationMs);
 
     while ((xTaskGetTickCount() - start_time) < max_duration) {
-        if (SSENotifier::waitForUpdate(500)) {
+        if (SSENotifier::waitForUpdate(kMonitorUpdateWaitMs)) {
             TelemetrySnapshotUtils::fill_snapshot_telemetry(current_soc, current_power, current_voltage);
 
             if (current_soc != last_soc || current_power != last_power || current_voltage != last_voltage) {

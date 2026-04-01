@@ -9,8 +9,8 @@
 #include "../../src/espnow/espnow_send.h"
 #include "../../src/espnow/component_apply_tracker.h"
 #include "../../src/espnow/type_catalog_cache.h"
-#include <Arduino.h>
 #include <ArduinoJson.h>
+#include <esp_heap_caps.h>
 #include <esp_system.h>
 #include <algorithm>
 #include <cstring>
@@ -35,83 +35,68 @@ static TypeEntry battery_interfaces[] = {
     {5, "CAN-FD (MCP2518 add-on)"}
 };
 
-static TypeEntry inverter_interface_defaults[] = {
-    {0, "Modbus"},
-    {1, "RS485"},
-    {2, "CAN (Native)"},
-    {3, "CAN-FD (Native)"},
-    {4, "CAN (MCP2515 add-on)"},
-    {5, "CAN-FD (MCP2518 add-on)"}
-};
-
 static constexpr size_t kMaxTypeEntries = 128;
 using CatalogCopyFn = size_t (*)(TypeCatalogCache::TypeEntry*, size_t);
 using CatalogRequestFn = bool (*)();
 
-static bool is_disabled_placeholder_label(const char* label) {
-    return (label != nullptr) && (strstr(label, "(disabled)") != nullptr);
-}
+// Serialize a sorted copy of types[] to JSON. Uses a static BSS buffer (httpd is
+// single-task so there is no re-entrancy concern). TypeEntry.name pointers must
+// remain valid for the duration of this call.
+static esp_err_t serve_type_catalog_json(httpd_req_t* req, TypeEntry* types, size_t count) {
+    const size_t n = (count < kMaxTypeEntries) ? count : kMaxTypeEntries;
 
-static String generate_sorted_type_json(TypeEntry* types, size_t count) {
-    TypeEntry* sorted_copy = new TypeEntry[count];
-    if (!sorted_copy) {
-        return "{\"types\":[]}";
+    // Sort on a stack copy (kMaxTypeEntries * sizeof(TypeEntry) = ~1 KB)
+    TypeEntry sorted[kMaxTypeEntries];
+    memcpy(sorted, types, n * sizeof(TypeEntry));
+    std::sort(sorted, sorted + n);
+
+    // Serialise into a static buffer (lives in BSS, not on stack)
+    static char buf[4096];
+    int pos = snprintf(buf, sizeof(buf), "{\"types\":[");
+    for (size_t i = 0; i < n && pos < (int)sizeof(buf) - 8; ++i) {
+        if (i > 0) buf[pos++] = ',';
+        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos,
+                        "{\"id\":%u,\"name\":\"%s\"}", sorted[i].id, sorted[i].name);
     }
-
-    memcpy(sorted_copy, types, count * sizeof(TypeEntry));
-    std::sort(sorted_copy, sorted_copy + count);
-
-    String json = "{\"types\":[";
-    for (size_t i = 0; i < count; i++) {
-        if (i > 0) json += ",";
-        json += "{\"id\":" + String(sorted_copy[i].id) + ",\"name\":\"" + sorted_copy[i].name + "\"}";
+    if (pos < (int)sizeof(buf) - 2) {
+        buf[pos++] = ']';
+        buf[pos++] = '}';
+        buf[pos]   = '\0';
     }
-    json += "]}";
-
-    delete[] sorted_copy;
-    return json;
+    return HttpJsonUtils::send_json(req, buf);
 }
 
-static esp_err_t send_oom_response(httpd_req_t *req) {
-    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
-    return ESP_FAIL;
-}
-
-static esp_err_t serve_fixed_type_catalog(httpd_req_t *req, TypeEntry* types, size_t count) {
-    String json_response = generate_sorted_type_json(types, count);
-    return HttpJsonUtils::send_json(req, json_response.c_str());
-}
-
-static esp_err_t serve_cached_type_catalog(httpd_req_t *req,
+// Fetch entries from TypeCatalogCache into a PSRAM allocation (avoids fragmenting
+// internal heap), build a lightweight TypeEntry pointer-index array on the stack,
+// then delegate to serve_type_catalog_json.
+static esp_err_t serve_cached_type_catalog(httpd_req_t* req,
                                            CatalogCopyFn copy_entries,
                                            CatalogRequestFn request_entries) {
-    auto* cache_entries = new TypeCatalogCache::TypeEntry[kMaxTypeEntries];
+    auto* cache_entries = static_cast<TypeCatalogCache::TypeEntry*>(
+        heap_caps_malloc(kMaxTypeEntries * sizeof(TypeCatalogCache::TypeEntry), MALLOC_CAP_SPIRAM));
     if (!cache_entries) {
-        return send_oom_response(req);
+        return ApiResponseUtils::send_error_with_status(
+            req, "500 Internal Server Error", "OOM: type catalog PSRAM allocation failed");
     }
 
     const size_t count = copy_entries(cache_entries, kMaxTypeEntries);
     if (count == 0) {
-        delete[] cache_entries;
+        heap_caps_free(cache_entries);
         (void)request_entries();
         return HttpJsonUtils::send_json(req, "{\"types\":[],\"loading\":true}");
     }
 
-    auto* response_entries = new TypeEntry[count];
-    if (!response_entries) {
-        delete[] cache_entries;
-        return send_oom_response(req);
-    }
-
+    // Build a stack TypeEntry array whose .name pointers reference cache_entries.
+    // cache_entries stays alive until after serve_type_catalog_json returns.
+    TypeEntry entries[kMaxTypeEntries];
     for (size_t i = 0; i < count; ++i) {
-        response_entries[i].id = cache_entries[i].id;
-        response_entries[i].name = cache_entries[i].name;
+        entries[i].id   = cache_entries[i].id;
+        entries[i].name = cache_entries[i].name;
     }
 
-    String json_response = generate_sorted_type_json(response_entries, count);
-    delete[] response_entries;
-    delete[] cache_entries;
-    return HttpJsonUtils::send_json(req, json_response.c_str());
+    esp_err_t result = serve_type_catalog_json(req, entries, count);
+    heap_caps_free(cache_entries);
+    return result;
 }
 
 
@@ -224,11 +209,10 @@ static esp_err_t api_component_apply_status_handler(httpd_req_t *req) {
         doc["ready_for_reboot"] = false;
         doc["message"] = "Waiting for matching apply transaction";
 
-        String json;
-        json.reserve(192);
-        serializeJson(doc, json);
+        char json[256];
+        serializeJson(doc, json, sizeof(json));
 
-        return ApiResponseUtils::send_json_no_cache(req, json.c_str());
+        return ApiResponseUtils::send_json_no_cache(req, json);
     }
 
     doc["request_id"] = snapshot.request_id;
@@ -258,11 +242,10 @@ static esp_err_t api_component_apply_status_handler(httpd_req_t *req) {
                               : "";
     doc["message"] = snapshot.message;
 
-    String json;
-    json.reserve(384);
-    serializeJson(doc, json);
+    char json[512];
+    serializeJson(doc, json, sizeof(json));
 
-    return ApiResponseUtils::send_json_no_cache(req, json.c_str());
+    return ApiResponseUtils::send_json_no_cache(req, json);
 }
 
 static esp_err_t api_get_battery_types_handler(httpd_req_t *req) {
@@ -284,7 +267,7 @@ static esp_err_t api_get_selected_types_handler(httpd_req_t *req) {
 }
 
 static esp_err_t api_get_battery_interfaces_handler(httpd_req_t *req) {
-    return serve_fixed_type_catalog(req, battery_interfaces, sizeof(battery_interfaces) / sizeof(TypeEntry));
+    return serve_type_catalog_json(req, battery_interfaces, sizeof(battery_interfaces) / sizeof(TypeEntry));
 }
 
 static esp_err_t api_get_inverter_interfaces_handler(httpd_req_t *req) {

@@ -366,7 +366,7 @@ void MqttClient::handleInverterTypeCatalog(const char* json_payload, size_t leng
 
     const uint16_t version = doc["catalog_version"] | 0;
     const uint16_t applied = TypeCatalogCache::inverter_applied_version();
-    if (version != 0 && applied != 0 && version <= applied) {
+    if (version != 0 && applied != 0 && version < applied) {
         LOG_DEBUG("MQTT", "Skipping inverter_type_catalog version %u (applied=%u)",
                   (unsigned)version,
                   (unsigned)applied);
