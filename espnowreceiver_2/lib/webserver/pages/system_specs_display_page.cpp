@@ -28,12 +28,28 @@ esp_err_t system_specs_page_handler(httpd_req_t *req) {
         DeserializationError error = deserializeJson(doc, specs_json);
         if (!error) {
             hardware_model = doc["hardware_model"].as<String>();
+            if (hardware_model.length() == 0) {
+                // Backward compatibility: older combined payload used "hardware".
+                hardware_model = doc["hardware"].as<String>();
+            }
             if (hardware_model.length() == 0) hardware_model = "Unknown";
             
             can_interface = doc["can_interface"].as<String>();
-            if (can_interface.length() == 0) can_interface = "MCP2515";
+            if (can_interface.length() == 0) {
+                // Accept alternative key spellings if present.
+                can_interface = doc["can_bus_interface"].as<String>();
+            }
+            if (can_interface.length() == 0) can_interface = "MCP2515_SPI";
             
-            can_speed_kbps = doc["can_speed_kbps"] | 250;
+            // Prefer explicit kbps field, fall back to bitrate in bps.
+            can_speed_kbps = doc["can_speed_kbps"] | 0;
+            if (can_speed_kbps == 0) {
+                const uint32_t can_bitrate_bps = doc["can_bitrate"] | 0;
+                if (can_bitrate_bps > 0) {
+                    can_speed_kbps = static_cast<uint8_t>(can_bitrate_bps / 1000);
+                }
+            }
+            if (can_speed_kbps == 0) can_speed_kbps = 250;
             supports_diagnostics = doc["supports_diagnostics"] | 1;
         }
     }

@@ -426,7 +426,10 @@ size_t serialize_all_specs(char* buffer, size_t buffer_size) {
     
     // System specs
     JsonObject system = doc.createNestedObject("system");
+    // Keep legacy + canonical keys for receiver compatibility.
     system["hardware"] = system_specs.hardware_model;
+    system["hardware_model"] = system_specs.hardware_model;
+    system["can_interface"] = system_specs.can_interface;
     system["firmware_version"] = system_specs.firmware_version;
     system["can_bitrate"] = system_specs.can_bitrate;
     
