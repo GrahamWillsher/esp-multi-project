@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include <cstdint>
+#include <esp32common/espnow/common.h>
 
 namespace TransmitterState {
 
@@ -14,10 +15,14 @@ void update_send_status(bool success);
 bool was_last_send_successful();
 bool is_transmitter_connected();
 
-void update_time_data(uint64_t uptime_ms, uint64_t unix_time, uint8_t time_source);
+void update_time_data(uint64_t uptime_ms, uint64_t unix_time, int16_t utc_offset_min, uint8_t time_source);
 uint64_t get_uptime_ms();
 uint64_t get_unix_time();
+int16_t get_utc_offset_min();
 uint8_t get_time_source();
+void update_heartbeat_flags(uint8_t flags);
+uint8_t get_heartbeat_flags();
+bool is_geolocation_valid();
 
 void store_metadata(bool valid,
                     const char* env,

@@ -23,11 +23,16 @@ String get_hardware_config_page_content() {
         .hardware-config-grid button:not(:disabled) {
             cursor: pointer;
         }
+
+        .hardware-action-btn {
+            width: 220px;
+            box-sizing: border-box;
+            text-align: center;
+        }
     </style>
 
     <div class='settings-card'>
         <h3>Hardware config</h3>
-        <p style='color: #888; font-size: 13px; margin-top: 0;'>Ported layout/mechanics from the original Battery Emulator Hardware Config section.</p>
 
         <div class='hardware-config-grid' style='display: grid; grid-template-columns: 1fr 1.5fr; gap: 10px; align-items: center;'>
             <!-- 1 -->
@@ -124,7 +129,7 @@ String get_hardware_config_page_content() {
         </div>
         <div class='settings-row'>
             <label>Manual Resync:</label>
-            <button id='resyncLedBtn' onclick='resyncLedState()' style='padding: 8px 16px; font-size: 13px; background-color: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer;'>
+            <button id='resyncLedBtn' class='hardware-action-btn' onclick='resyncLedState()' style='padding: 12px 40px; font-size: 16px; background-color: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer;'>
                 Resync LED Now
             </button>
         </div>
@@ -132,7 +137,7 @@ String get_hardware_config_page_content() {
     </div>
 
     <div style='text-align: center; margin-top: 30px;'>
-        <button id='saveHardwareBtn' onclick='saveHardwareSettings()' disabled style='padding: 12px 40px; font-size: 16px; background-color: #6c757d; color: white; border: none; border-radius: 4px; cursor: not-allowed;'>
+        <button id='saveHardwareBtn' class='hardware-action-btn' onclick='saveHardwareSettings()' disabled style='padding: 12px 40px; font-size: 16px; background-color: #6c757d; color: white; border: none; border-radius: 4px; cursor: not-allowed;'>
             Nothing to Save
         </button>
     </div>

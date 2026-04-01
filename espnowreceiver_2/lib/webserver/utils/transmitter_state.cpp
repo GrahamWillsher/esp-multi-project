@@ -26,7 +26,9 @@ struct RuntimeStatus {
     bool last_espnow_send_success = true;
     uint64_t uptime_ms = 0;
     uint64_t unix_time = 0;
-    uint8_t time_source = 0;
+    int16_t  utc_offset_min = 0;
+    uint8_t  time_source = 0;
+    uint8_t  heartbeat_flags = 0;
 };
 
 struct Metadata {
@@ -86,9 +88,10 @@ bool is_transmitter_connected() {
            TransmitterIdentity::get_active_mac() != nullptr;
 }
 
-void update_time_data(uint64_t uptime_ms, uint64_t unix_time, uint8_t time_source) {
+void update_time_data(uint64_t uptime_ms, uint64_t unix_time, int16_t utc_offset_min, uint8_t time_source) {
     runtime_status.uptime_ms = uptime_ms;
     runtime_status.unix_time = unix_time;
+    runtime_status.utc_offset_min = utc_offset_min;
     runtime_status.time_source = time_source;
 }
 
@@ -100,8 +103,24 @@ uint64_t get_unix_time() {
     return runtime_status.unix_time;
 }
 
+int16_t get_utc_offset_min() {
+    return runtime_status.utc_offset_min;
+}
+
 uint8_t get_time_source() {
     return runtime_status.time_source;
+}
+
+void update_heartbeat_flags(uint8_t flags) {
+    runtime_status.heartbeat_flags = flags;
+}
+
+uint8_t get_heartbeat_flags() {
+    return runtime_status.heartbeat_flags;
+}
+
+bool is_geolocation_valid() {
+    return (runtime_status.heartbeat_flags & HEARTBEAT_FLAG_GEOLOCATION_VALID) != 0;
 }
 
 void store_metadata(bool valid,

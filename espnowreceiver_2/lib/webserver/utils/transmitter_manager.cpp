@@ -321,9 +321,25 @@ uint8_t TransmitterManager::getTimeSource() {
     return TransmitterState::get_time_source();
 }
 
+int16_t TransmitterManager::getUtcOffsetMin() {
+    return TransmitterState::get_utc_offset_min();
+}
+
 // Phase 4: Update time/uptime data from heartbeat
-void TransmitterManager::updateTimeData(uint64_t new_uptime_ms, uint64_t new_unix_time, uint8_t new_time_source) {
-    TransmitterState::update_time_data(new_uptime_ms, new_unix_time, new_time_source);
+void TransmitterManager::updateTimeData(uint64_t new_uptime_ms, uint64_t new_unix_time, int16_t new_utc_offset_min, uint8_t new_time_source) {
+    TransmitterState::update_time_data(new_uptime_ms, new_unix_time, new_utc_offset_min, new_time_source);
+}
+
+void TransmitterManager::updateHeartbeatFlags(uint8_t heartbeat_flags) {
+    TransmitterState::update_heartbeat_flags(heartbeat_flags);
+}
+
+uint8_t TransmitterManager::getHeartbeatFlags() {
+    return TransmitterState::get_heartbeat_flags();
+}
+
+bool TransmitterManager::isGeolocationValid() {
+    return TransmitterState::is_geolocation_valid();
 }
 
 void TransmitterManager::updateSendStatus(bool success) {

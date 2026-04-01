@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <esp32common/espnow/common.h>
 #include <vector>
 #include "transmitter_settings_types.h"
 #include "transmitter_event_log_types.h"
@@ -128,8 +129,12 @@ public:
     // Time data management
     static uint64_t getUptimeMs();
     static uint64_t getUnixTime();
+    static int16_t getUtcOffsetMin();
     static uint8_t getTimeSource();
-    static void updateTimeData(uint64_t new_uptime_ms, uint64_t new_unix_time, uint8_t new_time_source);
+    static void updateTimeData(uint64_t new_uptime_ms, uint64_t new_unix_time, int16_t new_utc_offset_min, uint8_t new_time_source);
+    static void updateHeartbeatFlags(uint8_t heartbeat_flags);
+    static uint8_t getHeartbeatFlags();
+    static bool isGeolocationValid();
     
     // Phase 3: Static spec data from battery emulator (via MQTT)
     static void storeStaticSpecs(const JsonObject& specs);

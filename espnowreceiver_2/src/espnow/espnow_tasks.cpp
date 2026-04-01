@@ -584,7 +584,7 @@ void setup_message_routes() {
             }
         },
         0xFF, nullptr);
-    
+
     LOG_DEBUG(kLogTag, "Registered %d message routes", router.route_count());
 }
 
@@ -678,7 +678,8 @@ void task_espnow_worker(void *parameter) {
             if (connection_manager.is_connected()) {
                 bool is_keepalive_msg = (msg_type == msg_heartbeat || 
                                          msg_type == msg_heartbeat_ack ||
-                                         msg_type == msg_version_beacon);
+                                         msg_type == msg_version_beacon ||
+                                         msg_type == msg_time_transitions_snapshot);
                 
                 if (!is_keepalive_msg) {
                     connection_handler.on_data_received(queue_msg.mac);

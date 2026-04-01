@@ -35,5 +35,37 @@ String get_debug_page_content() {
         <div id='debug-status'></div>
 </div>
 )rawliteral";
-    return content;
+
+            content += R"rawliteral(
+        <div class='debug-control' id='mem-health-card'>
+                <h3>🧠 Memory Health</h3>
+                                         <p>Heap health is sampled every 30 seconds, or every 1 second during active API/SSE activity.
+                                                 Fragmentation is shown as a percentage: lower is better, while values above 70% suggest memory pressure.</p>
+
+                <div class='mem-grid'>
+                        <div class='mem-domain' id='mem-internal'>
+                                <h4>Internal RAM</h4>
+                                <div class='mem-row'><span class='mem-label'>Free:</span>        <span id='int-free'>—</span></div>
+                                <div class='mem-row'><span class='mem-label'>Largest block:</span><span id='int-largest'>—</span></div>
+                                <div class='mem-row'><span class='mem-label'>Frag estimate:</span><span id='int-frag'>—</span></div>
+                        </div>
+                        <div class='mem-domain' id='mem-psram'>
+                                <h4>PSRAM</h4>
+                                <div class='mem-row'><span class='mem-label'>Free:</span>        <span id='ps-free'>—</span></div>
+                                <div class='mem-row'><span class='mem-label'>Largest block:</span><span id='ps-largest'>—</span></div>
+                                <div class='mem-row'><span class='mem-label'>Frag estimate:</span><span id='ps-frag'>—</span></div>
+                        </div>
+                </div>
+
+                <div class='mem-meta'>
+                        <span id='mem-sample-mode' class='mem-mode-badge'>—</span>
+                        <span id='mem-sample-count' style='margin-left:12px;color:#aaa;font-size:13px;'>0 samples</span>
+                        <span id='mem-sample-age'   style='margin-left:12px;color:#aaa;font-size:13px;'></span>
+                </div>
+
+                <button onclick='loadMemoryHealth()' class='button' style='margin-top:12px;'>↻ Refresh</button>
+        </div>
+        )rawliteral";
+
+            return content;
 }

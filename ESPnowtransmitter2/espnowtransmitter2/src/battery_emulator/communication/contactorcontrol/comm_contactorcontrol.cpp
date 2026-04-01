@@ -4,10 +4,9 @@
 #include "../../inverter/INVERTERS.h"
 #include "../../devboard/utils/compat.h"
 #include "../../../network/time_manager.h"
+#include "../../../../lib/ethernet_utilities/ethernet_utilities.h"
 
 #include <ctime>
-#include <Preferences.h>
-#include <cstring>
 
 // TODO: Ensure valid values at run-time
 // User can update all these values via Settings page
@@ -56,174 +55,11 @@ static bool initialAlignCompletedThisBoot = false;
 static unsigned long firstAlignAnchorMs = 0;
 static unsigned long firstAlignDelayMs = 0;
 
-enum class AlignArmReason : uint8_t { NONE = 0, INITIAL = 1, DST_REALIGN = 2 };
+enum class AlignArmReason : uint8_t { NONE = 0, INITIAL = 1, OFFSET_CHANGE = 2 };
 static AlignArmReason alignArmReason = AlignArmReason::NONE;
 
-static bool dstQueueLoaded = false;
-static uint8_t dstQueueCount = 0;
-static uint64_t dstQueueEpochs[4] = {0, 0, 0, 0};
-static bool dstEntryPendingPop = false;
-static uint64_t dstPendingEpoch = 0;
-static uint64_t lastDstRefillAttemptEpoch = 0;
-
-static constexpr uint64_t kSecondsPerDay = 24ULL * 60ULL * 60ULL;
-static constexpr uint64_t kDstRefillRetryIntervalSec = 12ULL * 60ULL * 60ULL;
-
-static void log_bst_dst_queue_status(uint64_t now_epoch, const char* reason) {
-  if (!reason) {
-    reason = "unspecified";
-  }
-
-  if (dstQueueCount == 0) {
-    logging.printf("BMS reset (%s): BST/DST array is empty (no pending transitions). Next alignment change: none scheduled.\n",
-                   reason);
-    return;
-  }
-
-  logging.printf("BMS reset (%s): BST/DST array count=%u\n",
-                 reason,
-                 static_cast<unsigned>(dstQueueCount));
-
-  for (uint8_t i = 0; i < dstQueueCount; ++i) {
-    const time_t epoch = static_cast<time_t>(dstQueueEpochs[i]);
-    struct tm tm_local{};
-    localtime_r(&epoch, &tm_local);
-
-    char local_buf[32] = {0};
-    strftime(local_buf, sizeof(local_buf), "%Y-%m-%d %H:%M:%S", &tm_local);
-
-    const uint64_t seconds_until = (now_epoch != 0 && dstQueueEpochs[i] > now_epoch) ? (dstQueueEpochs[i] - now_epoch) : 0;
-    logging.printf("  BST/DST[%u]: epoch=%llu local=%s in=%llus\n",
-                   static_cast<unsigned>(i),
-                   static_cast<unsigned long long>(dstQueueEpochs[i]),
-                   local_buf,
-                   static_cast<unsigned long long>(seconds_until));
-  }
-}
-
-static int local_isdst_for_epoch(time_t epoch) {
-  struct tm tm_local{};
-  localtime_r(&epoch, &tm_local);
-  return tm_local.tm_isdst;
-}
-
-static void save_dst_queue_to_nvs() {
-  Preferences prefs;
-  if (!prefs.begin("bmsdst", false)) {
-    return;
-  }
-
-  prefs.putUChar("cnt", dstQueueCount);
-  prefs.putBytes("arr", dstQueueEpochs, sizeof(dstQueueEpochs));
-  prefs.end();
-}
-
-static void load_dst_queue_from_nvs() {
-  if (dstQueueLoaded) {
-    return;
-  }
-
-  Preferences prefs;
-  if (!prefs.begin("bmsdst", true)) {
-    dstQueueLoaded = true;
-    return;
-  }
-
-  dstQueueCount = prefs.getUChar("cnt", 0);
-  if (dstQueueCount > 4) {
-    dstQueueCount = 0;
-  }
-
-  const size_t read = prefs.getBytes("arr", dstQueueEpochs, sizeof(dstQueueEpochs));
-  if (read != sizeof(dstQueueEpochs)) {
-    memset(dstQueueEpochs, 0, sizeof(dstQueueEpochs));
-    dstQueueCount = 0;
-  }
-
-  for (uint8_t i = 0; i + 1 < dstQueueCount; ++i) {
-    if (dstQueueEpochs[i] == 0 || dstQueueEpochs[i + 1] <= dstQueueEpochs[i]) {
-      memset(dstQueueEpochs, 0, sizeof(dstQueueEpochs));
-      dstQueueCount = 0;
-      break;
-    }
-  }
-
-  prefs.end();
-  dstQueueLoaded = true;
-
-  const uint64_t now_epoch = TimeManager::instance().get_unix_time();
-  log_bst_dst_queue_status(now_epoch, "nvs-load");
-}
-
-static void pop_dst_queue_head() {
-  if (dstQueueCount == 0) {
-    return;
-  }
-
-  for (uint8_t i = 1; i < dstQueueCount; ++i) {
-    dstQueueEpochs[i - 1] = dstQueueEpochs[i];
-  }
-  dstQueueEpochs[dstQueueCount - 1] = 0;
-  dstQueueCount--;
-  save_dst_queue_to_nvs();
-
-  const uint64_t now_epoch = TimeManager::instance().get_unix_time();
-  log_bst_dst_queue_status(now_epoch, "queue-pop");
-}
-
-static uint64_t find_dst_transition_epoch(time_t range_start, time_t range_end, int start_isdst) {
-  time_t left = range_start;
-  time_t right = range_end;
-
-  while ((right - left) > 1) {
-    const time_t mid = left + ((right - left) / 2);
-    const int mid_isdst = local_isdst_for_epoch(mid);
-    if (mid_isdst == start_isdst) {
-      left = mid;
-    } else {
-      right = mid;
-    }
-  }
-
-  return static_cast<uint64_t>(right);
-}
-
-static void refill_dst_queue_if_needed(uint64_t now_epoch) {
-  if (now_epoch == 0 || dstQueueCount >= 4) {
-    return;
-  }
-
-  if (lastDstRefillAttemptEpoch != 0 && (now_epoch - lastDstRefillAttemptEpoch) < kDstRefillRetryIntervalSec) {
-    return;
-  }
-  lastDstRefillAttemptEpoch = now_epoch;
-
-  time_t scan_start = static_cast<time_t>(now_epoch);
-  if (dstQueueCount > 0 && dstQueueEpochs[dstQueueCount - 1] > now_epoch) {
-    scan_start = static_cast<time_t>(dstQueueEpochs[dstQueueCount - 1] + 1);
-  }
-
-  int prev_isdst = local_isdst_for_epoch(scan_start);
-
-  for (uint16_t day = 1; day <= 1461 && dstQueueCount < 4; ++day) {
-    const time_t probe = scan_start + (static_cast<time_t>(day) * static_cast<time_t>(kSecondsPerDay));
-    const int probe_isdst = local_isdst_for_epoch(probe);
-
-    if (probe_isdst != prev_isdst && probe_isdst >= 0 && prev_isdst >= 0) {
-      const time_t range_start = probe - static_cast<time_t>(kSecondsPerDay);
-      const uint64_t transition_epoch = find_dst_transition_epoch(range_start, probe, prev_isdst);
-
-      if (transition_epoch > now_epoch && (dstQueueCount == 0 || transition_epoch > dstQueueEpochs[dstQueueCount - 1])) {
-        dstQueueEpochs[dstQueueCount++] = transition_epoch;
-      }
-    }
-
-    prev_isdst = probe_isdst;
-  }
-
-  save_dst_queue_to_nvs();
-  log_bst_dst_queue_status(now_epoch, "queue-refill");
-}
+static bool offset_monitor_initialized = false;
+static int16_t last_seen_utc_offset_min = 0;
 
 static bool arm_alignment_to_target_from_ntp(unsigned long now_ms, AlignArmReason reason, const char* log_prefix) {
   if (!periodic_bms_reset || firstAlignArmed) {
@@ -272,53 +108,37 @@ static void maybe_arm_initial_alignment_from_ntp(unsigned long now_ms) {
   arm_alignment_to_target_from_ntp(now_ms, AlignArmReason::INITIAL, "initial-align");
 }
 
-static void maybe_arm_dst_realign(unsigned long now_ms, uint64_t now_epoch) {
-  if (!periodic_bms_reset || firstAlignArmed || dstEntryPendingPop || dstQueueCount == 0) {
+static void maybe_arm_offset_change_realign(unsigned long now_ms) {
+  if (!periodic_bms_reset) {
     return;
   }
 
-  while (dstQueueCount > 0 && dstQueueEpochs[0] <= now_epoch) {
-    pop_dst_queue_head();
-  }
-
-  if (dstQueueCount == 0) {
+  const int16_t current_offset_min = get_cached_utc_offset_min();
+  if (!offset_monitor_initialized) {
+    last_seen_utc_offset_min = current_offset_min;
+    offset_monitor_initialized = true;
     return;
   }
 
-  const uint64_t next_transition = dstQueueEpochs[0];
-  const uint64_t seconds_until_transition = next_transition - now_epoch;
-  if (seconds_until_transition > kSecondsPerDay) {
+  if (current_offset_min == last_seen_utc_offset_min) {
     return;
   }
 
-  log_bst_dst_queue_status(now_epoch, "dst-check-within-24h");
+  logging.printf("BMS reset: UTC offset change detected (%d -> %d). Triggering re-alignment.\n",
+                 static_cast<int>(last_seen_utc_offset_min),
+                 static_cast<int>(current_offset_min));
 
-  if (arm_alignment_to_target_from_ntp(now_ms, AlignArmReason::DST_REALIGN, "dst-realign")) {
-    dstEntryPendingPop = true;
-    dstPendingEpoch = next_transition;
-  }
+  // Update immediately so this is edge-triggered once per observed change.
+  last_seen_utc_offset_min = current_offset_min;
+
+  (void)arm_alignment_to_target_from_ntp(now_ms, AlignArmReason::OFFSET_CHANGE, "offset-change-realign");
 }
 
 static uint8_t encode_bms_alignment_snapshot_data(uint64_t now_epoch) {
-  const uint8_t queue_count = (dstQueueCount > 0x0F) ? 0x0F : dstQueueCount;
-  uint8_t status_nibble = 0;  // unknown
-
-  if (dstQueueCount == 0) {
-    status_nibble = 1;  // empty queue, no transition scheduled
-  } else if (now_epoch == 0) {
-    status_nibble = 4;  // unsynced wall-clock
-  } else {
-    const uint64_t next_transition = dstQueueEpochs[0];
-    if (next_transition <= now_epoch) {
-      status_nibble = 2;  // due now (treat as within 24h)
-    } else if ((next_transition - now_epoch) <= kSecondsPerDay) {
-      status_nibble = 2;  // within 24h
-    } else {
-      status_nibble = 3;  // beyond 24h
-    }
-  }
-
-  return static_cast<uint8_t>((status_nibble << 4) | queue_count);
+  (void)now_epoch;
+  // Legacy event format retained for compatibility with current event text.
+  // queue_count=0 and status=1 => "queue empty / none scheduled".
+  return static_cast<uint8_t>((1u << 4) | 0u);
 }
 
 static void emit_bms_alignment_snapshot_event() {
@@ -559,12 +379,8 @@ void bms_power_on() {
 void handle_BMSpower() {
   if (periodic_bms_reset || remote_bms_reset) {
     currentTime = millis();
-    load_dst_queue_from_nvs();
 
     const uint64_t unix_time = TimeManager::instance().get_unix_time();
-    if (periodic_bms_reset && unix_time != 0) {
-      refill_dst_queue_if_needed(unix_time);
-    }
 
     if (!periodic_bms_reset && firstAlignArmed) {
       firstAlignArmed = false;
@@ -572,15 +388,11 @@ void handle_BMSpower() {
       firstAlignAnchorMs = 0;
       firstAlignConsumeOnSuccess = false;
       alignArmReason = AlignArmReason::NONE;
-      dstEntryPendingPop = false;
-      dstPendingEpoch = 0;
     }
 
     if (periodic_bms_reset) {
       maybe_arm_initial_alignment_from_ntp(currentTime);
-      if (unix_time != 0) {
-        maybe_arm_dst_realign(currentTime, unix_time);
-      }
+      maybe_arm_offset_change_realign(currentTime);
     }
 
     if (datalayer.system.status.bms_reset_status == BMS_RESET_IDLE) {
@@ -592,8 +404,8 @@ void handle_BMSpower() {
         const bool elapsed_due = (currentTime - lastPowerRemovalTime >= powerRemovalInterval);
 
         if (aligned_due) {
-          if (alignArmReason == AlignArmReason::DST_REALIGN) {
-            logging.println("BMS reset: triggering DST re-aligned reset");
+          if (alignArmReason == AlignArmReason::OFFSET_CHANGE) {
+            logging.println("BMS reset: triggering offset-change re-aligned reset");
           } else {
             logging.println("BMS reset: triggering initial aligned reset");
           }
@@ -656,13 +468,8 @@ void handle_BMSpower() {
           if (alignArmReason == AlignArmReason::INITIAL) {
             initialAlignCompletedThisBoot = true;
             logging.println("BMS reset: initial alignment consumed, continuing with pure elapsed 24h cycle");
-          } else if (alignArmReason == AlignArmReason::DST_REALIGN) {
-            if (dstEntryPendingPop && dstQueueCount > 0 && dstQueueEpochs[0] == dstPendingEpoch) {
-              pop_dst_queue_head();
-            }
-            dstEntryPendingPop = false;
-            dstPendingEpoch = 0;
-            logging.println("BMS reset: DST re-alignment consumed, continuing with pure elapsed 24h cycle");
+          } else if (alignArmReason == AlignArmReason::OFFSET_CHANGE) {
+            logging.println("BMS reset: offset-change re-alignment consumed, continuing with pure elapsed 24h cycle");
           }
 
           alignArmReason = AlignArmReason::NONE;

@@ -2,8 +2,10 @@
 
 #include "../../src/espnow/espnow_send.h"
 #include "api_response_utils.h"
+#include "../utils/transmitter_manager.h"
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include <cstdio>
 
 esp_err_t api_get_debug_level_handler(httpd_req_t *req) {
