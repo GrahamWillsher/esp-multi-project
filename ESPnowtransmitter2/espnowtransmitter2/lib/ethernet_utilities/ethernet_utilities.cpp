@@ -15,6 +15,7 @@
 
 #include "ethernet_utilities.h"
 #include "../src/config/logging_config.h"
+#include <ethernet_config.h>
 #include <log_routed.h>
 #include <ArduinoJson.h>
 #include <WiFiClient.h>
@@ -36,7 +37,9 @@ static TaskHandle_t ethernet_utils_task_handle = NULL;
 static unsigned long last_ntp_sync = 0;
 static bool time_initialized = false;
 static bool timezone_configured = false;
+static bool timezone_auto_detected = false;
 static unsigned long last_timezone_attempt = 0;
+static int16_t cached_utc_offset_min = 0;  // Cached UTC offset in minutes; refreshed on each TZ update
 
 // Internet connectivity status
 static volatile bool internet_connected = false;
@@ -53,6 +56,8 @@ static String detected_timezone_abbreviation = "";
 constexpr uint32_t kGeoLookupPerProviderTimeoutMs = 5000;
 constexpr uint32_t kGeoLookupIdleTimeoutMs = 1000;
 constexpr size_t kGeoResponseCapacity = 768;
+constexpr uint32_t kTimezoneRetryDelayMs = 30000;
+constexpr uint32_t kTimezoneRefreshIntervalMs = NTP_SYNC_INTERVAL_MS;
 
 struct TimezoneLookupResult {
     char timezone_name[64]{};
@@ -60,6 +65,8 @@ struct TimezoneLookupResult {
     char city[48]{};
     char country[48]{};
     char public_ip[32]{};
+    int32_t utc_offset_seconds = 0;
+    bool utc_offset_valid = false;
 };
 
 struct GeoProvider {
@@ -67,6 +74,151 @@ struct GeoProvider {
     const char* path;
     bool (*parser)(JsonDocument&, TimezoneLookupResult&);
 };
+
+static bool configure_timezone_from_location_internal(bool* out_changed);
+
+static void refresh_detected_timezone_abbreviation_from_system_time() {
+    time_t now = time(nullptr);
+    if (now <= 0) {
+        return;
+    }
+
+    struct tm local_tm{};
+    localtime_r(&now, &local_tm);
+
+    char tz_buf[16] = {0};
+    if (strftime(tz_buf, sizeof(tz_buf), "%Z", &local_tm) > 0) {
+        detected_timezone_abbreviation = tz_buf;
+    }
+}
+
+static bool parse_strftime_utc_offset_min(const char* tz_offset, int16_t* out_offset_min) {
+    if (tz_offset == nullptr || out_offset_min == nullptr) {
+        return false;
+    }
+
+    const int sign = (tz_offset[0] == '-') ? -1 : ((tz_offset[0] == '+') ? 1 : 0);
+    if (sign == 0) {
+        return false;
+    }
+
+    int hours = 0;
+    int minutes = 0;
+
+    // Accept both %z variants: +HHMM and +HH:MM.
+    if (sscanf(tz_offset + 1, "%2d:%2d", &hours, &minutes) == 2) {
+        // Parsed +HH:MM.
+    } else if (sscanf(tz_offset + 1, "%2d%2d", &hours, &minutes) == 2) {
+        // Parsed +HHMM.
+    } else {
+        return false;
+    }
+
+    *out_offset_min = static_cast<int16_t>(sign * (hours * 60 + minutes));
+    return true;
+}
+
+static int16_t get_utc_offset_min_at(time_t epoch_utc) {
+    if (epoch_utc <= 0) {
+        return 0;
+    }
+
+    struct tm local_tm{};
+    localtime_r(&epoch_utc, &local_tm);
+
+    char tz_offset_buf[8] = {0};
+    if (strftime(tz_offset_buf, sizeof(tz_offset_buf), "%z", &local_tm) == 0) {
+        return 0;
+    }
+
+    int16_t offset_min = 0;
+    if (!parse_strftime_utc_offset_min(tz_offset_buf, &offset_min)) {
+        return 0;
+    }
+
+    return offset_min;
+}
+
+// Recompute and cache the UTC offset in minutes from the current TZ environment.
+// Called whenever setenv("TZ",...) + tzset() are invoked so per-heartbeat cost is zero.
+static void refresh_cached_utc_offset() {
+    const time_t now = time(nullptr);
+    cached_utc_offset_min = get_utc_offset_min_at(now);
+}
+
+
+static bool parse_utc_offset_hhmm(const char* utc_offset, int32_t* out_offset_seconds) {
+    if (utc_offset == nullptr || out_offset_seconds == nullptr) {
+        return false;
+    }
+
+    const int sign = (utc_offset[0] == '-') ? -1 : ((utc_offset[0] == '+') ? 1 : 0);
+    if (sign == 0) {
+        return false;
+    }
+
+    int hours = 0;
+    int minutes = 0;
+    if (sscanf(utc_offset + 1, "%d:%d", &hours, &minutes) < 1) {
+        return false;
+    }
+
+    *out_offset_seconds = sign * ((hours * 3600) + (minutes * 60));
+    return true;
+}
+
+static void sanitize_timezone_abbreviation(const char* input,
+                                          char* output,
+                                          size_t output_len) {
+    if (output == nullptr || output_len == 0) {
+        return;
+    }
+
+    output[0] = '\0';
+    if (input == nullptr || input[0] == '\0') {
+        strlcpy(output, "LOC", output_len);
+        return;
+    }
+
+    size_t write_index = 0;
+    for (size_t read_index = 0; input[read_index] != '\0' && write_index < (output_len - 1); ++read_index) {
+        const char ch = input[read_index];
+        if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')) {
+            output[write_index++] = ch;
+        }
+    }
+    output[write_index] = '\0';
+
+    if (write_index < 3) {
+        strlcpy(output, "LOC", output_len);
+    }
+}
+
+static bool build_fixed_offset_posix_tz(int32_t utc_offset_seconds,
+                                        const char* tz_abbrev_hint,
+                                        char* posix_tz,
+                                        size_t posix_tz_len,
+                                        char* tz_abbrev,
+                                        size_t tz_abbrev_len) {
+    if (posix_tz == nullptr || posix_tz_len == 0 || tz_abbrev == nullptr || tz_abbrev_len == 0) {
+        return false;
+    }
+
+    char safe_abbrev[16] = {0};
+    sanitize_timezone_abbreviation(tz_abbrev_hint, safe_abbrev, sizeof(safe_abbrev));
+    strlcpy(tz_abbrev, safe_abbrev, tz_abbrev_len);
+
+    const int32_t abs_offset = (utc_offset_seconds < 0) ? -utc_offset_seconds : utc_offset_seconds;
+    const int hours = static_cast<int>(abs_offset / 3600);
+    const int minutes = static_cast<int>((abs_offset % 3600) / 60);
+    const int posix_sign = (utc_offset_seconds >= 0) ? -1 : 1;
+
+    const int written = (minutes == 0)
+        ? snprintf(posix_tz, posix_tz_len, "%s%d", safe_abbrev, posix_sign * hours)
+        : snprintf(posix_tz, posix_tz_len, "%s%d:%02d", safe_abbrev, posix_sign * hours, minutes);
+
+    return written > 0 && static_cast<size_t>(written) < posix_tz_len;
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 // PRIVATE HELPER FUNCTIONS
@@ -166,6 +318,10 @@ static bool parse_ip_api_response(JsonDocument& doc, TimezoneLookupResult& out) 
     strlcpy(out.country, doc["country"] | "", sizeof(out.country));
     strlcpy(out.public_ip, doc["query"] | "", sizeof(out.public_ip));
     out.timezone_abbreviation[0] = '\0';
+    if (!doc["offset"].isNull()) {
+        out.utc_offset_seconds = doc["offset"] | 0;
+        out.utc_offset_valid = true;
+    }
 
     return out.timezone_name[0] != '\0';
 }
@@ -174,6 +330,22 @@ static bool parse_worldtime_response(JsonDocument& doc, TimezoneLookupResult& ou
     strlcpy(out.timezone_name, doc["timezone"] | "", sizeof(out.timezone_name));
     strlcpy(out.timezone_abbreviation, doc["abbreviation"] | "", sizeof(out.timezone_abbreviation));
     strlcpy(out.public_ip, doc["client_ip"] | "", sizeof(out.public_ip));
+
+    if (!doc["utc_offset"].isNull()) {
+        int32_t parsed_offset = 0;
+        if (parse_utc_offset_hhmm(doc["utc_offset"] | "", &parsed_offset)) {
+            out.utc_offset_seconds = parsed_offset;
+            out.utc_offset_valid = true;
+        }
+    }
+
+    if (!out.utc_offset_valid && !doc["raw_offset"].isNull()) {
+        const int32_t raw_offset = doc["raw_offset"] | 0;
+        const int32_t dst_offset = doc["dst_offset"] | 0;
+        out.utc_offset_seconds = raw_offset + dst_offset;
+        out.utc_offset_valid = true;
+    }
+
     return out.timezone_name[0] != '\0';
 }
 
@@ -218,7 +390,7 @@ static bool http_get_json(const GeoProvider& provider,
 
 static bool lookup_timezone_with_fallback(TimezoneLookupResult& out) {
     static const GeoProvider kProviders[] = {
-        {"ip-api.com", "/json/?fields=status,timezone,country,city,query", parse_ip_api_response},
+        {"ip-api.com", "/json/?fields=status,timezone,country,city,query,offset", parse_ip_api_response},
         {"worldtimeapi.org", "/api/ip", parse_worldtime_response},
         {"timeapi.world", "/api/ip", parse_worldtime_response},
     };
@@ -300,22 +472,26 @@ static void ethernet_utilities_task(void* parameter) {
     while (!is_network_connected()) {
         vTaskDelay(pdMS_TO_TICKS(500));
     }
+
+    bool timezone_changed = false;
+    (void)configure_timezone_from_location_internal(&timezone_changed);
+    last_timezone_attempt = millis();
     
     // Do initial NTP sync
     get_ntp_time();
     
-    // State tracking
-    bool timezone_detected = false;
     int timezone_retry_count = 0;
-    const int TIMEZONE_RETRY_DELAY_MS = 30000;      // 30 seconds between timezone retries
     
     while (true) {
         TickType_t current_time = xTaskGetTickCount();
         
-        // Timezone auto-detection (combines public IP detection and timezone lookup)
-        if (!timezone_detected && is_network_connected()) {
+        // Timezone auto-detection + periodic refresh.
+        // Known timezone names use full POSIX DST rules; unknown names fall back to the provider's current UTC offset.
+        if (is_network_connected()) {
             unsigned long time_since_last_attempt = millis() - last_timezone_attempt;
-            if (time_since_last_attempt >= TIMEZONE_RETRY_DELAY_MS || last_timezone_attempt == 0) {
+            const uint32_t required_interval = timezone_auto_detected ? kTimezoneRefreshIntervalMs
+                                                                      : kTimezoneRetryDelayMs;
+            if (time_since_last_attempt >= required_interval || last_timezone_attempt == 0) {
                 last_timezone_attempt = millis();
                 timezone_retry_count++;
 
@@ -335,8 +511,8 @@ static void ethernet_utilities_task(void* parameter) {
                     LOG_INFO("NET_UTILS", "Local WiFi IP: %s", wifi_ip.toString().c_str());
                 }
                 
-                if (configure_timezone_from_location()) {
-                    timezone_detected = true;
+                bool timezone_rule_changed = false;
+                if (configure_timezone_from_location_internal(&timezone_rule_changed)) {
                     LOG_INFO("NET_UTILS", "✓✓✓ SUCCESS! Timezone configured: %s (%s) ✓✓✓",
                              detected_timezone_name.c_str(),
                              detected_timezone_abbreviation.c_str());
@@ -346,12 +522,13 @@ static void ethernet_utilities_task(void* parameter) {
                                "Configured: %s (%s)",
                                detected_timezone_name.c_str(),
                                detected_timezone_abbreviation.c_str());
-                    // Re-sync time to apply new timezone
-                    last_ntp_sync = 0;
-                    get_ntp_time();
+                    if (timezone_rule_changed) {
+                        last_ntp_sync = 0;
+                        get_ntp_time();
+                    }
                 } else {
                     LOG_WARN("NET_UTILS", "Timezone detection attempt #%d FAILED - will retry in %d seconds",
-                             timezone_retry_count, TIMEZONE_RETRY_DELAY_MS/1000);
+                             timezone_retry_count, kTimezoneRetryDelayMs / 1000);
                 }
             }
         }
@@ -430,12 +607,19 @@ void stop_ethernet_utilities_task() {
 }
 
 bool get_ntp_time() {
-    // Configure default UTC timezone on first call (will be auto-detected later)
+    // Configure a DST-aware default timezone on first call.
+    // Geolocation may still replace this later, but we should not remain on raw UTC
+    // in locales such as the UK where summer/winter transitions matter.
     if (!timezone_configured) {
-        setenv("TZ", "UTC0", 1);
+        setenv("TZ", EthernetConfig::NTP::DEFAULT_POSIX_TZ, 1);
         tzset();
+        detected_timezone_name = EthernetConfig::NTP::DEFAULT_TIMEZONE_NAME;
+        refresh_detected_timezone_abbreviation_from_system_time();
+        refresh_cached_utc_offset();
         timezone_configured = true;
-        LOG_INFO("NTP_UTILS", "Initial timezone: UTC (will auto-detect)");
+        LOG_INFO("NTP_UTILS", "Initial timezone: %s -> %s (will auto-detect/override if available)",
+                 EthernetConfig::NTP::DEFAULT_TIMEZONE_NAME,
+                 EthernetConfig::NTP::DEFAULT_POSIX_TZ);
     }
     
     // Skip if recently synced
@@ -482,6 +666,8 @@ bool get_ntp_time() {
             
             time_t now = epoch;
             struct tm* local_time = localtime(&now);
+            refresh_detected_timezone_abbreviation_from_system_time();
+            refresh_cached_utc_offset();
             
             const char* tz_display = detected_timezone_abbreviation.length() > 0 ? 
                                      detected_timezone_abbreviation.c_str() : "UTC";
@@ -530,8 +716,12 @@ bool is_internet_reachable() {
     return internet_connected;
 }
 
-bool configure_timezone_from_location() {
+static bool configure_timezone_from_location_internal(bool* out_changed) {
     LOG_INFO("TZ_CONFIG", "Getting timezone from location with fallback...");
+
+    if (out_changed != nullptr) {
+        *out_changed = false;
+    }
 
     if (!is_network_connected()) {
         LOG_WARN("TZ_CONFIG", "No network connection for timezone lookup");
@@ -552,19 +742,47 @@ bool configure_timezone_from_location() {
                                                            tz_abbrev,
                                                            sizeof(tz_abbrev));
 
+    bool used_offset_fallback = false;
     if (!known_mapping) {
-        LOG_WARN("TZ_CONFIG", "Unknown timezone mapping: %s (fallback UTC0)", result.timezone_name);
+        if (result.utc_offset_valid &&
+            build_fixed_offset_posix_tz(result.utc_offset_seconds,
+                                        result.timezone_abbreviation,
+                                        posix_tz,
+                                        sizeof(posix_tz),
+                                        tz_abbrev,
+                                        sizeof(tz_abbrev))) {
+            used_offset_fallback = true;
+            LOG_WARN("TZ_CONFIG", "Unknown timezone mapping: %s (using offset fallback %s)",
+                     result.timezone_name,
+                     posix_tz);
+        } else {
+            LOG_WARN("TZ_CONFIG", "Unknown timezone mapping: %s (fallback UTC0)", result.timezone_name);
+        }
     }
+
+    const char* current_tz = getenv("TZ");
+    const bool tz_changed = (current_tz == nullptr) || (strcmp(current_tz, posix_tz) != 0);
 
     setenv("TZ", posix_tz, 1);
     tzset();
 
     detected_timezone_name = result.timezone_name;
     detected_timezone_abbreviation = tz_abbrev;
+    refresh_detected_timezone_abbreviation_from_system_time();
+    refresh_cached_utc_offset();
     public_ip_address = result.public_ip;
     last_public_ip_check = millis();
+    timezone_configured = true;
+    timezone_auto_detected = true;
 
-    LOG_INFO("TZ_CONFIG", "Timezone configured: %s -> %s", result.timezone_name, posix_tz);
+    if (out_changed != nullptr) {
+        *out_changed = tz_changed;
+    }
+
+    LOG_INFO("TZ_CONFIG", "Timezone configured: %s -> %s%s",
+             result.timezone_name,
+             posix_tz,
+             used_offset_fallback ? " (offset fallback)" : "");
     log_routed(LogSink::Mqtt,
                RoutedLevel::Notice,
                "TZ",
@@ -574,6 +792,10 @@ bool configure_timezone_from_location() {
     return true;
 }
 
+bool configure_timezone_from_location() {
+    return configure_timezone_from_location_internal(nullptr);
+}
+
 bool get_formatted_time(char* buffer, size_t buffer_size) {
     if (!time_initialized) {
         snprintf(buffer, buffer_size, "Time not synced");
@@ -581,14 +803,26 @@ bool get_formatted_time(char* buffer, size_t buffer_size) {
     }
     
     time_t now = time(nullptr);
-    struct tm* t = localtime(&now);
-    const char* tz = detected_timezone_abbreviation.length() > 0 ? 
-                     detected_timezone_abbreviation.c_str() : "UTC";
-    
+    struct tm local_tm{};
+    localtime_r(&now, &local_tm);
+
+    char tz_buf[16] = {0};
+    if (strftime(tz_buf, sizeof(tz_buf), "%Z", &local_tm) == 0) {
+        strlcpy(tz_buf, "UTC", sizeof(tz_buf));
+    }
+
     snprintf(buffer, buffer_size, "%02d/%02d/%04d %02d:%02d:%02d %s",
-             t->tm_mday, t->tm_mon + 1, t->tm_year + 1900,
-             t->tm_hour, t->tm_min, t->tm_sec, tz);
+             local_tm.tm_mday, local_tm.tm_mon + 1, local_tm.tm_year + 1900,
+             local_tm.tm_hour, local_tm.tm_min, local_tm.tm_sec, tz_buf);
     return true;
+}
+
+bool is_geolocation_configured() {
+    return timezone_auto_detected;
+}
+
+int16_t get_cached_utc_offset_min() {
+    return cached_utc_offset_min;
 }
 
 bool force_sync_ntp() {

@@ -100,6 +100,20 @@ bool configure_timezone_from_location();
 bool get_formatted_time(char* buffer, size_t bufferSize);
 
 /**
+ * @brief Check whether timezone was confirmed via geolocation provider lookup.
+ * @return true when geolocation succeeded at least once since boot.
+ */
+bool is_geolocation_configured();
+
+/**
+ * @brief Get the cached UTC offset in whole minutes.
+ * Updated whenever the timezone is set (NTP default or geolocation).
+ * Stable for ~6 months at a time (changes only at DST transitions).
+ * @return UTC offset in minutes (e.g. BST = +60, UTC = 0, EST = -300)
+ */
+int16_t get_cached_utc_offset_min();
+
+/**
  * @brief Force immediate NTP sync (resets cooldown timer)
  * @return true if sync successful, false otherwise
  */

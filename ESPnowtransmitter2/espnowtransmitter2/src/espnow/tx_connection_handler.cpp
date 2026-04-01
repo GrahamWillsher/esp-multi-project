@@ -8,6 +8,7 @@
 #include "heartbeat_manager.h"
 #include "tx_state_machine.h"
 #include "tx_send_guard.h"
+#include "version_beacon_manager.h"
 #include <esp32common/espnow/connection_manager.h>
 #include <esp32common/config/timing_config.h>
 #include <channel_manager.h>
@@ -84,7 +85,7 @@ void TransmitterConnectionHandler::init() {
                     HeartbeatManager::instance().reset();
                     TxStateMachine::instance().on_connected(channel);
                 }
-                
+
                 LOG_INFO("TX_CONN", "✓ Connected - channel locked");
                 
             } else if (old_state == EspNowConnectionState::CONNECTED && 

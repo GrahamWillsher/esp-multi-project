@@ -8,11 +8,13 @@
 #include "../settings/settings_manager.h"
 #include "../network/mqtt_task.h"
 #include "../network/ethernet_manager.h"
+#include "../../lib/ethernet_utilities/ethernet_utilities.h"
 #include "message_handler.h"
 #include "../battery_emulator/devboard/utils/led_handler.h"
 #include <firmware_version.h>
 #include <firmware_metadata.h>
 #include <esp32common/espnow/packet_utils.h>
+#include <log_routed.h>
 #include <cstddef>
 
 VersionBeaconManager& VersionBeaconManager::instance() {
@@ -52,11 +54,11 @@ void VersionBeaconManager::notify_config_version_changed(config_section_t sectio
 
 void VersionBeaconManager::update() {
     uint32_t now = millis();
-    
-    // Periodic heartbeat beacon - FORCE send every 30 seconds regardless of changes
-    // This ensures receiver always has fresh runtime status (MQTT/Ethernet connected state)
+
+    // Periodic version beacon every 30 seconds — ensures receiver always has
+    // fresh runtime status (MQTT connected, Ethernet link) and current config versions.
     if (now - last_beacon_ms_ >= PERIODIC_INTERVAL_MS) {
-        send_version_beacon(true);  // Force send - receiver needs periodic status updates
+        send_version_beacon(true);
     }
 }
 

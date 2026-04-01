@@ -4,20 +4,11 @@
 #include <esp32common/espnow/common.h>
 
 /**
- * @brief Manages periodic version beacons for cache synchronization
- * 
- * Sends lightweight version beacons (~20 bytes) every 30 seconds containing:
- * - Configuration version numbers (MQTT, Network, Battery, Power Profile)
- * - Runtime status (MQTT connected, Ethernet link status)
- * 
- * Receiver compares beacon versions with its cache and requests updated
- * config sections only when versions don't match. This minimizes bandwidth
- * while ensuring receiver always has current configuration data.
- * 
- * Event-driven updates sent immediately when:
- * - MQTT connection state changes
- * - Ethernet link state changes
- * - Any configuration version changes (config saved)
+ * @brief Manages version beacon publication.
+ *
+ * Version beacons (~107 bytes) are sent every 30 seconds and immediately on
+ * runtime-state or config-version changes so the receiver can request stale
+ * sections on demand.
  */
 class VersionBeaconManager {
 public:
@@ -49,8 +40,9 @@ public:
     void notify_config_version_changed(config_section_t section);
     
     /**
-     * @brief Periodic update - call from main loop
-        * Sends periodic heartbeat beacon every 30 seconds
+     * @brief Periodic update - call from main loop.
+     * Sends version beacon every 30 seconds and checks for snapshot revision
+     * changes (revision change triggers immediate re-send).
      */
     void update();
     
@@ -64,10 +56,10 @@ public:
     /**
      * @brief Send version beacon to receiver (can be called directly when needed)
      * @param force If true, send even if no runtime state changed
-        * @return true if beacon was sent successfully, false if send was skipped/failed
+     * @return true if beacon was sent successfully, false if send was skipped/failed
      */
-        bool send_version_beacon(bool force = false);
-    
+    bool send_version_beacon(bool force = false);
+
 private:
     VersionBeaconManager() = default;
     
@@ -92,4 +84,5 @@ private:
     uint32_t last_beacon_ms_{0};
     static constexpr uint32_t PERIODIC_INTERVAL_MS = 30000;  // 30 seconds
     static constexpr uint32_t MIN_BEACON_INTERVAL_MS = 1000; // Rate limit (1s minimum)
+
 };
