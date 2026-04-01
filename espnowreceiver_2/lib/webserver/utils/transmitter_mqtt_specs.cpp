@@ -139,7 +139,10 @@ void store_mqtt_config(bool enabled,
                        bool connected,
                        uint32_t version,
                        bool persist) {
-    (void)connected;  // runtime MQTT connection is managed by version beacons
+    // Connection status in config packets is treated as non-authoritative.
+    // Authoritative transmitter runtime MQTT connection is updated through
+    // update_runtime_connection() from version-beacon handling.
+    (void)connected;
 
     mqtt_cache.mqtt_enabled = enabled;
 

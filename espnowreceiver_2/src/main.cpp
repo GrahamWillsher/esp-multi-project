@@ -14,7 +14,6 @@
 #include <runtime_common_utils/bootstrap_phase_runner.h>
 #include "display/display_led.h"
 #include "display/display.h"
-#include "display/display_splash.h"
 #include "display/display_update_queue.h"
 
 #include "espnow/espnow_callbacks.h"
@@ -25,9 +24,6 @@
 #include "mqtt/mqtt_client.h"
 #include "mqtt/mqtt_task.h"
 #include "hal/hardware_config.h"
-#ifdef USE_LVGL
-#include "hal/display/lvgl_driver.h"
-#endif
 #include <esp32common/espnow/connection_manager.h>
 #include <esp32common/espnow/connection_event_processor.h>
 #include <channel_manager.h>

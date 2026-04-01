@@ -7,8 +7,14 @@
 #include <freertos/timers.h>
 
 /**
- * @brief MQTT client for subscribing to battery emulator static specs
- * 
+ * @brief Receiver-local MQTT runtime client for subscribing to transmitter topics
+ *
+ * Ownership boundary (Phase 3 cleanup):
+ * - This class tracks RECEIVER↔BROKER runtime connection state only.
+ * - Transmitter-reported MQTT state/config shown in the web UI is cached in
+ *   `TransmitterMqttSpecs` / `TransmitterManager` and updated from ESP-NOW
+ *   version-beacon/config messages.
+ *
  * This module subscribes to topics published by the transmitter's battery emulator:
  * - BE/spec_data: Combined battery/inverter/charger/system specs
  * - BE/spec_data_2: Inverter-specific specs (alternative topic)

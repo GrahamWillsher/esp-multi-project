@@ -12,14 +12,6 @@ void TransmitterManager::init() {
     TransmitterNvsPersistence::init();
 }
 
-void TransmitterManager::loadFromNVS() {
-    TransmitterNvsPersistence::loadFromNVS();
-}
-
-void TransmitterManager::saveToNVS() {
-    TransmitterNvsPersistence::persist();
-}
-
 void TransmitterManager::registerMAC(const uint8_t* transmitter_mac) {
     TransmitterIdentity::register_mac(transmitter_mac);
 }
@@ -149,10 +141,6 @@ void TransmitterManager::getMetadataVersion(uint8_t& major, uint8_t& minor, uint
     TransmitterState::get_metadata_version(major, minor, patch);
 }
 
-uint32_t TransmitterManager::getMetadataVersionNumber() {
-    return TransmitterState::get_metadata_version_number();
-}
-
 const char* TransmitterManager::getMetadataBuildDate() {
     return TransmitterState::get_metadata_build_date();
 }
@@ -201,10 +189,6 @@ PowerSettings TransmitterManager::getPowerSettings() {
     return TransmitterSettingsCache::get_power_settings();
 }
 
-bool TransmitterManager::hasPowerSettings() {
-    return TransmitterSettingsCache::has_power_settings();
-}
-
 void TransmitterManager::storeInverterSettings(const InverterSettings& settings) {
     TransmitterSettingsCache::store_inverter_settings(settings);
     TransmitterNvsPersistence::persist();
@@ -212,10 +196,6 @@ void TransmitterManager::storeInverterSettings(const InverterSettings& settings)
 
 InverterSettings TransmitterManager::getInverterSettings() {
     return TransmitterSettingsCache::get_inverter_settings();
-}
-
-bool TransmitterManager::hasInverterSettings() {
-    return TransmitterSettingsCache::has_inverter_settings();
 }
 
 void TransmitterManager::storeCanSettings(const CanSettings& settings) {
@@ -227,10 +207,6 @@ CanSettings TransmitterManager::getCanSettings() {
     return TransmitterSettingsCache::get_can_settings();
 }
 
-bool TransmitterManager::hasCanSettings() {
-    return TransmitterSettingsCache::has_can_settings();
-}
-
 void TransmitterManager::storeContactorSettings(const ContactorSettings& settings) {
     TransmitterSettingsCache::store_contactor_settings(settings);
     TransmitterNvsPersistence::persist();
@@ -238,10 +214,6 @@ void TransmitterManager::storeContactorSettings(const ContactorSettings& setting
 
 ContactorSettings TransmitterManager::getContactorSettings() {
     return TransmitterSettingsCache::get_contactor_settings();
-}
-
-bool TransmitterManager::hasContactorSettings() {
-    return TransmitterSettingsCache::has_contactor_settings();
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -271,10 +243,6 @@ const char* TransmitterManager::getMqttUsername() {
     return TransmitterMqttSpecs::get_username();
 }
 
-const char* TransmitterManager::getMqttPassword() {
-    return TransmitterMqttSpecs::get_password();
-}
-
 const char* TransmitterManager::getMqttClientId() {
     return TransmitterMqttSpecs::get_client_id();
 }
@@ -285,10 +253,6 @@ bool TransmitterManager::isMqttConnected() {
 
 bool TransmitterManager::isMqttConfigKnown() {
     return TransmitterMqttSpecs::is_config_known();
-}
-
-String TransmitterManager::getMqttServerString() {
-    return TransmitterMqttSpecs::get_server_string();
 }
 
 // Phase 4: Version and runtime status tracking
@@ -302,10 +266,6 @@ void TransmitterManager::updateRuntimeStatus(bool mqtt_conn, bool eth_conn) {
 
 bool TransmitterManager::isEthernetConnected() {
     return TransmitterState::is_ethernet_connected();
-}
-
-unsigned long TransmitterManager::getLastBeaconTime() {
-    return TransmitterState::get_last_beacon_time();
 }
 
 // Phase 4: Get transmitter time and uptime data
@@ -334,20 +294,12 @@ void TransmitterManager::updateHeartbeatFlags(uint8_t heartbeat_flags) {
     TransmitterState::update_heartbeat_flags(heartbeat_flags);
 }
 
-uint8_t TransmitterManager::getHeartbeatFlags() {
-    return TransmitterState::get_heartbeat_flags();
-}
-
 bool TransmitterManager::isGeolocationValid() {
     return TransmitterState::is_geolocation_valid();
 }
 
 void TransmitterManager::updateSendStatus(bool success) {
     TransmitterState::update_send_status(success);
-}
-
-bool TransmitterManager::wasLastSendSuccessful() {
-    return TransmitterState::was_last_send_successful();
 }
 
 bool TransmitterManager::isTransmitterConnected() {
@@ -409,12 +361,4 @@ bool TransmitterManager::hasEventLogs() {
 
 void TransmitterManager::getEventLogsSnapshot(std::vector<EventLogEntry>& out_logs, uint32_t* out_last_update_ms) {
     TransmitterEventLogCache::get_event_logs_snapshot(out_logs, out_last_update_ms);
-}
-
-uint32_t TransmitterManager::getEventLogCount() {
-    return TransmitterEventLogCache::get_event_log_count();
-}
-
-uint32_t TransmitterManager::getEventLogsLastUpdateMs() {
-    return TransmitterEventLogCache::get_event_logs_last_update_ms();
 }

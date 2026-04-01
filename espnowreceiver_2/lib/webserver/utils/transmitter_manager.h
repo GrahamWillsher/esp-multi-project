@@ -17,8 +17,6 @@ public:
 public:
     // Initialization (load cache from NVS)
     static void init();
-    static void loadFromNVS();
-    static void saveToNVS();
 
     // MAC management
     static void registerMAC(const uint8_t* transmitter_mac);
@@ -72,19 +70,15 @@ public:
     static const uint8_t* getMqttServer();
     static uint16_t getMqttPort();
     static const char* getMqttUsername();
-    static const char* getMqttPassword();
     static const char* getMqttClientId();
     static bool isMqttConnected();
     static bool isMqttConfigKnown();
     static uint32_t getMqttConfigVersion();  // Phase 4: Get cached MQTT config version
-    static String getMqttServerString();
     
     // Phase 4: Runtime status update from version beacons
     static void updateRuntimeStatus(bool mqtt_conn, bool eth_conn);
     static bool isEthernetConnected();
-    static unsigned long getLastBeaconTime();
     static void updateSendStatus(bool success);
-    static bool wasLastSendSuccessful();
     static bool isTransmitterConnected();
     
     // V2: Legacy version functions removed - only use metadata
@@ -99,7 +93,6 @@ public:
     static const char* getMetadataDevice();
     static void getMetadataVersion(uint8_t& major, uint8_t& minor, uint8_t& patch);
     static const char* getMetadataBuildDate();
-    static uint32_t getMetadataVersionNumber();
     
     // Battery settings management
     static void storeBatterySettings(const BatterySettings& settings);
@@ -112,19 +105,15 @@ public:
 
     static void storePowerSettings(const PowerSettings& settings);
     static PowerSettings getPowerSettings();
-    static bool hasPowerSettings();
 
     static void storeInverterSettings(const InverterSettings& settings);
     static InverterSettings getInverterSettings();
-    static bool hasInverterSettings();
 
     static void storeCanSettings(const CanSettings& settings);
     static CanSettings getCanSettings();
-    static bool hasCanSettings();
 
     static void storeContactorSettings(const ContactorSettings& settings);
     static ContactorSettings getContactorSettings();
-    static bool hasContactorSettings();
     
     // Time data management
     static uint64_t getUptimeMs();
@@ -133,7 +122,6 @@ public:
     static uint8_t getTimeSource();
     static void updateTimeData(uint64_t new_uptime_ms, uint64_t new_unix_time, int16_t new_utc_offset_min, uint8_t new_time_source);
     static void updateHeartbeatFlags(uint8_t heartbeat_flags);
-    static uint8_t getHeartbeatFlags();
     static bool isGeolocationValid();
     
     // Phase 3: Static spec data from battery emulator (via MQTT)
@@ -155,8 +143,6 @@ public:
     static void storeEventLogs(const JsonObject& logs);
     static bool hasEventLogs();
     static void getEventLogsSnapshot(std::vector<EventLogEntry>& out_logs, uint32_t* out_last_update_ms = nullptr);
-    static uint32_t getEventLogCount();
-    static uint32_t getEventLogsLastUpdateMs();
 };
 
 #endif

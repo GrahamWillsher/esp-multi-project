@@ -1,28 +1,18 @@
 #ifndef SYSTEM_SETTINGS_H_
 #define SYSTEM_SETTINGS_H_
-/** TASKS
- * Higher number equals higher priority. Max 25 per core
- * 
- * Parameter: TASK_CORE_PRIO
- * Description:
- * Defines the priority of core functionality (CAN, Modbus, etc)
- * 
- * Parameter: TASK_CONNECTIVITY_PRIO
- * Description:
- * Defines the priority of various wireless functionality (TCP, MQTT, etc)
- * 
- * Parameter: TASK_MODBUS_PRIO
- * Description:
- * Defines the priority of MODBUS handling
+
+/**
+ * @file src/battery_emulator/system_settings.h
+ * @brief Upstream Battery Emulator boundary header — canonical owner.
  *
- * Parameter: TASK_ACAN2515_PRIORITY
- * Description:
- * Defines the priority of ACAN2515 CAN handling
- *  
- * Parameter: TASK_ACAN2515_PRIORITY
- * Description:
- * Defines the priority of ACAN2517FD CAN-FD handling
-*/
+ * Phase 3 (Battery Emulator boundary rewrite):
+ * This is the single canonical definition of task priorities and cell-count
+ * limits for the Battery Emulator integration layer.
+ *
+ * src/datalayer/system_settings.h redirects here.
+ * Do NOT duplicate these definitions elsewhere.
+ */
+
 #define TASK_CORE_PRIO 4
 #define TASK_CONNECTIVITY_PRIO 3
 #define TASK_MQTT_PRIO 2
@@ -30,12 +20,7 @@
 #define TASK_ACAN2515_PRIORITY 10
 #define TASK_ACAN2517FD_PRIORITY 10
 
-/** MAX AMOUNT OF CELLS
- * 
- * Parameter: MAX_AMOUNT_CELLS
- * Description:
- * Basically the length of the array used to hold individual cell voltages
-*/
+/** Maximum number of individual cell voltages in the datalayer array. */
 #define MAX_AMOUNT_CELLS 192
 
 #endif

@@ -6,6 +6,11 @@
 
 namespace TransmitterMqttSpecs {
 
+// Ownership boundary (Phase 3 cleanup):
+// - This module stores TRANSMITTER-reported MQTT config + runtime state for UI/API use.
+// - Receiver-local broker connectivity is owned by src/mqtt/mqtt_client.*.
+// - `is_connected()` here means transmitter runtime MQTT status from version beacons.
+
 void load_from_prefs(void* prefs_ptr);
 void save_to_prefs(void* prefs_ptr);
 

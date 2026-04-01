@@ -1,4 +1,4 @@
-#include "spec_page_layout.h"
-
-// Compatibility translation unit.
-// Implementations are now provided by esp32common/webserver_common_utils.
+// LEGACY COMPATIBILITY TRANSLATION UNIT RETIRED.
+//
+// Canonical implementation lives in:
+// - esp32common/webserver_common_utils/spec_page_layout

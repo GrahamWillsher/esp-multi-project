@@ -1,13 +1,8 @@
 #include "littlefs_init.h"
 #include "../common.h"
+#include "../display/display.h"
 #include <LittleFS.h>
 #include <TFT_eSPI.h>
-
-#ifdef USE_LVGL
-    #include "../display/display_splash_lvgl.h"
-#else
-    #include "../display/display_splash.h"
-#endif
 
 extern TFT_eSPI tft;
 
@@ -47,15 +42,8 @@ void initlittlefs() {
         LOG_INFO("INIT", "LittleFS ready - starting splash screen...");
         Serial.flush();
         
-        #ifdef USE_LVGL
-            // LVGL backend: Call LVGL splash directly (no generic dispatcher)
-            LOG_INFO("INIT", "Using LVGL splash screen (direct call)");
-            Display::display_splash_lvgl();
-        #else
-            // TFT backend: Call TFT splash  
-            LOG_INFO("INIT", "Using TFT splash screen");
-            displaySplashWithFade();
-        #endif
+        LOG_INFO("INIT", "Using TFT splash screen");
+        displaySplashWithFade();
         
         LOG_INFO("INIT", "Splash screen complete");
         Serial.flush();

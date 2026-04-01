@@ -2,9 +2,8 @@
  * @file display_interface.h
  * @brief Abstract display interface for hardware-agnostic display operations
  * 
- * Both TFT and LVGL implementations must satisfy this interface.
- * This allows compile-time selection between implementations without
- * mixing code or using runtime ifdef blocks.
+ * TFT implementation satisfies this interface.
+ * This keeps display usage hardware-agnostic for application code.
  */
 
 #pragma once
@@ -17,9 +16,6 @@ namespace Display {
  * Abstract Display Interface
  * 
  * Defines all display operations that the application expects.
- * Two implementations are provided:
- * - TftDisplay: Pure TFT-eSPI with direct rendering (proven working)
- * - LvglDisplay: Pure LVGL with async animations (modern UI)
  */
 class IDisplay {
 public:
@@ -101,7 +97,7 @@ public:
      * Red screen with error details (component, message).
      * System will likely enter infinite loop after this.
      * 
-     * @param component Component name (e.g., "LVGL", "Display", "WiFi")
+    * @param component Component name (e.g., "Display", "WiFi")
      * @param message Error message (e.g., "Failed to initialize")
      */
     virtual void show_fatal_error(const char* component, const char* message) = 0;
@@ -113,8 +109,7 @@ public:
     /**
      * Process display tasks (call regularly from main loop)
      * 
-     * TFT implementation: No-op (rendering is synchronous)
-     * LVGL implementation: Pumps message loop, processes animations, renders
+    * TFT implementation: No-op (rendering is synchronous)
      * 
      * Should be called frequently (every 10-20ms) from loop() or task.
      */
@@ -128,7 +123,7 @@ public:
 /**
  * Global display instance
  * 
- * Points to either TftDisplay or LvglDisplay depending on build configuration.
+ * Points to the active display implementation.
  * Initialized by init_display() in main setup sequence.
  */
 extern IDisplay* g_display;

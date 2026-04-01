@@ -62,13 +62,11 @@ The receiver web stack has progressed significantly (modular pages, modular APIs
 - [../esp32common/webserver_common_utils/include/webserver_common_utils/http_sse_utils.h](../esp32common/webserver_common_utils/include/webserver_common_utils/http_sse_utils.h)
 
 ### Common project comparison points (esp32common)
-- [esp32common/webserver/http_json_utils.cpp](../esp32common/webserver/http_json_utils.cpp)
-- [esp32common/webserver/http_sse_utils.cpp](../esp32common/webserver/http_sse_utils.cpp)
-- [esp32common/include/esp32common/webserver/http_json_utils.h](../esp32common/include/esp32common/webserver/http_json_utils.h)
-- [esp32common/include/esp32common/webserver/http_sse_utils.h](../esp32common/include/esp32common/webserver/http_sse_utils.h)
-- Legacy/duplicate receiver web stack still present under:
-  - [esp32common/webserver/receiver/webserver.cpp](../esp32common/webserver/receiver/webserver.cpp)
-  - [esp32common/webserver/receiver/settings_processor.cpp](../esp32common/webserver/receiver/settings_processor.cpp)
+- [../esp32common/webserver_common_utils/src/http_json_utils.cpp](../esp32common/webserver_common_utils/src/http_json_utils.cpp)
+- [../esp32common/webserver_common_utils/src/http_sse_utils.cpp](../esp32common/webserver_common_utils/src/http_sse_utils.cpp)
+- [../esp32common/webserver_common_utils/include/webserver_common_utils/http_json_utils.h](../esp32common/webserver_common_utils/include/webserver_common_utils/http_json_utils.h)
+- [../esp32common/webserver_common_utils/include/webserver_common_utils/http_sse_utils.h](../esp32common/webserver_common_utils/include/webserver_common_utils/http_sse_utils.h)
+- Legacy duplicate receiver web stack paths previously listed here have been retired from current tree.
 
 ---
 

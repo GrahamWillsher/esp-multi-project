@@ -4,6 +4,12 @@
 **Author:** GitHub Copilot  
 **Purpose:** Comprehensive analysis of bidirectional ESP-NOW communication system
 
+> **Alignment Addendum (2026-04-01):**
+> - Canonical shared web helpers now live under `esp32common/webserver_common_utils/*`.
+> - Receiver compatibility wrappers should be treated as thin shims only.
+> - `subtype_settings` in request-data flow is legacy/deprecated wire behavior; active granular settings flow is versioned category updates.
+> - Runtime bootstrap phase runner ownership is in `esp32common/runtime_common_utils/*`; project-local compatibility TU is intentionally symbol-empty.
+
 ---
 
 ## Table of Contents

@@ -1,32 +1,19 @@
 /**
  * @file display.cpp
- * @brief Display System - Compile-Time Backend Selection
- * 
- * This file instantiates either the TFT or LVGL display implementation
- * based on compile-time flags.
- * 
- * The application code never needs to know which implementation is active -
- * it just uses the IDisplay interface through the global g_display pointer.
- * 
- * Backend Selection:
- * - USE_TFT:  Traditional TFT-eSPI direct rendering (proven, blocking)
- * - USE_LVGL: LVGL event-driven rendering (async, modern UI)
+ * @brief Display System - TFT Backend
+ *
+ * This file instantiates the TFT display implementation.
+ *
+ * The application code uses the `IDisplay` interface through the global
+ * `g_display` pointer while the project remains TFT-primary.
  */
 
 #include "display_interface.h"
 #include "../common.h"
 
-#if defined(USE_TFT)
-    #include "tft_impl/tft_display.h"
-    typedef Display::TftDisplay DisplayImplementation;
-    #define BACKEND_NAME "TFT"
-#elif defined(USE_LVGL)
-    #include "lvgl_impl/lvgl_display.h"
-    typedef Display::LvglDisplay DisplayImplementation;
-    #define BACKEND_NAME "LVGL"
-#else
-    #error "Either USE_TFT or USE_LVGL must be defined at compile time"
-#endif
+#include "tft_impl/tft_display.h"
+typedef Display::TftDisplay DisplayImplementation;
+#define BACKEND_NAME "TFT"
 
 // ============================================================================
 // Global Display Instance
