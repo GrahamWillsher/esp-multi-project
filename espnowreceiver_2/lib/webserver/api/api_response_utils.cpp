@@ -5,6 +5,7 @@
 #include <ArduinoJson.h>
 #include <cstdarg>
 #include <cstdio>
+#include <new>
 
 namespace ApiResponseUtils {
 
@@ -50,9 +51,26 @@ esp_err_t send_error_with_status(httpd_req_t* req, const char* status, const cha
 }
 
 esp_err_t send_json_doc(httpd_req_t* req, JsonDocument& doc) {
-    String buf;
-    serializeJson(doc, buf);
-    return HttpJsonUtils::send_json(req, buf.c_str());
+    // Measure first so we can pick stack vs heap path and avoid over-allocation.
+    const size_t json_len = measureJson(doc);
+    if (json_len == 0) {
+        return HttpJsonUtils::send_json(req, "{}");
+    }
+    // Stack path: keeps allocator pressure off the heap for the common case.
+    if (json_len <= 512) {
+        char buf[513];
+        serializeJson(doc, buf, sizeof(buf));
+        return HttpJsonUtils::send_json(req, buf);
+    }
+    // Heap path for larger documents: exactly one allocation sized to the payload.
+    char* buf = new (std::nothrow) char[json_len + 1];
+    if (!buf) {
+        return HttpJsonUtils::send_json_error(req, "Out of memory");
+    }
+    serializeJson(doc, buf, json_len + 1);
+    esp_err_t result = HttpJsonUtils::send_json(req, buf);
+    delete[] buf;
+    return result;
 }
 
 esp_err_t send_success_doc(httpd_req_t* req, JsonDocument& doc) {

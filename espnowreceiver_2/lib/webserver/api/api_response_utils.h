@@ -1,6 +1,17 @@
 #ifndef API_RESPONSE_UTILS_H
 #define API_RESPONSE_UTILS_H
 
+/**
+ * JSON response pipeline — canonical layer split (Section 4.2):
+ *
+ * This header is the HIGHER-LEVEL layer for the receiver webserver.
+ * All functions ultimately delegate to HttpJsonUtils::send_json / send_json_error
+ * (common primitives in esp32common/webserver_common_utils) for the actual send.
+ *
+ * Callers in API handlers MUST use ApiResponseUtils, not HttpJsonUtils directly,
+ * so the full response pipeline stays in one auditable place.
+ */
+
 #include <esp_http_server.h>
 #include <ArduinoJson.h>
 #include <cstdint>

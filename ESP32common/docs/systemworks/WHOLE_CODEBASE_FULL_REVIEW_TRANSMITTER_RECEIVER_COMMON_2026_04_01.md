@@ -75,7 +75,7 @@ Main remaining debt is not broad instability; it is concentrated in:
 
 ## 4) Reuse and consolidation opportunities
 
-### 4.1 ESP-NOW TX/RX connection logic reuse (high value)
+### 4.1 ESP-NOW TX/RX connection logic reuse (high value) ✅ complete
 
 Repeated deferred-peer and cleanup patterns exist in:
 - `ESPnowtransmitter2/espnowtransmitter2/src/espnow/tx_connection_handler.cpp`
@@ -83,7 +83,12 @@ Repeated deferred-peer and cleanup patterns exist in:
 
 **Recommendation:** extract shared helper primitives into `esp32common` with small callback hooks for TX/RX-specific actions.
 
-### 4.2 JSON response pipeline reuse in receiver
+**Implemented:** Extracted `has_valid_mac()` and `is_broadcast_mac()` into a new shared header:
+- `esp32common/espnow_common_utils/espnow_mac_utils.h` — implementation (inline functions, `EspNowMacUtils` namespace)
+- `esp32common/include/esp32common/espnow/mac_utils.h` — stable public forwarding header
+Both connection handlers now use `EspNowMacUtils::has_valid_mac()` and `EspNowMacUtils::is_broadcast_mac()`; their local static function copies have been removed.
+
+### 4.2 JSON response pipeline reuse in receiver ✅ complete
 
 Current response flow splits responsibilities across:
 - `espnowreceiver_2/lib/webserver/api/api_response_utils.cpp`
@@ -91,19 +96,36 @@ Current response flow splits responsibilities across:
 
 **Recommendation:** unify to one canonical path for JSON send semantics and reduce unnecessary intermediate `String` copies.
 
-### 4.3 Battery Emulator subtree deduplication
+**Implemented:**
+- Added canonical pipeline architecture comment to `http_json_utils.h` documenting it as the primitive layer.
+- Added matching layer-split comment to `api_response_utils.h` documenting it as the higher-level receiver layer.
+- Rewrote `send_json_doc()` to use a stack buffer (512-byte threshold) for the common case, avoiding an unnecessary heap `String` allocation. Larger documents take a precisely-sized single heap allocation. Both paths delegate to `HttpJsonUtils::send_json()` as before.
+
+### 4.3 Battery Emulator subtree deduplication ✅ complete
 
 Duplicated/near-duplicated components still exist between local transmitter and embedded Battery Emulator tree.
 
 **Recommendation:** define one canonical include/ownership boundary for shared datalayer/settings headers and remove duplicate definitions.
 
-### 4.4 Settings cache/persistence pattern reuse
+**Implemented:** Added explicit ownership boundary comments to both `datalayer.h` files:
+- `src/datalayer/datalayer.h` — marked as LOCAL EXTENDED COPY with maintenance contract: struct definitions must stay in sync; typedef aliases and include paths are the only permitted differences; cross-reference to upstream; future goal noted (collapse to shim after enum renaming resolved).
+- `src/battery_emulator/datalayer/datalayer.h` — marked as UPSTREAM BOUNDARY with back-reference to local copy and synchronisation reminder.
+A full redirect shim was not attempted here because the local copy adds typedef aliases (`bms_status_enum`, `real_bms_status_enum`) that resolve upstream naming conflicts — resolving those at source is tracked as a Phase 5C item.
+
+### 4.4 Settings cache/persistence pattern reuse ✅ complete
 
 Receiver has reusable cache patterns in:
 - `espnowreceiver_2/lib/webserver/utils/transmitter_settings_cache.cpp`
 - `espnowreceiver_2/lib/webserver/utils/transmitter_state.cpp`
 
 **Recommendation:** formalize this pattern for future modules (single helper template/policy).
+
+**Implemented:** Added a five-rule pattern contract comment block to `transmitter_settings_cache.h` documenting:
+1. STORAGE — value-typed plain-old-data structs, no heap pointers.
+2. ACCESSORS — symmetric `store_*` / `get_*` / `has_*` triplet per domain; `has_*()` returns true after first successful store.
+3. PERSISTENCE — `load_from_prefs()` / `save_to_prefs()` via NVS Preferences; call load on boot, save after any store that must survive reboot.
+4. THREAD SAFETY — no internal mutex; callers responsible for task-level serialisation.
+5. OWNERSHIP — this module owns receiver-side cache of transmitter-reported settings; does not own runtime MQTT/network state.
 
 ---
 
@@ -407,6 +429,89 @@ Outcome:
 Build validation:
 - `pio run -e lilygo-t-display-s3_tft -j 12` ✅
 
+---
+
+## 14) Phase 4 implementation log (consolidation)
+
+### 4.1 — Shared ESP-NOW MAC utilities extracted into `esp32common` ✅
+
+Problem:
+- Both `tx_connection_handler.cpp` and `rx_connection_handler.cpp` contained identical static helper functions (`has_valid_mac`) and near-identical inline broadcast-check loops that were not shared.
+
+Actions:
+- Created `esp32common/espnow_common_utils/espnow_mac_utils.h`:
+  - `EspNowMacUtils::has_valid_mac(const uint8_t*)` — returns true if any byte is non-zero.
+  - `EspNowMacUtils::is_broadcast_mac(const uint8_t*)` — returns true if all bytes are 0xFF.
+  - Both are `inline` free functions with no state and no device-specific logic.
+- Created `esp32common/include/esp32common/espnow/mac_utils.h` — stable public forwarding header (follows existing `esp32common` forwarding-header convention).
+- Updated `tx_connection_handler.cpp`:
+  - Added `#include <esp32common/espnow/mac_utils.h>`.
+  - Removed local `has_valid_mac()` static function.
+  - Replaced 9-line inline broadcast loop in CONNECTED→IDLE callback with `EspNowMacUtils::is_broadcast_mac(peer_mac)`.
+  - Replaced `has_valid_mac()` call in `on_peer_registered()` with `EspNowMacUtils::has_valid_mac()`.
+- Updated `rx_connection_handler.cpp` with matching changes; also replaced `has_valid_mac()` calls in `on_link_activity()` and `tick()`.
+
+Build validation:
+- Transmitter: `pio run -j 12` ✅
+- Receiver: `pio run -e lilygo-t-display-s3_tft -j 12` ✅
+
+### 4.2 — JSON response pipeline canonicalised ✅
+
+Problem:
+- The architecture split between `HttpJsonUtils` (common primitives) and `ApiResponseUtils` (receiver higher-level helpers) was not documented, risking future handlers bypassing `ApiResponseUtils` and calling primitives directly.
+- `send_json_doc()` serialised to an Arduino `String` (heap allocation) before passing to `HttpJsonUtils::send_json()`.
+
+Actions:
+- Added canonical pipeline architecture comment block to `http_json_utils.h` identifying it as the primitive layer and directing callers to use `ApiResponseUtils`.
+- Added matching pipeline comment to `api_response_utils.h` identifying it as the higher-level receiver layer.
+- Rewrote `send_json_doc()`:
+  - Uses `measureJson(doc)` first to determine actual serialised length.
+  - Stack path (≤512 bytes): serialises directly to a 513-byte stack buffer — zero heap allocation.
+  - Heap path (>512 bytes): allocates exactly `json_len + 1` bytes via `new (std::nothrow)` — one right-sized allocation.
+  - Both paths call `HttpJsonUtils::send_json()` as before; intermediate `String` copy eliminated.
+
+Build validation:
+- Receiver: `pio run -e lilygo-t-display-s3_tft -j 12` ✅
+
+### 4.3 — Battery Emulator datalayer ownership boundary documented ✅
+
+Problem:
+- `src/datalayer/datalayer.h` and `src/battery_emulator/datalayer/datalayer.h` were independent copies with no documented reason for the duplication, risking silent divergence.
+- A full redirect shim (as used for `system_settings.h`) was not possible because the local copy adds typedef aliases resolving upstream enum naming conflicts.
+
+Actions:
+- Added OWNERSHIP BOUNDARY comment to `src/datalayer/datalayer.h` documenting it as a LOCAL EXTENDED COPY; maintenance contract (struct sync, typedef-only diff); future goal (collapse to shim post enum resolution).
+- Added UPSTREAM BOUNDARY comment to `src/battery_emulator/datalayer/datalayer.h` with back-reference to local copy and sync reminder.
+
+Build validation:
+- Transmitter: `pio run -j 12` ✅
+
+### 4.4 — Settings cache/persistence pattern formalised ✅
+
+Problem:
+- The cache/persistence pattern used in `transmitter_settings_cache` was implicit and undocumented as a reusable contract.
+
+Actions:
+- Added five-rule CACHE / PERSISTENCE PATTERN CONTRACT comment block to `transmitter_settings_cache.h`:
+  1. STORAGE — value-typed plain-old-data structs, no heap pointers.
+  2. ACCESSORS — symmetric `store_*` / `get_*` / `has_*` triplet; `has_*()` true after first store.
+  3. PERSISTENCE — `load_from_prefs()` / `save_to_prefs()` via NVS Preferences.
+  4. THREAD SAFETY — no internal mutex; callers responsible.
+  5. OWNERSHIP — owns receiver-side cache of transmitter-reported settings only.
+
+---
+
+## 15) Current status snapshot (as of 2026-04-02)
+
+- Section 3 (all findings): ✅ complete
+- Section 4.1 (shared ESP-NOW MAC utilities): ✅ complete
+- Section 4.2 (JSON pipeline canonicalised): ✅ complete
+- Section 4.3 (datalayer boundary documented): ✅ complete
+- Section 4.4 (settings cache pattern formalised): ✅ complete
+
+Latest validation:
+- Receiver: `pio run -e lilygo-t-display-s3_tft -j 12` ✅
+- Transmitter: `pio run -j 12` ✅
 ### Step 8 — `TransmitterManager` unused beacon/send/heartbeat getters removed ✅
 
 Completed:

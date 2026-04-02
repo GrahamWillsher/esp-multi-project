@@ -7,6 +7,7 @@
 #include "../../lib/webserver/utils/transmitter_manager.h"
 #include <esp32common/espnow/connection_manager.h>
 #include <esp32common/espnow/connection_event.h>
+#include <esp32common/espnow/mac_utils.h>
 #include <channel_manager.h>
 #include <espnow_peer_manager.h>
 #include <espnow_transmitter.h>
@@ -18,18 +19,6 @@
 ReceiverConnectionHandler& ReceiverConnectionHandler::instance() {
     static ReceiverConnectionHandler instance;
     return instance;
-}
-
-static bool has_valid_mac(const uint8_t* mac) {
-    if (!mac) {
-        return false;
-    }
-    for (int index = 0; index < 6; ++index) {
-        if (mac[index] != 0) {
-            return true;
-        }
-    }
-    return false;
 }
 
 static esp_err_t send_config_section_request(const uint8_t* transmitter_mac,
@@ -107,16 +96,7 @@ void ReceiverConnectionHandler::init() {
                 // Clean up peer when connection lost
                 const uint8_t* peer_mac = ReceiverConnectionHandler::instance().get_transmitter_mac();
                 if (peer_mac) {
-                    // Check if it's not broadcast address before removing
-                    bool is_broadcast = true;
-                    for (int i = 0; i < 6; i++) {
-                        if (peer_mac[i] != 0xFF) {
-                            is_broadcast = false;
-                            break;
-                        }
-                    }
-                    
-                    if (!is_broadcast && EspnowPeerManager::is_peer_registered(peer_mac)) {
+                    if (!EspNowMacUtils::is_broadcast_mac(peer_mac) && EspnowPeerManager::is_peer_registered(peer_mac)) {
                         if (EspnowPeerManager::remove_peer(peer_mac)) {
                             LOG_INFO("RX_CONN", "✓ Removed peer on connection loss");
                         } else {
@@ -184,7 +164,7 @@ void ReceiverConnectionHandler::on_peer_registered(const uint8_t* transmitter_ma
         // Expected on reboot/discovery noise while already connected; do not warn.
         LOG_DEBUG("RX_CONN", "on_peer_registered() received while CONNECTED - ignoring duplicate");
     } else {
-        peer_registered_deferred_ = has_valid_mac(transmitter_mac_);
+        peer_registered_deferred_ = EspNowMacUtils::has_valid_mac(transmitter_mac_);
         if (peer_registered_deferred_) {
             memcpy(deferred_peer_mac_, transmitter_mac_, sizeof(deferred_peer_mac_));
             deferred_peer_registered_ms_ = millis();
@@ -216,7 +196,7 @@ void ReceiverConnectionHandler::on_link_activity(const uint8_t* transmitter_mac)
     }
     last_rx_time_ms_ = millis();
 
-    if (connected_at_ms_ == 0 && has_valid_mac(transmitter_mac_)) {
+    if (connected_at_ms_ == 0 && EspNowMacUtils::has_valid_mac(transmitter_mac_)) {
         connected_at_ms_ = millis();
         last_retry_ms_ = millis();
     }
@@ -391,7 +371,7 @@ void ReceiverConnectionHandler::tick() {
         return;
     }
 
-    if (connected_at_ms_ == 0 || !has_valid_mac(transmitter_mac_)) {
+    if (connected_at_ms_ == 0 || !EspNowMacUtils::has_valid_mac(transmitter_mac_)) {
         return;
     }
 

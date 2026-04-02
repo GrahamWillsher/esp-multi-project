@@ -1,6 +1,28 @@
 #ifndef _DATALAYER_H_
 #define _DATALAYER_H_
 
+/**
+ * OWNERSHIP BOUNDARY (Section 4.3 — Battery Emulator subtree deduplication)
+ *
+ * This file is a LOCAL EXTENDED COPY of:
+ *   src/battery_emulator/datalayer/datalayer.h
+ *
+ * Why it exists as a copy rather than a redirect shim:
+ *   1. It adds project-local typedef aliases for renamed Battery Emulator enum
+ *      types (bms_status_enum, real_bms_status_enum) that are needed to resolve
+ *      naming conflicts with the wider transmitter codebase.
+ *   2. Its include paths use transmitter-relative paths (devboard/utils/types.h,
+ *      system_settings.h via shim) that differ from the upstream relative paths.
+ *
+ * Maintenance contract:
+ *   - Struct definitions MUST stay in sync with src/battery_emulator/datalayer/datalayer.h.
+ *   - Only the typedef block and include paths should differ from upstream.
+ *   - If Battery Emulator upstream adds new struct members, propagate them here.
+ *
+ * Future goal (post-baseline tests): collapse to a redirect shim once enum
+ * naming conflicts are resolved at source.
+ */
+
 #include "devboard/utils/types.h"
 #include "system_settings.h"
 

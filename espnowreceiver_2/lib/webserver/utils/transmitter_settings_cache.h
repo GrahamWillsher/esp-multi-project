@@ -1,6 +1,36 @@
 #ifndef TRANSMITTER_SETTINGS_CACHE_H
 #define TRANSMITTER_SETTINGS_CACHE_H
 
+/**
+ * CACHE / PERSISTENCE PATTERN CONTRACT (Section 4.4)
+ *
+ * This module is the canonical reference implementation for the
+ * settings-cache / NVS-persistence pattern used in the receiver webserver.
+ *
+ * Pattern rules (follow these for any new settings module):
+ *
+ *   1. STORAGE:  All settings are held in plain-old-data structs defined in
+ *                transmitter_settings_types.h.  The structs are value-typed —
+ *                no heap pointers.
+ *
+ *   2. ACCESSORS: Each settings domain exposes a symmetric triplet:
+ *                   store_<domain>_settings(const T&)
+ *                   get_<domain>_settings() -> T
+ *                   has_<domain>_settings() -> bool
+ *                 has_*() returns true only after the first successful store.
+ *
+ *   3. PERSISTENCE: load_from_prefs() and save_to_prefs() serialise to/from
+ *                   NVS via Preferences.  Call load on boot; call save after
+ *                   any store that should survive reboot.
+ *
+ *   4. THREAD SAFETY: Callers are responsible for task-level serialisation.
+ *                     This module does NOT use a mutex internally.
+ *
+ *   5. OWNERSHIP: This module owns the receiver-side cache of transmitter-reported
+ *                 settings.  It does NOT own runtime MQTT/network state (see
+ *                 transmitter_mqtt_specs.h / transmitter_state.h for those).
+ */
+
 #include "transmitter_settings_types.h"
 
 namespace TransmitterSettingsCache {

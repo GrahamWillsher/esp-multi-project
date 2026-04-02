@@ -10,6 +10,7 @@
 #include "tx_send_guard.h"
 #include "version_beacon_manager.h"
 #include <esp32common/espnow/connection_manager.h>
+#include <esp32common/espnow/mac_utils.h>
 #include <esp32common/config/timing_config.h>
 #include <channel_manager.h>
 #include <espnow_peer_manager.h>
@@ -20,18 +21,6 @@
 TransmitterConnectionHandler& TransmitterConnectionHandler::instance() {
     static TransmitterConnectionHandler instance;
     return instance;
-}
-
-static bool has_valid_mac(const uint8_t* mac) {
-    if (!mac) {
-        return false;
-    }
-    for (int index = 0; index < 6; ++index) {
-        if (mac[index] != 0) {
-            return true;
-        }
-    }
-    return false;
 }
 
 TransmitterConnectionHandler::TransmitterConnectionHandler()
@@ -98,16 +87,7 @@ void TransmitterConnectionHandler::init() {
                 // Clean up peer when connection lost
                 const uint8_t* peer_mac = TransmitterConnectionHandler::instance().get_receiver_mac();
                 if (peer_mac) {
-                    // Check if it's not broadcast address before removing
-                    bool is_broadcast = true;
-                    for (int i = 0; i < 6; i++) {
-                        if (peer_mac[i] != 0xFF) {
-                            is_broadcast = false;
-                            break;
-                        }
-                    }
-                    
-                    if (!is_broadcast && EspnowPeerManager::is_peer_registered(peer_mac)) {
+                    if (!EspNowMacUtils::is_broadcast_mac(peer_mac) && EspnowPeerManager::is_peer_registered(peer_mac)) {
                         if (EspnowPeerManager::remove_peer(peer_mac)) {
                             LOG_INFO("TX_CONN", "✓ Removed peer on connection loss");
                         } else {
@@ -192,7 +172,7 @@ void TransmitterConnectionHandler::on_peer_registered(const uint8_t* receiver_ma
     } else if (state == EspNowConnectionState::CONNECTED) {
         LOG_DEBUG("TX_CONN", "on_peer_registered() received while CONNECTED - ignoring duplicate");
     } else {
-        peer_registered_deferred_ = has_valid_mac(receiver_mac_);
+        peer_registered_deferred_ = EspNowMacUtils::has_valid_mac(receiver_mac_);
         if (peer_registered_deferred_) {
             memcpy(deferred_peer_mac_, receiver_mac_, sizeof(deferred_peer_mac_));
             deferred_peer_registered_ms_ = millis();
