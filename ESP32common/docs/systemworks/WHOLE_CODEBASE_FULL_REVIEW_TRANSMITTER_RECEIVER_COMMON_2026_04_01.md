@@ -133,18 +133,28 @@ Receiver has reusable cache patterns in:
 
 ## A) Safe immediate cleanup (low risk)
 
-1. Remove obsolete artifact:
+1. Remove obsolete artifact: ✅ complete
    - `ESPnowtransmitter2/espnowtransmitter2/src/battery_emulator/datalayer/datalayer.cpp.bak`
 
-2. Sync stale architecture docs to actual code paths.
+2. Sync stale architecture docs to actual code paths: ✅ complete
 
-3. Keep compatibility TUs only if still needed; otherwise remove with a short migration note.
+3. Keep compatibility TUs only if still needed; otherwise remove with a short migration note: ✅ complete
+
+**Implemented in 5A:**
+- `.bak` artifact removed from transmitter Battery Emulator subtree.
+- Architecture path references aligned to canonical `webserver_common_utils/*` locations where stale paths remained.
+- Compatibility TU policy documented and retained only for explicit migration stability cases; canonical ownership paths are now stated in-file.
 
 ## B) Medium refactor (moderate risk)
 
-1. Consolidate ESP-NOW connection helper logic into `esp32common`.
-2. Collapse duplicate transmitter settings/datalayer headers.
-3. Reduce wrapper indirection in receiver manager layer where direct namespace/module calls are now stable.
+1. Consolidate ESP-NOW connection helper logic into `esp32common`: ✅ complete
+2. Collapse duplicate transmitter settings/datalayer headers: ✅ complete
+3. Reduce wrapper indirection in receiver manager layer where direct namespace/module calls are now stable: ✅ complete
+
+**Implemented in 5B:**
+- B.1 completed via shared `EspNowMacUtils` extraction in `esp32common` and adoption in both TX/RX connection handlers.
+- B.2 completed by converting `src/datalayer/datalayer_extended.h` to a compatibility shim that includes canonical `src/battery_emulator/datalayer/datalayer_extended.h`.
+- B.3 completed by prior `TransmitterManager` API surface reduction (unused passthrough wrapper removals with build validation at each step).
 
 ## C) High-risk rewrite candidates
 
@@ -402,6 +412,51 @@ Outcome:
 
 Build validation:
 - `pio run -e lilygo-t-display-s3_tft -j 12` ✅
+
+---
+
+## 14) Phase 5A implementation log (safe immediate cleanup)
+
+### 5A.1 — Obsolete artifact removal ✅
+
+Status:
+- Confirmed obsolete transmitter artifact is removed:
+   - `ESPnowtransmitter2/espnowtransmitter2/src/battery_emulator/datalayer/datalayer.cpp.bak`
+
+### 5A.2 — Stale architecture doc path sync ✅
+
+Completed:
+- Updated stale webserver helper references in:
+   - `espnowreceiver_2/RECEIVER_COMMON_CODE_REVIEW_2026_03_17.md`
+- Replaced legacy paths with canonical common helper locations:
+   - `esp32common/webserver/http_json_utils.h` → `esp32common/webserver_common_utils/include/webserver_common_utils/http_json_utils.h`
+   - `esp32common/webserver/http_sse_utils.h` → `esp32common/webserver_common_utils/include/webserver_common_utils/http_sse_utils.h`
+   - `esp32common/webserver/catalog_response_utils.h` → `esp32common/webserver_common_utils/include/webserver_common_utils/catalog_response_utils.h` (recommended location)
+- Replaced stale note about `esp32common/webserver/receiver_webserver.cpp` with retirement/canonical-stack note.
+
+### 5A.3 — Compatibility TU policy enforcement ✅
+
+Decision and outcome:
+- Compatibility translation units are retained only where explicitly needed for migration/source-tree stability.
+- In-file migration notes now clearly point to canonical owners:
+   - `espnowreceiver_2/lib/webserver/common/spec_page_layout.h` → `<webserver_common_utils/spec_page_layout.h>`
+   - `ESPnowtransmitter2/espnowtransmitter2/src/runtime/bootstrap_phase_runner.cpp` → `esp32common/runtime_common_utils/src/bootstrap_phase_runner.cpp`
+
+Build validation:
+- Receiver: `pio run -e lilygo-t-display-s3_tft -j 12` ✅
+- Transmitter: `pio run -j 12` ✅
+
+---
+
+## 15) Current status snapshot (as of 2026-04-02)
+
+- Section 3 findings: ✅ complete
+- Section 4 consolidation opportunities: ✅ complete
+- Section 5A safe immediate cleanup: ✅ complete
+
+Latest validation:
+- Receiver: `pio run -e lilygo-t-display-s3_tft -j 12` ✅
+- Transmitter: `pio run -j 12` ✅
 
 ### Step 6 — `TransmitterManager` unused MQTT credential wrapper removal ✅
 

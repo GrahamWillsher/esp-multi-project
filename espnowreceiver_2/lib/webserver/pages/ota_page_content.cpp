@@ -13,7 +13,10 @@ String get_ota_page_content() {
     content += R"rawliteral(
     
     <div class='info-box' style='margin-bottom: 20px;'>
-        <h3>📊 Current Firmware Versions</h3>
+        <h3 style='display: flex; align-items: center; justify-content: space-between; gap: 12px;'>
+            <span>📊 Current Firmware Versions</span>
+            <span id='compatibilityStatus' style='font-size: 14px; color: #FFD700; text-align: right; white-space: nowrap;'>⚠️ Waiting for version info</span>
+        </h3>
         <table style='width: 100%; border-collapse: collapse; margin-top: 15px;'>
             <tr style='border-bottom: 1px solid #444;'>
                 <td style='padding: 10px; font-weight: bold;'>Device</td>
@@ -31,9 +34,6 @@ String get_ota_page_content() {
                 <td id='transmitterBuild' style='padding: 10px; color: #888; font-size: 12px;'></td>
             </tr>
         </table>
-        <div id='compatibilityStatus' style='margin-top: 15px; padding: 10px; background-color: rgba(0,0,0,0.3); border-radius: 5px; color: #FFD700;'>
-            ⚠️ Waiting for version info
-        </div>
     </div>
 
     )rawliteral";

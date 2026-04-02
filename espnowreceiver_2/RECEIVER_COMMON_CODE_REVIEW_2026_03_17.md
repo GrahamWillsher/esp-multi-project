@@ -193,8 +193,8 @@ The problem is not the router itself. The problem is that the receiver still pac
 ## 2) Webserver helper reuse is already happening
 
 The receiver already wraps and uses:
-- `esp32common/webserver/http_json_utils.h`
-- `esp32common/webserver/http_sse_utils.h`
+- `esp32common/webserver_common_utils/include/webserver_common_utils/http_json_utils.h`
+- `esp32common/webserver_common_utils/include/webserver_common_utils/http_sse_utils.h`
 
 This is also correct.
 
@@ -434,7 +434,7 @@ The handlers repeatedly do:
 Add a small common helper for “catalog-to-JSON response” and “loading-or-data” semantics.
 
 Possible location:
-- `esp32common/webserver/catalog_response_utils.h`
+- `esp32common/webserver_common_utils/include/webserver_common_utils/` (new helper header, e.g. `catalog_response_utils.h`)
 
 ### Why this is better
 - reduces heap-heavy copy/sort/string boilerplate
@@ -665,7 +665,7 @@ It is the strongest remaining example of page-specific orchestration that should
 ## C5) Legacy/parallel webserver implementation in common should be retired or explicitly archived
 
 ### Current state
-`esp32common/webserver/receiver_webserver.cpp` still contains a large overlapping receiver webserver implementation.
+The previous `esp32common/webserver/receiver_webserver.cpp` path is now retired from active code. The modular receiver pages plus `webserver_common_utils/*` are the canonical stack.
 
 ### Problem
 This creates ambiguity:
