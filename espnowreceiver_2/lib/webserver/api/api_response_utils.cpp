@@ -5,6 +5,7 @@
 #include <ArduinoJson.h>
 #include <cstdarg>
 #include <cstdio>
+#include <memory>
 #include <new>
 
 namespace ApiResponseUtils {
@@ -63,14 +64,12 @@ esp_err_t send_json_doc(httpd_req_t* req, JsonDocument& doc) {
         return HttpJsonUtils::send_json(req, buf);
     }
     // Heap path for larger documents: exactly one allocation sized to the payload.
-    char* buf = new (std::nothrow) char[json_len + 1];
+    std::unique_ptr<char[]> buf(new (std::nothrow) char[json_len + 1]);
     if (!buf) {
         return HttpJsonUtils::send_json_error(req, "Out of memory");
     }
-    serializeJson(doc, buf, json_len + 1);
-    esp_err_t result = HttpJsonUtils::send_json(req, buf);
-    delete[] buf;
-    return result;
+    serializeJson(doc, buf.get(), json_len + 1);
+    return HttpJsonUtils::send_json(req, buf.get());
 }
 
 esp_err_t send_success_doc(httpd_req_t* req, JsonDocument& doc) {
