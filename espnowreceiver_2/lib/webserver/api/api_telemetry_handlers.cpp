@@ -20,7 +20,9 @@
 #include <ArduinoJson.h>
 #include <esp_now.h>
 #include <esp32common/espnow/common.h>
+#include <runtime_common_utils/device_temperature.h>
 #include <freertos/queue.h>
+#include "../../src/espnow/espnow_send.h"
 #include "../../src/mqtt/mqtt_client.h"
 #include <esp_heap_caps.h>
 #include "../../src/memory/memory_sampler.h"
@@ -103,6 +105,9 @@ esp_err_t api_dashboard_data_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_DASHBOARD_DATA);
     StaticJsonDocument<384> doc;
 
+    const DeviceTemperature::Reading receiver_temperature = DeviceTemperature::get_latest();
+    const auto transmitter_temperature = TransmitterManager::getTemperatureReport();
+
     JsonObject transmitter = ApiFieldBuilders::addTransmitterObject(doc);
     transmitter["connected"] = TransmitterManager::isTransmitterConnected();
     transmitter["ethernet_connected"] = TransmitterManager::isEthernetConnected();
@@ -119,9 +124,19 @@ esp_err_t api_dashboard_data_handler(httpd_req_t *req) {
         tx_firmware = String(version_str);
     }
     transmitter["firmware"] = tx_firmware;
+    if (transmitter_temperature.known && transmitter_temperature.valid) {
+        transmitter["temperature_c"] = DeviceTemperature::to_celsius(transmitter_temperature.temperature_centi_c);
+    } else {
+        transmitter["temperature_c"] = nullptr;
+    }
 
     JsonObject receiver = ApiFieldBuilders::addReceiverObject(doc);
     receiver["is_static"] = true;
+    if (receiver_temperature.valid) {
+        receiver["temperature_c"] = DeviceTemperature::to_celsius(receiver_temperature.centi_celsius);
+    } else {
+        receiver["temperature_c"] = nullptr;
+    }
 
     String json;
     json.reserve(256);
@@ -263,6 +278,13 @@ esp_err_t api_transmitter_health_handler(httpd_req_t *req) {
     doc["mqtt_connected"]     = TransmitterManager::isMqttConnected();
     doc["ethernet_connected"] = TransmitterManager::isEthernetConnected();
 
+    const auto transmitter_temperature = TransmitterManager::getTemperatureReport();
+    if (transmitter_temperature.known && transmitter_temperature.valid) {
+        doc["temperature_c"] = DeviceTemperature::to_celsius(transmitter_temperature.temperature_centi_c);
+    } else {
+        doc["temperature_c"] = nullptr;
+    }
+
     String json;
     json.reserve(192);
     serializeJson(doc, json);
@@ -303,6 +325,7 @@ esp_err_t api_get_event_logs_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_GET_EVENT_LOGS);
     char query[256] = {0};
     int limit = 50;
+    bool force_transmitter_source = false;
 
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
         char param[32];
@@ -311,9 +334,17 @@ esp_err_t api_get_event_logs_handler(httpd_req_t *req) {
             if (limit < 1) limit = 1;
             if (limit > 500) limit = 500;
         }
+
+        char source_param[32];
+        if (httpd_query_key_value(query, "source", source_param, sizeof(source_param)) == ESP_OK) {
+            force_transmitter_source =
+                (strcmp(source_param, "transmitter") == 0) ||
+                (strcmp(source_param, "live") == 0) ||
+                (strcmp(source_param, "direct") == 0);
+        }
     }
 
-    if (TransmitterManager::hasEventLogs()) {
+    if (!force_transmitter_source && TransmitterManager::hasEventLogs()) {
         std::vector<TransmitterManager::EventLogEntry> logs;
         uint32_t last_update_ms = 0;
         TransmitterManager::getEventLogsSnapshot(logs, &last_update_ms);
@@ -331,6 +362,9 @@ esp_err_t api_get_event_logs_handler(httpd_req_t *req) {
             evt["timestamp"] = entry.timestamp;
             evt["level"] = entry.level;
             evt["data"] = entry.data;
+            evt["count"] = entry.count;
+            evt["is_new"] = entry.is_new;
+            evt["type"] = entry.type;
             evt["message"] = entry.message;
         }
 
@@ -360,6 +394,65 @@ esp_err_t api_get_event_logs_handler(httpd_req_t *req) {
 
     http.end();
     StaticJsonDocument<128> doc;
+    doc["success"] = false;
+    if (httpCode == -1) {
+        doc["error"] = "Failed to connect to transmitter";
+    } else {
+        String error_msg = "Transmitter returned HTTP " + String(httpCode);
+        doc["error"] = error_msg;
+    }
+
+    return ApiResponseUtils::send_json_doc(req, doc);
+}
+
+esp_err_t api_get_event_log_summary_handler(httpd_req_t *req) {
+    // Opportunistically request fresh summary from transmitter (non-blocking).
+    send_event_log_summary_request();
+
+    const auto summary = TransmitterManager::getEventLogSummary();
+
+    DynamicJsonDocument doc(256);
+    doc["success"] = summary.known;
+    doc["source"] = "espnow";
+    doc["seq"] = summary.seq;
+    doc["total_historical"] = summary.total_historical;
+    doc["error_historical"] = summary.error_historical;
+    doc["new_since_last_report_total"] = summary.new_since_last_report_total;
+    doc["new_since_last_report_error"] = summary.new_since_last_report_error;
+    doc["uptime_ms"] = summary.uptime_ms;
+    doc["last_update_ms"] = summary.last_update_ms;
+
+    if (!summary.known) {
+        doc["message"] = "Waiting for summary";
+    }
+
+    String json;
+    serializeJson(doc, json);
+    return HttpJsonUtils::send_json(req, json.c_str());
+}
+
+esp_err_t api_clear_event_logs_handler(httpd_req_t *req) {
+    HttpHandlerTimer handler_timer(HM_GET_EVENT_LOGS);
+
+    if (!TransmitterManager::isIPKnown()) {
+        return HttpJsonUtils::send_json(req, "{\"success\":false,\"error\":\"Transmitter not connected\"}");
+    }
+
+    String transmitter_url = TransmitterManager::getURL() + "/api/clear_event_logs";
+    HTTPClient http;
+    http.begin(transmitter_url);
+    http.setTimeout(5000);
+    int httpCode = http.POST("");
+
+    if (httpCode == 200) {
+        String response = http.getString();
+        http.end();
+        TransmitterManager::clearEventLogs();
+        return HttpJsonUtils::send_json(req, response.c_str());
+    }
+
+    http.end();
+    StaticJsonDocument<160> doc;
     doc["success"] = false;
     if (httpCode == -1) {
         doc["error"] = "Failed to connect to transmitter";

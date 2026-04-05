@@ -112,6 +112,18 @@ const char* get_dashboard_page_script() {
             return spaced.replace(/\b\w/g, c => c.toUpperCase());
         }
 
+        function formatCountLabel(count, singular, plural) {
+            return `${count} ${count === 1 ? singular : plural}`;
+        }
+
+        function formatTemperature(value) {
+            const numeric = Number(value);
+            if (!Number.isFinite(numeric)) {
+                return '🌡️ --.-°C';
+            }
+            return `🌡️ ${numeric.toFixed(1)}°C`;
+        }
+
         function applyFormattedDeviceNames() {
             const txEl = document.getElementById('txDeviceName');
             const rxEl = document.getElementById('rxDeviceName');
@@ -135,7 +147,13 @@ const char* get_dashboard_page_script() {
                     const txIPModeEl = document.getElementById('txIPMode');
                     const txVersionEl = document.getElementById('txVersion');
                     const txMACEl = document.getElementById('txMAC');
+                    const txTemperatureEl = document.getElementById('txTemperature');
                     const ethernetConnected = !!tx.ethernet_connected;
+
+                    if (txTemperatureEl) {
+                        txTemperatureEl.textContent = formatTemperature(tx.temperature_c);
+                        txTemperatureEl.style.color = Number.isFinite(Number(tx.temperature_c)) ? '#fff' : '#888';
+                    }
                     
                     if (ethernetConnected) {
                         statusEl.textContent = 'Connected';
@@ -164,6 +182,15 @@ const char* get_dashboard_page_script() {
                         if (statusDotEl) {
                             statusDotEl.style.background = '#ff6b35';
                         }
+                    }
+                }
+
+                if (data.receiver) {
+                    const rx = data.receiver;
+                    const rxTemperatureEl = document.getElementById('rxTemperature');
+                    if (rxTemperatureEl) {
+                        rxTemperatureEl.textContent = formatTemperature(rx.temperature_c);
+                        rxTemperatureEl.style.color = Number.isFinite(Number(rx.temperature_c)) ? '#fff' : '#888';
                     }
                 }
                 
@@ -221,10 +248,17 @@ const char* get_dashboard_page_script() {
             statusEl.style.color = '#FFD700';
             
             try {
-                const response = await fetch('/api/get_event_logs?limit=100');
-                const data = await response.json();
+                const [logsResult, summaryResult] = await Promise.allSettled([
+                    // Match /events semantics: transmitter-authoritative snapshot.
+                    fetch('/api/get_event_logs?limit=500&source=transmitter').then(r => r.json()),
+                    // Keep latest-change badge from ESP-NOW summary delta.
+                    fetch('/api/get_event_log_summary').then(r => r.json())
+                ]);
+
+                const data = (logsResult.status === 'fulfilled') ? logsResult.value : null;
+                const summary = (summaryResult.status === 'fulfilled') ? summaryResult.value : null;
                 
-                if (data.success && data.event_count !== undefined && data.event_count > 0) {
+                if (data && data.success) {
                     // Count event types if events array exists
                     let errorCount = 0;
                     let warningCount = 0;
@@ -232,27 +266,40 @@ const char* get_dashboard_page_script() {
                     
                     if (data.events && Array.isArray(data.events)) {
                         data.events.forEach(event => {
-                            if (event.level === 3) {  // ERROR
+                            const levelRaw = event.level;
+                            const levelText = String(levelRaw || '').toUpperCase();
+
+                            if (levelRaw === 3 || levelText.includes('ERROR')) {
                                 errorCount++;
-                            } else if (event.level === 4) {  // WARNING
+                            } else if (levelRaw === 4 || levelText.includes('WARN')) {
                                 warningCount++;
-                            } else if (event.level === 6) {  // INFO
+                            } else {
                                 infoCount++;
                             }
                         });
                     }
                     
-                    // Update status display - enable card
-                    let statusText = data.event_count + ' events';
-                    if (errorCount > 0) {
-                        statusText += ` | ${errorCount} errors`;
-                    }
-                    if (warningCount > 0) {
-                        statusText += ` | ${warningCount} warnings`;
+                    // Update status display from same source as /events page.
+                    let statusText = 'No events yet';
+                    if (data.event_count !== undefined) {
+                        statusText = formatCountLabel(data.event_count, 'event', 'events');
+                        if (errorCount > 0) {
+                            statusText += ` | ${formatCountLabel(errorCount, 'error', 'errors')}`;
+                        }
+                        if (warningCount > 0) {
+                            statusText += ` | ${formatCountLabel(warningCount, 'warning', 'warnings')}`;
+                        }
+
+                        if (summary && summary.success) {
+                            const newTotal = Number(summary.new_since_last_report_total || 0);
+                            if (newTotal > 0) {
+                                statusText += ` | ${formatCountLabel(newTotal, 'new', 'new')}`;
+                            }
+                        }
                     }
                     
                     statusEl.textContent = statusText;
-                    statusEl.style.color = '#4CAF50';
+                    statusEl.style.color = (errorCount > 0) ? '#ff6b35' : ((data.event_count && data.event_count > 0) ? '#4CAF50' : '#888');
                     cardEl.classList.remove('disabled');
                     linkEl.style.pointerEvents = 'auto';
                     cardEl.style.opacity = '1';
@@ -262,19 +309,17 @@ const char* get_dashboard_page_script() {
                         total: data.event_count,
                         errors: errorCount,
                         warnings: warningCount,
-                        info: infoCount
+                        info: infoCount,
+                        new: (summary && summary.success) ? Number(summary.new_since_last_report_total || 0) : 0
                     });
                 } else {
-                    // No data available - disable card and show appropriate message
+                    // API unavailable - disable card only when transmitter is offline
                     cardEl.classList.add('disabled');
                     linkEl.style.pointerEvents = 'none';
                     cardEl.style.opacity = '0.5';
                     cardEl.style.cursor = 'not-allowed';
-                    
-                    if (data.success && data.event_count === 0) {
-                        statusEl.textContent = 'No events to display';
-                        statusEl.style.color = '#888';
-                    } else if (data.success === false && data.error && data.error.includes('not connected')) {
+
+                    if (data.success === false && data.error && data.error.includes('not connected')) {
                         statusEl.textContent = 'Transmitter offline';
                         statusEl.style.color = '#FFD700';
                     } else {
@@ -294,7 +339,8 @@ const char* get_dashboard_page_script() {
             }
         }
         
-        // Load event logs on page load
+        // Load event logs once on page load for card status.
+        // Detailed logs are fetched on demand when the Event Logs page is opened.
         window.addEventListener('load', function() {
             applyFormattedDeviceNames();
             loadEventLogs();
