@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <mqtt_logger.h>
 #include <esp_err.h>
+#include <Preferences.h>
 
 namespace {
 
@@ -142,6 +143,25 @@ bool SystemSettings::load_from_nvs() {
 
   if (corrected_invalid_selection) {
     save_to_nvs();
+  }
+  
+  // MIGRATION: First-boot legacy key consolidation
+  // If new schema battery_profile_type is None but legacy BATTTYPE exists, migrate it
+  if (battery_profile_type_ == static_cast<uint8_t>(BatteryType::None)) {
+    Preferences legacyPrefs;
+    if (legacyPrefs.begin("batterySettings", true)) {  // read-only
+      uint32_t legacyBattType = legacyPrefs.getUInt("BATTTYPE", 
+                                                 static_cast<uint32_t>(BatteryType::None));
+      legacyPrefs.end();
+    
+      if (legacyBattType != static_cast<uint32_t>(BatteryType::None)) {
+        LOG_INFO("SETTINGS", "MIGRATION: Importing legacy BATTTYPE=%u to new schema", legacyBattType);
+        battery_profile_type_ = static_cast<uint8_t>(legacyBattType);
+        // Persist in new location so migration doesn't repeat
+        save_to_nvs();
+        LOG_INFO("SETTINGS", "MIGRATION: Battery profile type %u now in new schema", battery_profile_type_);
+      }
+    }
   }
   
   LOG_INFO("SETTINGS", "✓ Settings loaded from NVS");

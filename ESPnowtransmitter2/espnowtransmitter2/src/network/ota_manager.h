@@ -92,6 +92,13 @@ private:
     static esp_err_t event_logs_handler(httpd_req_t *req);
 
     /**
+     * @brief HTTP handler to clear event logs
+     * @param req HTTP request object
+     * @return ESP_OK on success
+     */
+    static esp_err_t clear_event_logs_handler(httpd_req_t *req);
+
+    /**
      * @brief HTTP handler for OTA status API
      * @param req HTTP request object
      * @return ESP_OK on success

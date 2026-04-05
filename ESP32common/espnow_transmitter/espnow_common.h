@@ -103,6 +103,13 @@ enum msg_type : uint8_t {
     // Event logs subscription control (receiver → transmitter)
     msg_event_logs_control,         // Subscribe/unsubscribe event logs publishing
 
+    // Event log count summary (receiver request, transmitter response)
+    msg_event_log_summary_request,  // Request latest event summary counters
+    msg_event_log_summary,          // Event summary counters (historical + new-since-last-report)
+
+    // Periodic transmitter temperature report
+    msg_temperature_report,         // Transmitter chip temperature sampled at heartbeat cadence
+
     // Dynamic type catalog discovery (receiver requests, transmitter responds)
     msg_request_battery_types,      // Request battery type catalog
     msg_battery_types_fragment,     // Battery type catalog fragment response
@@ -113,7 +120,10 @@ enum msg_type : uint8_t {
 
     // Dynamic type catalog version exchange (receiver requests, transmitter responds)
     msg_request_type_catalog_versions, // Request current battery/inverter catalog versions
-    msg_type_catalog_versions          // Current battery/inverter catalog versions
+    msg_type_catalog_versions,         // Current battery/inverter catalog versions
+
+    // LED state synchronization (receiver request, transmitter response)
+    msg_led_state_request              // Request current LED color/effect snapshot
 };
 
 // ESP-NOW packet subtypes (for fragmented messages)
@@ -165,6 +175,30 @@ typedef struct __attribute__((packed)) {
     uint8_t action;      // 0 = unsubscribe, 1 = subscribe
 } event_logs_control_t;
 
+// Event log summary request
+typedef struct __attribute__((packed)) {
+    uint8_t type;        // msg_event_log_summary_request
+} event_log_summary_request_t;
+
+// Event log summary response
+typedef struct __attribute__((packed)) {
+    uint8_t type;                        // msg_event_log_summary
+    uint32_t seq;                        // Monotonic summary sequence
+    uint32_t total_historical;           // Slots with occurences > 0
+    uint32_t error_historical;           // Historical error-count slots
+    uint32_t new_since_last_report_total; // New occurrences since last summary report
+    uint32_t new_since_last_report_error; // New error occurrences since last summary report
+    uint32_t uptime_ms;                  // Sender uptime millis() at report time (truncated)
+} event_log_summary_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;              // msg_temperature_report
+    uint32_t seq;              // Monotonic temperature report sequence
+    int16_t temperature_centi_c; // Chip temperature in centi-degrees Celsius
+    uint8_t valid;             // 0 = unavailable/invalid, 1 = valid sample
+    uint32_t uptime_ms;        // Sender uptime millis() at sample/report time
+} temperature_report_t;
+
 // ============================================================================
 // Dynamic type catalog discovery (battery/inverter)
 // ============================================================================
@@ -199,6 +233,10 @@ typedef struct __attribute__((packed)) {
     uint16_t battery_catalog_version;            // Monotonic battery catalog version
     uint16_t inverter_catalog_version;           // Monotonic inverter catalog version
 } type_catalog_versions_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                                // msg_led_state_request
+} led_state_request_t;
 
 typedef struct __attribute__((packed)) {
     uint8_t type;       // msg_abort_data

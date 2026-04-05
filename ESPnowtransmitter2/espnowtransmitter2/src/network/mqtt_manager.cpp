@@ -580,7 +580,15 @@ bool MqttManager::publish_event_logs() {
         obj["timestamp"] = static_cast<uint64_t>(evt->timestamp);
         obj["level"] = map_event_level(evt->level);
         obj["data"] = evt->data;
-        obj["message"] = have_event_message ? event_message : "";
+        if (have_event_message) {
+            // IMPORTANT: assign mutable char* directly so ArduinoJson copies the
+            // content into the document. Avoid conditional const char* paths
+            // here, because they can store linked pointers to stack buffers and
+            // cause type/message mismatches after the loop.
+            obj["message"] = event_message;
+        } else {
+            obj["message"] = "";
+        }
         obj["event"] = get_event_enum_string(item.event_handle);
     }
 

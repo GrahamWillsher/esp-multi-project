@@ -4,6 +4,7 @@
 #include "../utils/transmitter_manager.h"
 #include "../logging.h"
 #include "../../src/memory/memory_sampler.h"
+#include "../../../src/espnow/espnow_send.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -16,6 +17,12 @@
 #include <firmware_version.h>
 #include <firmware_compatibility_policy.h>
 #include <mbedtls/sha256.h>
+
+namespace ESPNow {
+    extern uint8_t current_led_color;
+    extern uint8_t current_led_effect;
+    extern volatile bool receiver_ota_led_override_active;
+}
 
 namespace {
 constexpr size_t OTA_IMAGE_SHA256_HEX_LEN = 64;
@@ -47,6 +54,27 @@ struct BurstModeGuard {
     // Non-copyable
     BurstModeGuard(const BurstModeGuard&) = delete;
     BurstModeGuard& operator=(const BurstModeGuard&) = delete;
+};
+
+struct ReceiverOtaLedOverrideGuard {
+    ReceiverOtaLedOverrideGuard() {
+        constexpr uint8_t kLedBlue = 3;
+        constexpr uint8_t kEffectEnergyFlow = 1;
+        ESPNow::receiver_ota_led_override_active = true;
+        ESPNow::current_led_color = kLedBlue;
+        ESPNow::current_led_effect = kEffectEnergyFlow;
+        LOG_INFO("OTA_RX", "Receiver self-OTA LED override enabled: BLUE + ENERGY FLOW");
+    }
+
+    ~ReceiverOtaLedOverrideGuard() {
+        ESPNow::receiver_ota_led_override_active = false;
+        const bool requested = send_led_state_request();
+        LOG_INFO("OTA_RX", "Receiver self-OTA LED override disabled; requested transmitter LED sync=%s",
+                 requested ? "yes" : "no");
+    }
+
+    ReceiverOtaLedOverrideGuard(const ReceiverOtaLedOverrideGuard&) = delete;
+    ReceiverOtaLedOverrideGuard& operator=(const ReceiverOtaLedOverrideGuard&) = delete;
 };
 
 struct OtaSessionChallenge {
@@ -560,6 +588,8 @@ esp_err_t api_ota_upload_receiver_handler(httpd_req_t *req) {
 
     LOG_INFO("OTA_RX", "Starting receiver self-OTA upload, size=%d", req->content_len);
 
+    const ReceiverOtaLedOverrideGuard led_override_guard;
+
     if (!Update.begin(static_cast<size_t>(req->content_len))) {
         LOG_ERROR("OTA_RX", "Update.begin failed: %s", Update.errorString());
         return ApiResponseUtils::send_error_message(req, Update.errorString());
@@ -679,12 +709,14 @@ esp_err_t api_ota_upload_receiver_handler(httpd_req_t *req) {
     }
 
     LOG_INFO("OTA_RX", "Receiver OTA successful, written=%u bytes", static_cast<unsigned>(written_total));
-    return ApiResponseUtils::send_success_message(req, "Receiver firmware uploaded. Rebooting...");
+    const esp_err_t response_result = ApiResponseUtils::send_success_message(req, "Receiver firmware uploaded. Rebooting...");
 
-    // Note: unreachable, but kept for clarity
+    // Give HTTP stack a short window to flush response bytes, then reboot into new firmware.
     vTaskDelay(pdMS_TO_TICKS(OTA_RX_REBOOT_DELAY_MS));
     ESP.restart();
-    return ESP_OK;
+
+    // Not expected to execute (ESP.restart should not return), but keep a deterministic fallback.
+    return response_result;
 }
 
 esp_err_t api_ota_upload_handler(httpd_req_t *req) {

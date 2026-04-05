@@ -11,6 +11,12 @@
 static constexpr const char* kLogTag = "ESPNOW";
 
 void handle_flash_led_message(const espnow_queue_msg_t* msg) {
+    if (ESPNow::receiver_ota_led_override_active) {
+        // During receiver self-OTA, local LED state is forced by OTA handler.
+        // Ignore remote LED animation updates until OTA session ends.
+        return;
+    }
+
     if (msg->len >= (int)sizeof(flash_led_t)) {
         const flash_led_t* flash_msg = reinterpret_cast<const flash_led_t*>(msg->data);
         

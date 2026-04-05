@@ -2,10 +2,12 @@
 #include "tx_state_machine.h"
 #include "tx_send_guard.h"
 #include <espnow_transmitter.h>
+#include <esp_now.h>
 #include <esp32common/config/timing_config.h>
 #include <esp32common/espnow/connection_manager.h>
 #include <esp32common/espnow/connection_event.h>
 #include <esp32common/espnow/packet_utils.h>
+#include <runtime_common_utils/device_temperature.h>
 #include "../config/logging_config.h"
 #include "../network/time_manager.h"
 #include "../network/ethernet_manager.h"
@@ -20,7 +22,11 @@ void HeartbeatManager::init() {
     m_heartbeat_seq = 0;
     m_last_ack_seq = 0;
     m_last_send_time = 0;
+    m_temperature_seq = 0;
     m_initialized = true;
+
+    DeviceTemperature::init();
+    DeviceTemperature::sample_now();
     
     LOG_INFO("HEARTBEAT", "Heartbeat manager initialized (interval: %u ms)", TimingConfig::HEARTBEAT_INTERVAL_MS);
 }
@@ -95,8 +101,45 @@ void HeartbeatManager::send_heartbeat() {
         LOG_DEBUG("HEARTBEAT", "Sent heartbeat seq=%u, uptime=%llu ms to %02X:%02X:%02X:%02X:%02X:%02X", 
                   hb.seq, (unsigned long long)hb.uptime_ms,
                   peer_mac[0], peer_mac[1], peer_mac[2], peer_mac[3], peer_mac[4], peer_mac[5]);
+        send_temperature_report(peer_mac);
     } else {
         LOG_ERROR("HEARTBEAT", "Failed to send heartbeat seq=%u: %s", hb.seq, esp_err_to_name(result));
+    }
+}
+
+void HeartbeatManager::send_temperature_report(const uint8_t* peer_mac) {
+    if (!peer_mac) {
+        return;
+    }
+
+    DeviceTemperature::sample_now();
+    const DeviceTemperature::Reading reading = DeviceTemperature::get_latest();
+
+    temperature_report_t report{};
+    report.type = msg_temperature_report;
+    report.seq = ++m_temperature_seq;
+    report.temperature_centi_c = reading.centi_celsius;
+    report.valid = reading.valid ? 1 : 0;
+    report.uptime_ms = millis();
+
+    // Best-effort telemetry: intentionally bypass TxSendGuard recovery/backoff
+    // so this optional message can never influence core connection behavior.
+    const esp_err_t result = esp_now_send(
+        peer_mac,
+        reinterpret_cast<const uint8_t*>(&report),
+        sizeof(report)
+    );
+
+    if (result == ESP_OK) {
+        if (reading.valid) {
+            LOG_DEBUG("TEMP", "Sent TX temperature seq=%u value=%.2fC", report.seq,
+                      DeviceTemperature::to_celsius(reading.centi_celsius));
+        } else {
+            LOG_WARN("TEMP", "Sent TX temperature seq=%u with invalid reading", report.seq);
+        }
+    } else {
+        LOG_DEBUG("TEMP", "Skipped TX temperature seq=%u (best-effort send failed: %s)",
+                  report.seq, esp_err_to_name(result));
     }
 }
 
@@ -129,4 +172,5 @@ void HeartbeatManager::reset() {
     m_heartbeat_seq = 0;
     m_last_ack_seq = 0;
     m_last_send_time = 0;
+    m_temperature_seq = 0;
 }

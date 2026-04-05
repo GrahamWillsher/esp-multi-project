@@ -45,12 +45,14 @@ private:
     HeartbeatManager& operator=(const HeartbeatManager&) = delete;
     
     void send_heartbeat();
+    void send_temperature_report(const uint8_t* peer_mac);
     
     static constexpr uint32_t MAX_UNACKED_HEARTBEATS = 3;     // Trigger CONNECTION_LOST after 3
     
     uint32_t m_heartbeat_seq = 0;        // Monotonic sequence counter
     uint32_t m_last_ack_seq = 0;         // Last acknowledged sequence
     uint32_t m_last_send_time = 0;       // Timestamp of last heartbeat send
+    uint32_t m_temperature_seq = 0;      // Monotonic temperature report sequence
     bool m_initialized = false;
 };
 

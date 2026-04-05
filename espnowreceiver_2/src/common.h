@@ -69,6 +69,7 @@ namespace ESPNow {
     // LED indicator state
     extern LEDColor current_led_color;
     extern LEDEffect current_led_effect;
+    extern volatile bool receiver_ota_led_override_active;
     
     // Connection state (managed by RxStateMachine, not volatile flags)
     extern int wifi_channel;                // Managed by ChannelManager

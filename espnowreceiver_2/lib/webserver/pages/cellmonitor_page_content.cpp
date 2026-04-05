@@ -12,23 +12,9 @@ const char* get_cellmonitor_page_content() {
             <a href='/' style='color: #4CAF50; text-decoration: none; font-weight: bold;'>← Back to Dashboard</a>
         </div>
         <p id='cellStatus' style='color: #888; margin-top: 8px;'>Fetching cell data...</p>
-    </div>
-
-    <div class='info-box' style='margin-bottom: 20px;'>
-        <h2 style='margin-top: 0; color: #00FFFF;'>Statistics</h2>
-        <div style='display: grid; grid-template-columns: 1fr 1fr; gap: 15px;'>
-            <div>
-                <strong>Max Voltage:</strong> <span id='maxVoltage' style='color: #4CAF50;'>-- mV</span>
-            </div>
-            <div>
-                <strong>Min Voltage:</strong> <span id='minVoltage' style='color: #FF6B6B;'>-- mV</span>
-            </div>
-            <div>
-                <strong>Deviation:</strong> <span id='deviation' style='color: #FFD700;'>-- mV</span>
-            </div>
-            <div>
-                <strong>Balancing Cells:</strong> <span id='balancingCount' style='color: #00FFFF;'>--</span>
-            </div>
+        <div style='display: flex; justify-content: center; gap: 30px; margin-top: 8px; color: #ddd;'>
+            <span>Deviation: <span id='deviation' style='color: #FFD700;'>-- mV</span></span>
+            <span>Balancing Cells: <span id='balancingCount' style='color: #00FFFF;'>--</span></span>
         </div>
     </div>
 

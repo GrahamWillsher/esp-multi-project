@@ -5,6 +5,8 @@
 #include <espnow_transmitter.h>
 #include <esp32common/espnow/packet_utils.h>
 #include <esp32common/espnow/connection_event.h>
+#include <esp32common/config/timing_config.h>
+#include <runtime_common_utils/device_temperature.h>
 #include "../webserver/utils/transmitter_manager.h"
 
 void RxHeartbeatManager::init() {
@@ -18,12 +20,17 @@ void RxHeartbeatManager::init() {
     m_heartbeats_received = 0;
     m_acks_sent = 0;
     m_initialized = true;
+
+    DeviceTemperature::init();
+    DeviceTemperature::sample_now();
     
     LOG_INFO("HEARTBEAT", "RX Heartbeat manager initialized (timeout: %u ms)", HEARTBEAT_TIMEOUT_MS);
 }
 
 void RxHeartbeatManager::tick() {
     if (!m_initialized) return;
+
+    DeviceTemperature::tick(TimingConfig::HEARTBEAT.interval_ms);
     
     // Only check timeout when connected
     if (EspNowConnectionManager::instance().get_state() != EspNowConnectionState::CONNECTED) {

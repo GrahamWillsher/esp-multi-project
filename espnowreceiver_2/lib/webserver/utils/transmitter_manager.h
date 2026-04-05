@@ -12,6 +12,26 @@ class TransmitterManager {
 public:
     using EventLogEntry = TransmitterEventLogTypes::EventLogEntry;
 
+    struct EventLogSummary {
+        bool known = false;
+        uint32_t seq = 0;
+        uint32_t total_historical = 0;
+        uint32_t error_historical = 0;
+        uint32_t new_since_last_report_total = 0;
+        uint32_t new_since_last_report_error = 0;
+        uint32_t uptime_ms = 0;
+        uint32_t last_update_ms = 0;
+    };
+
+    struct TemperatureReport {
+        bool known = false;
+        bool valid = false;
+        uint32_t seq = 0;
+        int16_t temperature_centi_c = 0;
+        uint32_t uptime_ms = 0;
+        uint32_t last_update_ms = 0;
+    };
+
 
 
 public:
@@ -141,8 +161,17 @@ public:
     
     // Event logs (from transmitter via MQTT or HTTP proxy)
     static void storeEventLogs(const JsonObject& logs);
+    static void clearEventLogs();
     static bool hasEventLogs();
     static void getEventLogsSnapshot(std::vector<EventLogEntry>& out_logs, uint32_t* out_last_update_ms = nullptr);
+
+    // Event log summary counters (from ESP-NOW)
+    static void storeEventLogSummary(const event_log_summary_t& summary);
+    static EventLogSummary getEventLogSummary();
+
+    // Transmitter temperature (from ESP-NOW)
+    static void storeTemperatureReport(const temperature_report_t& report);
+    static TemperatureReport getTemperatureReport();
 };
 
 #endif

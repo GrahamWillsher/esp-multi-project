@@ -359,6 +359,14 @@ void OtaManager::init_http_server() {
             .user_ctx = NULL
         };
         httpd_register_uri_handler(http_server_, &event_logs_uri);
+
+        httpd_uri_t clear_event_logs_uri = {
+            .uri = "/api/clear_event_logs",
+            .method = HTTP_POST,
+            .handler = clear_event_logs_handler,
+            .user_ctx = NULL
+        };
+        httpd_register_uri_handler(http_server_, &clear_event_logs_uri);
         
         // Register root handler
         httpd_uri_t root_uri = {

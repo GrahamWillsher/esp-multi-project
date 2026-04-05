@@ -32,6 +32,7 @@ namespace Display {
 namespace ESPNow {
     LEDColor current_led_color = LED_ORANGE;  // Start with orange (medium)
     LEDEffect current_led_effect = LED_EFFECT_FLASH;
+    volatile bool receiver_ota_led_override_active = false;
 
     int wifi_channel = 1;
     uint8_t transmitter_mac[6] = {0};  // Will be filled when transmitter connects

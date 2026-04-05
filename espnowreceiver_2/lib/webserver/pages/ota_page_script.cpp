@@ -414,104 +414,209 @@ const char* get_ota_page_script() {
             }, pollMs);
         }
         
-        function setupDeviceUpload(device) {
-            const fileInput = document.getElementById('firmwareFile' + device);
-            const uploadBtn = document.getElementById('uploadBtn' + device);
-            const statusDiv = document.getElementById('status' + device);
-            const progressBarDiv = document.getElementById('progressBar' + device);
-            const progressFill = document.getElementById('progressFill' + device);
-            const progressBarText = document.getElementById('progressText' + device);
-            
+        function setUploadButtonState(uploadBtn, label, color, disabled) {
+            uploadBtn.innerText = label;
+            uploadBtn.style.backgroundColor = color;
+            uploadBtn.disabled = !!disabled;
+        }
+
+        function handleReceiverUploadSuccess(response, ui) {
+            ui.progressBarDiv.style.display = 'none';
+            ui.uploadBtn.style.display = '';
+
+            if (response.success) {
+                ui.statusDiv.innerHTML = '&#9989; Receiver update complete. Restarting...';
+                setUploadButtonState(ui.uploadBtn, 'Complete', '#4CAF50', true);
+                redirectToDashboardAfterDelay(2000);
+                return;
+            }
+
+            ui.statusDiv.innerHTML = '&#10060; ' + (response.message || 'Upload failed');
+            setUploadButtonState(ui.uploadBtn, 'Retry Upload', '#ff6b35', false);
+        }
+
+        function handleTransmitterUploadSuccess(response, ui) {
+            if (!response.success) {
+                ui.statusDiv.innerHTML = '❌ Failed: ' + response.message;
+                ui.progressBarDiv.style.display = 'none';
+                ui.uploadBtn.style.display = '';
+                setUploadButtonState(ui.uploadBtn, 'Retry Upload', '#ff6b35', false);
+                return;
+            }
+
+            ui.statusDiv.innerHTML = '✅ Firmware uploaded to transmitter.';
+            ui.progressBarDiv.style.display = 'none';
+            ui.uploadBtn.style.display = '';
+            setUploadButtonState(ui.uploadBtn, 'Verifying OTA...', '#4CAF50', false);
+
+            let statusPollAttempts = 0;
+            const maxStatusPollAttempts = 40;
+
+            const statusPollInterval = setInterval(function() {
+                statusPollAttempts++;
+
+                fetch('/api/transmitter_ota_status')
+                    .then(resp => resp.json())
+                    .then(status => {
+                        if (status.success && status.ready_for_reboot) {
+                            clearInterval(statusPollInterval);
+                            const expectedTxnId = Number(status.ota_txn_id || 0);
+
+                            runTransmitterReboot({
+                                countdownSeconds: 10,
+                                updateCountdown: (seconds) => {
+                                    ui.statusDiv.innerHTML = '✅ OTA verified on transmitter.';
+                                    ui.uploadBtn.disabled = true;
+                                    ui.uploadBtn.style.cursor = 'not-allowed';
+                                    ui.uploadBtn.style.backgroundColor = '#ff9800';
+                                    ui.uploadBtn.innerText = 'Reboot in ' + seconds + 's...';
+                                },
+                                onCommandStart: () => {
+                                    ui.statusDiv.innerHTML = '✅ Sending reboot command to transmitter...';
+                                    ui.uploadBtn.disabled = true;
+                                    ui.uploadBtn.style.cursor = 'not-allowed';
+                                    ui.uploadBtn.style.backgroundColor = '#ff9800';
+                                    ui.uploadBtn.innerText = 'Sending reboot command...';
+                                },
+                                onSuccess: () => {
+                                    ui.statusDiv.innerHTML = '✅ Waiting for transmitter to come back and validate...';
+                                    ui.uploadBtn.disabled = true;
+                                    ui.uploadBtn.style.cursor = 'not-allowed';
+                                    ui.uploadBtn.style.backgroundColor = '#28a745';
+                                    ui.uploadBtn.innerText = '✓ Reboot command sent';
+                                    startCommitVerification(ui.statusDiv, ui.uploadBtn, expectedTxnId);
+                                },
+                                onFailure: (message) => {
+                                    ui.statusDiv.innerHTML = '❌ OTA uploaded, but reboot command failed: ' + (message || 'Unknown error');
+                                    ui.uploadBtn.disabled = false;
+                                    ui.uploadBtn.style.cursor = 'pointer';
+                                    ui.uploadBtn.style.backgroundColor = '#ff6b35';
+                                    ui.uploadBtn.innerText = 'Retry Upload';
+                                },
+                                onError: (err) => {
+                                    ui.statusDiv.innerHTML = '❌ OTA uploaded, but reboot request error: ' + err.message;
+                                    ui.uploadBtn.disabled = false;
+                                    ui.uploadBtn.style.cursor = 'pointer';
+                                    ui.uploadBtn.style.backgroundColor = '#ff6b35';
+                                    ui.uploadBtn.innerText = 'Retry Upload';
+                                }
+                            });
+                        } else if (status.success && status.in_progress) {
+                            ui.statusDiv.innerHTML = '✅ Firmware uploaded to transmitter.<br><br>Applying OTA... please wait';
+                        } else if (status.success && !status.in_progress && !status.ready_for_reboot && status.last_success === false) {
+                            clearInterval(statusPollInterval);
+                            ui.statusDiv.innerHTML = '❌ Transmitter OTA failed: ' + (status.last_error || 'Unknown error');
+                            setUploadButtonState(ui.uploadBtn, 'Retry Upload', '#ff6b35', false);
+                        } else if (!status.success) {
+                            clearInterval(statusPollInterval);
+                            ui.statusDiv.innerHTML = '❌ Unable to verify transmitter OTA: ' + (status.message || status.detail || 'Unknown status error');
+                            setUploadButtonState(ui.uploadBtn, 'Retry Upload', '#ff6b35', false);
+                        }
+                    })
+                    .catch(() => {
+                    });
+
+                if (statusPollAttempts >= maxStatusPollAttempts) {
+                    clearInterval(statusPollInterval);
+                    ui.statusDiv.innerHTML = '❌ Timed out waiting for transmitter OTA readiness';
+                    setUploadButtonState(ui.uploadBtn, 'Retry Upload', '#ff6b35', false);
+                }
+            }, 1000);
+        }
+
+        function setupOtaUpload(config) {
+            const fileInput = document.getElementById('firmwareFile' + config.device);
+            const uploadBtn = document.getElementById('uploadBtn' + config.device);
+            const statusDiv = document.getElementById('status' + config.device);
+            const progressBarDiv = document.getElementById('progressBar' + config.device);
+            const progressFill = document.getElementById('progressFill' + config.device);
+            const progressBarText = document.getElementById('progressText' + config.device);
+
             let selectedFile = null;
             let selectedMetadata = null;
-            
-            // Handle file selection
+
+            const ui = { fileInput, uploadBtn, statusDiv, progressBarDiv, progressFill, progressBarText };
+
             fileInput.addEventListener('change', async function(e) {
-                if (e.target.files.length > 0) {
-                    selectedFile = e.target.files[0];
-                    const sizeMB = (selectedFile.size / 1024 / 1024).toFixed(2);
-                    
-                    // Extract metadata from file
-                    try {
-                        const metadata = await extractMetadataFromFile(selectedFile);
-                        selectedMetadata = metadata;
-                        if (metadata.valid) {
-                            statusDiv.innerHTML = '📄 ' + selectedFile.name + ' (' + sizeMB + ' MB) → ' +
-                                                  '<span style="color: #4CAF50;">● v' + 
-                                                  metadata.version + '</span> ' +
-                                                  '<span style="color: #888; font-size: 12px;">(Built: ' + 
-                                                  metadata.build_date + ')</span>';
-
-                            const preflight = validateUploadSelection(device, metadata);
-                            if (!preflight.ok) {
-                                statusDiv.innerHTML += '<br><span style="color:#ff6b35;">❌ ' + preflight.reason + '</span>';
-                                uploadBtn.disabled = true;
-                                uploadBtn.style.backgroundColor = '#666';
-                                uploadBtn.innerText = 'Incompatible Firmware';
-                                return;
-                            }
-
-                            if (preflight.warning) {
-                                statusDiv.innerHTML += '<br><span style="color:#FFD700;">⚠️ ' + preflight.warning + '</span>';
-                            }
-                        } else {
-                            statusDiv.innerHTML = '📄 ' + selectedFile.name + ' (' + sizeMB + ' MB) → ' +
-                                                  '<span style="color: #FFD700;">* No metadata (legacy firmware)</span>';
-                        }
-                    } catch (err) {
-                        selectedMetadata = null;
-                        statusDiv.innerHTML = '📄 ' + selectedFile.name + ' (' + sizeMB + ' MB)';
-                    }
-                    
-                    uploadBtn.disabled = false;
-                    uploadBtn.style.backgroundColor = '#ff6b35';
-                    uploadBtn.innerText = 'Upload Firmware';
-                } else {
+                if (e.target.files.length <= 0) {
                     selectedFile = null;
+                    selectedMetadata = null;
                     statusDiv.innerHTML = '📁 Select firmware file (.bin)';
-                    uploadBtn.disabled = false;
-                    uploadBtn.style.backgroundColor = '#666';
-                    uploadBtn.innerText = 'Select File First';
+                    setUploadButtonState(uploadBtn, config.emptyButtonLabel, '#666', false);
+                    return;
                 }
+
+                selectedFile = e.target.files[0];
+                const sizeMB = (selectedFile.size / 1024 / 1024).toFixed(2);
+
+                try {
+                    selectedMetadata = await extractMetadataFromFile(selectedFile);
+                } catch (err) {
+                    selectedMetadata = null;
+                }
+
+                const preflightMetadata = (selectedMetadata && selectedMetadata.valid) ? selectedMetadata : null;
+                const preflight = validateUploadSelection(config.device, preflightMetadata);
+
+                if (config.simpleStatus) {
+                    statusDiv.innerHTML = '&#128196; ' + selectedFile.name + ' (' + sizeMB + ' MB)';
+                } else if (selectedMetadata && selectedMetadata.valid) {
+                    statusDiv.innerHTML = '📄 ' + selectedFile.name + ' (' + sizeMB + ' MB) → ' +
+                                          '<span style="color: #4CAF50;">● v' + selectedMetadata.version + '</span> ' +
+                                          '<span style="color: #888; font-size: 12px;">(Built: ' + selectedMetadata.build_date + ')</span>';
+                } else if (selectedMetadata && !selectedMetadata.valid) {
+                    statusDiv.innerHTML = '📄 ' + selectedFile.name + ' (' + sizeMB + ' MB) → ' +
+                                          '<span style="color: #FFD700;">* No metadata (legacy firmware)</span>';
+                } else {
+                    statusDiv.innerHTML = '📄 ' + selectedFile.name + ' (' + sizeMB + ' MB)';
+                }
+
+                if (!preflight.ok) {
+                    statusDiv.innerHTML += '<br><span style="color:#ff6b35;">❌ ' + preflight.reason + '</span>';
+                    setUploadButtonState(uploadBtn, 'Incompatible Firmware', '#666', true);
+                    return;
+                }
+
+                if (!config.simpleStatus && preflight.warning) {
+                    statusDiv.innerHTML += '<br><span style="color:#FFD700;">⚠️ ' + preflight.warning + '</span>';
+                }
+
+                setUploadButtonState(uploadBtn, config.readyButtonLabel, '#ff6b35', false);
             });
-            
-            // Handle upload button
+
             uploadBtn.addEventListener('click', async function() {
                 if (!selectedFile) {
                     fileInput.click();
                     return;
                 }
 
-                const preflight = validateUploadSelection(device, selectedMetadata);
+                const preflightMetadata = (selectedMetadata && selectedMetadata.valid) ? selectedMetadata : null;
+                const preflight = validateUploadSelection(config.device, preflightMetadata);
                 if (!preflight.ok) {
                     statusDiv.innerHTML = '❌ ' + preflight.reason;
-                    uploadBtn.disabled = false;
-                    uploadBtn.style.backgroundColor = '#ff6b35';
-                    uploadBtn.innerText = 'Retry Upload';
+                    setUploadButtonState(uploadBtn, 'Retry Upload', '#ff6b35', false);
                     return;
                 }
 
                 let imageSha256 = '';
                 try {
-                    statusDiv.innerHTML = '🔐 Computing firmware hash...';
+                    statusDiv.innerHTML = config.hashMessage;
                     imageSha256 = await computeFileSha256(selectedFile);
                 } catch (err) {
-                    statusDiv.innerHTML = '❌ Unable to compute firmware hash: ' + err.message;
-                    uploadBtn.disabled = false;
-                    uploadBtn.style.backgroundColor = '#ff6b35';
-                    uploadBtn.innerText = 'Retry Upload';
+                    statusDiv.innerHTML = config.hashErrorPrefix + err.message;
+                    setUploadButtonState(uploadBtn, 'Retry Upload', '#ff6b35', false);
                     return;
                 }
-                
-                console.log('Starting ' + device + ' OTA upload...');
+
+                console.log('Starting ' + config.device + ' OTA upload...');
                 uploadBtn.style.display = 'none';
                 progressBarDiv.style.display = 'block';
                 progressFill.style.width = '0%';
                 progressBarText.innerText = '0%';
-                
+                statusDiv.innerHTML = config.uploadingMessage;
+
                 const xhr = new XMLHttpRequest();
-                
-                // Upload progress
+
                 xhr.upload.addEventListener('progress', function(e) {
                     if (e.lengthComputable) {
                         const percent = Math.round((e.loaded / e.total) * 100);
@@ -519,155 +624,42 @@ const char* get_ota_page_script() {
                         progressBarText.innerText = percent + '%';
                     }
                 });
-                
-                // Upload complete
+
                 xhr.addEventListener('load', function() {
-                    if (xhr.status === 200) {
-                        try {
-                            const response = JSON.parse(xhr.responseText);
-                            if (response.success) {
-                                if (device === 'Receiver') {
-                                    statusDiv.innerHTML = '✅ Firmware uploaded! Device is rebooting...<br><br>Please wait 30 seconds and reload the page.';
-                                    progressBarDiv.style.display = 'none';
-                                    uploadBtn.style.display = '';
-                                    uploadBtn.innerText = 'Upload complete\nRebooting...';
-                                    uploadBtn.style.backgroundColor = '#4CAF50';
-                                    // Don't redirect - receiver is rebooting
-                                } else {
-                                    statusDiv.innerHTML = '✅ Firmware uploaded to transmitter.';
-                                    progressBarDiv.style.display = 'none';
-                                    uploadBtn.style.display = '';
-                                    uploadBtn.innerText = 'Verifying OTA...';
-                                    uploadBtn.style.backgroundColor = '#4CAF50';
-
-                                    let statusPollAttempts = 0;
-                                    const maxStatusPollAttempts = 40; // 40s
-
-                                    const statusPollInterval = setInterval(function() {
-                                        statusPollAttempts++;
-
-                                        fetch('/api/transmitter_ota_status')
-                                            .then(resp => resp.json())
-                                            .then(status => {
-                                                if (status.success && status.ready_for_reboot) {
-                                                    clearInterval(statusPollInterval);
-                                                    const expectedTxnId = Number(status.ota_txn_id || 0);
-
-                                                    runTransmitterReboot({
-                                                        countdownSeconds: 10,
-                                                        updateCountdown: (seconds) => {
-                                                            statusDiv.innerHTML = '✅ OTA verified on transmitter.';
-                                                            uploadBtn.disabled = true;
-                                                            uploadBtn.style.cursor = 'not-allowed';
-                                                            uploadBtn.style.backgroundColor = '#ff9800';
-                                                            uploadBtn.innerText = 'Reboot in ' + seconds + 's...';
-                                                        },
-                                                        onCommandStart: () => {
-                                                            statusDiv.innerHTML = '✅ Sending reboot command to transmitter...';
-                                                            uploadBtn.disabled = true;
-                                                            uploadBtn.style.cursor = 'not-allowed';
-                                                            uploadBtn.style.backgroundColor = '#ff9800';
-                                                            uploadBtn.innerText = 'Sending reboot command...';
-                                                        },
-                                                        onSuccess: () => {
-                                                            statusDiv.innerHTML = '✅ Waiting for transmitter to come back and validate...';
-                                                            uploadBtn.disabled = true;
-                                                            uploadBtn.style.cursor = 'not-allowed';
-                                                            uploadBtn.style.backgroundColor = '#28a745';
-                                                            uploadBtn.innerText = '✓ Reboot command sent';
-                                                            startCommitVerification(statusDiv, uploadBtn, expectedTxnId);
-                                                        },
-                                                        onFailure: (message) => {
-                                                            statusDiv.innerHTML = '❌ OTA uploaded, but reboot command failed: ' + (message || 'Unknown error');
-                                                            uploadBtn.disabled = false;
-                                                            uploadBtn.style.cursor = 'pointer';
-                                                            uploadBtn.style.backgroundColor = '#ff6b35';
-                                                            uploadBtn.innerText = 'Retry Upload';
-                                                        },
-                                                        onError: (err) => {
-                                                            statusDiv.innerHTML = '❌ OTA uploaded, but reboot request error: ' + err.message;
-                                                            uploadBtn.disabled = false;
-                                                            uploadBtn.style.cursor = 'pointer';
-                                                            uploadBtn.style.backgroundColor = '#ff6b35';
-                                                            uploadBtn.innerText = 'Retry Upload';
-                                                        }
-                                                    });
-                                                } else if (status.success && status.in_progress) {
-                                                    statusDiv.innerHTML = '✅ Firmware uploaded to transmitter.<br><br>Applying OTA... please wait';
-                                                } else if (status.success && !status.in_progress && !status.ready_for_reboot && status.last_success === false) {
-                                                    clearInterval(statusPollInterval);
-                                                    statusDiv.innerHTML = '❌ Transmitter OTA failed: ' + (status.last_error || 'Unknown error');
-                                                    uploadBtn.disabled = false;
-                                                    uploadBtn.style.backgroundColor = '#ff6b35';
-                                                    uploadBtn.innerText = 'Retry Upload';
-                                                } else if (!status.success) {
-                                                    clearInterval(statusPollInterval);
-                                                    statusDiv.innerHTML = '❌ Unable to verify transmitter OTA: ' + (status.message || status.detail || 'Unknown status error');
-                                                    uploadBtn.disabled = false;
-                                                    uploadBtn.style.backgroundColor = '#ff6b35';
-                                                    uploadBtn.innerText = 'Retry Upload';
-                                                }
-                                            })
-                                            .catch(() => {
-                                                // Keep polling until timeout
-                                            });
-
-                                        if (statusPollAttempts >= maxStatusPollAttempts) {
-                                            clearInterval(statusPollInterval);
-                                            statusDiv.innerHTML = '❌ Timed out waiting for transmitter OTA readiness';
-                                            uploadBtn.disabled = false;
-                                            uploadBtn.style.backgroundColor = '#ff6b35';
-                                            uploadBtn.innerText = 'Retry Upload';
-                                        }
-                                    }, 1000);
-                                }
-                            } else {
-                                statusDiv.innerHTML = '❌ Failed: ' + response.message;
-                                progressBarDiv.style.display = 'none';
-                                uploadBtn.style.display = '';
-                                uploadBtn.disabled = false;
-                                uploadBtn.style.backgroundColor = '#ff6b35';
-                                uploadBtn.innerText = 'Retry Upload';
-                            }
-                        } catch (e) {
-                            statusDiv.innerHTML = '❌ Error parsing response';
-                            progressBarDiv.style.display = 'none';
-                            uploadBtn.style.display = '';
-                            uploadBtn.disabled = false;
-                            uploadBtn.style.backgroundColor = '#ff6b35';
-                            uploadBtn.innerText = 'Retry Upload';
-                        }
-                    } else {
-                        statusDiv.innerHTML = '❌ Upload failed: HTTP ' + xhr.status;
+                    if (xhr.status !== 200) {
+                        statusDiv.innerHTML = config.httpErrorPrefix + xhr.status;
                         progressBarDiv.style.display = 'none';
                         uploadBtn.style.display = '';
-                        uploadBtn.disabled = false;
-                        uploadBtn.style.backgroundColor = '#ff6b35';
-                        uploadBtn.innerText = 'Retry Upload';
+                        setUploadButtonState(uploadBtn, 'Retry Upload', '#ff6b35', false);
+                        return;
+                    }
+
+                    try {
+                        const response = JSON.parse(xhr.responseText);
+                        config.handleSuccess(response, ui);
+                    } catch (e) {
+                        statusDiv.innerHTML = config.parseErrorMessage;
+                        progressBarDiv.style.display = 'none';
+                        uploadBtn.style.display = '';
+                        setUploadButtonState(uploadBtn, 'Retry Upload', '#ff6b35', false);
                     }
                 });
-                
-                // Upload error
+
                 xhr.addEventListener('error', function() {
-                    statusDiv.innerHTML = '❌ Network error during upload';
+                    statusDiv.innerHTML = config.networkErrorMessage;
                     progressBarDiv.style.display = 'none';
                     uploadBtn.style.display = '';
-                    uploadBtn.disabled = false;
-                    uploadBtn.style.backgroundColor = '#ff6b35';
-                    uploadBtn.innerText = 'Retry Upload';
+                    setUploadButtonState(uploadBtn, 'Retry Upload', '#ff6b35', false);
                 });
 
-                // Choose endpoint based on device
-                const endpoint = (device === 'Receiver') ? '/api/ota_upload_receiver' : '/api/ota_upload';
-                xhr.open('POST', endpoint);
-                // Both receiver self-OTA and transmitter forwarding now use raw binary uploads.
+                xhr.open('POST', config.endpoint);
                 xhr.setRequestHeader('Content-Type', 'application/octet-stream');
                 xhr.setRequestHeader('X-OTA-Image-SHA256', imageSha256);
                 xhr.send(selectedFile);
             });
         }
         
-        window.onload = function() {
+            window.onload = function() {
             console.log('OTA page loaded');
 
             function fallbackReceiverFromVersionApi() {
@@ -730,8 +722,34 @@ const char* get_ota_page_script() {
                 });
             
             // Setup upload handlers for both devices
-            setupDeviceUpload('Receiver');
-            setupDeviceUpload('Transmitter');
+            setupOtaUpload({
+                device: 'Receiver',
+                endpoint: '/api/ota_upload_receiver',
+                simpleStatus: true,
+                emptyButtonLabel: 'Select File',
+                readyButtonLabel: 'Upload',
+                hashMessage: 'Preparing firmware...',
+                hashErrorPrefix: '&#10060; Failed to process firmware file: ',
+                uploadingMessage: 'Uploading firmware...',
+                httpErrorPrefix: '&#10060; Upload failed: HTTP ',
+                parseErrorMessage: '&#10060; Upload failed',
+                networkErrorMessage: '&#10060; Network error',
+                handleSuccess: handleReceiverUploadSuccess
+            });
+            setupOtaUpload({
+                device: 'Transmitter',
+                endpoint: '/api/ota_upload',
+                simpleStatus: false,
+                emptyButtonLabel: 'Select File First',
+                readyButtonLabel: 'Upload Firmware',
+                hashMessage: '🔐 Computing firmware hash...',
+                hashErrorPrefix: '❌ Unable to compute firmware hash: ',
+                uploadingMessage: 'Uploading firmware...',
+                httpErrorPrefix: '❌ Upload failed: HTTP ',
+                parseErrorMessage: '❌ Error parsing response',
+                networkErrorMessage: '❌ Network error during upload',
+                handleSuccess: handleTransmitterUploadSuccess
+            });
             
             // Fetch transmitter metadata from ESP-NOW data (simpler approach)
             function fetchTransmitterMetadata() {

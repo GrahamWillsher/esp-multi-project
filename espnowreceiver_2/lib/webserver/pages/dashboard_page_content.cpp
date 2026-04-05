@@ -23,9 +23,12 @@ String get_dashboard_page_content(const String& tx_status,
                 <div onmouseover='this.parentElement.style.transform="translateY(-5px)"; this.parentElement.style.boxShadow="0 8px 20px rgba(0,0,0,0.3)";' 
                      onmouseout='this.parentElement.style.transform="translateY(0)"; this.parentElement.style.boxShadow="0 4px 6px rgba(0,0,0,0.2)";'>
                     <h2 style='margin: 0 0 15px 0; color: #2196F3;'>📡 Transmitter</h2>
-                    <p id='txDeviceName' style='color: #888; font-size: 14px; margin: 5px 0;'>)rawliteral";
+                    <div style='display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 5px 0;'>
+                        <p id='txDeviceName' style='color: #888; font-size: 14px; margin: 0;'>)rawliteral";
     content += tx_device_name;
     content += R"rawliteral(</p>
+                        <span id='txTemperature' style='color: #888; font-size: 14px; white-space: nowrap;'>🌡️ --.-°C</span>
+                    </div>
                     
                     <div style='margin: 20px 0; padding: 15px; background: rgba(0,0,0,0.3); border-radius: 8px;'>
                         <div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;'>
@@ -75,9 +78,12 @@ String get_dashboard_page_content(const String& tx_status,
                 <div onmouseover='this.parentElement.style.transform="translateY(-5px)"; this.parentElement.style.boxShadow="0 8px 20px rgba(0,0,0,0.3)";' 
                      onmouseout='this.parentElement.style.transform="translateY(0)"; this.parentElement.style.boxShadow="0 4px 6px rgba(0,0,0,0.2)";'>
                     <h2 style='margin: 0 0 15px 0; color: #4CAF50;'>📱 Receiver</h2>
-                    <p id='rxDeviceName' style='color: #888; font-size: 14px; margin: 5px 0;'>)rawliteral";
+                    <div style='display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 5px 0;'>
+                        <p id='rxDeviceName' style='color: #888; font-size: 14px; margin: 0;'>)rawliteral";
     content += rx_device_name;
     content += R"rawliteral(</p>
+                        <span id='rxTemperature' style='color: #888; font-size: 14px; white-space: nowrap;'>🌡️ --.-°C</span>
+                    </div>
                     
                     <div style='margin: 20px 0; padding: 15px; background: rgba(0,0,0,0.3); border-radius: 8px;'>
                         <div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;'>

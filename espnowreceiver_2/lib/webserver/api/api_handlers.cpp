@@ -44,6 +44,8 @@ static const httpd_uri_t kCoreApiHandlers[] = {
     {.uri = "/api/battery_specs", .method = HTTP_GET, .handler = api_battery_specs_handler, .user_ctx = NULL},
     {.uri = "/api/inverter_specs", .method = HTTP_GET, .handler = api_inverter_specs_handler, .user_ctx = NULL},
     {.uri = "/api/get_event_logs", .method = HTTP_GET, .handler = api_get_event_logs_handler, .user_ctx = NULL},
+    {.uri = "/api/get_event_log_summary", .method = HTTP_GET, .handler = api_get_event_log_summary_handler, .user_ctx = NULL},
+    {.uri = "/api/clear_event_logs", .method = HTTP_POST, .handler = api_clear_event_logs_handler, .user_ctx = NULL},
     {.uri = "/api/event_logs/subscribe", .method = HTTP_POST, .handler = api_event_logs_subscribe_handler, .user_ctx = NULL},
     {.uri = "/api/event_logs/unsubscribe", .method = HTTP_POST, .handler = api_event_logs_unsubscribe_handler, .user_ctx = NULL},
     {.uri = "/api/get_test_data_mode", .method = HTTP_GET, .handler = api_get_test_data_mode_handler, .user_ctx = NULL},

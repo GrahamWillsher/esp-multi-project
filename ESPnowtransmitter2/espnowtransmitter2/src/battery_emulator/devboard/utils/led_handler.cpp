@@ -90,7 +90,19 @@ esp_err_t led_publish_current_state(bool force, const uint8_t* receiver_mac) {
     const EMULATOR_STATUS status = get_emulator_status();
     const uint8_t color = wire_color_from_status(status);
     const uint8_t led_mode = static_cast<uint8_t>(datalayer.battery.status.led_mode);
-    const uint8_t effect = wire_effect_from_led_mode(led_mode);
+    uint8_t effect = wire_effect_from_led_mode(led_mode);
+
+    // OTA UX override (transmitter): while OTA event is active, keep BLUE
+    // color from STATUS_UPDATING and force HEARTBEAT animation so this board
+    // is visually distinct from receiver self-OTA.
+    const EVENTS_STRUCT_TYPE* ota_event = get_event_pointer(EVENT_OTA_UPDATE);
+    const bool ota_active =
+        (ota_event != nullptr) &&
+        ((ota_event->state == EVENT_STATE_ACTIVE) ||
+         (ota_event->state == EVENT_STATE_ACTIVE_LATCHED));
+    if (ota_active) {
+        effect = LED_WIRE_HEARTBEAT;
+    }
 
     if (!force && s_have_last_led_packet && color == s_last_color && effect == s_last_effect) {
         return ESP_OK;

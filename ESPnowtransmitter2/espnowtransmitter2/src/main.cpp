@@ -81,6 +81,9 @@
 #include "battery_emulator/test_data_generator.h"
 #include "communication/can/can_driver.h"
 #include "battery/battery_manager.h"
+#include "battery_emulator/devboard/utils/events.h"
+#include "battery_emulator/devboard/safety/safety.h"
+#include <esp_system.h>
 #endif
 
 // =============================================================================
@@ -193,9 +196,47 @@ static void bootstrap_persistence() {
 // TestDataGenerator::update() are called.
 static void bootstrap_battery() {
 #if CONFIG_CAN_ENABLED
+    // Initialize events system (MUST be first - required before any set_event() calls)
+    init_events();
+
+    // Record reset reason as the first event so the event log is never empty
+    {
+        const esp_reset_reason_t rst = esp_reset_reason();
+        switch (rst) {
+            case ESP_RST_POWERON:   set_event(EVENT_RESET_POWERON,   static_cast<uint8_t>(rst)); break;
+            case ESP_RST_EXT:       set_event(EVENT_RESET_EXT,       static_cast<uint8_t>(rst)); break;
+            case ESP_RST_SW:        set_event(EVENT_RESET_SW,        static_cast<uint8_t>(rst)); break;
+            case ESP_RST_PANIC:     set_event(EVENT_RESET_PANIC,     static_cast<uint8_t>(rst)); break;
+            case ESP_RST_INT_WDT:   set_event(EVENT_RESET_INT_WDT,   static_cast<uint8_t>(rst)); break;
+            case ESP_RST_TASK_WDT:  set_event(EVENT_RESET_TASK_WDT,  static_cast<uint8_t>(rst)); break;
+            case ESP_RST_WDT:       set_event(EVENT_RESET_WDT,       static_cast<uint8_t>(rst)); break;
+            case ESP_RST_DEEPSLEEP: set_event(EVENT_RESET_DEEPSLEEP, static_cast<uint8_t>(rst)); break;
+            case ESP_RST_BROWNOUT:  set_event(EVENT_RESET_BROWNOUT,  static_cast<uint8_t>(rst)); break;
+            default:                set_event(EVENT_RESET_UNKNOWN,   static_cast<uint8_t>(rst)); break;
+        }
+        LOG_INFO("EVENTS", "Events initialized, reset reason: %d", static_cast<int>(rst));
+    }
+
     // Load battery type and other settings from NVS
-    LOG_INFO("BATTERY", "Loading battery configuration from NVS...");
+    // Get battery type from SystemSettings (Phase 2 already initialized it)
+    SystemSettings& settings_ref = SystemSettings::instance();
+    uint8_t battery_profile = settings_ref.get_battery_profile_type();
+    
+    // Diagnostics BEFORE any init
+    LOG_INFO("BATTERY", "┌─────────────────────────────────────────────────────┐");
+    LOG_INFO("BATTERY", "│ Boot Battery Init - Source of Truth Verification      │");
+    LOG_INFO("BATTERY", "├─────────────────────────────────────────────────────┤");
+    LOG_INFO("BATTERY", "│ SystemSettings.battery_profile = %u (BatteryType)    │", battery_profile);
+    LOG_INFO("BATTERY", "│ CAN_ENABLED = yes, watchdog will check 1x/sec        │");
+    LOG_INFO("BATTERY", "└─────────────────────────────────────────────────────┘");
+    
+    // Load non-battery settings from legacy store (still needed for inverter/charger/limits)
+    LOG_INFO("BATTERY", "Loading non-battery settings from legacy store...");
     init_stored_settings();
+    
+    // OVERRIDE battery type with SystemSettings value (source of truth)
+    user_selected_battery_type = static_cast<BatteryType>(battery_profile);
+    LOG_INFO("BATTERY", "Battery type set from SystemSettings: %u", static_cast<uint32_t>(user_selected_battery_type));
 
     // Initialize CAN driver (uses HSPI — no GPIO conflicts with Ethernet)
     LOG_INFO("CAN", "Initializing CAN driver...");
@@ -206,12 +247,17 @@ static void bootstrap_battery() {
     }
 
     // Initialize battery after CAN (matches original Battery Emulator order)
-    LOG_INFO("BATTERY", "Initializing battery (type: %d)...", (int)user_selected_battery_type);
+    LOG_INFO("BATTERY", "Initializing battery (type: %d)...", static_cast<int>(user_selected_battery_type));
     if (BatteryManager::instance().init_primary_battery(user_selected_battery_type)) {
         LOG_INFO("BATTERY", "✓ Battery initialized: %u cells configured",
                  datalayer.battery.info.number_of_cells);
+        LOG_INFO("BATTERY", "✓ CAN watchdog is ACTIVE (will fire EVENT_CAN_BATTERY_MISSING after 60s idle)");
     } else {
         LOG_WARN("BATTERY", "Battery initialization returned false (may be None type)");
+        if (user_selected_battery_type == BatteryType::None) {
+            LOG_WARN("BATTERY", "⚠ Battery type is NONE - CAN watchdog will NOT fire");
+            LOG_WARN("BATTERY", "  Configure battery via receiver UI or set BATTTYPE in NVS");
+        }
     }
 
     LOG_INFO("DATALAYER", "✓ Datalayer initialized");
@@ -471,6 +517,18 @@ void loop() {
     
     // Phase 4a: Update periodic BMS transmitters (battery data publishing)
     BatteryManager::instance().update_transmitters(millis());
+
+    // Safety watchdog: CAN alive countdown, CPU temperature, voltage/cell checks.
+    // Must be called at ~1 Hz — CAN_battery_still_alive counts down from 60 and
+    // sets EVENT_CAN_BATTERY_MISSING when it reaches 0 (no CAN frames for 60 s).
+    static uint32_t last_safety_check_ms = 0;
+    {
+        uint32_t now_ms = millis();
+        if (now_ms - last_safety_check_ms >= 1000) {
+            update_machineryprotection();
+            last_safety_check_ms = now_ms;
+        }
+    }
 #endif
     
     // ✅ NEW: Update Ethernet state machine (check timeouts, recovery transitions)

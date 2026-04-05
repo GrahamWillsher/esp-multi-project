@@ -20,8 +20,11 @@
 #include <vector>
 #include <cstring>
 
-#ifdef CONFIG_BATTERY_EMULATOR_ENABLED
+#if __has_include("../battery_emulator/devboard/utils/events.h")
+#define EVENT_LOGS_BACKEND_AVAILABLE 1
 #include "../battery_emulator/devboard/utils/events.h"
+#else
+#define EVENT_LOGS_BACKEND_AVAILABLE 0
 #endif
 
 // ---------------------------------------------------------------------------
@@ -165,7 +168,7 @@ esp_err_t OtaManager::event_logs_handler(httpd_req_t *req) {
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
 
-#ifdef CONFIG_BATTERY_EMULATOR_ENABLED
+#if EVENT_LOGS_BACKEND_AVAILABLE
     // Collect active events
     std::vector<std::pair<EVENTS_ENUM_TYPE, const EVENTS_STRUCT_TYPE*>>
         active_events;
@@ -180,8 +183,9 @@ esp_err_t OtaManager::event_logs_handler(httpd_req_t *req) {
     }
 
     // Sort by timestamp descending (newest first)
+    typedef std::pair<EVENTS_ENUM_TYPE, const EVENTS_STRUCT_TYPE*> EventPair;
     std::sort(active_events.begin(), active_events.end(),
-              [](const auto& a, const auto& b) {
+              [](const EventPair& a, const EventPair& b) {
                   return a.second->timestamp > b.second->timestamp;
               });
 
@@ -217,6 +221,7 @@ esp_err_t OtaManager::event_logs_handler(httpd_req_t *req) {
         edoc["level"]        = get_event_level_string(event_handle);
         edoc["timestamp_ms"] = static_cast<uint32_t>(event_ptr->timestamp);
         edoc["count"]        = static_cast<uint32_t>(event_ptr->occurences);
+        edoc["data"]         = event_ptr->data;
         edoc["message"]      = have_event_message ? event_message : "";
 
         char event_json[kEventJsonBytes];
@@ -239,6 +244,30 @@ esp_err_t OtaManager::event_logs_handler(httpd_req_t *req) {
     if (send_chunk_checked(req, "]}", 2, "event_logs_handler_suffix") != ESP_OK) { return ESP_FAIL; }
     if (send_chunk_checked(req, nullptr, 0, "event_logs_handler_finalize") != ESP_OK) { return ESP_FAIL; }
     return ESP_OK;
+}
+
+esp_err_t OtaManager::clear_event_logs_handler(httpd_req_t *req) {
+    if (reject_unexpected_request_body(req, "/api/clear_event_logs") != ESP_OK) {
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+#if EVENT_LOGS_BACKEND_AVAILABLE
+    reset_all_events();
+    const char* ok_json =
+        "{\"success\":true,\"message\":\"Event logs cleared\",\"event_count\":0}";
+    return (send_response_str_checked(req, ok_json, "clear_event_logs_handler_ok") == ESP_OK)
+               ? ESP_OK
+               : ESP_FAIL;
+#else
+    const char* err_json =
+        "{\"success\":false,\"error\":\"Battery emulator not enabled\"}";
+    return (send_response_str_checked(req, err_json, "clear_event_logs_handler_err") == ESP_OK)
+               ? ESP_OK
+               : ESP_FAIL;
+#endif
 }
 
 esp_err_t OtaManager::ota_status_handler(httpd_req_t *req) {

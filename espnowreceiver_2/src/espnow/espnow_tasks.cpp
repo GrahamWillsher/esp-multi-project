@@ -24,6 +24,7 @@
 #include <esp32common/espnow/standard_handlers.h>
 #include <esp32common/espnow/packet_utils.h>
 #include <esp32common/config/timing_config.h>
+#include <runtime_common_utils/device_temperature.h>
 #include <firmware_version.h>
 
 extern void notify_sse_data_updated();
@@ -225,6 +226,49 @@ void setup_message_routes() {
     router.register_route(msg_debug_ack,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             handle_debug_ack_message(msg);
+        },
+        0xFF, nullptr);
+
+    // Register event log summary handler (transmitter -> receiver)
+    router.register_route(msg_event_log_summary,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            if (msg->len < (int)sizeof(event_log_summary_t)) {
+                LOG_WARN(kLogTag, "EVENT_LOG_SUMMARY too short: %d bytes", msg->len);
+                return;
+            }
+
+            const auto* summary = reinterpret_cast<const event_log_summary_t*>(msg->data);
+            TransmitterManager::storeEventLogSummary(*summary);
+            notify_sse_data_updated();
+
+            LOG_INFO(kLogTag,
+                     "EVENT_LOG_SUMMARY seq=%lu total=%lu error=%lu new=%lu new_error=%lu",
+                     static_cast<unsigned long>(summary->seq),
+                     static_cast<unsigned long>(summary->total_historical),
+                     static_cast<unsigned long>(summary->error_historical),
+                     static_cast<unsigned long>(summary->new_since_last_report_total),
+                     static_cast<unsigned long>(summary->new_since_last_report_error));
+        },
+        0xFF, nullptr);
+
+    router.register_route(msg_temperature_report,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            if (msg->len < (int)sizeof(temperature_report_t)) {
+                LOG_WARN(kLogTag, "TEMPERATURE_REPORT too short: %d bytes", msg->len);
+                return;
+            }
+
+            const auto* report = reinterpret_cast<const temperature_report_t*>(msg->data);
+            TransmitterManager::storeTemperatureReport(*report);
+            notify_sse_data_updated();
+
+            if (report->valid) {
+                LOG_DEBUG(kLogTag, "TEMPERATURE_REPORT seq=%lu value=%.2fC",
+                          static_cast<unsigned long>(report->seq),
+                          DeviceTemperature::to_celsius(report->temperature_centi_c));
+            } else {
+                LOG_WARN(kLogTag, "TEMPERATURE_REPORT seq=%lu invalid", static_cast<unsigned long>(report->seq));
+            }
         },
         0xFF, nullptr);
     

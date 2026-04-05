@@ -5,6 +5,7 @@
 #include "discovery_task.h"
 #include "version_beacon_manager.h"
 #include "tx_send_guard.h"
+#include "../battery_emulator/devboard/utils/led_handler.h"
 #include "../network/mqtt_manager.h"
 #include "../settings/settings_manager.h"
 #include "../config/logging_config.h"
@@ -12,8 +13,111 @@
 #include <esp32common/espnow/message_router.h>
 #include <esp32common/espnow/standard_handlers.h>
 #include <espnow_transmitter.h>
+#include <esp_err.h>
 #include <firmware_version.h>
 #include <cstring>
+#include <array>
+
+#if __has_include("../battery_emulator/devboard/utils/events.h")
+#define EVENT_LOG_SUMMARY_BACKEND_AVAILABLE 1
+#include "../battery_emulator/devboard/utils/events.h"
+#else
+#define EVENT_LOG_SUMMARY_BACKEND_AVAILABLE 0
+#endif
+
+namespace {
+uint32_t g_event_log_summary_seq = 0;
+
+#if EVENT_LOG_SUMMARY_BACKEND_AVAILABLE
+std::array<uint32_t, EVENT_NOF_EVENTS> g_event_occurrences_reported{};
+bool g_event_occurrences_initialized = false;
+
+void initialize_event_occurrence_snapshot_if_needed() {
+    if (g_event_occurrences_initialized) {
+        return;
+    }
+
+    for (int i = 0; i < EVENT_NOF_EVENTS; ++i) {
+        const auto* evt = get_event_pointer(static_cast<EVENTS_ENUM_TYPE>(i));
+        g_event_occurrences_reported[i] = evt ? evt->occurences : 0;
+    }
+
+    g_event_occurrences_initialized = true;
+}
+
+bool is_error_event_level(EVENTS_LEVEL_TYPE level) {
+    return level == EVENT_LEVEL_ERROR;
+}
+#endif
+
+event_log_summary_t build_event_log_summary() {
+    event_log_summary_t summary{};
+    summary.type = msg_event_log_summary;
+    summary.seq = ++g_event_log_summary_seq;
+    summary.uptime_ms = millis();
+
+#if EVENT_LOG_SUMMARY_BACKEND_AVAILABLE
+    initialize_event_occurrence_snapshot_if_needed();
+
+    for (int i = 0; i < EVENT_NOF_EVENTS; ++i) {
+        const auto event_handle = static_cast<EVENTS_ENUM_TYPE>(i);
+        const EVENTS_STRUCT_TYPE* evt = get_event_pointer(event_handle);
+        if (!evt) {
+            continue;
+        }
+
+        const uint32_t occurrences = evt->occurences;
+        const bool is_error = is_error_event_level(evt->level);
+
+        if (occurrences > 0) {
+            summary.total_historical++;
+            if (is_error) {
+                summary.error_historical++;
+            }
+        }
+
+        const uint32_t previous = g_event_occurrences_reported[i];
+        if (occurrences > previous) {
+            const uint32_t delta = occurrences - previous;
+            summary.new_since_last_report_total += delta;
+            if (is_error) {
+                summary.new_since_last_report_error += delta;
+            }
+        }
+
+        g_event_occurrences_reported[i] = occurrences;
+    }
+#endif
+
+    return summary;
+}
+
+void send_event_log_summary_to_receiver(const uint8_t* receiver_mac) {
+    if (!receiver_mac) {
+        return;
+    }
+
+    const event_log_summary_t summary = build_event_log_summary();
+
+    esp_err_t result = TxSendGuard::send_to_receiver_guarded(
+        receiver_mac,
+        reinterpret_cast<const uint8_t*>(&summary),
+        sizeof(summary),
+        "event_log_summary"
+    );
+
+    if (result == ESP_OK) {
+        LOG_DEBUG("EVENT_SUMMARY", "Sent summary seq=%lu hist=%lu err_hist=%lu new=%lu err_new=%lu",
+                  static_cast<unsigned long>(summary.seq),
+                  static_cast<unsigned long>(summary.total_historical),
+                  static_cast<unsigned long>(summary.error_historical),
+                  static_cast<unsigned long>(summary.new_since_last_report_total),
+                  static_cast<unsigned long>(summary.new_since_last_report_error));
+    } else {
+        LOG_WARN("EVENT_SUMMARY", "Failed to send summary: %s", esp_err_to_name(result));
+    }
+}
+}  // namespace
 
 void EspnowMessageHandler::setup_message_routes() {
     auto& router = EspnowMessageRouter::instance();
@@ -147,9 +251,27 @@ void EspnowMessageHandler::setup_message_routes() {
                 const event_logs_control_t* control = reinterpret_cast<const event_logs_control_t*>(msg->data);
                 if (control->action == 1) {
                     MqttManager::instance().increment_event_log_subscribers();
+                    send_event_log_summary_to_receiver(msg->mac);
                 } else {
                     MqttManager::instance().decrement_event_log_subscribers();
                 }
+            }
+        });
+
+    // Event log summary request (receiver → transmitter)
+    register_with_context(msg_event_log_summary_request,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            if (msg->len >= (int)sizeof(event_log_summary_request_t)) {
+                send_event_log_summary_to_receiver(msg->mac);
+            }
+        });
+
+    // LED state request (receiver → transmitter)
+    register_with_context(msg_led_state_request,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            (void)ctx;
+            if (msg->len >= (int)sizeof(led_state_request_t)) {
+                led_publish_current_state(true, msg->mac);
             }
         });
 

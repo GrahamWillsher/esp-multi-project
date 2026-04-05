@@ -6,6 +6,8 @@
 #include "ota_manager.h"
 #include "ota_manager_internal.h"
 #include "../config/logging_config.h"
+#include "../battery_emulator/devboard/utils/events.h"
+#include "../battery_emulator/devboard/utils/led_handler.h"
 #include <webserver_common_utils/ota_auth_utils.h>
 #include <firmware_metadata.h>
 #include <firmware_compatibility_policy.h>
@@ -168,6 +170,8 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
 
     auto fail_ota = [&](int status_code, const char* message) -> esp_err_t {
         resources.abort_update_if_started();
+        clear_event(EVENT_OTA_UPDATE);
+        led_publish_current_state(true, nullptr);
         send_json_error(req, status_code, message);
         mgr.ota_in_progress_ = false;
         mgr.ota_session_.deactivate();
@@ -215,6 +219,10 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
     resources.mark_update_started();
     mgr.set_commit_state("prepare_writing", "streaming firmware to inactive slot");
     LOG_INFO("HTTP_OTA", "Update.begin OK");
+
+    // Signal OTA in progress: sets EVENT_LEVEL_UPDATE → LED turns BLUE on receiver
+    set_event(EVENT_OTA_UPDATE, 0);
+    led_publish_current_state(true, nullptr);
 
     // Receive and write firmware data
     while (remaining > 0) {
@@ -396,6 +404,8 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
         mgr.ota_session_.deactivate();
         mgr.set_commit_state("prepared_waiting_reboot",
                              "firmware staged; awaiting reboot command");
+        clear_event(EVENT_OTA_UPDATE);
+        led_publish_current_state(true, nullptr);
 
         StaticJsonDocument<224> ok_doc;
         ok_doc["success"]          = true;
@@ -429,6 +439,8 @@ esp_err_t OtaManager::ota_upload_handler(httpd_req_t *req) {
         mgr.ota_last_error_[sizeof(mgr.ota_last_error_) - 1] = '\0';
         send_json_error(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                         Update.errorString());
+        clear_event(EVENT_OTA_UPDATE);
+        led_publish_current_state(true, nullptr);
         mgr.ota_in_progress_ = false;
         mgr.ota_session_.deactivate();
         mgr.set_commit_state("prepare_failed", Update.errorString());

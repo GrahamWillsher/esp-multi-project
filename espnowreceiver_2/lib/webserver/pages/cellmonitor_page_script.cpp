@@ -23,8 +23,6 @@ const char* get_cellmonitor_page_script() {
             const deviation = max - min;
 
             // Update statistics
-            document.getElementById('maxVoltage').textContent = max + ' mV';
-            document.getElementById('minVoltage').textContent = min + ' mV';
             document.getElementById('deviation').textContent = deviation + ' mV';
             
             const balancingCount = balancing ? balancing.filter(b => b).length : 0;
@@ -192,7 +190,7 @@ const char* get_cellmonitor_page_script() {
                         
                         modeEl.textContent = data.mode || 'live';
                         modeEl.style.color = '#4CAF50';
-                        statusEl.textContent = `Cells: ${data.cells.length} | Min: ${data.cell_min_voltage_mV}mV | Max: ${data.cell_max_voltage_mV}mV`;
+                        statusEl.innerHTML = `Cells: ${data.cells.length} | Min Voltage: <span style="color:#4CAF50;">${data.cell_min_voltage_mV} mV</span> | Max Voltage: <span style="color:#FF6B6B;">${data.cell_max_voltage_mV} mV</span>`;
                         statusEl.style.color = '#ddd';
                         reconnectDelayMs = 1000;
                         

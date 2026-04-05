@@ -8,6 +8,11 @@
 #include "transmitter_state.h"
 #include "../logging.h"
 
+namespace {
+TransmitterManager::EventLogSummary g_event_log_summary;
+TransmitterManager::TemperatureReport g_temperature_report;
+}
+
 void TransmitterManager::init() {
     TransmitterNvsPersistence::init();
 }
@@ -355,10 +360,58 @@ void TransmitterManager::storeEventLogs(const JsonObject& logs) {
     TransmitterEventLogCache::store_event_logs(logs);
 }
 
+void TransmitterManager::clearEventLogs() {
+    TransmitterEventLogCache::clear_event_logs();
+}
+
 bool TransmitterManager::hasEventLogs() {
     return TransmitterEventLogCache::has_event_logs();
 }
 
 void TransmitterManager::getEventLogsSnapshot(std::vector<EventLogEntry>& out_logs, uint32_t* out_last_update_ms) {
     TransmitterEventLogCache::get_event_logs_snapshot(out_logs, out_last_update_ms);
+}
+
+void TransmitterManager::storeEventLogSummary(const event_log_summary_t& summary) {
+    g_event_log_summary.known = true;
+    g_event_log_summary.seq = summary.seq;
+    g_event_log_summary.total_historical = summary.total_historical;
+    g_event_log_summary.error_historical = summary.error_historical;
+    g_event_log_summary.new_since_last_report_total = summary.new_since_last_report_total;
+    g_event_log_summary.new_since_last_report_error = summary.new_since_last_report_error;
+    g_event_log_summary.uptime_ms = summary.uptime_ms;
+    g_event_log_summary.last_update_ms = millis();
+
+    LOG_DEBUG("TX_MGR", "Stored event summary seq=%lu total=%lu error=%lu new=%lu new_error=%lu",
+              static_cast<unsigned long>(g_event_log_summary.seq),
+              static_cast<unsigned long>(g_event_log_summary.total_historical),
+              static_cast<unsigned long>(g_event_log_summary.error_historical),
+              static_cast<unsigned long>(g_event_log_summary.new_since_last_report_total),
+              static_cast<unsigned long>(g_event_log_summary.new_since_last_report_error));
+}
+
+TransmitterManager::EventLogSummary TransmitterManager::getEventLogSummary() {
+    return g_event_log_summary;
+}
+
+void TransmitterManager::storeTemperatureReport(const temperature_report_t& report) {
+    g_temperature_report.known = true;
+    g_temperature_report.valid = report.valid != 0;
+    g_temperature_report.seq = report.seq;
+    g_temperature_report.temperature_centi_c = report.temperature_centi_c;
+    g_temperature_report.uptime_ms = report.uptime_ms;
+    g_temperature_report.last_update_ms = millis();
+
+    if (g_temperature_report.valid) {
+        LOG_INFO("TX_MGR", "Stored TX temperature seq=%lu value=%.2fC",
+                 static_cast<unsigned long>(g_temperature_report.seq),
+                 static_cast<double>(g_temperature_report.temperature_centi_c) / 100.0);
+    } else {
+        LOG_WARN("TX_MGR", "Stored TX temperature seq=%lu as invalid",
+                 static_cast<unsigned long>(g_temperature_report.seq));
+    }
+}
+
+TransmitterManager::TemperatureReport TransmitterManager::getTemperatureReport() {
+    return g_temperature_report;
 }

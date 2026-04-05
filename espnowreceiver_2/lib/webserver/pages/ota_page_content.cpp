@@ -49,15 +49,11 @@ String get_ota_page_content() {
         <input type='file' id='firmwareFileReceiver' accept='.bin' style='display:none;'>
 
         <button id='uploadBtnReceiver' class='button'
-            style='background-color: #666; font-size: 20px; font-weight: bold; width: 340px; height: 72px; padding: 0 14px; line-height: 1.2; box-sizing: border-box; white-space: pre-line; word-break: break-word; text-align: center; display: inline-flex; align-items: center; justify-content: center;'>Select File First</button>
+            style='background-color: #666; font-size: 20px; font-weight: bold; width: 340px; height: 72px; padding: 0 14px; line-height: 1.2; box-sizing: border-box; white-space: pre-line; word-break: break-word; text-align: center; display: inline-flex; align-items: center; justify-content: center;'>Select File</button>
         
         <div id='progressBarReceiver' style='display:none; width:340px; height:72px; background:#333; border-radius:4px; position:relative; overflow:hidden; margin:0 auto;'>
             <div id='progressFillReceiver' style='height:100%; width:0%; background:#4CAF50; transition:width 0.15s ease;'></div>
             <div id='progressTextReceiver' style='position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); color:#fff; font-size:20px; font-weight:bold;'>0%</div>
-        </div>
-        
-        <div style='margin-top: 15px; color: #FFD700; font-size: 14px;'>
-            ⚠️ Device will reboot automatically after update
         </div>
         
     </div>

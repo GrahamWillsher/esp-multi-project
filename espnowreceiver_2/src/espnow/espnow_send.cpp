@@ -336,3 +336,59 @@ bool send_type_catalog_versions_request() {
     LOG_INFO("ESP-NOW", "Requested type catalog versions");
     return true;
 }
+
+bool send_event_log_summary_request() {
+    if (RxStateMachine::instance().message_state() != RxStateMachine::MessageState::VALID) {
+        LOG_WARN("ESP-NOW", "Transmitter not connected - cannot request event log summary");
+        return false;
+    }
+
+    if (!has_transmitter_mac()) {
+        LOG_WARN("ESP-NOW", "Transmitter MAC not registered - cannot request event log summary");
+        return false;
+    }
+
+    event_log_summary_request_t packet{};
+    packet.type = msg_event_log_summary_request;
+
+    esp_err_t result = esp_now_send(ESPNow::transmitter_mac,
+                                    reinterpret_cast<uint8_t*>(&packet),
+                                    sizeof(packet));
+    if (result == ESP_OK) {
+        LOG_DEBUG("ESP-NOW", "Event log summary request sent to %02X:%02X:%02X:%02X:%02X:%02X",
+                  ESPNow::transmitter_mac[0], ESPNow::transmitter_mac[1], ESPNow::transmitter_mac[2],
+                  ESPNow::transmitter_mac[3], ESPNow::transmitter_mac[4], ESPNow::transmitter_mac[5]);
+        return true;
+    }
+
+    LOG_ERROR("ESP-NOW", "Failed to send event log summary request: %s", esp_err_to_name(result));
+    return false;
+}
+
+bool send_led_state_request() {
+    if (RxStateMachine::instance().message_state() != RxStateMachine::MessageState::VALID) {
+        LOG_WARN("ESP-NOW", "Transmitter not connected - cannot request LED state");
+        return false;
+    }
+
+    if (!has_transmitter_mac()) {
+        LOG_WARN("ESP-NOW", "Transmitter MAC not registered - cannot request LED state");
+        return false;
+    }
+
+    led_state_request_t packet{};
+    packet.type = msg_led_state_request;
+
+    esp_err_t result = esp_now_send(ESPNow::transmitter_mac,
+                                    reinterpret_cast<uint8_t*>(&packet),
+                                    sizeof(packet));
+    if (result == ESP_OK) {
+        LOG_DEBUG("ESP-NOW", "LED state request sent to %02X:%02X:%02X:%02X:%02X:%02X",
+                  ESPNow::transmitter_mac[0], ESPNow::transmitter_mac[1], ESPNow::transmitter_mac[2],
+                  ESPNow::transmitter_mac[3], ESPNow::transmitter_mac[4], ESPNow::transmitter_mac[5]);
+        return true;
+    }
+
+    LOG_ERROR("ESP-NOW", "Failed to send LED state request: %s", esp_err_to_name(result));
+    return false;
+}
