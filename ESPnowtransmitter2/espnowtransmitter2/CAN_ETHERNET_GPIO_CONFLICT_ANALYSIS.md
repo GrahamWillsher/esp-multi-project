@@ -313,6 +313,49 @@ Waveshare RS485/CAN HAT expects:
 - CS: GPIO 5
 - INT: GPIO 25
 
+Connector mapping note (12-pin yellow connector):
+- **CAN uses the `_0` suffix pins**.
+- **RS485/Modbus uses the `_0` suffix pins**.
+- **External relays use 5V and GND from the Waveshare yellow 12-pin connector**.
+
+### Waveshare RS485/CAN HAT(B) vendor reference diagram
+
+Diagram file reference:
+- `RS485-CAN-HAT-B-details-inter.jpg`
+
+If this image is stored in-repo, keep it adjacent to this document or under `docs/` and update this link if needed:
+
+![Waveshare RS485-CAN-HAT-B details](RS485-CAN-HAT-B-details-inter.jpg)
+
+### Vendor pin map reference (_0 / _1 suffix interfaces)
+
+> NOTE: The table below is copied from Waveshare HAT(B) reference naming.
+> `BCM` labels are vendor Raspberry Pi BCM labels, not ESP32 GPIO numbers.
+
+#### CAN bus (`CAN_0`, control via `SPI0`)
+
+| Func | BCM | Description |
+|------|-----|-------------|
+| 5V | 5V | 5V power input |
+| GND | GND | Ground |
+| SCLK_0 | 11 (SCK) | SPI clock input |
+| MOSI_0 | 10 (MOSI) | SPI data input |
+| MISO_0 | 9 (MISO) | SPI data output |
+| CE_0 | 8 (CE0) | data/command selection |
+| INT_0 | D25 | interrupt output |
+
+#### RS485 bus (control `RS485_0` and `RS485_1` via `SPI1`)
+
+| Func | BCM | Description |
+|------|-----|-------------|
+| 5V | 5V | 5V power input |
+| GND | GND | Ground |
+| SCLK_1 | D21 | SPI clock input |
+| MOSI_1 | D20 | SPI data input |
+| MISO_1 | D19 | SPI data output |
+| CE_1 | D18 | data/command selection |
+| INT_1 | D24 | interrupt output |
+
 **But this is VSPI pinout** - conflicts with Ethernet even more!
 
 Our current configuration uses HSPI pins (14, 19, 13, 15) which is better, but GPIO 19 still conflicts.

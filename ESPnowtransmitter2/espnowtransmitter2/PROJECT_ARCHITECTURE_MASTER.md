@@ -36,7 +36,7 @@ Build a **real-time battery monitoring and control system** that transmits CAN b
 - **Transmitter**: Olimex ESP32-POE2
   - Wired Ethernet (RMII interface with LAN8720 PHY)
   - Wireless ESP-NOW (IEEE 802.11 vendor action frames on the Wi-Fi radio)
-  - CAN bus interface (for battery data)
+  - Connected to a Waveshare RS485 CAN HAT(B) to provide RS485/Modbus and CAN connectivity (GPIO allocation is documented in [CAN_ETHERNET_GPIO_CONFLICT_ANALYSIS.md](CAN_ETHERNET_GPIO_CONFLICT_ANALYSIS.md) and in the Hardware & GPIO Allocation section below)
   - Built-in PoE (Power over Ethernet) for field deployment
   
 - **Receiver**: LilyGo T-Display-S3
