@@ -1,10 +1,10 @@
 # ESP-NOW Receiver: Project Architecture Master Document
 
 **Scope**: Receiver-side runtime architecture for ESP-NOW data ingestion, UI display, web API/control, and configuration orchestration.  
-**Version**: 1.1 (Current Workspace Baseline)  
-**Date**: March 20, 2026  
+**Version**: 1.2 (Workspace Sync Refresh)  
+**Date**: April 5, 2026  
 **Device**: LilyGo T-Display-S3 (Receiver)  
-**Status**: Active development baseline (build passing in current workspace)
+**Status**: Active development baseline (build passing in current workspace for `lilygo-t-display-s3_tft` and `lilygo-t-display-s3`)
 
 ---
 
@@ -13,7 +13,7 @@
 1. [Project Overview](#project-overview)
 2. [Architecture Overview](#architecture-overview)
 3. [Core Systems](#core-systems)
-4. [Current Codebase Snapshot (Mar 2026)](#current-codebase-snapshot-mar-2026)
+4. [Current Codebase Snapshot (Apr 2026)](#current-codebase-snapshot-apr-2026)
 5. [Technical References](#technical-references)
 6. [Hardware, HAL, and Pin Layout](#hardware-hal-and-pin-layout)
 7. [Timing, NVS, Metadata, and Memory](#timing-nvs-metadata-and-memory)
@@ -217,7 +217,7 @@ Project rules reference:
 
 - `../esp32common/docs/project guidlines.md`
 
-## Current Codebase Snapshot (Mar 2026)
+## Current Codebase Snapshot (Apr 2026)
 
 Top-level runtime anchors:
 
@@ -234,8 +234,8 @@ High-value review and migration records:
 - `RECEIVER_FULL_CODE_REVIEW_2026_03_16.md`
 - `RECEIVER_COMMON_CODE_REVIEW_2026_03_17.md`
 - `ARCHITECTURE_REDESIGN.md`
-- `IMPLEMENTATION_SUMMARY.md`
-- `MASTER_CHECKLIST.md`
+- `CHANGES_QUICK_SUMMARY.txt`
+- `START_HERE.md`
 
 ### Runtime Feature Note (Mar 26, 2026): Webserver Local-Only Logging
 
@@ -259,7 +259,7 @@ Implemented:
 
 Validation:
 
-- `pio run -e receiver_tft -j 12` succeeds after change.
+- `pio run -e lilygo-t-display-s3_tft -j 12` succeeds after change.
 - `LOG_USE_MQTT` redefinition warnings were eliminated.
 
 Recommended next step (granularity):
@@ -344,18 +344,18 @@ Operational note:
 ### Build
 
 ```bash
-pio run -e receiver_tft
+pio run -e lilygo-t-display-s3_tft
 ```
 
 ### Upload + Monitor
 
 ```bash
-pio run -e receiver_tft -t upload -t monitor
+pio run -e lilygo-t-display-s3_tft -t upload -t monitor
 ```
 
 ### Baseline Status (Mar 17, 2026)
 
-- Receiver build for `receiver_tft` succeeds in current workspace baseline.
+- Receiver builds for `lilygo-t-display-s3_tft` and `lilygo-t-display-s3` succeed in current workspace baseline.
 
 ---
 

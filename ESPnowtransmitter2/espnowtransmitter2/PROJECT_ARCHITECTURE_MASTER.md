@@ -3,10 +3,10 @@
 **Attribution**: This work is completely based on Dala the Great’s Battery Emulator: https://github.com/dalathegreat/Battery-Emulator
 **Scope**: The goal is to split that project into two devices — one for control and one for display — with communication between them. If the display device stops working, it does not interfere with the main control device.
 
-**Version**: 1.4 (Service Integration Results Merged)  
-**Date**: March 20, 2026  
+**Version**: 1.5 (Codebase Sync Refresh)  
+**Date**: April 5, 2026  
 **Device**: Olimex ESP32-POE2 (Transmitter)  
-**Status**: Active development — OTA hardening complete through Phase D; service integration progress merged
+**Status**: Active development — OTA hardening complete through Phase D; architecture links and runtime map verified against current workspace
 
 ---
 
@@ -21,7 +21,7 @@
 7. [First Release Timeline](#first-release-timeline)
 8. [Post-Release Improvements](#post-release-improvements)
 9. [Implementation Checklist](#implementation-checklist)
-10. [Current Codebase Snapshot (Mar 2026)](#current-codebase-snapshot-mar-2026)
+10. [Current Codebase Snapshot (Apr 2026)](#current-codebase-snapshot-apr-2026)
 
 ---
 
@@ -34,8 +34,8 @@ Build a **real-time battery monitoring and control system** that transmits CAN b
 ### Hardware
 
 - **Transmitter**: Olimex ESP32-POE2
-  - Wired Ethernet (MII interface with LAN8720 PHY)
-  - Wireless ESP-NOW (IEEE 802.15.4 - same radio as WiFi, different protocol)
+  - Wired Ethernet (RMII interface with LAN8720 PHY)
+  - Wireless ESP-NOW (IEEE 802.11 vendor action frames on the Wi-Fi radio)
   - CAN bus interface (for battery data)
   - Built-in PoE (Power over Ethernet) for field deployment
   
@@ -57,18 +57,18 @@ Build a **real-time battery monitoring and control system** that transmits CAN b
 | **Heartbeat protocol** | Connection health monitoring (10s interval) | ✅ Section 11 |
 | **State machine control** | Deterministic system behavior | ✅ New |
 
-### Current Codebase Snapshot (Mar 2026)
+### Current Codebase Snapshot (Apr 2026)
 
 Primary active modules now align to this structure:
 
 - `src/espnow/tx_state_machine.*` + `src/espnow/tx_connection_handler.*` for transmitter-side ESP-NOW state and transitions.
 - `src/network/ethernet_manager.*` for Ethernet lifecycle and readiness gating.
 - `src/network/mqtt_manager.*`, `src/network/mqtt_task.*`, `src/network/time_manager.*`, `src/network/ota_manager.*` for network services.
-- `src/espnow/component_catalog_handlers.*`, `src/espnow/component_config_sender.*`, and `src/espnow/control_handlers.*` for runtime configuration/control exchange with the receiver.
+- `src/espnow/component_catalog_handlers.*`, `src/espnow/config_handler_common.*`, and `src/espnow/control_handlers.*` for runtime configuration/control exchange with the receiver.
 
 Receiver companion architecture reference: `../../espnowreceiver_2/PROJECT_ARCHITECTURE_MASTER.md`.
 
-### Architecture Currency Addendum (Verified Mar 20, 2026)
+### Architecture Currency Addendum (Verified Apr 5, 2026)
 
 This addendum is the current authoritative map for structure and operation.
 
@@ -174,7 +174,7 @@ WiFi → ESP-NOW only. Ethernet → IP networking only. CAN → battery data onl
 ```
 
 > **WiFi** is configured in STA mode with no IP address and is used **exclusively** for ESP-NOW radio.
-> **Ethernet** (LAN8720 PHY, MII) is the sole IP networking path for MQTT, NTP, OTA, and HTTP.
+> **Ethernet** (LAN8720 PHY, RMII) is the sole IP networking path for MQTT, NTP, OTA, and HTTP.
 
 ### Layered Architecture
 
@@ -201,7 +201,7 @@ WiFi → ESP-NOW only. Ethernet → IP networking only. CAN → battery data onl
 ├───────────────────────────────────────────────────────────┤
 │ Hardware Interface Layer                                  │
 │ ├─ CAN Driver (MCP2515 or built-in, HSPI)                │
-│ ├─ Ethernet Driver (LAN8720 PHY, MII)                    │
+│ ├─ Ethernet Driver (LAN8720 PHY, RMII)                   │
 │ ├─ WiFi Radio (ESP32 built-in, STA mode)                 │
 │ └─ NVRAM (NVS for config persistence)                    │
 └───────────────────────────────────────────────────────────┘
@@ -408,9 +408,16 @@ Use the following current documents for hardware pin allocation and conflicts:
 - [ETHERNET_SUMMARY.md](ETHERNET_SUMMARY.md)
 - `src/config/hardware_config.h`
 
+Waveshare RS485/CAN HAT(B) `_0`/`_1` vendor interface tables and diagram reference are documented in:
+- `CAN_ETHERNET_GPIO_CONFLICT_ANALYSIS.md` → “Waveshare RS485/CAN HAT(B) vendor reference diagram”
+- `CAN_ETHERNET_GPIO_CONFLICT_ANALYSIS.md` → “Vendor pin map reference (_0 / _1 suffix interfaces)”
+
 **Key Points:**
 - **Ethernet**: 10 GPIO pins (0, 12, 18-27) for RMII interface
 - **CAN**: 5 GPIO pins (4, 13-15, 32) for SPI + interrupt
+- **12-pin yellow connector convention**: CAN uses `_0` suffix pins.
+- **12-pin yellow connector convention**: RS485/Modbus uses `_0` suffix pins.
+- **External relay power**: use 5V and GND from the Waveshare yellow 12-pin connector.
 - **Contactors**: 4 GPIO pins (33-36) for battery relay control
 - **Critical**: GPIO 4 (MISO) chosen to avoid Ethernet conflicts with GPIO 19
 - **Power**: GPIO 12 controls LAN8720 PHY power enable

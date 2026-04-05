@@ -1,8 +1,8 @@
 
 # PROJECT GUIDELINES
 ## Coding Standards, Architecture Rules & Best Practices
-**Version:** 2.0  
-**Last Updated:** March 17, 2026  
+**Version:** 2.1  
+**Last Updated:** April 5, 2026  
 **Purpose:** Ensure all firmware in this repository is fast, readable, reliable, and maintainable using modern embedded-systems best practices.
 
 # 1. Project Philosophy
@@ -39,7 +39,6 @@ ESP32Projects/
 │   │   └── MQTT_LOGGER_IMPLEMENTATION.md
 │   ├── espnow_common_utils/
 │   ├── espnow_transmitter/
-│   ├── webserver_common/
 │   ├── webserver_common_utils/
 │   ├── logging_utilities/
 │   └── firmware_metadata/
@@ -197,8 +196,8 @@ After code changes:
 
 Minimum build checks:
 
-- Receiver: `pio run -e receiver_tft`
-- Transmitter: `pio run`
+- Receiver: `pio run -e lilygo-t-display-s3_tft`
+- Transmitter: `pio run -e olimex_esp32_poe2`
 
 ---
 
