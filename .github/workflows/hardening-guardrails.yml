@@ -24,4 +24,4 @@ jobs:
           python-version: '3.11'
 
       - name: Run hardening guardrail checks
-        run: python esp32common/scripts/hardening_guardrails.py --root "$GITHUB_WORKSPACE"
+        run: python ESP32common/scripts/hardening_guardrails.py --root "$GITHUB_WORKSPACE"
