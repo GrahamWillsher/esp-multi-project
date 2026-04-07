@@ -9,7 +9,8 @@ enum LEDColor {
     LED_RED    = 0,
     LED_GREEN  = 1,
     LED_ORANGE = 2,
-    LED_BLUE   = 3
+    LED_BLUE   = 3,
+    LED_TEAL   = 4
 };
 
 // LED effect modes for simulated/status indicator
@@ -50,4 +51,5 @@ namespace LEDColors {
     constexpr uint16_t GREEN  = TFT_GREEN;   // 0x07E0
     constexpr uint16_t ORANGE = TFT_ORANGE;  // 0xFD20
     constexpr uint16_t BLUE   = TFT_BLUE;    // 0x001F
+    constexpr uint16_t TEAL   = TFT_CYAN;    // 0x07FF
 }

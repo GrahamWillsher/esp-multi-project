@@ -316,6 +316,21 @@ void ReceiverConnectionHandler::send_initialization_requests(const uint8_t* tran
         LOG_WARN("CONN_HANDLER", "Failed to send version info: %s", esp_err_to_name(result));
     }
 
+    // Request current transmitter LED state explicitly on connect so receiver
+    // converges quickly after TX reboot, independent of config-section timing.
+    const bool led_request_sent = send_led_state_request();
+    if (led_request_sent) {
+        LOG_INFO("CONN_HANDLER", "[INIT] Requested transmitter LED state");
+    } else {
+        LOG_WARN("CONN_HANDLER", "[INIT] Failed to request transmitter LED state");
+    }
+
+    // Option B: bounded silent retry window (max attempts, no per-attempt warnings).
+    led_sync_pending_ = true;
+    led_sync_started_ms_ = millis();
+    led_sync_attempt_count_ = led_request_sent ? 1 : 0;
+    last_led_sync_request_ms_ = led_request_sent ? led_sync_started_ms_ : 0;
+
     // Request transmitter catalog versions first (freshness check).
     // Receiver will request catalogs selectively when versions differ.
     send_type_catalog_versions_request();
@@ -359,6 +374,24 @@ void ReceiverConnectionHandler::tick() {
     const auto rx_state = RxStateMachine::instance().connection_state();
     const auto rx_stats = RxStateMachine::instance().stats();
     const uint32_t now = millis();
+
+    // LED sync retry engine (Option B): bounded silent retries, one summary warning.
+    if (led_sync_pending_ &&
+        EspNowConnectionManager::instance().is_connected() &&
+        EspNowMacUtils::has_valid_mac(transmitter_mac_)) {
+        if (led_sync_attempt_count_ >= LED_SYNC_MAX_ATTEMPTS) {
+            LOG_WARN("CONN_HANDLER", "[LED_SYNC] No LED response after %u attempt(s)",
+                     static_cast<unsigned>(led_sync_attempt_count_));
+            led_sync_pending_ = false;
+        } else if (last_led_sync_request_ms_ == 0 ||
+                   (now - last_led_sync_request_ms_) >= LED_SYNC_RETRY_INTERVAL_MS) {
+            if (send_led_state_request()) {
+                ++led_sync_attempt_count_;
+                last_led_sync_request_ms_ = now;
+            }
+        }
+    }
+
     const bool recent_power_data =
         (rx_stats.last_message_ms > 0) && ((now - rx_stats.last_message_ms) <= POWER_DATA_FRESHNESS_MS);
 
@@ -448,6 +481,16 @@ void ReceiverConnectionHandler::on_type_catalog_versions_received() {
     catalog_versions_received_ = true;
 }
 
+void ReceiverConnectionHandler::on_led_state_received() {
+    if (!led_sync_pending_) {
+        return;
+    }
+
+    led_sync_pending_ = false;
+    LOG_INFO("CONN_HANDLER", "[LED_SYNC] Completed after %u attempt(s)",
+             static_cast<unsigned>(led_sync_attempt_count_));
+}
+
 void ReceiverConnectionHandler::on_transmitter_reboot_detected() {
     // TX reboot usually resets TX state to CONNECTED and stops stream until REQUEST_DATA is
     // received again. Re-arm retry engine immediately so recovery happens in seconds, not after
@@ -478,6 +521,10 @@ void ReceiverConnectionHandler::on_connection_lost() {
     battery_catalog_retry_count_ = 0;
     inverter_catalog_retry_count_ = 0;
     inverter_interface_retry_count_ = 0;
+    led_sync_pending_ = false;
+    led_sync_attempt_count_ = 0;
+    led_sync_started_ms_ = 0;
+    last_led_sync_request_ms_ = 0;
     peer_registered_event_posted_ = false;
     peer_registered_deferred_ = false;
     deferred_peer_registered_ms_ = 0;

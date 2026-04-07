@@ -250,7 +250,7 @@ bool send_event_logs_control(bool subscribe) {
 
     event_logs_control_t packet;
     packet.type = msg_event_logs_control;
-    packet.action = subscribe ? 1 : 0;
+    packet.action = subscribe ? EVENT_LOGS_ACTION_SUBSCRIBE : EVENT_LOGS_ACTION_UNSUBSCRIBE;
 
     esp_err_t result = esp_now_send(ESPNow::transmitter_mac, (uint8_t*)&packet, sizeof(packet));
     if (result == ESP_OK) {
@@ -262,6 +262,33 @@ bool send_event_logs_control(bool subscribe) {
     }
 
     LOG_ERROR("ESP-NOW", "Failed to send event logs control: %s", esp_err_to_name(result));
+    return false;
+}
+
+bool send_event_logs_clear_request() {
+    if (RxStateMachine::instance().message_state() != RxStateMachine::MessageState::VALID) {
+        LOG_WARN("ESP-NOW", "Transmitter not connected - cannot send event logs clear request");
+        return false;
+    }
+
+    if (!has_transmitter_mac()) {
+        LOG_WARN("ESP-NOW", "Transmitter MAC not registered - cannot send event logs clear request");
+        return false;
+    }
+
+    event_logs_control_t packet;
+    packet.type = msg_event_logs_control;
+    packet.action = EVENT_LOGS_ACTION_CLEAR;
+
+    esp_err_t result = esp_now_send(ESPNow::transmitter_mac, (uint8_t*)&packet, sizeof(packet));
+    if (result == ESP_OK) {
+        LOG_DEBUG("ESP-NOW", "Event logs clear request sent to %02X:%02X:%02X:%02X:%02X:%02X",
+                  ESPNow::transmitter_mac[0], ESPNow::transmitter_mac[1], ESPNow::transmitter_mac[2],
+                  ESPNow::transmitter_mac[3], ESPNow::transmitter_mac[4], ESPNow::transmitter_mac[5]);
+        return true;
+    }
+
+    LOG_ERROR("ESP-NOW", "Failed to send event logs clear request: %s", esp_err_to_name(result));
     return false;
 }
 
@@ -337,37 +364,16 @@ bool send_type_catalog_versions_request() {
     return true;
 }
 
-bool send_event_log_summary_request() {
-    if (RxStateMachine::instance().message_state() != RxStateMachine::MessageState::VALID) {
-        LOG_WARN("ESP-NOW", "Transmitter not connected - cannot request event log summary");
-        return false;
-    }
-
-    if (!has_transmitter_mac()) {
-        LOG_WARN("ESP-NOW", "Transmitter MAC not registered - cannot request event log summary");
-        return false;
-    }
-
-    event_log_summary_request_t packet{};
-    packet.type = msg_event_log_summary_request;
-
-    esp_err_t result = esp_now_send(ESPNow::transmitter_mac,
-                                    reinterpret_cast<uint8_t*>(&packet),
-                                    sizeof(packet));
-    if (result == ESP_OK) {
-        LOG_DEBUG("ESP-NOW", "Event log summary request sent to %02X:%02X:%02X:%02X:%02X:%02X",
-                  ESPNow::transmitter_mac[0], ESPNow::transmitter_mac[1], ESPNow::transmitter_mac[2],
-                  ESPNow::transmitter_mac[3], ESPNow::transmitter_mac[4], ESPNow::transmitter_mac[5]);
-        return true;
-    }
-
-    LOG_ERROR("ESP-NOW", "Failed to send event log summary request: %s", esp_err_to_name(result));
-    return false;
-}
-
 bool send_led_state_request() {
-    if (RxStateMachine::instance().message_state() != RxStateMachine::MessageState::VALID) {
-        LOG_WARN("ESP-NOW", "Transmitter not connected - cannot request LED state");
+    const bool message_valid =
+        (RxStateMachine::instance().message_state() == RxStateMachine::MessageState::VALID);
+    const bool connected =
+        (EspNowConnectionManager::instance().get_state() == EspNowConnectionState::CONNECTED);
+
+    if (!(message_valid || connected)) {
+        LOG_WARN("ESP-NOW", "Transmitter not ready - cannot request LED state (state=%d, msg_valid=%d)",
+                 (int)EspNowConnectionManager::instance().get_state(),
+                 message_valid ? 1 : 0);
         return false;
     }
 

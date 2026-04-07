@@ -81,6 +81,11 @@ public:
     void on_type_catalog_versions_received();
 
     /**
+     * @brief Mark LED sync as satisfied when authoritative LED state is received.
+     */
+    void on_led_state_received();
+
+    /**
      * @brief Get last receive timestamp
      * @return Milliseconds since boot of last received message
      */
@@ -127,6 +132,14 @@ private:
     static constexpr uint32_t CATALOG_RETRY_INITIAL_DELAY_MS = 2500;
     static constexpr uint32_t CATALOG_RETRY_INTERVAL_MS = 3000;
     static constexpr uint8_t CATALOG_MAX_RETRIES = 8;
+
+    // LED sync retry policy (Option B: bounded silent retries)
+    bool led_sync_pending_ = false;
+    uint8_t led_sync_attempt_count_ = 0; // counts sent requests in current window
+    uint32_t led_sync_started_ms_ = 0;
+    uint32_t last_led_sync_request_ms_ = 0;
+    static constexpr uint32_t LED_SYNC_RETRY_INTERVAL_MS = 500;
+    static constexpr uint8_t LED_SYNC_MAX_ATTEMPTS = 3;
 
     // Send initialization requests when connection state is confirmed
     // Called by state machine callback when entering CONNECTED state

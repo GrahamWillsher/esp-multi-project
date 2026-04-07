@@ -4,6 +4,7 @@
 
 #include "espnow_tasks_internal.h"
 #include "rx_state_machine.h"
+#include "rx_connection_handler.h"
 #include "../common.h"
 #include "../display/display_led.h"
 #include <esp32common/espnow/packet_utils.h>
@@ -46,6 +47,7 @@ void handle_flash_led_message(const espnow_queue_msg_t* msg) {
         // Store the current LED color for status indicator task to use
         ESPNow::current_led_color = color;
         ESPNow::current_led_effect = effect;
+        ReceiverConnectionHandler::instance().on_led_state_received();
     }
 }
 

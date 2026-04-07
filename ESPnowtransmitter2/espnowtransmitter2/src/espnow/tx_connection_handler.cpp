@@ -9,6 +9,7 @@
 #include "tx_state_machine.h"
 #include "tx_send_guard.h"
 #include "version_beacon_manager.h"
+#include "../battery_emulator/devboard/utils/led_handler.h"
 #include <esp32common/espnow/connection_manager.h>
 #include <esp32common/espnow/mac_utils.h>
 #include <esp32common/config/timing_config.h>
@@ -73,6 +74,18 @@ void TransmitterConnectionHandler::init() {
                     ChannelManager::instance().lock_channel(channel, "TX_CONN");
                     HeartbeatManager::instance().reset();
                     TxStateMachine::instance().on_connected(channel);
+                }
+
+                // Force one authoritative LED replay on connect so receiver UI
+                // converges even if early boot-time publishes were missed.
+                const uint8_t* peer_mac = EspNowConnectionManager::instance().get_peer_mac();
+                if (peer_mac != nullptr) {
+                    const esp_err_t led_rc = led_publish_current_state(true, peer_mac);
+                    if (led_rc != ESP_OK &&
+                        led_rc != ESP_ERR_INVALID_STATE &&
+                        led_rc != ESP_ERR_INVALID_ARG) {
+                        LOG_WARN("TX_CONN", "Initial LED replay on connect failed: %s", esp_err_to_name(led_rc));
+                    }
                 }
 
                 LOG_INFO("TX_CONN", "✓ Connected - channel locked");
