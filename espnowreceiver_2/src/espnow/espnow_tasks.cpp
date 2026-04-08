@@ -251,6 +251,23 @@ void setup_message_routes() {
         },
         0xFF, nullptr);
 
+    router.register_route(msg_event_logs_clear_ack,
+        [](const espnow_queue_msg_t* msg, void* ctx) {
+            if (msg->len < (int)sizeof(event_logs_clear_ack_t)) {
+                LOG_WARN(kLogTag, "EVENT_LOGS_CLEAR_ACK too short: %d bytes", msg->len);
+                return;
+            }
+
+            const auto* ack = reinterpret_cast<const event_logs_clear_ack_t*>(msg->data);
+            TransmitterManager::storeEventLogClearAck(*ack);
+            notify_sse_data_updated();
+
+            LOG_INFO(kLogTag, "EVENT_LOGS_CLEAR_ACK status=%u summary_seq=%lu",
+                     static_cast<unsigned>(ack->status),
+                     static_cast<unsigned long>(ack->summary_seq));
+        },
+        0xFF, nullptr);
+
     router.register_route(msg_temperature_report,
         [](const espnow_queue_msg_t* msg, void* ctx) {
             if (msg->len < (int)sizeof(temperature_report_t)) {

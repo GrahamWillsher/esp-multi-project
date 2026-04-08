@@ -34,6 +34,8 @@ namespace {
     std::vector<TransmitterEventLogCache::EventLogEntry> event_logs;
     bool event_logs_known = false;
     uint32_t event_logs_last_update_ms = 0;
+    TransmitterEventLogCache::SnapshotStatus snapshot_status;
+    std::vector<uint8_t> snapshot_batch_seen;
 
     void ensure_mutex() {
         if (event_logs_mutex == nullptr) {
@@ -58,6 +60,64 @@ namespace {
 
 namespace TransmitterEventLogCache {
 
+void begin_snapshot_session(bool clear_existing_cache) {
+    ensure_mutex();
+
+    ScopedMutex guard(event_logs_mutex);
+    if (!guard.locked()) {
+        LOG_WARN("EVENT_LOG_CACHE", "Failed to lock event logs mutex for snapshot begin");
+        return;
+    }
+
+    if (clear_existing_cache) {
+        event_logs.clear();
+        event_logs_known = true;
+        event_logs_last_update_ms = millis();
+    }
+
+    snapshot_status = SnapshotStatus{};
+    snapshot_status.session_active = true;
+    snapshot_status.session_started_ms = millis();
+    snapshot_status.last_update_ms = snapshot_status.session_started_ms;
+    snapshot_batch_seen.clear();
+
+    LOG_INFO("EVENT_LOG_CACHE", "Started event-log snapshot session");
+}
+
+void end_snapshot_session(bool clear_cached_logs) {
+    ensure_mutex();
+
+    ScopedMutex guard(event_logs_mutex);
+    if (!guard.locked()) {
+        LOG_WARN("EVENT_LOG_CACHE", "Failed to lock event logs mutex for snapshot end");
+        return;
+    }
+
+    snapshot_status.session_active = false;
+    snapshot_status.last_update_ms = millis();
+
+    if (clear_cached_logs) {
+        event_logs.clear();
+        event_logs_known = true;
+        event_logs_last_update_ms = snapshot_status.last_update_ms;
+        SSENotifier::notifyDataUpdated();
+    }
+
+    LOG_INFO("EVENT_LOG_CACHE", "Ended event-log snapshot session (cache cleared=%s)",
+             clear_cached_logs ? "yes" : "no");
+}
+
+SnapshotStatus get_snapshot_status() {
+    ensure_mutex();
+
+    ScopedMutex guard(event_logs_mutex);
+    if (!guard.locked()) {
+        return SnapshotStatus{};
+    }
+
+    return snapshot_status;
+}
+
 void store_event_logs(const JsonObject& logs) {
     ensure_mutex();
 
@@ -77,6 +137,48 @@ void store_event_logs(const JsonObject& logs) {
     const size_t max_events = 200;
     uint32_t new_count = 0;
 
+    const uint64_t incoming_snapshot_id = logs["snapshot_id"] | static_cast<uint64_t>(0);
+    const int incoming_batch_index = logs["batch_index"] | -1;
+    const uint16_t incoming_batch_count = logs["batch_count"] | static_cast<uint16_t>(0);
+    const bool incoming_snapshot_complete = logs["snapshot_complete"] | false;
+
+    if (incoming_batch_count > 0 && incoming_batch_index >= 0) {
+        if (!snapshot_status.session_active) {
+            snapshot_status.session_active = true;
+            snapshot_status.session_started_ms = millis();
+        }
+
+        const bool new_snapshot = !snapshot_status.metadata_seen ||
+                                  snapshot_status.snapshot_id != incoming_snapshot_id ||
+                                  snapshot_status.batch_count != incoming_batch_count;
+
+        if (new_snapshot) {
+            snapshot_status.metadata_seen = true;
+            snapshot_status.complete = false;
+            snapshot_status.snapshot_id = incoming_snapshot_id;
+            snapshot_status.batch_count = incoming_batch_count;
+            snapshot_status.last_batch_index = -1;
+            snapshot_status.received_batches = 0;
+
+            snapshot_batch_seen.assign(incoming_batch_count, 0);
+        }
+
+        if (incoming_batch_index < (int)snapshot_batch_seen.size()) {
+            if (!snapshot_batch_seen[(size_t)incoming_batch_index]) {
+                snapshot_batch_seen[(size_t)incoming_batch_index] = 1;
+                snapshot_status.received_batches++;
+            }
+            snapshot_status.last_batch_index = static_cast<int16_t>(incoming_batch_index);
+        }
+
+        if (incoming_snapshot_complete ||
+            (snapshot_status.batch_count > 0 && snapshot_status.received_batches >= snapshot_status.batch_count)) {
+            snapshot_status.complete = true;
+        }
+
+        snapshot_status.last_update_ms = millis();
+    }
+
     // Only the most recently received delta batch should be marked as new.
     for (auto& entry : event_logs) {
         entry.is_new = false;
@@ -84,11 +186,13 @@ void store_event_logs(const JsonObject& logs) {
 
     for (JsonObject evt : events) {
         EventLogEntry entry = {};
-        entry.timestamp = evt["timestamp"] | 0;
+        entry.timestamp_ms = evt["timestamp_ms"] | (evt["timestamp"] | static_cast<uint64_t>(0));
+        entry.event_unix_ms = evt["event_unix_ms"] | static_cast<uint64_t>(0);
+        entry.event_utc_offset_min = evt["event_utc_offset_min"] | static_cast<int16_t>(0);
         entry.level = evt["level"] | 0;
         entry.data = evt["data"] | 0;
         entry.count = evt["count"] | 1;
-        entry.is_new = true;
+        entry.is_new = evt["is_new"] | true;
 
         const char* type = evt["type"] | evt["event"] | "";
         strncpy(entry.type, type, sizeof(entry.type) - 1);
@@ -112,10 +216,10 @@ void store_event_logs(const JsonObject& logs) {
         if (event_logs.size() >= max_events) {
             // Replace the oldest entry to keep cache bounded.
             size_t oldest_index = 0;
-            uint32_t oldest_ts = event_logs[0].timestamp;
+            uint64_t oldest_ts = event_logs[0].timestamp_ms;
             for (size_t i = 1; i < event_logs.size(); ++i) {
-                if (event_logs[i].timestamp < oldest_ts) {
-                    oldest_ts = event_logs[i].timestamp;
+                if (event_logs[i].timestamp_ms < oldest_ts) {
+                    oldest_ts = event_logs[i].timestamp_ms;
                     oldest_index = i;
                 }
             }
@@ -130,7 +234,7 @@ void store_event_logs(const JsonObject& logs) {
     // Keep newest events first for API/UI consumers.
     std::sort(event_logs.begin(), event_logs.end(),
               [](const EventLogEntry& a, const EventLogEntry& b) {
-                  return a.timestamp > b.timestamp;
+                  return a.timestamp_ms > b.timestamp_ms;
               });
 
     event_logs_known = true;

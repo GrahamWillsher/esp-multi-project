@@ -39,10 +39,10 @@ bool send_component_apply_request(uint32_t request_id,
 bool send_event_logs_control(bool subscribe);
 
 /**
- * @brief Request event log summary counters from transmitter via ESP-NOW
- * @return true if request sent successfully, false otherwise
+ * @brief Send event logs clear command to transmitter via ESP-NOW
+ * @return true if sent successfully, false otherwise
  */
-bool send_event_log_summary_request();
+bool send_event_logs_clear_request();
 
 /**
  * @brief Request current LED state snapshot from transmitter via ESP-NOW

@@ -32,6 +32,14 @@ public:
         uint32_t last_update_ms = 0;
     };
 
+    struct EventLogClearAck {
+        bool known = false;
+        uint8_t status = EVENT_LOGS_CLEAR_ACK_FAILED;
+        uint32_t summary_seq = 0;
+        uint32_t uptime_ms = 0;
+        uint32_t last_update_ms = 0;
+    };
+
 
 
 public:
@@ -168,6 +176,9 @@ public:
     // Event log summary counters (from ESP-NOW)
     static void storeEventLogSummary(const event_log_summary_t& summary);
     static EventLogSummary getEventLogSummary();
+
+    static void storeEventLogClearAck(const event_logs_clear_ack_t& ack);
+    static EventLogClearAck getEventLogClearAck();
 
     // Transmitter temperature (from ESP-NOW)
     static void storeTemperatureReport(const temperature_report_t& report);

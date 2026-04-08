@@ -10,6 +10,7 @@
 
 namespace {
 TransmitterManager::EventLogSummary g_event_log_summary;
+TransmitterManager::EventLogClearAck g_event_log_clear_ack;
 TransmitterManager::TemperatureReport g_temperature_report;
 }
 
@@ -392,6 +393,22 @@ void TransmitterManager::storeEventLogSummary(const event_log_summary_t& summary
 
 TransmitterManager::EventLogSummary TransmitterManager::getEventLogSummary() {
     return g_event_log_summary;
+}
+
+void TransmitterManager::storeEventLogClearAck(const event_logs_clear_ack_t& ack) {
+    g_event_log_clear_ack.known = true;
+    g_event_log_clear_ack.status = ack.status;
+    g_event_log_clear_ack.summary_seq = ack.summary_seq;
+    g_event_log_clear_ack.uptime_ms = ack.uptime_ms;
+    g_event_log_clear_ack.last_update_ms = millis();
+
+    LOG_INFO("TX_MGR", "Stored event clear ack status=%u summary_seq=%lu",
+             static_cast<unsigned>(g_event_log_clear_ack.status),
+             static_cast<unsigned long>(g_event_log_clear_ack.summary_seq));
+}
+
+TransmitterManager::EventLogClearAck TransmitterManager::getEventLogClearAck() {
+    return g_event_log_clear_ack;
 }
 
 void TransmitterManager::storeTemperatureReport(const temperature_report_t& report) {

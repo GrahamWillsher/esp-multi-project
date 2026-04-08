@@ -1,6 +1,7 @@
 #include "mqtt_manager.h"
 #include "ethernet_manager.h"
 #include "../config/network_config.h"
+#include "../config/event_log_config.h"
 #include "../config/logging_config.h"
 #include "../datalayer/static_data.h"
 #include "../battery_emulator/devboard/utils/events.h"
@@ -536,50 +537,99 @@ static uint8_t map_event_level(EVENTS_LEVEL_TYPE level) {
 
 bool MqttManager::publish_event_logs() {
     if (!is_connected()) return false;
+
+    const uint64_t now_ms = millis64();
+
+    reap_expired_event_log_subscriptions(now_ms);
     
     // Only publish if there are active subscribers
-    if (event_log_subscribers_ <= 0) {
+    if (event_log_subscriptions_.empty()) {
         LOG_DEBUG("MQTT", "No event log subscribers, skipping publish");
+        event_snapshot_offset_ = 0;
+        event_snapshot_order_.clear();
         return true;
     }
 
     std::vector<EventData> ordered;
     ordered.reserve(EVENT_NOF_EVENTS);
 
-    // Collect only events that have been set and NOT yet published (delta mode)
+    // Collect all active events for snapshot publishing.
+    // "new" status is still tracked via MQTTpublished flag per event.
     for (int i = 0; i < EVENT_NOF_EVENTS; i++) {
         const EVENTS_STRUCT_TYPE* event_ptr = get_event_pointer((EVENTS_ENUM_TYPE)i);
-        if (event_ptr && event_ptr->occurences > 0 && !event_ptr->MQTTpublished) {
+        if (event_ptr && event_ptr->occurences > 0) {
             ordered.push_back({(EVENTS_ENUM_TYPE)i, event_ptr});
         }
     }
 
-    // If no unpublished events, skip publishing
+    // If no events, skip publishing
     if (ordered.empty()) {
-        LOG_DEBUG("MQTT", "No unpublished events, skipping publish");
+        LOG_DEBUG("MQTT", "No events available, skipping publish");
+        event_snapshot_offset_ = 0;
+        event_snapshot_order_.clear();
         return true;
     }
 
     std::sort(ordered.begin(), ordered.end(), compareEventsByTimestampDesc);
 
-    const size_t total_events = ordered.size();
-    const size_t max_events = (total_events > 100) ? 100 : total_events;
+    // Start a new snapshot if needed
+    if (event_snapshot_order_.empty() || event_snapshot_offset_ == 0) {
+        event_snapshot_id_++;
+        event_snapshot_offset_ = 0;
+        event_snapshot_order_.clear();
+        event_snapshot_order_.reserve(ordered.size());
+        for (const auto& item : ordered) {
+            event_snapshot_order_.push_back(static_cast<int>(item.event_handle));
+        }
+    }
+
+    const size_t total_events = event_snapshot_order_.size();
+    const size_t max_events_per_message = config::event_logs::MAX_BATCH_SIZE;
+    const size_t batch_count = (total_events + max_events_per_message - 1) / max_events_per_message;
+
+    if (batch_count == 0 || event_snapshot_offset_ >= total_events) {
+        // Defensive reset if snapshot state got stale
+        event_snapshot_offset_ = 0;
+        event_snapshot_order_.clear();
+        return true;
+    }
+
+    const size_t batch_index = event_snapshot_offset_ / max_events_per_message;
+    const size_t batch_end = std::min(event_snapshot_offset_ + max_events_per_message, total_events);
+    const size_t events_in_batch = batch_end - event_snapshot_offset_;
+    const bool snapshot_complete = (batch_end >= total_events);
 
     // Allocate JSON document in PSRAM
     DynamicJsonDocument doc(6144);
+    doc["snapshot_id"] = static_cast<unsigned long long>(event_snapshot_id_);
+    doc["batch_index"] = static_cast<uint32_t>(batch_index);
+    doc["batch_count"] = static_cast<uint32_t>(batch_count);
+    doc["snapshot_total"] = static_cast<uint32_t>(total_events);
+    doc["snapshot_complete"] = snapshot_complete;
     doc["event_count"] = static_cast<uint32_t>(total_events);
     JsonArray events = doc.createNestedArray("events");
 
-    for (size_t i = 0; i < max_events; i++) {
-        const auto& item = ordered[i];
-        const EVENTS_STRUCT_TYPE* evt = item.event_pointer;
+    std::vector<int> published_this_batch;
+    published_this_batch.reserve(events_in_batch);
+
+    for (size_t i = event_snapshot_offset_; i < batch_end; i++) {
+        const EVENTS_ENUM_TYPE handle = static_cast<EVENTS_ENUM_TYPE>(event_snapshot_order_[i]);
+        const EVENTS_STRUCT_TYPE* evt = get_event_pointer(handle);
+        if (!evt || evt->occurences == 0) {
+            continue;
+        }
+
         JsonObject obj = events.createNestedObject();
         char event_message[384] = {0};
         const bool have_event_message =
-            get_event_message(item.event_handle, event_message, sizeof(event_message), evt->data);
-        obj["timestamp"] = static_cast<uint64_t>(evt->timestamp);
+            get_event_message(handle, event_message, sizeof(event_message), evt->data);
+        obj["timestamp_ms"] = static_cast<unsigned long long>(evt->timestamp);
+        obj["event_unix_ms"] = static_cast<unsigned long long>(evt->event_unix_ms);
+        obj["event_utc_offset_min"] = static_cast<int16_t>(evt->event_utc_offset_min);
         obj["level"] = map_event_level(evt->level);
         obj["data"] = evt->data;
+        obj["count"] = evt->occurences;
+        obj["is_new"] = !evt->MQTTpublished;
         if (have_event_message) {
             // IMPORTANT: assign mutable char* directly so ArduinoJson copies the
             // content into the document. Avoid conditional const char* paths
@@ -589,7 +639,9 @@ bool MqttManager::publish_event_logs() {
         } else {
             obj["message"] = "";
         }
-        obj["event"] = get_event_enum_string(item.event_handle);
+        obj["event"] = get_event_enum_string(handle);
+
+        published_this_batch.push_back(static_cast<int>(handle));
     }
 
     constexpr size_t kBufferSize = 6144;
@@ -602,11 +654,23 @@ bool MqttManager::publish_event_logs() {
     if (len > 0) {
         success = client_.publish("transmitter/BE/event_logs", publish_buffer_, true);
         if (success) {
-            LOG_DEBUG("MQTT", "Published %u changed event(s) (%u bytes)", (unsigned)max_events, len);
-            
-            // Mark all published events as published
-            for (const auto& item : ordered) {
-                set_event_MQTTpublished(item.event_handle);
+            LOG_DEBUG("MQTT", "Published event snapshot batch %u/%u (%u event(s), %u bytes)",
+                      static_cast<unsigned>(batch_index + 1),
+                      static_cast<unsigned>(batch_count),
+                      static_cast<unsigned>(published_this_batch.size()),
+                      static_cast<unsigned>(len));
+
+            // Advance snapshot cursor
+            event_snapshot_offset_ = batch_end;
+
+            // Mark published events as no longer new only when full snapshot has completed.
+            if (snapshot_complete) {
+                for (const auto handle : event_snapshot_order_) {
+                    set_event_MQTTpublished(static_cast<EVENTS_ENUM_TYPE>(handle));
+                }
+
+                event_snapshot_offset_ = 0;
+                event_snapshot_order_.clear();
             }
         } else {
             LOG_ERROR("MQTT", "Failed to publish event logs");
@@ -619,14 +683,59 @@ bool MqttManager::publish_event_logs() {
 }
 
 void MqttManager::increment_event_log_subscribers() {
-    event_log_subscribers_++;
-    LOG_INFO("MQTT", "Event log subscriber count: %d", event_log_subscribers_);
+    EventLogSubscription session{};
+    session.id = next_event_log_subscription_id_++;
+    session.created_ms = millis64();
+    session.last_activity_ms = session.created_ms;
+    event_log_subscriptions_.push_back(session);
+
+    event_snapshot_offset_ = 0;
+    event_snapshot_order_.clear();
+    LOG_INFO("MQTT", "Event log subscriber created (id=%lu), active count: %d",
+             static_cast<unsigned long>(session.id),
+             static_cast<int>(event_log_subscriptions_.size()));
 }
 
 void MqttManager::decrement_event_log_subscribers() {
-    if (event_log_subscribers_ > 0) {
-        event_log_subscribers_--;
-        LOG_INFO("MQTT", "Event log subscriber count: %d", event_log_subscribers_);
+    if (!event_log_subscriptions_.empty()) {
+        const auto removed = event_log_subscriptions_.back();
+        event_log_subscriptions_.pop_back();
+
+        if (event_log_subscriptions_.empty()) {
+            event_snapshot_offset_ = 0;
+            event_snapshot_order_.clear();
+        }
+
+        LOG_INFO("MQTT", "Event log subscriber removed (id=%lu), active count: %d",
+                 static_cast<unsigned long>(removed.id),
+                 static_cast<int>(event_log_subscriptions_.size()));
+    }
+}
+
+void MqttManager::reap_expired_event_log_subscriptions(uint64_t now_ms) {
+    if (event_log_subscriptions_.empty()) {
+        return;
+    }
+
+    const auto old_size = event_log_subscriptions_.size();
+    event_log_subscriptions_.erase(
+        std::remove_if(event_log_subscriptions_.begin(), event_log_subscriptions_.end(),
+                       [now_ms](const EventLogSubscription& session) {
+                           return (now_ms - session.last_activity_ms) > config::event_logs::SUBSCRIPTION_TTL_MS;
+                       }),
+        event_log_subscriptions_.end());
+
+    const auto reaped = old_size - event_log_subscriptions_.size();
+    if (reaped > 0) {
+        event_log_ttl_reap_count_ += static_cast<uint32_t>(reaped);
+        LOG_WARN("MQTT", "Reaped %u expired event-log subscription(s), active count: %d",
+                 static_cast<unsigned>(reaped),
+                 static_cast<int>(event_log_subscriptions_.size()));
+
+        if (event_log_subscriptions_.empty()) {
+            event_snapshot_offset_ = 0;
+            event_snapshot_order_.clear();
+        }
     }
 }
 

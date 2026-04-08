@@ -5,6 +5,7 @@
 #include "../webserver.h"
 #include "api_field_builders.h"
 
+#include "../utils/transmitter_event_log_cache.h"
 #include "../utils/transmitter_manager.h"
 #include "../utils/cell_data_cache.h"
 #include <webserver_common_utils/http_json_utils.h>
@@ -14,12 +15,12 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
-#include <HTTPClient.h>
 #include <firmware_version.h>
 #include <firmware_metadata.h>
 #include <ArduinoJson.h>
 #include <esp_now.h>
 #include <esp32common/espnow/common.h>
+#include <esp32common/config/event_log_config.h>
 #include <runtime_common_utils/device_temperature.h>
 #include <freertos/queue.h>
 #include "../../src/espnow/espnow_send.h"
@@ -325,7 +326,6 @@ esp_err_t api_get_event_logs_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_GET_EVENT_LOGS);
     char query[256] = {0};
     int limit = 50;
-    bool force_transmitter_source = false;
 
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
         char param[32];
@@ -334,80 +334,42 @@ esp_err_t api_get_event_logs_handler(httpd_req_t *req) {
             if (limit < 1) limit = 1;
             if (limit > 500) limit = 500;
         }
-
-        char source_param[32];
-        if (httpd_query_key_value(query, "source", source_param, sizeof(source_param)) == ESP_OK) {
-            force_transmitter_source =
-                (strcmp(source_param, "transmitter") == 0) ||
-                (strcmp(source_param, "live") == 0) ||
-                (strcmp(source_param, "direct") == 0);
-        }
     }
 
-    if (!force_transmitter_source && TransmitterManager::hasEventLogs()) {
-        std::vector<TransmitterManager::EventLogEntry> logs;
-        uint32_t last_update_ms = 0;
-        TransmitterManager::getEventLogsSnapshot(logs, &last_update_ms);
-        DynamicJsonDocument doc(4096);
-        doc["success"] = true;
-        doc["event_count"] = static_cast<uint32_t>(logs.size());
-        doc["source"] = "mqtt";
-        doc["last_update_ms"] = last_update_ms;
-        JsonArray events = doc.createNestedArray("events");
+    std::vector<TransmitterManager::EventLogEntry> logs;
+    uint32_t last_update_ms = 0;
+    TransmitterManager::getEventLogsSnapshot(logs, &last_update_ms);
 
-        const int max_events = (limit < (int)logs.size()) ? limit : (int)logs.size();
-        for (int i = 0; i < max_events; i++) {
-            const auto& entry = logs[i];
-            JsonObject evt = events.createNestedObject();
-            evt["timestamp"] = entry.timestamp;
-            evt["level"] = entry.level;
-            evt["data"] = entry.data;
-            evt["count"] = entry.count;
-            evt["is_new"] = entry.is_new;
-            evt["type"] = entry.type;
-            evt["message"] = entry.message;
-        }
+    DynamicJsonDocument doc(6144);
+    doc["success"] = true;
+    doc["event_count"] = static_cast<uint32_t>(logs.size());
+    doc["source"] = "mqtt";
+    doc["last_update_ms"] = last_update_ms;
+    JsonArray events = doc.createNestedArray("events");
 
-        String json;
-        serializeJson(doc, json);
-        return HttpJsonUtils::send_json(req, json.c_str());
+    const int max_events = (limit < (int)logs.size()) ? limit : (int)logs.size();
+    for (int i = 0; i < max_events; i++) {
+        const auto& entry = logs[i];
+        JsonObject evt = events.createNestedObject();
+        evt["timestamp_ms"] = entry.timestamp_ms;
+        evt["event_unix_ms"] = entry.event_unix_ms;
+        evt["event_utc_offset_min"] = entry.event_utc_offset_min;
+        evt["level"] = entry.level;
+        evt["data"] = entry.data;
+        evt["count"] = entry.count;
+        evt["is_new"] = entry.is_new;
+        evt["type"] = entry.type;
+        evt["message"] = entry.message;
     }
 
-    if (!TransmitterManager::isIPKnown()) {
-        return HttpJsonUtils::send_json(req, "{\"success\":false,\"error\":\"Transmitter not connected\"}");
-    }
-
-    String transmitter_url = TransmitterManager::getURL() + "/api/get_event_logs?limit=" + String(limit);
-    HTTPClient http;
-    http.begin(transmitter_url);
-    http.setTimeout(5000);
-    const uint32_t start_ms = millis();
-    int httpCode = http.GET();
-    const uint32_t latency_ms = millis() - start_ms;
-    recordEventLogProxyResult(httpCode, latency_ms);
-
-    if (httpCode == 200) {
-        String response = http.getString();
-        http.end();
-        return HttpJsonUtils::send_json(req, response.c_str());
-    }
-
-    http.end();
-    StaticJsonDocument<128> doc;
-    doc["success"] = false;
-    if (httpCode == -1) {
-        doc["error"] = "Failed to connect to transmitter";
-    } else {
-        String error_msg = "Transmitter returned HTTP " + String(httpCode);
-        doc["error"] = error_msg;
-    }
-
-    return ApiResponseUtils::send_json_doc(req, doc);
+    String json;
+    serializeJson(doc, json);
+    return HttpJsonUtils::send_json(req, json.c_str());
 }
 
 esp_err_t api_get_event_log_summary_handler(httpd_req_t *req) {
-    // Opportunistically request fresh summary from transmitter (non-blocking).
-    send_event_log_summary_request();
+    // Transmitter-driven model: return cached summary pushed over ESP-NOW.
+    // Do not request on every HTTP poll from dashboard.
 
     const auto summary = TransmitterManager::getEventLogSummary();
 
@@ -434,32 +396,49 @@ esp_err_t api_get_event_log_summary_handler(httpd_req_t *req) {
 esp_err_t api_clear_event_logs_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_GET_EVENT_LOGS);
 
-    if (!TransmitterManager::isIPKnown()) {
-        return HttpJsonUtils::send_json(req, "{\"success\":false,\"error\":\"Transmitter not connected\"}");
+    const auto ack_before = TransmitterManager::getEventLogClearAck();
+    const auto summary_before = TransmitterManager::getEventLogSummary();
+
+    // Event log transport is ESP-NOW + MQTT only: send clear command to transmitter.
+    const bool tx_send_ok = send_event_logs_clear_request();
+
+    // Keep receiver cache consistent with clear command.
+    TransmitterManager::clearEventLogs();
+
+    bool transmitter_clear_confirmed = false;
+    if (tx_send_ok) {
+        const uint32_t start_ms = millis();
+        while ((millis() - start_ms) < config::event_logs::CLEAR_CONFIRM_TIMEOUT_MS) {
+            const auto ack_now = TransmitterManager::getEventLogClearAck();
+            if (ack_now.known &&
+                ack_now.last_update_ms > ack_before.last_update_ms &&
+                ack_now.status == EVENT_LOGS_CLEAR_ACK_SUCCESS) {
+                transmitter_clear_confirmed = true;
+                break;
+            }
+
+            const auto summary_now = TransmitterManager::getEventLogSummary();
+            if (summary_now.known &&
+                summary_now.last_update_ms > summary_before.last_update_ms &&
+                summary_now.total_historical == 0) {
+                transmitter_clear_confirmed = true;
+                break;
+            }
+
+            delay(50);
+        }
     }
 
-    String transmitter_url = TransmitterManager::getURL() + "/api/clear_event_logs";
-    HTTPClient http;
-    http.begin(transmitter_url);
-    http.setTimeout(5000);
-    int httpCode = http.POST("");
-
-    if (httpCode == 200) {
-        String response = http.getString();
-        http.end();
-        TransmitterManager::clearEventLogs();
-        return HttpJsonUtils::send_json(req, response.c_str());
-    }
-
-    http.end();
-    StaticJsonDocument<160> doc;
-    doc["success"] = false;
-    if (httpCode == -1) {
-        doc["error"] = "Failed to connect to transmitter";
-    } else {
-        String error_msg = "Transmitter returned HTTP " + String(httpCode);
-        doc["error"] = error_msg;
-    }
+    StaticJsonDocument<320> doc;
+    doc["success"] = tx_send_ok;
+    doc["receiver_cache_cleared"] = true;
+    doc["transmitter_clear_requested"] = tx_send_ok;
+    doc["transmitter_clear_confirmed"] = transmitter_clear_confirmed;
+    doc["message"] = tx_send_ok
+        ? (transmitter_clear_confirmed
+            ? "Event logs cleared on receiver and confirmed by transmitter"
+            : "Receiver logs cleared; transmitter clear requested (confirmation pending)")
+        : "Receiver logs cleared; failed to send transmitter clear request";
 
     return ApiResponseUtils::send_json_doc(req, doc);
 }
@@ -475,9 +454,6 @@ esp_err_t api_system_metrics_handler(httpd_req_t *req) {
     const uint32_t queue_size = (ESPNow::queue != nullptr)
                                     ? static_cast<uint32_t>(uxQueueMessagesWaiting(ESPNow::queue) + uxQueueSpacesAvailable(ESPNow::queue))
                                     : 0;
-
-    EventLogProxyMetricsSnapshot proxy_metrics{};
-    getEventLogProxyMetrics(proxy_metrics);
 
     doc["success"] = true;
     doc["uptime_s"] = millis() / 1000;
@@ -545,15 +521,6 @@ esp_err_t api_system_metrics_handler(httpd_req_t *req) {
     sse_runtime_json["monitor_active_clients"] = sse_runtime.monitor_active_clients;
     sse_runtime_json["monitor_last_session_ms"] = sse_runtime.monitor_last_session_ms;
     sse_runtime_json["monitor_max_session_ms"] = sse_runtime.monitor_max_session_ms;
-
-    JsonObject event_logs_proxy = doc.createNestedObject("event_logs_proxy");
-    event_logs_proxy["requests"] = proxy_metrics.total_requests;
-    event_logs_proxy["success"] = proxy_metrics.total_success;
-    event_logs_proxy["timeouts"] = proxy_metrics.total_timeouts;
-    event_logs_proxy["http_errors"] = proxy_metrics.total_http_errors;
-    event_logs_proxy["last_http_code"] = proxy_metrics.last_http_code;
-    event_logs_proxy["last_latency_ms"] = proxy_metrics.last_latency_ms;
-    event_logs_proxy["avg_success_latency_ms"] = proxy_metrics.avg_success_latency_ms;
 
     JsonObject http_handlers = doc.createNestedObject("http_handlers");
     for (uint8_t i = 0; i < httpHandlerCount(); i++) {

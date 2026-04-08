@@ -48,6 +48,7 @@ static const httpd_uri_t kCoreApiHandlers[] = {
     {.uri = "/api/clear_event_logs", .method = HTTP_POST, .handler = api_clear_event_logs_handler, .user_ctx = NULL},
     {.uri = "/api/event_logs/subscribe", .method = HTTP_POST, .handler = api_event_logs_subscribe_handler, .user_ctx = NULL},
     {.uri = "/api/event_logs/unsubscribe", .method = HTTP_POST, .handler = api_event_logs_unsubscribe_handler, .user_ctx = NULL},
+    {.uri = "/api/event_logs/snapshot_status", .method = HTTP_GET, .handler = api_event_logs_snapshot_status_handler, .user_ctx = NULL},
     {.uri = "/api/get_test_data_mode", .method = HTTP_GET, .handler = api_get_test_data_mode_handler, .user_ctx = NULL},
     {.uri = "/api/set_test_data_mode", .method = HTTP_POST, .handler = api_set_test_data_mode_handler, .user_ctx = NULL},
     {.uri = "/api/system_metrics", .method = HTTP_GET, .handler = api_system_metrics_handler, .user_ctx = NULL},

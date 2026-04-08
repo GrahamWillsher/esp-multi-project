@@ -39,6 +39,14 @@ public:
      * @return Saved debug level, or default if not found
      */
     uint8_t load_debug_level();
+
+    /**
+     * @brief Push event-log summary to receiver only when transmitter event state changed
+     *
+     * Called from periodic runtime task. This avoids receiver-driven summary polling
+     * and only emits ESP-NOW summary packets when counters changed.
+     */
+    void maybe_push_event_log_summary();
     
 private:
     EspnowMessageHandler();

@@ -108,7 +108,7 @@ esp_err_t OtaManager::health_handler(httpd_req_t *req) {
     StaticJsonDocument<kHealthDocBytes> doc;
     doc["success"]               = true;
     doc["status"]                = "ok";
-    doc["uptime_ms"]             = static_cast<unsigned long>(millis());
+    doc["uptime_ms"]             = static_cast<unsigned long long>(TimeManager::instance().get_uptime_ms());
     doc["unix_time"]             = static_cast<unsigned long long>(TimeManager::instance().get_unix_time());
     doc["time_source"]           = TimeManager::instance().get_time_source_byte();
     doc["heap_free"]             = static_cast<unsigned>(ESP.getFreeHeap());
@@ -219,7 +219,7 @@ esp_err_t OtaManager::event_logs_handler(httpd_req_t *req) {
             get_event_message(event_handle, event_message, sizeof(event_message), event_ptr->data);
         edoc["type"]         = get_event_enum_string(event_handle);
         edoc["level"]        = get_event_level_string(event_handle);
-        edoc["timestamp_ms"] = static_cast<uint32_t>(event_ptr->timestamp);
+        edoc["timestamp_ms"] = static_cast<unsigned long long>(event_ptr->timestamp);
         edoc["count"]        = static_cast<uint32_t>(event_ptr->occurences);
         edoc["data"]         = event_ptr->data;
         edoc["message"]      = have_event_message ? event_message : "";

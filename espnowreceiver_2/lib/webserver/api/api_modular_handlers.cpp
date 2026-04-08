@@ -2,6 +2,7 @@
 
 #include "api_request_utils.h"
 #include "api_response_utils.h"
+#include "../utils/transmitter_event_log_cache.h"
 #include "../../src/espnow/espnow_send.h"
 #include "../../src/mqtt/mqtt_client.h"
 
@@ -67,4 +68,22 @@ esp_err_t api_event_logs_subscribe_handler(httpd_req_t *req) {
 esp_err_t api_event_logs_unsubscribe_handler(httpd_req_t *req) {
     MqttClient::decrementEventLogSubscribers();
     return ApiResponseUtils::send_success(req);
+}
+
+esp_err_t api_event_logs_snapshot_status_handler(httpd_req_t *req) {
+    const auto status = TransmitterEventLogCache::get_snapshot_status();
+
+    StaticJsonDocument<256> doc;
+    doc["success"] = true;
+    doc["session_active"] = status.session_active;
+    doc["metadata_seen"] = status.metadata_seen;
+    doc["snapshot_complete"] = status.complete;
+    doc["snapshot_id"] = static_cast<unsigned long long>(status.snapshot_id);
+    doc["batch_count"] = status.batch_count;
+    doc["received_batches"] = status.received_batches;
+    doc["last_batch_index"] = status.last_batch_index;
+    doc["session_started_ms"] = status.session_started_ms;
+    doc["last_update_ms"] = status.last_update_ms;
+
+    return ApiResponseUtils::send_json_doc(req, doc);
 }

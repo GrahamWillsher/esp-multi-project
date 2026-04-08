@@ -1,6 +1,7 @@
 #pragma once
 #include <PubSubClient.h>
 #include <WiFiClient.h>
+#include <vector>
 
 /**
  * @brief MQTT connection state machine states
@@ -150,7 +151,7 @@ public:
      * @brief Get current event log subscriber count
      * @return number of active subscribers
      */
-    int get_event_log_subscribers() const { return event_log_subscribers_; }
+    int get_event_log_subscribers() const { return static_cast<int>(event_log_subscriptions_.size()); }
     
     /**
      * @brief Process MQTT messages (must be called regularly from task)
@@ -259,5 +260,21 @@ private:
     char payload_buffer_[PAYLOAD_BUFFER_SIZE];
     char* publish_buffer_{nullptr};
     size_t publish_buffer_capacity_{0};
-    int event_log_subscribers_{0};  // Track number of clients subscribing to event logs
+
+    struct EventLogSubscription {
+        uint32_t id;
+        uint64_t created_ms;
+        uint64_t last_activity_ms;
+    };
+
+    std::vector<EventLogSubscription> event_log_subscriptions_;
+    uint32_t next_event_log_subscription_id_{1};
+    uint32_t event_log_ttl_reap_count_{0};
+
+    // Snapshot/session state for event-log publishing
+    uint64_t event_snapshot_id_{0};
+    size_t event_snapshot_offset_{0};
+    std::vector<int> event_snapshot_order_;
+
+    void reap_expired_event_log_subscriptions(uint64_t now_ms);
 };

@@ -27,6 +27,9 @@
 
 namespace {
 uint32_t g_event_log_summary_seq = 0;
+bool g_last_sent_summary_known = false;
+uint32_t g_last_sent_total_historical = 0;
+uint32_t g_last_sent_error_historical = 0;
 
 #if EVENT_LOG_SUMMARY_BACKEND_AVAILABLE
 std::array<uint32_t, EVENT_NOF_EVENTS> g_event_occurrences_reported{};
@@ -92,12 +95,13 @@ event_log_summary_t build_event_log_summary() {
     return summary;
 }
 
-void send_event_log_summary_to_receiver(const uint8_t* receiver_mac) {
+bool send_event_log_summary_to_receiver(const uint8_t* receiver_mac,
+                                        const event_log_summary_t* summary_override = nullptr) {
     if (!receiver_mac) {
-        return;
+        return false;
     }
 
-    const event_log_summary_t summary = build_event_log_summary();
+    const event_log_summary_t summary = summary_override ? *summary_override : build_event_log_summary();
 
     esp_err_t result = TxSendGuard::send_to_receiver_guarded(
         receiver_mac,
@@ -107,17 +111,77 @@ void send_event_log_summary_to_receiver(const uint8_t* receiver_mac) {
     );
 
     if (result == ESP_OK) {
+        g_last_sent_summary_known = true;
+        g_last_sent_total_historical = summary.total_historical;
+        g_last_sent_error_historical = summary.error_historical;
+
         LOG_DEBUG("EVENT_SUMMARY", "Sent summary seq=%lu hist=%lu err_hist=%lu new=%lu err_new=%lu",
                   static_cast<unsigned long>(summary.seq),
                   static_cast<unsigned long>(summary.total_historical),
                   static_cast<unsigned long>(summary.error_historical),
                   static_cast<unsigned long>(summary.new_since_last_report_total),
                   static_cast<unsigned long>(summary.new_since_last_report_error));
+        return true;
     } else {
         LOG_WARN("EVENT_SUMMARY", "Failed to send summary: %s", esp_err_to_name(result));
+        return false;
+    }
+}
+
+void send_event_logs_clear_ack_to_receiver(const uint8_t* receiver_mac,
+                                           uint8_t status,
+                                           uint32_t summary_seq) {
+    if (!receiver_mac) {
+        return;
+    }
+
+    event_logs_clear_ack_t ack{};
+    ack.type = msg_event_logs_clear_ack;
+    ack.status = status;
+    ack.summary_seq = summary_seq;
+    ack.uptime_ms = millis();
+
+    esp_err_t result = TxSendGuard::send_to_receiver_guarded(
+        receiver_mac,
+        reinterpret_cast<const uint8_t*>(&ack),
+        sizeof(ack),
+        "event_logs_clear_ack"
+    );
+
+    if (result != ESP_OK) {
+        LOG_WARN("EVENT_SUMMARY", "Failed to send clear ack: %s", esp_err_to_name(result));
     }
 }
 }  // namespace
+
+void EspnowMessageHandler::maybe_push_event_log_summary() {
+    bool receiver_known = false;
+    for (int i = 0; i < 6; ++i) {
+        if (receiver_mac_[i] != 0) {
+            receiver_known = true;
+            break;
+        }
+    }
+
+    if (!receiver_known) {
+        return;
+    }
+
+    // Build current summary snapshot, then push only if counters changed.
+    const event_log_summary_t summary = build_event_log_summary();
+    const bool counters_changed =
+        !g_last_sent_summary_known ||
+        (summary.total_historical != g_last_sent_total_historical) ||
+        (summary.error_historical != g_last_sent_error_historical) ||
+        (summary.new_since_last_report_total > 0) ||
+        (summary.new_since_last_report_error > 0);
+
+    if (!counters_changed) {
+        return;
+    }
+
+    send_event_log_summary_to_receiver(receiver_mac_, &summary);
+}
 
 void EspnowMessageHandler::setup_message_routes() {
     auto& router = EspnowMessageRouter::instance();
@@ -134,6 +198,7 @@ void EspnowMessageHandler::setup_message_routes() {
     probe_config_.peer_mac_storage = receiver_mac_;
     probe_config_.on_connection = [](const uint8_t* mac, bool connected) {
         LOG_INFO("MSG_HANDLER", "Receiver connected via PROBE");
+        send_event_log_summary_to_receiver(mac);
     };
 
     // Setup ACK handler configuration
@@ -145,6 +210,7 @@ void EspnowMessageHandler::setup_message_routes() {
     ack_config_.set_wifi_channel = false;              // Don't change channel in handler - let discovery complete first
     ack_config_.on_connection = [](const uint8_t* mac, bool connected) {
         LOG_INFO("MSG_HANDLER", "Receiver connected via ACK");
+        send_event_log_summary_to_receiver(mac);
         // Note: Version announce already sent in PROBE handler - no need to duplicate
     };
 
@@ -247,13 +313,28 @@ void EspnowMessageHandler::setup_message_routes() {
     // Event logs subscription control (receiver → transmitter)
     register_with_context(msg_event_logs_control,
         [](const espnow_queue_msg_t* msg, void* ctx) {
+            (void)ctx;
             if (msg->len >= (int)sizeof(event_logs_control_t)) {
                 const event_logs_control_t* control = reinterpret_cast<const event_logs_control_t*>(msg->data);
-                if (control->action == 1) {
+                if (control->action == EVENT_LOGS_ACTION_SUBSCRIBE) {
                     MqttManager::instance().increment_event_log_subscribers();
                     send_event_log_summary_to_receiver(msg->mac);
-                } else {
+                } else if (control->action == EVENT_LOGS_ACTION_UNSUBSCRIBE) {
                     MqttManager::instance().decrement_event_log_subscribers();
+                } else if (control->action == EVENT_LOGS_ACTION_CLEAR) {
+#if EVENT_LOG_SUMMARY_BACKEND_AVAILABLE
+                    reset_all_events();
+                    send_event_log_summary_to_receiver(msg->mac);
+                    send_event_logs_clear_ack_to_receiver(msg->mac,
+                                                          EVENT_LOGS_CLEAR_ACK_SUCCESS,
+                                                          g_event_log_summary_seq);
+                    LOG_INFO("EVENT_LOGS", "Receiver requested event log clear via ESP-NOW");
+#else
+                    send_event_logs_clear_ack_to_receiver(msg->mac,
+                                                          EVENT_LOGS_CLEAR_ACK_FAILED,
+                                                          g_event_log_summary_seq);
+                    LOG_WARN("EVENT_LOGS", "Clear request ignored: event backend unavailable");
+#endif
                 }
             }
         });

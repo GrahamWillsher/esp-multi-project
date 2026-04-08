@@ -10,8 +10,23 @@ namespace TransmitterEventLogCache {
 
 using EventLogEntry = TransmitterEventLogTypes::EventLogEntry;
 
+struct SnapshotStatus {
+	bool session_active = false;
+	bool metadata_seen = false;
+	bool complete = false;
+	uint64_t snapshot_id = 0;
+	uint16_t batch_count = 0;
+	int16_t last_batch_index = -1;
+	uint16_t received_batches = 0;
+	uint32_t session_started_ms = 0;
+	uint32_t last_update_ms = 0;
+};
+
 void store_event_logs(const JsonObject& logs);
 void clear_event_logs();
+void begin_snapshot_session(bool clear_existing_cache = true);
+void end_snapshot_session(bool clear_cached_logs = true);
+SnapshotStatus get_snapshot_status();
 bool has_event_logs();
 void get_event_logs_snapshot(std::vector<EventLogEntry>& out_logs, uint32_t* out_last_update_ms = nullptr);
 uint32_t get_event_log_count();

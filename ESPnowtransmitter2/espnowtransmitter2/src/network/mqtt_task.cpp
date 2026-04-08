@@ -169,6 +169,7 @@ void task_mqtt_loop(void* parameter) {
     unsigned long last_publish = 0;
     unsigned long last_cell_publish = 0;
     unsigned long last_event_publish = 0;
+    unsigned long last_event_summary_push_check = 0;
     unsigned long last_stats_log = 0;
     bool logger_initialized = false;
     bool was_connected = false;  // Track previous MQTT connection state
@@ -216,6 +217,13 @@ void task_mqtt_loop(void* parameter) {
             last_cell_publish,
             last_event_publish
         );
+
+        // Transmitter-driven event summary updates for receiver dashboard (/).
+        // Only sends when event counters changed; no receiver-triggered summary polling needed.
+        if ((now - last_event_summary_push_check) > TimingConfig::MQTT_EVENT_PUBLISH_INTERVAL_MS) {
+            last_event_summary_push_check = now;
+            EspnowMessageHandler::instance().maybe_push_event_log_summary();
+        }
         
         // Update task every second (state machine runs inside update())
         vTaskDelay(pdMS_TO_TICKS(TimingConfig::MQTT_LOOP_DELAY_MS));

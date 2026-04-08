@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include "../../datalayer/datalayer.h"
 #include "../../devboard/utils/logging.h"
+#include "../../../../lib/ethernet_utilities/ethernet_utilities.h"
 
 typedef struct {
   EVENTS_STRUCT_TYPE entries[EVENT_NOF_EVENTS];
@@ -25,6 +26,8 @@ void init_events(void) {
   for (uint16_t i = 0; i < EVENT_NOF_EVENTS; i++) {
     events.entries[i].data = 0;
     events.entries[i].timestamp = 0;
+    events.entries[i].event_unix_ms = 0;
+    events.entries[i].event_utc_offset_min = 0;
     events.entries[i].occurences = 0;
     events.entries[i].MQTTpublished = false;  // Not published by default
   }
@@ -159,6 +162,8 @@ void reset_all_events() {
     events.entries[i].data = 0;
     events.entries[i].state = EVENT_STATE_INACTIVE;
     events.entries[i].timestamp = 0;
+    events.entries[i].event_unix_ms = 0;
+    events.entries[i].event_utc_offset_min = 0;
     events.entries[i].occurences = 0;
     events.entries[i].MQTTpublished = false;  // Not published by default
   }
@@ -169,6 +174,10 @@ void reset_all_events() {
 
 void set_event_MQTTpublished(EVENTS_ENUM_TYPE event) {
   events.entries[event].MQTTpublished = true;
+}
+
+void clear_event_MQTTpublished(EVENTS_ENUM_TYPE event) {
+  events.entries[event].MQTTpublished = false;
 }
 
 bool get_event_message(EVENTS_ENUM_TYPE event, char* out, size_t out_size, uint8_t data) {
@@ -610,17 +619,33 @@ static void set_event(EVENTS_ENUM_TYPE event, uint8_t data, bool latched) {
     event = EVENT_UNKNOWN_EVENT_SET;
   }
 
+  const bool was_active =
+      (events.entries[event].state == EVENT_STATE_ACTIVE) ||
+      (events.entries[event].state == EVENT_STATE_ACTIVE_LATCHED);
+
   // If the event is already set, no reason to continue
-  if ((events.entries[event].state != EVENT_STATE_ACTIVE) &&
-      (events.entries[event].state != EVENT_STATE_ACTIVE_LATCHED)) {
+  if (!was_active) {
     events.entries[event].occurences++;
     events.entries[event].MQTTpublished = false;
 
     DEBUG_PRINTF("Event: %s\n", get_event_message_string(event).c_str());
+
+    // Capture event timestamps only on a new activation so "Last Event"
+    // reflects actual occurrence time instead of continuously tracking now.
+    events.entries[event].timestamp = millis64();
+    struct timeval tv;
+    if (gettimeofday(&tv, nullptr) == 0) {
+      const uint64_t unix_ms = (static_cast<uint64_t>(tv.tv_sec) * 1000ULL) +
+                               (static_cast<uint64_t>(tv.tv_usec) / 1000ULL);
+      events.entries[event].event_unix_ms = unix_ms;
+      events.entries[event].event_utc_offset_min = get_cached_utc_offset_min();
+    } else {
+      events.entries[event].event_unix_ms = 0;
+      events.entries[event].event_utc_offset_min = 0;
+    }
   }
 
-  // We should set the event, update event info
-  events.entries[event].timestamp = millis64();
+  // Keep latest data payload, but preserve activation timestamp while active.
   events.entries[event].data = data;
   // Check if the event is latching
   events.entries[event].state = latched ? EVENT_STATE_ACTIVE_LATCHED : EVENT_STATE_ACTIVE;

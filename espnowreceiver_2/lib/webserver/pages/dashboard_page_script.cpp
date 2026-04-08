@@ -116,6 +116,10 @@ const char* get_dashboard_page_script() {
             return `${count} ${count === 1 ? singular : plural}`;
         }
 
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
         function formatTemperature(value) {
             const numeric = Number(value);
             if (!Number.isFinite(numeric)) {
@@ -248,84 +252,36 @@ const char* get_dashboard_page_script() {
             statusEl.style.color = '#FFD700';
             
             try {
-                const [logsResult, summaryResult] = await Promise.allSettled([
-                    // Match /events semantics: transmitter-authoritative snapshot.
-                    fetch('/api/get_event_logs?limit=500&source=transmitter').then(r => r.json()),
-                    // Keep latest-change badge from ESP-NOW summary delta.
-                    fetch('/api/get_event_log_summary').then(r => r.json())
-                ]);
+                // Dashboard card uses cached ESP-NOW summary counters pushed from transmitter.
+                let summary = await fetch('/api/get_event_log_summary').then(r => r.json());
 
-                const data = (logsResult.status === 'fulfilled') ? logsResult.value : null;
-                const summary = (summaryResult.status === 'fulfilled') ? summaryResult.value : null;
-                
-                if (data && data.success) {
-                    // Count event types if events array exists
-                    let errorCount = 0;
-                    let warningCount = 0;
-                    let infoCount = 0;
-                    
-                    if (data.events && Array.isArray(data.events)) {
-                        data.events.forEach(event => {
-                            const levelRaw = event.level;
-                            const levelText = String(levelRaw || '').toUpperCase();
+                if (summary && summary.success) {
+                    const total = Number(summary.total_historical || 0);
+                    const errors = Number(summary.error_historical || 0);
+                    const newTotal = Number(summary.new_since_last_report_total || 0);
 
-                            if (levelRaw === 3 || levelText.includes('ERROR')) {
-                                errorCount++;
-                            } else if (levelRaw === 4 || levelText.includes('WARN')) {
-                                warningCount++;
-                            } else {
-                                infoCount++;
-                            }
-                        });
+                    let statusText = formatCountLabel(total, 'event', 'events');
+                    if (errors > 0) {
+                        statusText += ` | ${formatCountLabel(errors, 'error', 'errors')}`;
                     }
-                    
-                    // Update status display from same source as /events page.
-                    let statusText = 'No events yet';
-                    if (data.event_count !== undefined) {
-                        statusText = formatCountLabel(data.event_count, 'event', 'events');
-                        if (errorCount > 0) {
-                            statusText += ` | ${formatCountLabel(errorCount, 'error', 'errors')}`;
-                        }
-                        if (warningCount > 0) {
-                            statusText += ` | ${formatCountLabel(warningCount, 'warning', 'warnings')}`;
-                        }
-
-                        if (summary && summary.success) {
-                            const newTotal = Number(summary.new_since_last_report_total || 0);
-                            if (newTotal > 0) {
-                                statusText += ` | ${formatCountLabel(newTotal, 'new', 'new')}`;
-                            }
-                        }
+                    if (newTotal > 0) {
+                        statusText += ` | ${formatCountLabel(newTotal, 'new', 'new')}`;
                     }
-                    
+
                     statusEl.textContent = statusText;
-                    statusEl.style.color = (errorCount > 0) ? '#ff6b35' : ((data.event_count && data.event_count > 0) ? '#4CAF50' : '#888');
+                    statusEl.style.color = (errors > 0)
+                        ? '#ff6b35'
+                        : (total > 0 ? '#4CAF50' : '#888');
                     cardEl.classList.remove('disabled');
                     linkEl.style.pointerEvents = 'auto';
                     cardEl.style.opacity = '1';
-                    
-                    // Log event summary
-                    console.log('Event Summary:', {
-                        total: data.event_count,
-                        errors: errorCount,
-                        warnings: warningCount,
-                        info: infoCount,
-                        new: (summary && summary.success) ? Number(summary.new_since_last_report_total || 0) : 0
-                    });
                 } else {
-                    // API unavailable - disable card only when transmitter is offline
                     cardEl.classList.add('disabled');
                     linkEl.style.pointerEvents = 'none';
                     cardEl.style.opacity = '0.5';
                     cardEl.style.cursor = 'not-allowed';
-
-                    if (data.success === false && data.error && data.error.includes('not connected')) {
-                        statusEl.textContent = 'Transmitter offline';
-                        statusEl.style.color = '#FFD700';
-                    } else {
-                        statusEl.textContent = 'Not available';
-                        statusEl.style.color = '#888';
-                    }
+                    statusEl.textContent = 'Waiting for summary';
+                    statusEl.style.color = '#888';
                 }
             } catch (e) {
                 // Connection error - disable card
@@ -344,6 +300,13 @@ const char* get_dashboard_page_script() {
         window.addEventListener('load', function() {
             applyFormattedDeviceNames();
             loadEventLogs();
+        });
+
+        // Refresh event log summary when tab becomes active again.
+        document.addEventListener('visibilitychange', function() {
+            if (!document.hidden) {
+                loadEventLogs();
+            }
         });
 
         // Keep "Updated" counter moving every second between transmitter samples.

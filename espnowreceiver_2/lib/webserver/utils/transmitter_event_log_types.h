@@ -6,7 +6,9 @@
 namespace TransmitterEventLogTypes {
 
 struct EventLogEntry {
-    uint32_t timestamp;
+    uint64_t timestamp_ms;
+    uint64_t event_unix_ms;
+    int16_t event_utc_offset_min;
     uint8_t level;
     int32_t data;
     uint32_t count;

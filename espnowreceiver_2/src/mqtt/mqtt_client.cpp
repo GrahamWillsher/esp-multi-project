@@ -1,6 +1,7 @@
 #include "mqtt_client.h"
 #include "../lib/webserver/utils/transmitter_manager.h"
 #include "../lib/webserver/utils/cell_data_cache.h"
+#include "../lib/webserver/utils/transmitter_event_log_cache.h"
 #include "../common.h"
 #include "../espnow/espnow_send.h"
 #include "../espnow/type_catalog_cache.h"
@@ -570,6 +571,8 @@ void MqttClient::incrementEventLogSubscribers() {
 
     // Notify transmitter to start publishing event logs (ESP-NOW) on first subscriber
     if (was_zero) {
+        // Start fresh receiver-side snapshot session on /events open.
+        TransmitterEventLogCache::begin_snapshot_session(true);
         send_event_logs_control(true);
     }
 }
@@ -582,6 +585,9 @@ void MqttClient::decrementEventLogSubscribers() {
         if (event_log_subscribers_ == 0) {
             // Notify transmitter to stop publishing (ESP-NOW)
             send_event_logs_control(false);
+
+            // /events close semantics: clear receiver cache/session state.
+            TransmitterEventLogCache::end_snapshot_session(true);
         }
     }
 }

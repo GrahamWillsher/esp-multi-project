@@ -106,6 +106,7 @@ enum msg_type : uint8_t {
     // Event log count summary (receiver request, transmitter response)
     msg_event_log_summary_request,  // Request latest event summary counters
     msg_event_log_summary,          // Event summary counters (historical + new-since-last-report)
+    msg_event_logs_clear_ack,       // Clear command acknowledgment
 
     // Periodic transmitter temperature report
     msg_temperature_report,         // Transmitter chip temperature sampled at heartbeat cadence
@@ -172,8 +173,12 @@ typedef struct __attribute__((packed)) {
 // Event logs subscription control
 typedef struct __attribute__((packed)) {
     uint8_t type;        // msg_event_logs_control
-    uint8_t action;      // 0 = unsubscribe, 1 = subscribe
+    uint8_t action;      // 0 = unsubscribe, 1 = subscribe, 2 = clear
 } event_logs_control_t;
+
+constexpr uint8_t EVENT_LOGS_ACTION_UNSUBSCRIBE = 0;
+constexpr uint8_t EVENT_LOGS_ACTION_SUBSCRIBE   = 1;
+constexpr uint8_t EVENT_LOGS_ACTION_CLEAR       = 2;
 
 // Event log summary request
 typedef struct __attribute__((packed)) {
@@ -190,6 +195,16 @@ typedef struct __attribute__((packed)) {
     uint32_t new_since_last_report_error; // New error occurrences since last summary report
     uint32_t uptime_ms;                  // Sender uptime millis() at report time (truncated)
 } event_log_summary_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;            // msg_event_logs_clear_ack
+    uint8_t status;          // 0 = failed, 1 = success
+    uint32_t summary_seq;    // Latest summary sequence after clear processing
+    uint32_t uptime_ms;      // Sender uptime at ack time
+} event_logs_clear_ack_t;
+
+constexpr uint8_t EVENT_LOGS_CLEAR_ACK_FAILED  = 0;
+constexpr uint8_t EVENT_LOGS_CLEAR_ACK_SUCCESS = 1;
 
 typedef struct __attribute__((packed)) {
     uint8_t type;              // msg_temperature_report

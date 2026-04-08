@@ -149,6 +149,8 @@ typedef enum {
 
 typedef struct {
   uint64_t timestamp;
+  uint64_t event_unix_ms;   // UTC epoch milliseconds captured when event occurred
+  int16_t event_utc_offset_min;  // Local UTC offset (minutes) captured when event occurred
   uint8_t data;             // Custom data passed when setting the event, for example cell number for under voltage
   uint8_t occurences;       // Number of occurrences since startup
   EVENTS_LEVEL_TYPE level;  // Event level, i.e. ERROR/WARNING...
@@ -178,6 +180,7 @@ void set_event(EVENTS_ENUM_TYPE event, uint8_t data);
 void clear_event(EVENTS_ENUM_TYPE event);
 void reset_all_events();
 void set_event_MQTTpublished(EVENTS_ENUM_TYPE event);
+void clear_event_MQTTpublished(EVENTS_ENUM_TYPE event);
 
 const EVENTS_STRUCT_TYPE* get_event_pointer(EVENTS_ENUM_TYPE event);
 
