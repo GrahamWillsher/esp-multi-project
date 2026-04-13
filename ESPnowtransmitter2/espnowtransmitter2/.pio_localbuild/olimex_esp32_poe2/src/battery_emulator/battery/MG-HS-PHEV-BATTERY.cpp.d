@@ -1,0 +1,30 @@
+.pio_localbuild/olimex_esp32_poe2/src/battery_emulator/battery/MG-HS-PHEV-BATTERY.cpp.o: \
+ src/battery_emulator/battery/MG-HS-PHEV-BATTERY.cpp \
+ src/battery_emulator/battery/MG-HS-PHEV-BATTERY.h \
+ src/battery_emulator/battery/CanBattery.h \
+ src/battery_emulator/battery/Battery.h \
+ src/battery_emulator/devboard/utils/types.h \
+ src/battery_emulator/devboard/utils/compat.h \
+ src/battery_emulator/communication/Transmitter.h \
+ src/battery_emulator/communication/can/CanReceiver.h \
+ src/battery_emulator/communication/can/../../devboard/utils/types.h \
+ src/battery_emulator/communication/can/comm_can.h \
+ src/battery_emulator/communication/can/../Transmitter.h \
+ src/battery_emulator/battery/../communication/can/comm_can.h \
+ src/battery_emulator/battery/../communication/contactorcontrol/comm_contactorcontrol.h \
+ src/battery_emulator/battery/../communication/contactorcontrol/../../datalayer/datalayer.h \
+ src/battery_emulator/battery/../communication/contactorcontrol/../../datalayer/../devboard/utils/types.h \
+ src/battery_emulator/battery/../communication/contactorcontrol/../../datalayer/../system_settings.h \
+ src/battery_emulator/battery/../communication/contactorcontrol/../../devboard/utils/events.h \
+ C:/Users/GrahamWillsher/.platformio/packages/framework-arduinoespressif32/cores/esp32/WString.h \
+ C:/Users/GrahamWillsher/.platformio/packages/framework-arduinoespressif32/cores/esp32/pgmspace.h \
+ src/battery_emulator/battery/../communication/contactorcontrol/../../devboard/utils/millis64.h \
+ src/battery_emulator/battery/../communication/contactorcontrol/../../devboard/utils/types.h \
+ src/battery_emulator/battery/../datalayer/datalayer.h \
+ src/battery_emulator/battery/../devboard/utils/events.h \
+ src/battery_emulator/battery/../devboard/utils/logging.h \
+ src/battery_emulator/battery/../devboard/utils/../../datalayer/datalayer.h \
+ C:/Users/GrahamWillsher/.platformio/packages/framework-arduinoespressif32/cores/esp32/Print.h \
+ C:/Users/GrahamWillsher/.platformio/packages/framework-arduinoespressif32/cores/esp32/WString.h \
+ C:/Users/GrahamWillsher/.platformio/packages/framework-arduinoespressif32/cores/esp32/Printable.h \
+ src/battery_emulator/battery/../devboard/utils/types.h

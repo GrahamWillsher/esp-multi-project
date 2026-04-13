@@ -36,8 +36,10 @@ Provide a resilient receiver that:
 ### Hardware
 
 - **Receiver**: LilyGo T-Display-S3
+  - Variant baseline: **non-touch** T-Display-S3
   - ESP-NOW receiver path
   - TFT display/UI rendering
+  - Physical relay actuation endpoint for transmitter-driven contactor/relay commands
   - WiFi for local web interface and integrations
 
 ### Key Features
@@ -104,6 +106,8 @@ Notes:
 
 - Receiver keeps transmitter connection state and routes message types to handlers.
 - Batched component apply is the active control path (`component_apply_request`).
+- Relay-offload integration: receiver accepts transmitter `RELAY_CMD` frames, applies mapped semantic outputs, and returns ACK/status (`NEGATIVE_CONTACTOR_PIN`→GPIO10, `PRECHARGE_PIN`→GPIO16, `POSITIVE_CONTACTOR_PIN`→GPIO21, `BMS_POWER`→GPIO43).
+- Immediate relay policy support (where enabled) affects relay command path only; telemetry/config paths remain unchanged.
 
 ### 2) Component Apply + Catalog Synchronization
 
@@ -180,12 +184,15 @@ Primary files:
 - `src/hal/hardware_config.h`
 - `src/hal/tft_espi_user_setup.h`
 - `src/display/tft_impl/tft_display.cpp`
+- `../esp32common/docs/systemworks/LILYGO_T_DISPLAY_S3_RELAY_GPIO_AVAILABILITY.md`
 
 Board summary:
 
-- Board: LilyGo T-Display-S3
+- Board: LilyGo T-Display-S3 (**non-touch baseline**)
 - Display: ST7789, 8-bit parallel interface
 - PSRAM-capable ESP32-S3 configuration enabled in `platformio.ini` (`BOARD_HAS_PSRAM`)
+- Relay outputs (offloaded architecture): `NEGATIVE_CONTACTOR_PIN` (GPIO10), `PRECHARGE_PIN` (GPIO16), `POSITIVE_CONTACTOR_PIN` (GPIO21), `BMS_POWER` (GPIO43)
+- Receiver acts as relay actuator; transmitter remains sequencing authority via ESP-NOW command contract
 
 ---
 
@@ -334,6 +341,8 @@ Operational note:
 - [../esp32common/docs/ESP-NOW_Communication_Architecture.md](../esp32common/docs/ESP-NOW_Communication_Architecture.md)
 - [../esp32common/docs/ESPNOW_HEARTBEAT.md](../esp32common/docs/ESPNOW_HEARTBEAT.md)
 - [../esp32common/docs/MQTT_LOGGER_IMPLEMENTATION.md](../esp32common/docs/MQTT_LOGGER_IMPLEMENTATION.md)
+- [../esp32common/docs/systemworks/OLIMEX_POE2_TO_WAVESHARE_RS485_MODBUS_RELAY_GPIO_LAYOUT.md](../esp32common/docs/systemworks/OLIMEX_POE2_TO_WAVESHARE_RS485_MODBUS_RELAY_GPIO_LAYOUT.md)
+- [../esp32common/docs/systemworks/LILYGO_T_DISPLAY_S3_RELAY_GPIO_AVAILABILITY.md](../esp32common/docs/systemworks/LILYGO_T_DISPLAY_S3_RELAY_GPIO_AVAILABILITY.md)
 - [../esp32common/docs/project guidlines.md](../esp32common/docs/project%20guidlines.md)
 - [../esp32common/README.md](../esp32common/README.md)
 
@@ -365,6 +374,9 @@ pio run -e lilygo-t-display-s3_tft -t upload -t monitor
   - [../ESPnowtransmitter2/espnowtransmitter2/PROJECT_ARCHITECTURE_MASTER.md](../ESPnowtransmitter2/espnowtransmitter2/PROJECT_ARCHITECTURE_MASTER.md)
 - Shared library and protocol foundation:
   - [../esp32common/README.md](../esp32common/README.md)
+- Relay architecture and control-contract references:
+  - [../esp32common/docs/systemworks/OLIMEX_POE2_TO_WAVESHARE_RS485_MODBUS_RELAY_GPIO_LAYOUT.md](../esp32common/docs/systemworks/OLIMEX_POE2_TO_WAVESHARE_RS485_MODBUS_RELAY_GPIO_LAYOUT.md)
+  - [../esp32common/docs/systemworks/LILYGO_T_DISPLAY_S3_RELAY_GPIO_AVAILABILITY.md](../esp32common/docs/systemworks/LILYGO_T_DISPLAY_S3_RELAY_GPIO_AVAILABILITY.md)
 
 ---
 

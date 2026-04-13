@@ -37,6 +37,7 @@ Build a **real-time battery monitoring and control system** that transmits CAN b
   - Wired Ethernet (RMII interface with LAN8720 PHY)
   - Wireless ESP-NOW (IEEE 802.11 vendor action frames on the Wi-Fi radio)
   - Connected to a Waveshare RS485 CAN HAT(B) to provide RS485/Modbus and CAN connectivity (GPIO allocation is documented in [CAN_ETHERNET_GPIO_CONFLICT_ANALYSIS.md](CAN_ETHERNET_GPIO_CONFLICT_ANALYSIS.md) and in the Hardware & GPIO Allocation section below)
+  - Relay/contactors command authority remains on transmitter logic, but physical relay actuation is offloaded to receiver GPIO via ESP-NOW command frames
   - Built-in PoE (Power over Ethernet) for field deployment
   
 - **Receiver**: LilyGo T-Display-S3
@@ -407,6 +408,8 @@ Use the following current documents for hardware pin allocation and conflicts:
 - [CAN_ETHERNET_GPIO_CONFLICT_ANALYSIS.md](CAN_ETHERNET_GPIO_CONFLICT_ANALYSIS.md)
 - [ETHERNET_SUMMARY.md](ETHERNET_SUMMARY.md)
 - `src/config/hardware_config.h`
+- [../../esp32common/docs/systemworks/OLIMEX_POE2_TO_WAVESHARE_RS485_MODBUS_RELAY_GPIO_LAYOUT.md](../../esp32common/docs/systemworks/OLIMEX_POE2_TO_WAVESHARE_RS485_MODBUS_RELAY_GPIO_LAYOUT.md)
+- [../../esp32common/docs/systemworks/LILYGO_T_DISPLAY_S3_RELAY_GPIO_AVAILABILITY.md](../../esp32common/docs/systemworks/LILYGO_T_DISPLAY_S3_RELAY_GPIO_AVAILABILITY.md)
 
 Waveshare RS485/CAN HAT(B) `_0`/`_1` vendor interface tables and diagram reference are documented in:
 - `CAN_ETHERNET_GPIO_CONFLICT_ANALYSIS.md` → “Waveshare RS485/CAN HAT(B) vendor reference diagram”
@@ -416,13 +419,34 @@ Waveshare RS485/CAN HAT(B) `_0`/`_1` vendor interface tables and diagram referen
 - **Ethernet**: 10 GPIO pins (0, 12, 18-27) for RMII interface
 - **CAN**: 5 GPIO pins (4, 13-15, 32) for SPI + interrupt
 - **12-pin yellow connector convention**: CAN uses `_0` suffix pins.
-- **12-pin yellow connector convention**: RS485/Modbus uses `_0` suffix pins.
+- **12-pin yellow connector convention**: RS485/Modbus uses `_1` suffix pins.
 - **External relay power**: use 5V and GND from the Waveshare yellow 12-pin connector.
-- **Contactors**: 4 GPIO pins (33-36) for battery relay control
+- **Separate-bus design**: CAN and RS485 data buses are isolated (no shared data lines in selected mapping).
+- **Transmitter local relay GPIOs**: insufficient after Ethernet + CAN + RS485 allocation.
+- **Project solution**: contactor/relay outputs are physically driven on receiver (LilyGo T-Display-S3 non-touch), commanded by transmitter via ESP-NOW.
+- **Transmitter HAL compatibility**: pseudo/virtual **semantic** GPIO IDs map to ESP-NOW relay bitmask commands (`GPIO_NEGATIVE_CONTACTOR_VIRTUAL`, `GPIO_PRECHARGE_VIRTUAL`, `GPIO_POSITIVE_CONTACTOR_VIRTUAL`, `GPIO_BMS_POWER_VIRTUAL`; optional `GPIO_SECOND_BATTERY_CONTACTORS_VIRTUAL`) as documented in systemworks reference above.
 - **Critical**: GPIO 4 (MISO) chosen to avoid Ethernet conflicts with GPIO 19
 - **Power**: GPIO 12 controls LAN8720 PHY power enable
 - **Safety**: Contactors fail-safe (spring-open when de-energized)
-- **Status**: ✅ No pin conflicts verified across all 18 GPIO allocations
+- **Status**: ✅ No pin conflicts in selected separate-bus mapping; relay actuation moved to receiver to preserve timing and safety.
+
+### Relay Offload Architecture (Project-Wide Integration)
+
+This project now uses a two-device relay architecture:
+
+1. **Transmitter (Olimex)** runs battery/control state machine and decides relay states.
+2. Relay writes are represented as **virtual HAL GPIO outputs** in transmitter code.
+3. Virtual writes emit ESP-NOW `RELAY_CMD` frames to receiver.
+4. **Receiver (T-Display-S3 non-touch)** applies semantic outputs and returns ACK/status:
+  - `NEGATIVE_CONTACTOR_PIN` → GPIO10
+  - `PRECHARGE_PIN` → GPIO16
+  - `POSITIVE_CONTACTOR_PIN` → GPIO21
+  - `BMS_POWER` → GPIO43
+
+This preserves early-stage control sequencing on the transmitter while removing hard GPIO constraints from the Olimex board.
+
+Timing and immediate-vs-delayed ESP-NOW send policy details are defined in:
+- [../../esp32common/docs/systemworks/LILYGO_T_DISPLAY_S3_RELAY_GPIO_AVAILABILITY.md](../../esp32common/docs/systemworks/LILYGO_T_DISPLAY_S3_RELAY_GPIO_AVAILABILITY.md)
 
 ---
 
@@ -691,6 +715,8 @@ This master document references the following technical documents. Start with th
 11. **../../espnowreceiver_2/PROJECT_ARCHITECTURE_MASTER.md** - Receiver architecture master document
 12. **../../esp32common/docs/project guidlines.md** - Cross-project coding and architecture rules
 13. **../../esp32common/docs/systemworks/service integration.md** - MQTT/NTP/OTA service integration investigation and live phase progress tracking
+14. **../../esp32common/docs/systemworks/OLIMEX_POE2_TO_WAVESHARE_RS485_MODBUS_RELAY_GPIO_LAYOUT.md** - Olimex↔Waveshare pin layout, separate-bus mapping, and transmitter-side GPIO constraints
+15. **../../esp32common/docs/systemworks/LILYGO_T_DISPLAY_S3_RELAY_GPIO_AVAILABILITY.md** - Receiver relay GPIO plan, pseudo-GPIO HAL mapping, and ESP-NOW immediate relay command strategy
 
 ---
 
@@ -699,6 +725,7 @@ This master document references the following technical documents. Start with th
 **For implementation questions**: See [OTA & Service Integration Status](#ota--service-integration-status)  
 **For state machine details**: See ETHERNET_STATE_MACHINE_TECHNICAL_REFERENCE.md  
 **For debugging**: See TASK_ARCHITECTURE_AND_SERVICE_ISOLATION.md  
+**For relay offload + pseudo GPIO + immediate ESP-NOW relay send policy**: See ../../esp32common/docs/systemworks/LILYGO_T_DISPLAY_S3_RELAY_GPIO_AVAILABILITY.md  
 **For future work**: See POST_RELEASE_IMPROVEMENTS.md
 
 ---
