@@ -44,6 +44,9 @@ Status: **LVGL-only runtime path is now active and validated.**
 - Optional future pass: optimize splash backlight fade implementation.
 - Optional future pass: trim further unused LVGL features if binary size becomes a priority.
 
+### Touch screen — available, not yet implemented
+The board has a GT911 capacitive touch controller (GPIO4=TP_IRQ, I2C on GPIO8/9, reset via CH422G EXIO1). Because LVGL is now the active rendering pipeline, touch can be integrated via the standard LVGL pointer input device mechanism (`lv_indev_drv_t`, type `LV_INDEV_TYPE_POINTER`) without adding any new libraries. See `ESPNOWRECEIVER_LCD_PORT_ANALYSIS_2026_04_14.md` section 3.6 for the implementation notes.
+
 ---
 
 ## Executive Summary

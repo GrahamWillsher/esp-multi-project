@@ -1,14 +1,19 @@
 # espnowreceiver_LCD
 
-Minimal Waveshare ESP32-S3-Touch-LCD-7 display project (Arduino + LovyanGFX).
+Waveshare ESP32-S3-Touch-LCD-7 display project — **Arduino + LovyanGFX + LVGL 8.4.0**.
 
 ## Scope
 
-- Simulated LED (continuous / flash / heartbeat)
-- SOC large numeric display
-- Bidirectional power bar
-- Medium power text
-- No webserver / MQTT / ESP-NOW / receiver stack
+- LVGL 8.4.0 rendering pipeline (active and default)
+- Simulated LED indicator (continuous / flash / heartbeat) — LVGL `lv_obj` circle
+- SOC large numeric display — LVGL label with colour gradient
+- Bidirectional power bar — LVGL objects with animation
+- Medium power text — LVGL label
+- No webserver / MQTT / ESP-NOW / receiver stack (see port analysis doc)
+
+### Touch screen
+
+The board includes a **GT911 capacitive touch controller** (GPIO4=TP_IRQ, GPIO8/9=I2C, CH422G EXIO1=TP_RST). Touch is **not yet implemented** but is available for future use via the LVGL pointer input device driver (`lv_indev_drv_t`). See `docs/systemworks/ESPNOWRECEIVER_LCD_PORT_ANALYSIS_2026_04_14.md` section 3.6.
 
 ## Build
 
@@ -22,7 +27,8 @@ pio run -j 2
 - Phase 2: ✅ primitive rendering
 - Phase 3: ✅ widgets
 - Phase 4: ✅ autonomous demo model
-- Phase 5: ⏳ panel fit/polish + hardware diagnostics (color-cycle + dual serial) + final pin verification
+- Phase 5: ✅ LVGL migration — LVGL-only path active, legacy non-LVGL code removed
+- Phase 6: ⏳ receiver stack port (ESP-NOW, WiFi, MQTT, OTA — see port analysis doc)
 
 ## Important
 

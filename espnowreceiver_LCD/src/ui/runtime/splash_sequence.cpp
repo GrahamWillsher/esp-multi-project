@@ -2,7 +2,7 @@
 
 #include <Arduino.h>
 #include <FS.h>
-#include <SPIFFS.h>
+#include <LittleFS.h>
 #include <algorithm>
 #include <cmath>
 
@@ -136,20 +136,20 @@ bool read_jpeg_dimensions(fs::FS& fs, const char* path, int& width, int& height)
 void run_splash_sequence(lgfx::LGFX_Device& display) {
     display.fillScreen(UI::Colors::BLACK);
 
-    if (!SPIFFS.begin(true)) {
+    if (!LittleFS.begin(true)) {
         delay(300);
         return;
     }
 
     const char* kSplashPath = "/BatteryEmulator_LCD.jpg";
-    if (!SPIFFS.exists(kSplashPath)) {
+    if (!LittleFS.exists(kSplashPath)) {
         delay(300);
         return;
     }
 
     int jpg_w = 0;
     int jpg_h = 0;
-    if (!read_jpeg_dimensions(SPIFFS, kSplashPath, jpg_w, jpg_h)) {
+    if (!read_jpeg_dimensions(LittleFS, kSplashPath, jpg_w, jpg_h)) {
         delay(300);
         return;
     }
@@ -162,7 +162,7 @@ void run_splash_sequence(lgfx::LGFX_Device& display) {
     constexpr uint32_t kStepMs = 50;
     constexpr uint32_t kSteps = kFadeMs / kStepMs;
 
-    fs::File splash = SPIFFS.open(kSplashPath, FILE_READ);
+    fs::File splash = LittleFS.open(kSplashPath, FILE_READ);
     if (!splash) {
         delay(300);
         return;

@@ -3,6 +3,17 @@
 Date: 2026-04-13
 Project reviewed: espnowreceiver_LCD
 
+> **Status (2026-04-14): LVGL migration complete.**
+> The LVGL backend is now the active and only build path. The non-LVGL source files have been removed.
+> The `waveshare_esp32s3_lcd7_lvgl` environment is the default in `platformio.ini`.
+>
+> **Touch screen now available:** The GT911 touch controller on this board can be connected to the LVGL
+> input device stack via `lv_indev_drv_t` (type `LV_INDEV_TYPE_POINTER`). The I2C bus (GPIO8/9) and
+> reset line (CH422G EXIO1) are already initialised. No touch input device driver has been registered yet —
+> this is the next capability available. See `ESPNOWRECEIVER_LCD_PORT_ANALYSIS_2026_04_14.md` section 3.6.
+
+---
+
 ## 1) Current non-LVGL UI architecture (what exists today)
 
 The current implementation is a custom immediate-mode renderer using LovyanGFX draw calls:

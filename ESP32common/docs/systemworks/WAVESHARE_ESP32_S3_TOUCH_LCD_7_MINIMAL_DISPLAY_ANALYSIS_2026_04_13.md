@@ -273,10 +273,18 @@ For the touch version:
 
 - `5-point` capacitive touch
 - controller: `GT911`
-- interface: `I2C`
-- interrupt support available
+- interface: `I2C` (shared bus with CH422G, GPIO8=SDA, GPIO9=SCL)
+- interrupt support available (GPIO4=TP_IRQ)
+- reset via CH422G EXIO1 (already driven HIGH in `lgfx_waveshare_7.h` `init_impl`)
 
-Touch is optional for your display-only goal.
+Touch was optional for the original display-only goal.
+
+> **Status (2026-04-14):** LVGL is now the active rendering backend. Touch input is available via the LVGL
+> pointer input device driver (`lv_indev_drv_t`, type `LV_INDEV_TYPE_POINTER`). The HAL needs an
+> `lgfx::Touch_GT911` object added and `panel_.touch()` called; the LVGL backend needs a `read_cb`
+> registered via `lv_indev_drv_register`. Neither has been implemented yet — it is the next available
+> hardware capability. See `ESPNOWRECEIVER_LCD_PORT_ANALYSIS_2026_04_14.md` section 3.6 for the full
+> implementation plan.
 
 #### Board control signals
 
@@ -610,15 +618,21 @@ Trigger to adopt LVGL later:
 - touch-driven settings UI
 - reusable UI controls beyond the current three custom widgets
 
+> **Status (2026-04-14):** LVGL has been adopted. The LVGL backend is now the default and non-LVGL
+> source files have been removed. The next natural step enabled by LVGL is registering the GT911 touch
+> controller as an LVGL pointer input device, which would unlock touch-driven settings UI and interactive
+> widgets without any additional library dependencies.
+
 #### Chosen library stack
 
 | Layer | Choice |
 |-------|--------|
 | Build framework | Arduino via PlatformIO |
-| Board target | `esp32s3dev` (ESP32-S3 Dev Module, 16MB Flash, 8MB OPI PSRAM) |
+| Board target | `waveshare_esp32s3_n16r8` custom board JSON (16MB Flash, 8MB OPI PSRAM) |
 | RGB panel + expander + frame buffer | **LovyanGFX** with custom Waveshare board configuration |
-| Graphics drawing API | LovyanGFX (`fillCircle`, `fillRect`, `drawString`, etc.) |
-| LVGL | Not used |
+| Graphics drawing API | **LVGL 8.4.0** (active — `waveshare_esp32s3_lcd7_lvgl` environment) |
+| Touch input | GT911 via `lgfx::Touch_GT911` + LVGL `lv_indev_drv_t` — **available, not yet implemented** |
+| Non-LVGL backend | Removed (2026-04-14) |
 
 ### 2. Exact board init details
 

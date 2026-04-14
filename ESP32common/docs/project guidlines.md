@@ -1,8 +1,8 @@
 
 # PROJECT GUIDELINES
 ## Coding Standards, Architecture Rules & Best Practices
-**Version:** 2.1  
-**Last Updated:** April 5, 2026  
+**Version:** 2.2  
+**Last Updated:** April 14, 2026  
 **Purpose:** Ensure all firmware in this repository is fast, readable, reliable, and maintainable using modern embedded-systems best practices.
 
 # 1. Project Philosophy
@@ -59,6 +59,25 @@ ESP32Projects/
 │   │   ├── common/
 │   │   └── utils/
 │   └── data/
+│
+├── espnowreceiver_LCD/                     # Receiver v2 (Waveshare ESP32-S3-Touch-LCD-7)
+│   ├── README.md
+│   ├── platformio.ini                      # LVGL-only env: waveshare_esp32s3_lcd7_lvgl
+│   ├── partitions_16mb_ota.csv             # 16 MB dual-OTA + LittleFS
+│   ├── boards/waveshare_esp32s3_n16r8.json # 16 MB flash, 8 MB OPI PSRAM board def
+│   ├── include/
+│   │   ├── app_config.h                   # Screen + widget constants
+│   │   ├── common_lcd.h                   # RTOS + ESPNow namespace scaffolding
+│   │   ├── logging_config.h               # LOG_INFO/WARN/ERROR macros
+│   │   ├── lv_conf.h                      # LVGL 8.4.0 compile-time config
+│   │   └── task_config.h                  # FreeRTOS stack sizes + priorities
+│   ├── src/
+│   │   ├── main.cpp
+│   │   ├── helpers.h / helpers.cpp        # smart_delay()
+│   │   ├── app/demo_model.*               # Demo SOC/power cycle (Phase E: replaced)
+│   │   ├── hal/lgfx_waveshare_7.h         # LovyanGFX RGB panel + CH422G expander
+│   │   └── ui/runtime/                    # LVGL backend (ui_backend_lvgl.cpp)
+│   └── data/                              # LittleFS image (splash JPEG)
 │
 ├── ESPnowtransmitter2/espnowtransmitter2/  # Transmitter (Olimex ESP32-POE)
 │   ├── PROJECT_ARCHITECTURE_MASTER.md
@@ -196,7 +215,8 @@ After code changes:
 
 Minimum build checks:
 
-- Receiver: `pio run -e lilygo-t-display-s3_tft`
+- Receiver (T-Display-S3): `pio run -e lilygo-t-display-s3_tft`
+- Receiver LCD (Waveshare 7"): `pio run -e waveshare_esp32s3_lcd7_lvgl`
 - Transmitter: `pio run -e olimex_esp32_poe2`
 
 ---
@@ -208,3 +228,18 @@ Minimum build checks:
 - `esp32common/docs/MQTT_LOGGER_IMPLEMENTATION.md`
 - `espnowreceiver_2/PROJECT_ARCHITECTURE_MASTER.md`
 - `ESPnowtransmitter2/espnowtransmitter2/PROJECT_ARCHITECTURE_MASTER.md`
+- `esp32common/docs/systemworks/ESPNOWRECEIVER_LCD_PORT_ANALYSIS_2026_04_14.md` — port plan (Phases A–H)
+
+## Hardware inventory
+
+| Project | Board | Display | Framework | UI stack |
+|---------|-------|---------|-----------|----------|
+| espnowreceiver_2 | LilyGo T-Display-S3 | 320×170 ST7789 (SPI) | Arduino | TFT_eSPI direct render |
+| ESPnowtransmitter2 | Olimex ESP32-POE2 | None | Arduino | None |
+| espnowreceiver_LCD | Waveshare ESP32-S3-Touch-LCD-7 | 800×480 RGB (EK9716) | Arduino | **LovyanGFX + LVGL 8.4.0** |
+
+`espnowreceiver_LCD` key hardware facts:
+- GT911 capacitive touch (5-point), GPIO4=TP_IRQ, I2C on GPIO8/9
+- CH422G I/O expander (I2C 0x24): EXIO1=TP_RST, EXIO2=LCD_BL, EXIO3=LCD_RST
+- 16 MB Flash, 8 MB OPI PSRAM; dual-OTA partitions + LittleFS
+- Touch input driver not yet implemented; available via LVGL `lv_indev_drv_t`
