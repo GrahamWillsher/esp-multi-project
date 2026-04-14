@@ -24,20 +24,25 @@ void backlight_pwm_step(lgfx::LGFX_Device& display, uint8_t level_0_to_255, uint
         return;
     }
 
-    constexpr uint32_t kCycleUs = 2000;
-    const uint32_t end_ms = millis() + step_ms;
-    const uint32_t on_us = (kCycleUs * static_cast<uint32_t>(level_0_to_255)) / 255U;
-    const uint32_t off_us = (on_us < kCycleUs) ? (kCycleUs - on_us) : 0;
+    // PWM at 100 Hz (10 ms period) – well above the ~80 Hz flicker-fusion
+    // threshold so the backlight appears continuously lit at the target level.
+    // Multiple short cycles per visual step: max 2 I2C writes per cycle
+    // vs the original ~110 writes per step.
+    constexpr uint32_t kPwmPeriodMs = 10;
+    const uint32_t on_ms  = (kPwmPeriodMs * static_cast<uint32_t>(level_0_to_255)) / 255U;
+    const uint32_t off_ms = kPwmPeriodMs - on_ms;
+    const uint32_t cycles = step_ms / kPwmPeriodMs;
 
-    while (millis() < end_ms) {
-        if (on_us > 0) {
-            display.setBrightness(255);
-            delayMicroseconds(on_us);
-        }
-        if (off_us > 0) {
-            display.setBrightness(0);
-            delayMicroseconds(off_us);
-        }
+    for (uint32_t i = 0; i < cycles; ++i) {
+        if (on_ms  > 0) { display.setBrightness(255); delay(on_ms);  }
+        if (off_ms > 0) { display.setBrightness(0);   delay(off_ms); }
+    }
+
+    // Absorb any remainder so the total step duration remains step_ms.
+    const uint32_t remainder = step_ms - (cycles * kPwmPeriodMs);
+    if (remainder > 0) {
+        display.setBrightness(on_ms > 0 ? 255 : 0);
+        delay(remainder);
     }
 }
 
@@ -152,9 +157,9 @@ void run_splash_sequence(lgfx::LGFX_Device& display) {
     const float scale_x = static_cast<float>(AppConfig::SCREEN_WIDTH) / static_cast<float>(jpg_w);
     const float scale_y = static_cast<float>(AppConfig::SCREEN_HEIGHT) / static_cast<float>(jpg_h);
 
-    constexpr uint32_t kFadeMs = 2000;
+    constexpr uint32_t kFadeMs = 1800;
     constexpr uint32_t kHoldMs = 2000;
-    constexpr uint32_t kStepMs = 33;
+    constexpr uint32_t kStepMs = 50;
     constexpr uint32_t kSteps = kFadeMs / kStepMs;
 
     fs::File splash = SPIFFS.open(kSplashPath, FILE_READ);
