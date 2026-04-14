@@ -23,7 +23,6 @@ constexpr int kBatteryBodyY = 52;
 constexpr int kBatteryBorderW = 4;
 constexpr int kBatteryTerminalW = 64;
 constexpr int kBatteryTerminalH = 24;
-constexpr int kBatteryTerminalGap = 28;
 
 int battery_bottom_y() {
     return kBatteryBodyY + kBatteryBodyH;
