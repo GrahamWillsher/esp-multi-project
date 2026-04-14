@@ -75,9 +75,12 @@ public:
 
         {
             auto cfg = panel_.config_detail();
-            // Use PSRAM for the framebuffer: 800x480x2 = 750 KB, which
-            // exceeds the 320 KB SRAM limit.  N16R8 board has 8 MB OPI PSRAM.
-            cfg.use_psram = 1;
+            // use_psram = 2: LovyanGFX allocates two 750 KB framebuffers in PSRAM
+            // (front + back).  writePixels targets the inactive back buffer;
+            // at vsync the pointers swap atomically, so the LCD DMA never reads
+            // a partially-written frame.  This is the correct fix for RGB panel tearing.
+            // N16R8 has 8 MB OPI PSRAM so the extra 750 KB is trivial.
+            cfg.use_psram = 2;
             panel_.config_detail(cfg);
         }
 
@@ -106,8 +109,9 @@ public:
             cfg.pin_vsync = GPIO_NUM_3;
             cfg.pin_hsync = GPIO_NUM_46;
             cfg.pin_pclk = GPIO_NUM_7;
-            // 16 MHz — validated in LovyanGFX Waveshare reference.
-            cfg.freq_write = 16000000;
+            // 14 MHz reduces PSRAM/EDMA contention on RGB panels and is a common
+            // practical setting to mitigate intermittent flicker/tearing.
+            cfg.freq_write = 14000000;
 
             cfg.hsync_polarity = 0;
             cfg.hsync_front_porch = 8;

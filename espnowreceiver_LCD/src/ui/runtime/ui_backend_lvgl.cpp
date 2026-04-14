@@ -41,6 +41,7 @@ int bar_center_y_from_layout() {
 lgfx::LGFX_Device* display_ = nullptr;
 lv_disp_draw_buf_t draw_buf_;
 lv_color_t* draw_buffer_1_ = nullptr;
+lv_color_t* draw_buffer_2_ = nullptr;
 lv_disp_drv_t disp_drv_;
 lv_obj_t* screen_ = nullptr;
 lv_obj_t* battery_body_ = nullptr;
@@ -184,15 +185,15 @@ void init_bar_geometry() {
     const int top = center_y - (seg_h / 2);
 
     for (int i = 0; i < kBarCount; ++i) {
-        const int left_w = std::max(1, left_pitch - 1);
-        const int left_x = center_x - center_gap - ((i + 1) * left_pitch) + 1;
+        const int left_w = std::max(1, left_pitch);
+        const int left_x = center_x - center_gap - ((i + 1) * left_pitch);
         set_bar_obj(left_bars_[i], left_x, top, left_w, seg_h);
-        const int right_w = std::max(1, right_pitch - 1);
+        const int right_w = std::max(1, right_pitch);
         const int right_x = center_x + center_gap + (i * right_pitch);
         set_bar_obj(right_bars_[i], right_x, top, right_w, seg_h);
     }
 
-    const int marker_w = std::max(1, std::max(left_pitch, right_pitch) - 1);
+    const int marker_w = std::max(1, std::max(left_pitch, right_pitch));
     set_bar_obj(center_marker_, center_x - (marker_w / 2), top, marker_w, seg_h);
 }
 
@@ -437,21 +438,27 @@ bool init(lgfx::LGFX_Device& display) {
     display_ = &display;
     lv_init();
 
-    // 120 rows × 800 px × 2 B ≈ 188 KB from PSRAM.
-    // Battery fill (400 × ≤220 px = 88 K px) fits in a single flush pass — no inter-pass flicker.
+    // Two partial buffers (120 rows each) in PSRAM.
+    // Keep buffer traffic low to avoid saturating PSRAM bandwidth on RGB panels.
+    // With RGB panel-side double framebuffer enabled in LGFX (use_psram=2),
+    // partial flushes are still presented coherently at VSYNC.
     const size_t buffer_pixels = static_cast<size_t>(AppConfig::SCREEN_WIDTH) * 120U;
     draw_buffer_1_ = static_cast<lv_color_t*>(heap_caps_malloc(buffer_pixels * sizeof(lv_color_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!draw_buffer_1_) {
+    draw_buffer_2_ = static_cast<lv_color_t*>(heap_caps_malloc(buffer_pixels * sizeof(lv_color_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!draw_buffer_1_ || !draw_buffer_2_) {
         return false;
     }
 
-    lv_disp_draw_buf_init(&draw_buf_, draw_buffer_1_, nullptr, static_cast<uint32_t>(buffer_pixels));
+    lv_disp_draw_buf_init(&draw_buf_, draw_buffer_1_, draw_buffer_2_, static_cast<uint32_t>(buffer_pixels));
     lv_disp_drv_init(&disp_drv_);
     disp_drv_.hor_res = AppConfig::SCREEN_WIDTH;
     disp_drv_.ver_res = AppConfig::SCREEN_HEIGHT;
     disp_drv_.flush_cb = flush_cb;
     disp_drv_.draw_buf = &draw_buf_;
     disp_drv_.user_data = display_;
+    // Keep LVGL dirty-area refresh enabled to avoid full-screen copies each frame.
+    // Full-refresh on RGB+PSRAM can increase bandwidth pressure and visible jitter.
+    disp_drv_.full_refresh = 0;
     lv_disp_drv_register(&disp_drv_);
 
     create_objects();
@@ -493,10 +500,13 @@ void tick(uint32_t now_ms) {
     if (now_ms - last_anim_ms_ >= 33) {
         animate_led(now_ms);
         animate_power_ripple(now_ms);
+        // Rate-limit rendering to ~30 fps: all pending object changes (SOC, bars, LED)
+        // are batched and flushed in one full-screen pass per tick.  Calling
+        // lv_timer_handler() more frequently than the panel's vsync rate (~38 fps)
+        // would queue back-to-back full-screen writePixels calls with no benefit.
+        lv_timer_handler();
         last_anim_ms_ = now_ms;
     }
-
-    lv_timer_handler();
 }
 
 }  // namespace UI::Runtime::Backend
