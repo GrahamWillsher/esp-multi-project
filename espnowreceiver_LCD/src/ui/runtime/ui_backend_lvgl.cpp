@@ -22,7 +22,7 @@ constexpr int kBatteryBodyX = (AppConfig::SCREEN_WIDTH - kBatteryBodyW) / 2;
 constexpr int kBatteryBodyY = 52;
 constexpr int kBatteryBorderW = 4;
 constexpr int kBatteryTerminalW = 64;
-constexpr int kBatteryTerminalH = 24;
+constexpr int kBatteryTerminalH = 48;
 
 int battery_bottom_y() {
     return kBatteryBodyY + kBatteryBodyH;
@@ -50,6 +50,7 @@ lv_obj_t* battery_terminal_left_ = nullptr;
 lv_obj_t* battery_terminal_right_ = nullptr;
 lv_obj_t* power_label_ = nullptr;
 lv_obj_t* led_obj_ = nullptr;
+lv_obj_t* ip_label_ = nullptr;
 lv_obj_t* center_marker_ = nullptr;
 lv_obj_t* left_bars_[kBarCount] = {};
 lv_obj_t* right_bars_[kBarCount] = {};
@@ -70,6 +71,10 @@ bool current_is_charging_ = false;
 bool current_is_zero_ = true;
 int current_battery_fill_px_ = 0;
 bool bars_initialized_ = false;
+bool link_connected_ = false;
+bool remote_led_state_valid_ = false;
+uint8_t remote_led_color_ = 2;
+uint8_t remote_led_effect_ = 2;
 
 static void flush_cb(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* color_p) {
     auto* lcd = static_cast<lgfx::LGFX_Device*>(drv->user_data);
@@ -128,13 +133,51 @@ lv_color_t bar_lv_color(bool is_charging, int index, int max_index) {
     return lv_color_hex((r << 16) | (0 << 8) | b);
 }
 
+lv_color_t led_wire_color(uint8_t color) {
+    switch (color) {
+        case 0:
+            return lv_color_hex(0xDD0000);
+        case 1:
+            return lv_color_hex(0x00DD00);
+        case 2:
+            return lv_color_hex(0xFF9900);
+        case 3:
+            return lv_color_hex(0x0066FF);
+        default:
+            return lv_color_hex(0xFF9900);
+    }
+}
+
+lv_opa_t led_effect_opacity(uint8_t effect, uint32_t now_ms) {
+    switch (effect) {
+        case 0:
+            return LV_OPA_COVER;
+        case 1:
+            return ((now_ms / 500U) % 2U) == 0U ? LV_OPA_COVER : LV_OPA_TRANSP;
+        case 2: {
+            const uint32_t phase = now_ms % 1100U;
+            if (phase < 120U) {
+                return LV_OPA_COVER;
+            }
+            if (phase < 220U) {
+                return LV_OPA_TRANSP;
+            }
+            if (phase < 340U) {
+                return LV_OPA_COVER;
+            }
+            return LV_OPA_TRANSP;
+        }
+        default:
+            return LV_OPA_COVER;
+    }
+}
+
 uint8_t led_phase(uint32_t now_ms) {
     constexpr float pulse_period_ms = 2600.0f;
     constexpr float two_pi = 6.28318530718f;
     const float phase = (two_pi * static_cast<float>(now_ms % static_cast<uint32_t>(pulse_period_ms))) / pulse_period_ms;
-    const float wave = 0.5f + (0.5f * sinf(phase));
-    const float t = 0.15f + (0.85f * wave);
-    return static_cast<uint8_t>(t * 255.0f);
+    const float wave = 0.5f + (0.5f * sinf(phase));  // 0.0 – 1.0
+    return static_cast<uint8_t>(wave * 255.0f);  // full range: fully off → fully on
 }
 
 // Content area = body size minus 2× border (lv_obj_set_pos on children is relative here).
@@ -257,6 +300,24 @@ void create_objects() {
     lv_obj_set_style_bg_color(battery_terminal_left_, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(battery_terminal_left_, LV_OPA_COVER, 0);
 
+    // Bold, high-visibility polarity markers.
+    constexpr int kPolarityStrokeW = 8;
+    constexpr int kPolarityLong = 28;
+
+    lv_obj_t* left_plus_h = lv_obj_create(battery_terminal_left_);
+    lv_obj_remove_style_all(left_plus_h);
+    lv_obj_set_size(left_plus_h, kPolarityLong, kPolarityStrokeW);
+    lv_obj_set_style_bg_color(left_plus_h, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(left_plus_h, LV_OPA_COVER, 0);
+    lv_obj_center(left_plus_h);
+
+    lv_obj_t* left_plus_v = lv_obj_create(battery_terminal_left_);
+    lv_obj_remove_style_all(left_plus_v);
+    lv_obj_set_size(left_plus_v, kPolarityStrokeW, kPolarityLong);
+    lv_obj_set_style_bg_color(left_plus_v, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(left_plus_v, LV_OPA_COVER, 0);
+    lv_obj_center(left_plus_v);
+
     battery_terminal_right_ = lv_obj_create(screen_);
     lv_obj_remove_style_all(battery_terminal_right_);
     lv_obj_set_pos(battery_terminal_right_, right_x, terminal_y);
@@ -264,6 +325,13 @@ void create_objects() {
     lv_obj_set_style_radius(battery_terminal_right_, 8, 0);
     lv_obj_set_style_bg_color(battery_terminal_right_, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(battery_terminal_right_, LV_OPA_COVER, 0);
+
+    lv_obj_t* right_minus = lv_obj_create(battery_terminal_right_);
+    lv_obj_remove_style_all(right_minus);
+    lv_obj_set_size(right_minus, kPolarityLong, kPolarityStrokeW);
+    lv_obj_set_style_bg_color(right_minus, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(right_minus, LV_OPA_COVER, 0);
+    lv_obj_center(right_minus);
 
     power_label_ = lv_label_create(screen_);
     lv_obj_set_style_text_font(power_label_, &lv_font_montserrat_20, 0);
@@ -283,6 +351,14 @@ void create_objects() {
     lv_obj_set_style_outline_width(led_obj_, 0, 0);
     lv_obj_set_style_pad_all(led_obj_, 0, 0);
     lv_obj_set_pos(led_obj_, UI::Layout::led_x() - AppConfig::LED_RADIUS, UI::Layout::led_y() - AppConfig::LED_RADIUS);
+
+    // IP address label — bottom-left corner; updated by set_network_status() after WiFi connects.
+    ip_label_ = lv_label_create(screen_);
+    lv_obj_set_style_text_font(ip_label_, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(ip_label_, lv_color_hex(0xAAAAAA), 0);  // dim grey
+    lv_obj_set_style_text_opa(ip_label_, LV_OPA_COVER, 0);
+    lv_label_set_text(ip_label_, "WiFi: ---.---.---.---");
+    lv_obj_align(ip_label_, LV_ALIGN_BOTTOM_LEFT, 8, -4);
 
     center_marker_ = lv_obj_create(screen_);
     lv_obj_set_style_bg_color(center_marker_, lv_color_hex(rgb565_to_hex(UI::Colors::BLUE)), 0);
@@ -411,10 +487,19 @@ void update_power_state(uint32_t now_ms) {
 }
 
 void animate_led(uint32_t now_ms) {
-    // Pulse opacity between dim (40) and fully opaque (255) — size stays fixed.
-    const uint8_t phase = led_phase(now_ms);  // 0–255
-    const lv_opa_t opa = static_cast<lv_opa_t>(40U + ((static_cast<uint16_t>(phase) * 215U) / 255U));
-    lv_obj_set_style_bg_opa(led_obj_, opa, 0);
+    uint8_t color = 2;
+    uint8_t effect = 2;
+
+    if (!link_connected_) {
+        color = 0;
+        effect = 1;
+    } else if (remote_led_state_valid_) {
+        color = remote_led_color_;
+        effect = remote_led_effect_;
+    }
+
+    lv_obj_set_style_bg_color(led_obj_, led_wire_color(color), 0);
+    lv_obj_set_style_bg_opa(led_obj_, led_effect_opacity(effect, now_ms), 0);
 }
 
 void animate_power_ripple(uint32_t now_ms) {
@@ -432,6 +517,36 @@ void animate_power_ripple(uint32_t now_ms) {
 }
 
 }  // namespace
+
+void set_network_status(const char* ip, bool wifi_ok) {
+    if (!ip_label_) {
+        return;
+    }
+    char buf[40];
+    if (wifi_ok && ip && ip[0] != '\0') {
+        snprintf(buf, sizeof(buf), "WiFi: %s", ip);
+    } else if (wifi_ok) {
+        snprintf(buf, sizeof(buf), "WiFi: AP mode");
+    } else {
+        snprintf(buf, sizeof(buf), "WiFi: ---.---.---.---");
+    }
+    lv_label_set_text(ip_label_, buf);
+    lv_obj_set_style_text_color(
+        ip_label_,
+        wifi_ok ? lv_color_hex(0x66FF66) : lv_color_hex(0xAAAAAA),
+        0);
+    lv_obj_align(ip_label_, LV_ALIGN_BOTTOM_LEFT, 8, -4);
+}
+
+void set_led_state(uint8_t color, uint8_t effect) {
+    remote_led_color_ = color;
+    remote_led_effect_ = effect;
+    remote_led_state_valid_ = true;
+}
+
+void set_link_connected(bool connected) {
+    link_connected_ = connected;
+}
 
 bool init(lgfx::LGFX_Device& display) {
     display_ = &display;

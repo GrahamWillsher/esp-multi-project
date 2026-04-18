@@ -16,6 +16,14 @@ void set_state(float soc_percent, int32_t power_w) {
     Backend::set_state(soc_percent, power_w);
 }
 
+void set_led_state(uint8_t color, uint8_t effect) {
+    Backend::set_led_state(color, effect);
+}
+
+void set_link_connected(bool connected) {
+    Backend::set_link_connected(connected);
+}
+
 void tick(uint32_t now_ms) {
     Backend::tick(now_ms);
 }

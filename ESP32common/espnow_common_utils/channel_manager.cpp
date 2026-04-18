@@ -6,6 +6,7 @@
 #include "channel_manager.h"
 #include <Arduino.h>
 #include <Preferences.h>
+#include <WiFi.h>
 #include <logging_config.h>
 
 // Singleton instance
@@ -27,10 +28,17 @@ ChannelManager::ChannelManager()
 
 bool ChannelManager::init() {
     LOG_INFO("CHANNEL_MGR", "Initializing WiFi Channel Manager");
-    
+
+    if (channel_mutex_ != nullptr) {
+        LOG_INFO("CHANNEL_MGR", "Already initialized (current=%d locked=%s)",
+                 current_channel_,
+                 channel_locked_ ? "YES" : "NO");
+        return true;
+    }
+
     // Create mutex
     channel_mutex_ = xSemaphoreCreateMutex();
-    
+
     if (channel_mutex_ == nullptr) {
         LOG_ERROR("CHANNEL_MGR", "Failed to create mutex");
         return false;
@@ -43,11 +51,29 @@ bool ChannelManager::init() {
     wifi_second_chan_t second;
     esp_wifi_get_channel(&current_channel_, &second);
     
-    // If we have a saved channel, try to start on it
-    if (saved_channel_ > 0 && saved_channel_ <= 13) {
+    const wifi_mode_t wifi_mode = WiFi.getMode();
+    const bool sta_active = (wifi_mode == WIFI_MODE_STA || wifi_mode == WIFI_MODE_APSTA);
+    const bool sta_connected = sta_active && (WiFi.status() == WL_CONNECTED);
+
+    // If STA is already connected, the live WiFi channel is authoritative.
+    if (sta_connected) {
+        if (saved_channel_ > 0 && saved_channel_ != current_channel_) {
+            LOG_INFO("CHANNEL_MGR", "Ignoring saved channel %d; live STA channel is %d",
+                     saved_channel_, current_channel_);
+        } else {
+            LOG_INFO("CHANNEL_MGR", "Using live STA channel %d", current_channel_);
+        }
+    } else if (saved_channel_ > 0 && saved_channel_ <= 13) {
         LOG_INFO("CHANNEL_MGR", "Found saved channel: %d, setting as starting channel", saved_channel_);
-        esp_wifi_set_channel(saved_channel_, WIFI_SECOND_CHAN_NONE);
-        current_channel_ = saved_channel_;
+        const esp_err_t err = esp_wifi_set_channel(saved_channel_, WIFI_SECOND_CHAN_NONE);
+        if (err == ESP_OK) {
+            current_channel_ = saved_channel_;
+        } else {
+            LOG_WARN("CHANNEL_MGR", "Failed to restore saved channel %d: %d (staying on %d)",
+                     saved_channel_,
+                     static_cast<int>(err),
+                     current_channel_);
+        }
     }
     
     LOG_INFO("CHANNEL_MGR", "Channel Manager initialized");
@@ -104,10 +130,18 @@ void ChannelManager::lock_channel(uint8_t channel, const char* source) {
     }
     
     LOG_INFO("CHANNEL_MGR", "Locking channel to %d (source: %s)", channel, source);
-    
+
     // Set to the specified channel first
     if (channel != current_channel_) {
-        esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+        const esp_err_t err = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+        if (err != ESP_OK) {
+            LOG_ERROR("CHANNEL_MGR", "Failed to lock channel %d from %s: %d",
+                      channel,
+                      source,
+                      static_cast<int>(err));
+            xSemaphoreGive(channel_mutex_);
+            return;
+        }
         current_channel_ = channel;
     }
     

@@ -163,9 +163,25 @@ void handle_data(const espnow_queue_msg_t* msg, void* context) {
 
 bool send_ack_response(const uint8_t* peer_mac, uint32_t seq, uint8_t channel) {
     ack_t ack { msg_ack, seq, channel };
-    esp_err_t result = esp_now_send(peer_mac, 
-                                    reinterpret_cast<const uint8_t*>(&ack), 
-                                    sizeof(ack));
+    esp_err_t result = ESP_FAIL;
+    constexpr uint8_t kMaxNoMemRetries = 2;
+
+    for (uint8_t attempt = 0; attempt <= kMaxNoMemRetries; ++attempt) {
+        result = esp_now_send(peer_mac,
+                              reinterpret_cast<const uint8_t*>(&ack),
+                              sizeof(ack));
+
+        if (result == ESP_OK) {
+            break;
+        }
+
+        if (result != ESP_ERR_ESPNOW_NO_MEM || attempt == kMaxNoMemRetries) {
+            break;
+        }
+
+        // Transient ESP-NOW TX queue pressure: brief cooperative backoff and retry.
+        delay(2);
+    }
     
     if (result == ESP_OK) {
         LOG_DEBUG("ACK", "Sent response (seq=%u, channel=%d)", seq, channel);

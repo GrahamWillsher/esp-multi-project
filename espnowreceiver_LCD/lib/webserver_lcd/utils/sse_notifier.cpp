@@ -1,0 +1,57 @@
+#include "sse_notifier.h"
+#include <Arduino.h>
+
+#include "../logging.h"
+
+EventGroupHandle_t SSENotifier::event_group = nullptr;
+
+void SSENotifier::init() {
+    if (event_group == nullptr) {
+        event_group = xEventGroupCreate();
+        if (event_group != nullptr) {
+            LOG_INFO("SSE", "Event group created");
+        } else {
+            LOG_ERROR("SSE", "Failed to create event group");
+        }
+    }
+}
+
+void SSENotifier::notifyDataUpdated() {
+    if (event_group != nullptr) {
+        xEventGroupSetBits(event_group, DATA_UPDATED_BIT);
+    }
+}
+
+void SSENotifier::notifyCellDataUpdated() {
+    if (event_group != nullptr) {
+        xEventGroupSetBits(event_group, CELL_DATA_UPDATED_BIT);
+    }
+}
+
+bool SSENotifier::waitForUpdate(TickType_t timeout_ms) {
+    if (event_group == nullptr) return false;
+    
+    EventBits_t bits = xEventGroupWaitBits(
+        event_group,
+        DATA_UPDATED_BIT,
+        pdTRUE,  // Clear on exit
+        pdFALSE,
+        pdMS_TO_TICKS(timeout_ms)
+    );
+    
+    return (bits & DATA_UPDATED_BIT) != 0;
+}
+
+bool SSENotifier::waitForCellDataUpdate(TickType_t timeout_ms) {
+    if (event_group == nullptr) return false;
+
+    EventBits_t bits = xEventGroupWaitBits(
+        event_group,
+        CELL_DATA_UPDATED_BIT,
+        pdTRUE,
+        pdFALSE,
+        pdMS_TO_TICKS(timeout_ms)
+    );
+
+    return (bits & CELL_DATA_UPDATED_BIT) != 0;
+}

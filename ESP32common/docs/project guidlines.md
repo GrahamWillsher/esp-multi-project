@@ -63,8 +63,8 @@ ESP32Projects/
 ├── espnowreceiver_LCD/                     # Receiver v2 (Waveshare ESP32-S3-Touch-LCD-7)
 │   ├── README.md
 │   ├── platformio.ini                      # LVGL-only env: waveshare_esp32s3_lcd7_lvgl
-│   ├── partitions_16mb_ota.csv             # 16 MB dual-OTA + LittleFS
-│   ├── boards/waveshare_esp32s3_n16r8.json # 16 MB flash, 8 MB OPI PSRAM board def
+│   ├── partitions_8mb_ota.csv              # 8 MB dual-OTA + LittleFS
+│   ├── boards/waveshare_esp32s3_n16r8.json # active target profile: 8 MB flash, 8 MB OPI PSRAM
 │   ├── include/
 │   │   ├── app_config.h                   # Screen + widget constants
 │   │   ├── common_lcd.h                   # RTOS + ESPNow namespace scaffolding
@@ -241,5 +241,5 @@ Minimum build checks:
 `espnowreceiver_LCD` key hardware facts:
 - GT911 capacitive touch (5-point), GPIO4=TP_IRQ, I2C on GPIO8/9
 - CH422G I/O expander (I2C 0x24): EXIO1=TP_RST, EXIO2=LCD_BL, EXIO3=LCD_RST
-- 16 MB Flash, 8 MB OPI PSRAM; dual-OTA partitions + LittleFS
+- 8 MB Flash (detected on target unit), 8 MB OPI PSRAM; dual-OTA partitions + LittleFS
 - Touch input driver not yet implemented; available via LVGL `lv_indev_drv_t`

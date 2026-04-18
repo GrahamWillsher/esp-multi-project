@@ -1,0 +1,213 @@
+#include "webserver.h"
+#include "page_definitions.h"
+#include "page_registration_factory.h"
+#include "utils/transmitter_manager.h"
+#include "utils/sse_notifier.h"
+#include "pages/pages.h"
+#include "api/api_handlers.h"
+#include "logging.h"
+#include <esp_netif.h>
+#include <ESP.h>
+#include <esp_now.h>
+#include <esp32common/espnow/common.h>
+#include <WiFi.h>
+#include <LittleFS.h>
+
+// No test-mode globals in LCD receiver — always live data.
+
+// ═══════════════════════════════════════════════════════════════════════
+// NOTE: PAGE_DEFINITIONS moved to page_definitions.h/cpp
+// Navigation buttons moved to common/nav_buttons.h/cpp
+// Page generator moved to common/page_generator.h/cpp
+// Utilities moved to utils/ directory
+// ═══════════════════════════════════════════════════════════════════════
+
+// ESP-IDF HTTP Server handle
+httpd_handle_t server = NULL;
+
+namespace {
+WebserverRuntimeMetrics g_webserver_metrics = {
+    false,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    false,
+    0,
+    0,
+    0
+};
+}
+
+// OTA firmware storage - using LittleFS file instead of RAM
+size_t ota_firmware_size = 0;
+
+// ═══════════════════════════════════════════════════════════════════════
+// NOTE: All page handlers moved to pages/ directory
+// NOTE: All API handlers moved to api/api_handlers.cpp
+// ═══════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════
+// INITIALIZATION
+// ═══════════════════════════════════════════════════════════════════════
+
+void init_webserver() {
+    LOG_INFO("WEBSERVER", "Initializing ESP-IDF http_server...");
+    g_webserver_metrics.init_attempts++;
+    
+    // Check if server already running
+    if (server != NULL) {
+        LOG_INFO("WEBSERVER", "Server already running, skipping");
+        return;
+    }
+    
+    // Accept STA connected OR AP mode (LCD receiver supports AP fallback).
+    auto wifi_ready = []() {
+        return WiFi.status() == WL_CONNECTED
+            || WiFi.getMode() == WIFI_MODE_AP
+            || WiFi.getMode() == WIFI_MODE_APSTA;
+    };
+    int wifi_retries = 0;
+    while (!wifi_ready() && wifi_retries < 5) {
+        LOG_WARN("WEBSERVER", "WiFi not ready yet, retrying... (%d/5)", wifi_retries + 1);
+        delay(500);
+        wifi_retries++;
+    }
+    if (!wifi_ready()) {
+        g_webserver_metrics.init_failures++;
+        LOG_ERROR("WEBSERVER", "WiFi not available after retries - webserver startup aborted");
+        return;
+    }
+    LOG_INFO("WEBSERVER", "WiFi ready - proceeding with initialization");
+    
+    // Compute expected handlers from registries (prevents stale constants).
+    const int expected_page_handler_count = PageRegistrationFactory::get_expected_page_handler_count();
+    const int expected_api_handler_count = expected_all_api_handlers();
+    const int expected_handler_count = expected_page_handler_count + expected_api_handler_count;
+    
+    // Initialize SSE notification system
+    SSENotifier::init();
+    LOG_INFO("WEBSERVER", "SSE notification system initialized");
+    
+    // Ensure network stack initialized
+    static bool netif_initialized = false;
+    if (!netif_initialized) {
+        esp_err_t ret = esp_netif_init();
+        if (ret == ESP_OK || ret == ESP_ERR_INVALID_STATE) {
+            LOG_INFO("WEBSERVER", "Network interface initialized");
+            netif_initialized = true;
+        } else {
+            g_webserver_metrics.init_failures++;
+            LOG_ERROR("WEBSERVER", "esp_netif_init failed: %s", esp_err_to_name(ret));
+            return;
+        }
+    }
+    
+    // Configure HTTP server
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.task_priority = tskIDLE_PRIORITY + 2;
+    config.stack_size = 8192;  // Increased from 6144 for battery emulator data handling
+    config.max_open_sockets = 4;
+    config.max_uri_handlers = 80;  // Increased to accommodate 61 handlers with headroom
+    config.uri_match_fn = httpd_uri_match_wildcard;
+    config.server_port = 80;
+    config.recv_wait_timeout = 10;  // Receive timeout for battery data uploads
+    config.send_wait_timeout = 10;  // Send timeout for large JSON responses
+    config.lru_purge_enable = true;
+
+    g_webserver_metrics.server_port = static_cast<uint16_t>(config.server_port);
+    g_webserver_metrics.max_open_sockets = static_cast<uint16_t>(config.max_open_sockets);
+    g_webserver_metrics.max_uri_handlers = static_cast<uint16_t>(config.max_uri_handlers);
+    g_webserver_metrics.task_stack_size = static_cast<uint16_t>(config.stack_size);
+    g_webserver_metrics.task_priority = static_cast<uint8_t>(config.task_priority);
+    g_webserver_metrics.recv_wait_timeout_s = static_cast<uint8_t>(config.recv_wait_timeout);
+    g_webserver_metrics.send_wait_timeout_s = static_cast<uint8_t>(config.send_wait_timeout);
+    g_webserver_metrics.lru_purge_enabled = config.lru_purge_enable;
+    g_webserver_metrics.expected_handlers = static_cast<uint16_t>(expected_handler_count);
+    
+    // Verify configuration can handle all handlers
+    if (config.max_uri_handlers < expected_handler_count) {
+        LOG_ERROR("WEBSERVER", "max_uri_handlers (%d) is less than expected handlers (%d)!", 
+                      config.max_uri_handlers, expected_handler_count);
+        LOG_ERROR("WEBSERVER", "Some handlers will fail to register. Increase max_uri_handlers!");
+        // Continue anyway to register what we can, but warn user
+    }
+    
+    // Start HTTP server
+    esp_err_t ret = httpd_start(&server, &config);
+    if (ret != ESP_OK) {
+        g_webserver_metrics.init_failures++;
+        LOG_ERROR("WEBSERVER", "Failed to start: %s", esp_err_to_name(ret));
+        return;
+    }
+
+    g_webserver_metrics.running = true;
+    g_webserver_metrics.init_successes++;
+    
+    LOG_INFO("WEBSERVER", "Server started successfully");
+    
+    // Register all page handlers via factory (consolidated registration)
+    int registered_count = PageRegistrationFactory::register_all_pages(server);
+    
+    // Register all API handlers (consolidated)
+    int api_count = register_all_api_handlers(server);
+    registered_count += api_count;
+    LOG_DEBUG("WEBSERVER", "API handlers registered: %d", api_count);
+    
+    // Verify all handlers registered successfully
+    LOG_INFO("WEBSERVER", "Handlers registered: %d/%d", registered_count, expected_handler_count);
+    if (registered_count < expected_handler_count) {
+        LOG_WARN("WEBSERVER", "Only %d of %d handlers registered! Increase max_uri_handlers!",
+                      registered_count, expected_handler_count);
+    } else {
+        LOG_INFO("WEBSERVER", "All %d handlers registered successfully", registered_count);
+    }
+
+    g_webserver_metrics.registered_handlers = static_cast<uint16_t>(registered_count);
+    
+    // Log accessible URLs for debugging
+    LOG_INFO("WEBSERVER", "Access webserver at: http://%s", WiFi.localIP().toString().c_str());
+    LOG_DEBUG("WEBSERVER", "Pages available:");
+    for (int i = 0; i < PAGE_COUNT; i++) {
+        LOG_DEBUG("WEBSERVER", "  - %s (%s)", PAGE_DEFINITIONS[i].uri, PAGE_DEFINITIONS[i].name);
+    }
+}
+
+void stop_webserver() {
+    if (server != NULL) {
+        httpd_stop(server);
+        server = NULL;
+        g_webserver_metrics.running = false;
+        LOG_INFO("WEBSERVER", "Server stopped");
+    }
+}
+
+void get_webserver_runtime_metrics(WebserverRuntimeMetrics& out_metrics) {
+    out_metrics = g_webserver_metrics;
+    out_metrics.running = (server != NULL);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// PUBLIC API FUNCTIONS (delegated to utility classes)
+// ═══════════════════════════════════════════════════════════════════════
+
+// Notify SSE clients that battery monitor data has been updated
+// Call this from ESP-NOW worker task or test data generator when data changes
+void notify_sse_data_updated() {
+    SSENotifier::notifyDataUpdated();
+}
+
+// Register the transmitter MAC address for sending control messages
+void register_transmitter_mac(const uint8_t* mac) {
+    TransmitterManager::registerMAC(mac);
+}
+
+// Store transmitter IP address data received via ESP-NOW
+void store_transmitter_ip_data(const uint8_t* ip, const uint8_t* gateway, const uint8_t* subnet) {
+    TransmitterManager::storeIPData(ip, gateway, subnet);
+}

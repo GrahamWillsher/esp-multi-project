@@ -21,6 +21,22 @@ The board includes a **GT911 capacitive touch controller** (GPIO4=TP_IRQ, GPIO8/
 pio run -j 2
 ```
 
+## Flashing
+
+Firmware upload:
+
+```bash
+pio run --target upload --environment waveshare_esp32s3_lcd7_lvgl
+```
+
+LittleFS asset upload (required for splash image):
+
+```bash
+pio run --target uploadfs --environment waveshare_esp32s3_lcd7_lvgl
+```
+
+If you run a full flash erase, you must upload both firmware and LittleFS again.
+
 ## Phase status
 
 - Phase 1: ✅ scaffold + RGB panel baseline bring-up

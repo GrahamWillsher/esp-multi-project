@@ -259,8 +259,13 @@ void EspNowConnectionManager::transition_to_state(EspNowConnectionState new_stat
         heartbeat_timeout_reported_ = false;
         
         // Auto-reconnect if enabled
-        if (auto_reconnect_enabled_ && old_state == EspNowConnectionState::CONNECTED) {
-            LOG_INFO("CONN_MGR", "Auto-reconnect enabled -> posting CONNECTION_START");
+        const bool reconnect_eligible =
+            (old_state == EspNowConnectionState::CONNECTED) ||
+            (old_state == EspNowConnectionState::CONNECTING);
+
+        if (auto_reconnect_enabled_ && reconnect_eligible) {
+            LOG_INFO("CONN_MGR", "Auto-reconnect enabled (%s -> IDLE) -> posting CONNECTION_START",
+                     espnow_state_to_string(old_state));
             post_event(EspNowEvent::CONNECTION_START);
         }
     } else if (new_state == EspNowConnectionState::CONNECTED) {

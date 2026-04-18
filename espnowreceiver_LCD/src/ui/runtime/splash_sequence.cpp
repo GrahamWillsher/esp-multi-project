@@ -7,6 +7,7 @@
 #include <cmath>
 
 #include "app_config.h"
+#include "logging_config.h"
 #include "ui/colors.h"
 
 namespace UI::Runtime {
@@ -137,12 +138,14 @@ void run_splash_sequence(lgfx::LGFX_Device& display) {
     display.fillScreen(UI::Colors::BLACK);
 
     if (!LittleFS.begin(true)) {
+        LOG_WARN("SPLASH", "LittleFS mount failed");
         delay(300);
         return;
     }
 
     const char* kSplashPath = "/BatteryEmulator_LCD.jpg";
     if (!LittleFS.exists(kSplashPath)) {
+        LOG_WARN("SPLASH", "splash image not found in LittleFS");
         delay(300);
         return;
     }
@@ -150,9 +153,11 @@ void run_splash_sequence(lgfx::LGFX_Device& display) {
     int jpg_w = 0;
     int jpg_h = 0;
     if (!read_jpeg_dimensions(LittleFS, kSplashPath, jpg_w, jpg_h)) {
+        LOG_WARN("SPLASH", "failed to parse JPEG dimensions");
         delay(300);
         return;
     }
+    LOG_INFO("SPLASH", "jpeg dimensions %dx%d", jpg_w, jpg_h);
 
     const float scale_x = static_cast<float>(AppConfig::SCREEN_WIDTH) / static_cast<float>(jpg_w);
     const float scale_y = static_cast<float>(AppConfig::SCREEN_HEIGHT) / static_cast<float>(jpg_h);
@@ -164,14 +169,25 @@ void run_splash_sequence(lgfx::LGFX_Device& display) {
 
     fs::File splash = LittleFS.open(kSplashPath, FILE_READ);
     if (!splash) {
+        LOG_WARN("SPLASH", "failed to open splash image");
         delay(300);
         return;
     }
 
     display.fillScreen(UI::Colors::BLACK);
     display.setBrightness(0);
-    display.drawJpg(&splash, 0, 0, 0, 0, 0, 0, scale_x, scale_y);
+    const bool draw_ok = display.drawJpg(&splash, 0, 0, 0, 0, 0, 0, scale_x, scale_y);
     splash.close();
+
+    if (!draw_ok) {
+        LOG_WARN("SPLASH", "drawJpg failed (decoder rejected image)");
+        display.fillScreen(UI::Colors::BLUE);
+        display.setBrightness(255);
+        delay(1200);
+        display.fillScreen(UI::Colors::BLACK);
+        delay(500);
+        return;
+    }
 
     for (uint32_t i = 0; i <= kSteps; ++i) {
         const float p = static_cast<float>(i) / static_cast<float>(kSteps);

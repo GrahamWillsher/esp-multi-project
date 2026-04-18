@@ -142,7 +142,7 @@ esp_err_t send_to_receiver_guarded(const uint8_t* mac, const uint8_t* data, size
         }
 
         trigger_recovery_once(mac, "preflight mismatch");
-        return ESP_ERR_ESPNOW_ARG;
+        return ESP_ERR_INVALID_STATE;
     }
 
     // Recovery ends only when we are connected again and channel coherent.

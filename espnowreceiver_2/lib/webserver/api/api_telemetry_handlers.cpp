@@ -10,6 +10,7 @@
 #include "../utils/cell_data_cache.h"
 #include <webserver_common_utils/http_json_utils.h>
 #include "../utils/receiver_config_manager.h"
+#include "../../receiver_config/receiver_config_manager.h"
 #include "../utils/telemetry_snapshot_utils.h"
 #include "../logging.h"
 
@@ -28,17 +29,18 @@
 #include <esp_heap_caps.h>
 #include "../../src/memory/memory_sampler.h"
 
-extern bool test_mode_enabled;
-extern volatile int g_test_soc;
-extern volatile int32_t g_test_power;
-extern volatile uint32_t g_test_voltage_mv;
-
 namespace ESPNow {
 extern QueueHandle_t queue;
 extern volatile uint32_t rx_callback_count;
 extern volatile uint32_t rx_queue_drop_count;
 extern volatile uint32_t rx_queue_high_watermark;
 }
+
+// Temporary: keep test-mode telemetry support for display validation.
+extern bool test_mode_enabled;
+extern volatile int g_test_soc;
+extern volatile int32_t g_test_power;
+extern volatile uint32_t g_test_voltage_mv;
 
 using namespace WebserverMetrics;
 
@@ -132,7 +134,7 @@ esp_err_t api_dashboard_data_handler(httpd_req_t *req) {
     }
 
     JsonObject receiver = ApiFieldBuilders::addReceiverObject(doc);
-    receiver["is_static"] = true;
+    receiver["is_static"] = ReceiverNetworkConfig::useStaticIP();
     if (receiver_temperature.valid) {
         receiver["temperature_c"] = DeviceTemperature::to_celsius(receiver_temperature.centi_celsius);
     } else {

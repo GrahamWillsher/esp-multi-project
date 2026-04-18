@@ -1,5 +1,5 @@
 # espnowreceiver_LCD — Full Port Analysis from espnowreceiver_2
-**Date:** 2026-04-14  
+**Date:** 2026-04-16  
 **Author:** Code analysis (GitHub Copilot)  
 **Scope:** How to port the complete feature set of `espnowreceiver_2` into `espnowreceiver_LCD`, covering ESP-NOW, WiFi, FreeRTOS task architecture, webserver, MQTT, OTA, NVS configuration, and the expanded display model. Includes framework choice recommendation (Arduino vs ESP-IDF).
 
@@ -7,13 +7,13 @@
 
 ## 1. Executive Summary
 
-`espnowreceiver_LCD` is currently a display-only proof-of-concept: a demo model cycles fake SOC and power values through a clean `UI::Runtime::set_state(soc, power)` LVGL interface. It has no networking, no tasks, no persistence, and no real data.
+`espnowreceiver_LCD` has now progressed beyond foundation stage: it runs the dedicated LVGL task architecture, full `espnowreceiver_2` webserver surface (pages + APIs + SSE), receiver-side ESP-NOW parity path (state machine, heartbeat, typed telemetry routing), NVS-backed receiver config, WiFi STA + AP fallback, LittleFS, queue-driven UI updates from live data, **MQTT Phase F code parity**, **Phase G OTA/health-gate wiring**, and a **simulated LED parity fix** so `msg_flash_led` now drives the LCD indicator color/effect path (instead of link-only green/red behavior). The remaining major functional gap to full parity is now **display model expansion (Phase H)**, plus final on-device validation for recent E.5/F/G changes.
 
 `espnowreceiver_2` is the full production receiver: it runs six FreeRTOS tasks, a complete ESP-NOW state machine with heartbeat and discovery, a multi-page webserver with SSE and REST API, MQTT pub/sub, NVS-backed WiFi and MQTT configuration, LittleFS, OTA boot-guard, and a rich multi-section telemetry data model covering battery, charger, inverter, and system status.
 
 The good news is that the LCD project's `UI::Runtime` layer is already a clean abstraction boundary. Everything above that boundary (`set_state`, `tick`) can remain almost unchanged; the entire `espnowreceiver_2` infrastructure can be grafted below or beside it.
 
-The port is large but well-structured. The critical issues are **PSRAM budget management**, **LVGL thread-safety** across a multi-task architecture, a **narrower current display interface** than the rich telemetry model requires, **partition table** alignment with the 16 MB board, and a **backlight capability gap** (no hardware PWM dimming path on the Waveshare board).
+The port is large but well-structured. The critical issues are **PSRAM budget management**, **LVGL thread-safety** across a multi-task architecture, a **narrower current display interface** than the rich telemetry model requires, **partition table** alignment with the actual flash size on the target board, and a **backlight capability gap** (no hardware PWM dimming path on the Waveshare board).
 
 ---
 
@@ -42,20 +42,20 @@ The port is large but well-structured. The critical issues are **PSRAM budget ma
 
 | Layer | Current state |
 |---|---|
-| Board | Waveshare ESP32-S3-Touch-LCD-7 — 800×480 RGB, 8 MB OPI PSRAM, 16 MB Flash |
+| Board | Waveshare ESP32-S3-Touch-LCD-7 — 800×480 RGB, 8 MB OPI PSRAM, **8 MB flash detected on target unit** |
 | Display library | LovyanGFX 1.2.x |
 | UI | LVGL 8.4.0, clean `UI::Runtime::{init, run_startup_sequence, set_state, tick}` API |
-| FreeRTOS | None — single-threaded Arduino `setup()` / `loop()` |
+| FreeRTOS | **Present** — dedicated LVGL task on Core 1 + queue-driven display update path |
 | ESP-NOW | None |
-| WiFi | None |
-| Webserver | None |
+| WiFi | **Phase C+D complete** — STA setup from saved NVS config; mDNS advertising; AP fallback mode (ESP32-LCD-Setup open AP); IP label on display |
+| Webserver | **Phase D complete** — minimal ESP-IDF httpd; GET/POST `/api/v1/network`; `/config` page with WiFi + static IP + MQTT settings; `/` redirect; runs in background task |
 | MQTT | None |
-| Config persistence | None |
-| Filesystem | SPIFFS (splash JPEG only) |
+| Config persistence | **Present** — `ReceiverNetworkConfig` ported (NVS-backed); saves changes → reboot |
+| Filesystem | **LittleFS** (splash JPEG + webserver assets path ready) |
 | OTA | None |
-| Shared library | Not referenced |
+| Shared library | **Referenced** via `lib_extra_dirs = ../esp32common` |
 | Data model | `DemoModel` — fake SOC + power cycle only |
-| Partitions | Default 8 MB board profile (insufficient) |
+| Partitions | **Custom 8 MB OTA profile active** (`partitions_8mb_ota.csv`) |
 
 ---
 
@@ -105,7 +105,13 @@ PSRAM headroom is comfortable. The main risk is internal IRAM/SRAM: the LCD proj
 
 ### 3.5 Flash and partitions
 
-The current `waveshare_esp32s3_n16r8.json` board file specifies **8 MB flash** — but the physical board has **16 MB**. The `espnowreceiver_2` OTA partition table uses a 16 MB layout. The board JSON **must be corrected** and a custom partition CSV added before any meaningful OTA or webserver asset storage works.
+Boot logs on the actual target hardware report:
+
+`E ... spi_flash: Detected size(8192k) smaller than the size in the binary image header(16384k)`
+
+This confirms the currently deployed unit is **8 MB flash**. Running a 16 MB image header causes early boot assert failure in `startup.c`.
+
+**Required policy:** use an 8 MB flash profile and 8 MB partition table (`partitions_8mb_ota.csv`) for this unit.
 
 ---
 
@@ -137,15 +143,17 @@ This is entirely self-contained and does not interact with any of the port phase
 
 ## 4. Architectural Issues
 
-### Issue 1: LVGL is not thread-safe — highest risk item
+### Issue 1: LVGL is not thread-safe — architecture guardrail
 
 **Severity: Critical**
 
 `espnowreceiver_2` calls all display updates through `RTOS::tft_mutex` because TFT_eSPI has no internal locking. LVGL 8.x has the same constraint but enforces it differently: all LVGL calls (`lv_obj_*`, `lv_label_set_text`, `lv_timer_handler`) **must occur on the same task/thread**. Calling any LVGL API from the ESP-NOW worker task or MQTT task will corrupt the object tree.
 
-The current LCD architecture calls `UI::Runtime::tick()` (which calls `lv_timer_handler()`) from Arduino `loop()`, which runs on Core 1. When FreeRTOS tasks are added, Core 1 keeps running the `loop()` task at priority 1.
+This risk has been addressed in the current LCD implementation by running `UI::Runtime::tick()` from a dedicated LVGL task and feeding it through `DisplayUpdateQueue`. The guardrail still applies: no LVGL API calls should be made from worker tasks.
 
-**Recommended solution:** Introduce an explicit LVGL mutex, wrap every LVGL call in a lock, and tick LVGL only from a single dedicated task. The clean pattern is:
+**Current pattern (implemented):** tick LVGL only from a single dedicated task and feed updates through a queue.
+
+**Recommended ongoing policy:** keep this model and avoid direct LVGL calls outside the LVGL task. The clean pattern is:
 
 ```
 loop() → demoted to a thin coordinator, or eliminated
@@ -182,46 +190,45 @@ The current `UI::Runtime::set_state(float soc_percent, int32_t power_w)` signatu
 - Keeps `namespace RTOS` (mutex handles, task handles)
 - Replaces `namespace Display` with a reference to `BatteryData::TelemetrySnapshot`
 
-### Issue 4: LED indicator task is display-rendered and needs API adaptation
+### Issue 4: LED indicator path is display-rendered and now adapted to LVGL
 
 **Severity: Medium**
 
 `task_led_renderer` in `espnowreceiver_2` animates a **drawn** status dot by calling `set_led()`/`clear_led()`, which write circles into the TFT framebuffer. It does not drive a physical RGB LED.
 
-This means the behavior can port directly, but the rendering backend must change from TFT primitives to LVGL object state.
+This behavior is now represented in `espnowreceiver_LCD` by a plain LVGL `lv_obj` circle indicator with opacity animation (not an `lv_led` widget).
 
-**Recommended solution:** Keep the existing LED state/effect model and either:
+**Recommended next step:** Keep the existing LED state/effect model and either:
 1. keep a dedicated `LedRenderer` task that publishes indicator-state events to the LVGL/display queue, or
 2. fold the animation timing into the LVGL task timers.
 
-In both options, render via a lightweight LVGL `ConnectionStatusWidget` (small coloured circle: orange waiting, green connected, red error), not direct TFT calls.
+In both options, continue using the existing lightweight plain LVGL circle object (small coloured indicator), not direct TFT calls and not a separate LVGL LED widget class.
 
-### Issue 5: Board JSON flash size is wrong
+### Issue 5: Flash profile mismatch causes boot failure
 
 **Severity: High**
 
-`waveshare_esp32s3_n16r8.json` declares `"flash_size": "8MB"` and `"maximum_size": 8388608`. The physical Waveshare ESP32-S3-Touch-LCD-7 has **16 MB flash**. Running with the 8 MB profile on a 16 MB board:
-- Silently wastes 8 MB of flash
-- Limits OTA app partitions to ~3.5 MB each (too small for a production image with webserver assets)
-- Webserver HTML/CSS assets stored in SPIFFS will be constrained
+When firmware is built with 16 MB header fields and flashed to an 8 MB device, boot fails with:
 
-**Fix:** Update the board JSON to 16 MB and add `partitions_16mb_ota.csv` matching the layout used in `espnowreceiver_2`.
+`Detected size(8192k) smaller than the size in the binary image header(16384k). Probe failed.`
+
+**Fix (applied):** keep board JSON and `platformio.ini` at **8 MB**, and use `partitions_8mb_ota.csv`.
 
 ### Issue 6: Filesystem — SPIFFS vs LittleFS
 
 **Severity: Medium**
 
-The LCD project uses SPIFFS (for the splash JPEG). `espnowreceiver_2` uses LittleFS (for webserver assets, firmware metadata, config). SPIFFS is deprecated in newer ESP-IDF versions and has no wear-levelling or directory support. LittleFS is strictly better.
+This migration is now applied in `espnowreceiver_LCD`: the project uses LittleFS for splash assets and future web assets. `espnowreceiver_2` also uses LittleFS (for webserver assets, firmware metadata, config).
 
-**Recommended solution:** Migrate to LittleFS in the LCD project before adding webserver assets. Replace `SPIFFS.begin(true)` with `LittleFS.begin(true)` in `splash_sequence.cpp`. Change `board_build.filesystem = littlefs` in `platformio.ini`. The splash JPEG will work identically.
+**Status:** Complete (`LittleFS.begin(true)` in splash path + `board_build.filesystem = littlefs` in `platformio.ini`).
 
-### Issue 7: esp32common not referenced
+### Issue 7: esp32common integration baseline (applied)
 
 **Severity: High**
 
-All the shared infrastructure (`channel_manager`, `connection_manager`, `espnow_discovery`, `firmware_version`, `ota_boot_guard`, `timing_config`, `bootstrap_phase_runner`, `setup_health_gate`, `runtime_common_utils`) lives in `esp32common` and is pulled in via `lib_extra_dirs = ../esp32common`. The LCD project doesn't reference it.
+The shared infrastructure (`channel_manager`, `connection_manager`, `espnow_discovery`, `firmware_version`, `ota_boot_guard`, `timing_config`, `bootstrap_phase_runner`, `setup_health_gate`, `runtime_common_utils`) lives in `esp32common` and is now referenced from the LCD project via `lib_extra_dirs = ../esp32common`.
 
-**Fix:** Add `lib_extra_dirs = ../esp32common` to `platformio.ini` and add the firmware metadata/version script:
+**Status:** Complete in `platformio.ini` with both shared library path and firmware metadata/version script:
 ```ini
 extra_scripts = pre:../esp32common/scripts/version_firmware.py
 ```
@@ -276,9 +283,9 @@ Each phase should build and validate independently before the next begins.
 
 | Item | File(s) | Notes |
 |------|---------|-------|
-| Board JSON: 8 MB → 16 MB flash | `boards/waveshare_esp32s3_n16r8.json` | `flash_size`, `maximum_size` corrected; stale `default_8MB.csv` ref removed |
-| Partition table | `partitions_16mb_ota.csv` (new) | NVS + OTA0/1 (7.8 MB each) + LittleFS (704 KB) |
-| `platformio.ini` | `platformio.ini` | `board_build.flash_size=16MB`, partitions, `filesystem=littlefs`, `lib_extra_dirs`, version script, `FW_VERSION_*`, `LOG_USE_MQTT=0` |
+| Board JSON profile | `boards/waveshare_esp32s3_n16r8.json` | **Final setting:** 8 MB flash profile (`flash_size`, `maximum_size`, upload flash size) |
+| Partition table | `partitions_8mb_ota.csv` (new) | NVS + OTA0/1 (3.5625 MB each) + LittleFS (832 KB) |
+| `platformio.ini` | `platformio.ini` | **Final setting:** `board_build.flash_size=8MB`, `board_build.partitions=partitions_8mb_ota.csv`, `filesystem=littlefs`, `lib_extra_dirs`, version script, `FW_VERSION_*`, `LOG_USE_MQTT=0` |
 | SPIFFS → LittleFS | `src/ui/runtime/splash_sequence.cpp` | All 5 SPIFFS references replaced with LittleFS |
 | Logging macros | `include/logging_config.h` (new) | Standalone `LOG_INFO/WARN/ERROR/DEBUG/TRACE`; no MQTT dep in Phase A |
 | FreeRTOS task constants | `include/task_config.h` (new) | Stack sizes, priorities, `WORKER_CORE`; adapted for LCD |
@@ -287,8 +294,8 @@ Each phase should build and validate independently before the next begins.
 
 **Validation:** `pio run -j 2` — `[SUCCESS]`, zero errors, LittleFS library compiled.
 
-~~1. Correct the board JSON — update flash to 16 MB.~~
-~~2. Add `partitions_16mb_ota.csv`.~~
+~~1. Align board JSON/profile to the target hardware flash size.~~
+~~2. Add a matching OTA partition table (`partitions_8mb_ota.csv` for this unit).~~
 ~~3. Migrate SPIFFS → LittleFS.~~
 ~~4. Add `lib_extra_dirs = ../esp32common` and version script.~~
 ~~5. Port `task_config.h` — FreeRTOS task sizing constants.~~
@@ -296,53 +303,145 @@ Each phase should build and validate independently before the next begins.
 ~~7. Port `src/helpers.h` / `helpers.cpp` — `smart_delay()`.~~
 ~~8. Create `common_lcd.h` — `namespace ESPNow`, `namespace RTOS`, no display imports.~~
 
-### Phase B: FreeRTOS task structure
-1. **Extract `UI::Runtime::tick()` into a dedicated LVGL Task** pinned to Core 1.  
-2. **Port `DisplayUpdateQueue`** — change renderer callback from `display_soc()` / `display_power()` to `UI::Runtime::set_state()`.  
-3. **Port `RuntimeTaskStartup`** — create primitives (LVGL mutex, ESP-NOW queue), start LVGL task. No ESP-NOW tasks yet.  
-4. **Refactor `loop()`** — should now just call `vTaskDelay(portMAX_DELAY)` or tick only non-display state.  
-5. **Restructure `setup()`** using `BootstrapPhaseRunner`.  
+### Phase B: FreeRTOS task structure ✅ COMPLETE — 2026-04-14
 
-**Validation:** LVGL display still updates correctly from the display snapshot queue. Demo model data posts to queue → LVGL task renders it.
+> **Status:** Implemented and validated on-device (build + upload success).
 
-### Phase C: WiFi + NVS config
-1. **Port `lib/receiver_config/receiver_config_manager.h/.cpp`**.  
-2. **Port `src/config/wifi_setup.h/.cpp`** — uses `ReceiverNetworkConfig`.  
-3. **Add `bootstrap_filesystem()` phase** — LittleFS mount + `ReceiverNetworkConfig::loadConfig()` + `setupWiFi()`.  
-4. **Add `esp_wifi_set_ps(WIFI_PS_NONE)`** after WiFi init.  
+| Item | File(s) | Notes |
+|------|---------|-------|
+| Dedicated LVGL task on Core 1 | `src/runtime/runtime_task_startup.cpp` | `task_lvgl` created via `xTaskCreatePinnedToCore(..., TaskConfig::WORKER_CORE)`; owns `UI::Runtime::tick()` |
+| Display update queue | `src/runtime/display_update_queue.h/.cpp` | `snapshot_t {soc_percent, power_w}` queue; producer in `loop()`, consumer in LVGL task |
+| Runtime startup primitives/tasks | `src/runtime/runtime_task_startup.h/.cpp` | Creates LVGL mutex + queue, starts LVGL task |
+| Shared handle definitions | `src/runtime/common_lcd.cpp`, `include/common_lcd.h` | Added concrete definitions for `RTOS` / `ESPNow` extern handles, including `display_update_queue` |
+| `setup()` phase runner | `src/main.cpp` | Boot flow now split into `hardware`, `display`, `display_content`, `tasks` via `BootstrapPhaseRunner` |
+| `loop()` refactor | `src/main.cpp` | No direct LVGL calls remain; demo model updates enqueue snapshots only |
 
-**Validation:** Board connects to WiFi, IP visible on serial, LVGL display still works.
+**Validation:**
+- `pio run -j 2` → `[SUCCESS]`
+- `pio run --target upload --environment waveshare_esp32s3_lcd7_lvgl` → `[SUCCESS]`
+- Runtime architecture now follows queue-driven display updates (producer loop → LVGL consumer task).
 
-### Phase D: Webserver
-1. **Copy `lib/webserver/`** into LCD project (or symlink — PlatformIO supports both).  
-2. **Port `lib/webserver/utils/transmitter_manager.*`** and supporting utils.  
-3. **Add `bootstrap_services()` phase** — `ReceiverConfigManager::init()`, `TransmitterManager::init()`, `init_webserver()`.  
-4. **Add `CONFIG_HTTPD_MAX_URI_LEN` and `CONFIG_HTTPD_MAX_REQ_HDR_LEN`** to build flags.  
+### Phase C: WiFi + NVS config ✅ COMPLETE — 2026-04-15
 
-**Validation:** Webserver responds on expected IP. LVGL display unaffected.
+> **Status:** Implemented and build-validated (`[SUCCESS]`).
+
+| Item | File(s) | Notes |
+|------|---------|-------|
+| Receiver config manager port | `lib/receiver_config/receiver_config_manager.h/.cpp` (new) | NVS-backed load/save/getters for WiFi + related receiver config |
+| WiFi setup module | `src/config/wifi_setup.h/.cpp` (new) | STA connection from loaded NVS config; static IP support; timeout-based connect |
+| Runtime filesystem/network bootstrap phase | `src/main.cpp` | Added `bootstrap_filesystem()` phase: LittleFS mount + config load + WiFi bring-up |
+| WiFi power-save policy | `src/config/wifi_setup.cpp` | Calls `esp_wifi_set_ps(WIFI_PS_NONE)` after successful connect |
+| Logging level backing symbol | `src/logging_config.cpp` (new) | Defines `current_log_level` for project log macros |
+
+**Validation:**
+- `pio run -e waveshare_esp32s3_lcd7_lvgl -j 12` → `[SUCCESS]`
+- Build links `receiver_config` and `WiFi`; firmware image generated successfully.
+
+### Phase D: Webserver (Minimal Configuration Interface) ✅ COMPLETE — 2026-04-15
+
+**⚠️ Note:** Phase D implements only a **minimal webserver** for WiFi/MQTT/IP configuration. The **full webserver** from `espnowreceiver_2` (dashboard, transmitter hub, settings pages, REST API, SSE) is not yet implemented and will be added in a later phase (see Phase D.5 below).
+2. **Minimal ESP-IDF httpd stack** (`webserver_lcd.h/.cpp`) — `httpd_start()`, route registration, WiFi/AP readiness guard.
+3. **API layer** (`api/api_utils.h`) — inline JSON request/response helpers via `HttpJsonUtils` from esp32common.
+4. **Network API handlers** (`api/api_network.h/.cpp`) — `GET /api/v1/network` (read NVS config), `POST /api/v1/network` (save config → deferred reboot).
+5. **Configuration page** (`pages/network_page.h/.cpp`) — single self-contained static HTML file (dark theme, collapsible sections, inline CSS+JS, ArduinoJson form data).
+6. **WiFi enhancements** (`src/config/wifi_setup.h/.cpp`) — added mDNS support (`lcd-receiver.local`), AP fallback (`ESP32-LCD-Setup` open AP on config load failure), `get_ip_string()` helper.
+7. **LVGL display integration** (`src/ui/runtime/ui_backend_lvgl.cpp/.h`) — added IP label at bottom-left (green when connected, grey when offline, shows AP IP in fallback mode).
+8. **Bootstrap sequence** — added `bootstrap_services()` phase that queues webserver startup as background task (500 ms delay) to avoid watchdog timeout.
+9. **Build flags** — added `ArduinoJson@^6.21.5` to lib_deps; removed httpd size flags (already in sdkconfig).
+
+**Key design decisions:**
+- **Deferred webserver init:** Started in background task after `setup()` completes to prevent watchdog timeout.
+- **No MQTT override:** AP mode uses `192.168.4.1` hardcoded; STA uses DHCP or static IP from NVS.
+- **Single-file HTML page:** Minimizes RAM footprint — entire page in PROGMEM; JavaScript handles load/save via fetch API.
+- **SaveConfig atomicity:** Uses `ReceiverNetworkConfig::saveConfig(hostname, ssid, password, ...)` single call; all-or-nothing NVS write.
+
+**Validation:**
+- `pio run -e waveshare_esp32s3_lcd7_lvgl -j 12` → `[SUCCESS]` 56.91s
+- Boot sequence: splash → LittleFS → WiFi/AP → webserver task queued → tasks started → stable.
+- No watchdog resets.
+- LCD shows IP label; webserver accessible at `http://192.168.4.1/config` (AP mode) or WiFi IP in STA mode.
+- Config saves and reboots cleanly.
+
+### Phase D.5: Full Webserver
+**Status:** Complete (implemented 2026-04-16).
+
+**Implemented:**
+1. Copied entire `lib/webserver/` tree from `espnowreceiver_2` into `lib/webserver_lcd/` (178 files).
+2. Adapted WiFi readiness check to accept STA connected OR AP mode (LCD AP fallback).
+3. Removed `test_mode_enabled` / `g_test_soc` / `g_test_power` globals — LCD always uses live data.
+4. Ported `src/espnow/espnow_send.h/.cpp` — ESP-NOW control/catalog send functions (uses `ESPNow::peer_mac`).
+5. Ported `src/mqtt/mqtt_client.h/.cpp` and `src/mqtt/mqtt_task.h/.cpp` parity from `_2` (include-path adaptation only), replacing earlier temporary stubs.
+6. Ported `src/memory/memory_sampler.h/.cpp` — periodic heap health sampler (needed by SSE and debug API).
+7. Ported `src/espnow/battery_settings_cache.*`, `component_apply_tracker.*`, `type_catalog_cache.*`, `component_config_handler.*` — needed by webserver settings/type-selection APIs.
+8. Extended `ESPNow` namespace in `common_lcd.h/.cpp` with compatibility symbols used by the webserver (`transmitter_mac` alias, `rx_callback_count`, LED state stubs, `queue` alias).
+9. Wired `notify_sse_data_updated()` and `register_transmitter_mac()` calls in `espnow_runtime.cpp` after successful telemetry data handling.
+10. `WebserverLcd::init()` updated to inline-forward to `init_webserver()` from the full webserver.
+11. Performed file-level parity audit between `_2/lib/webserver` and `_lcd/lib/webserver_lcd`: confirmed only intentional LCD deltas remain (`webserver.cpp` WiFi AP/STA readiness path, dashboard/API hardening files, and legacy minimal `/config` compatibility files not registered in full page factory).
+12. Verified `/receiver/config` script parity hash between `_2` and `_lcd` (identical content); confirmation-message mismatch report traced to non-registered legacy `/config` minimal page path rather than `/receiver/config` implementation drift.
+
+**Pages available:** Dashboard, Transmitter Hub, Monitor, Monitor2, Battery/Inverter/Hardware Settings, Network Config, System Info, OTA, Debug, Event Logs, Cell Monitor, Battery/Inverter/Charger/System Specs.
+**REST API:** Full `/api/v1/*` set including telemetry, settings, peers, type selection, SSE, debug, LED, control, network.
+
+**Validation:** `pio run -e waveshare_esp32s3_lcd7_lvgl -j 12` → `[SUCCESS]` (89s).
 
 ### Phase E: ESP-NOW
-1. **Port `src/espnow/` subsystem** — callbacks, tasks, state machines, heartbeat manager, connection handler, peer manager.  
-2. **Port `esp_now_init()` + callback registration** into `bootstrap_espnow_state()` phase.  
-3. **Wire `update_received_data_cache()` → `DisplayUpdateQueue::enqueue()`** so real data flows to LVGL.  
-4. **Remove `DemoModel`** once real data is verified.  
-5. **Replace `task_led_renderer`** with `ConnectionStatusWidget` LVGL object.  
+**Status:** Complete (E2 implemented on 2026-04-16), with post-port hardening in progress.
 
-**Validation:** Transmitter connected → SOC and power values appear on display.
+**Implemented baseline (E1):**
+1. Added new runtime module: `src/espnow/espnow_runtime.h/.cpp`.
+2. Added lightweight protocol subset: `src/espnow/espnow_protocol_min.h` (`msg_probe`, `msg_data`, `msg_battery_status`, request-data frame).
+3. Initialised ESP-NOW in `bootstrap_services()` and registered send/recv callbacks.
+4. Added inbound RX queue + worker task (`RTOS::espnow_worker_task`) to process messages outside callback context.
+5. Added probe handshake: on `msg_probe`, receiver sends `msg_request_data` (`subtype_power_profile`) to start stream.
+6. Wired `msg_data` and `msg_battery_status` directly to `DisplayUpdateQueue::enqueue()` so live SOC/power reaches LVGL.
+7. Bound connection state to LVGL status indicator: LED is green when live packets are recent, red on timeout.
+8. Removed `DemoModel` from active runtime loop (display now waits for real ESP-NOW data instead of synthetic updates).
 
-### Phase F: MQTT
-1. **Port `src/mqtt/`** (`mqtt_client.*`, `mqtt_task.*`).  
-2. **Add `MqttClient` task** in `RuntimeTaskStartup`.  
-3. **Wire MQTT subscription handlers** to `BatteryData::TelemetrySnapshot` updates.  
+**Implemented for full Phase E completion (E2):**
+1. Ported `src/espnow/` subsystem pieces needed for receiver parity (state machine, connection handler, heartbeat manager, settings sync handlers, typed battery subsystem handlers).
+2. Added checksum validation + broad ESP-NOW route coverage parity for transmitter→receiver configuration/status traffic.
+3. Added battery/charger/inverter/system/component typed handlers with canonical telemetry snapshot store (`battery_data_store.*`).
+4. Integrated shared peer/discovery/channel/connection management utilities (`EspnowPeerManager`, `EspnowDiscovery`, `ChannelManager`, `EspNowConnectionManager`).
 
-**Validation:** MQTT broker receives telemetry topics.
+**Validation (E1):**
+- Build passes (`pio run -e waveshare_esp32s3_lcd7_lvgl -j 12` → `[SUCCESS]`).
+- Firmware uploads successfully.
+- Runtime enters ESP-NOW wait mode and updates display on incoming telemetry packets.
 
-### Phase G: OTA + health gate
-1. **Port `OtaBootGuard`** from esp32common — it's already a library component.  
-2. **Port `SetupHealthGate`** and `BootstrapPhaseRunner` — also already in esp32common.  
-3. **Add OTA health checks** (heap, LVGL mutex, ESP-NOW queue).  
+**Post-E hardening applied (2026-04-16):**
+1. Receiver local temperature lifecycle fixed by ensuring `DeviceTemperature` init/sample/tick is active in the heartbeat path.
+2. Initial transmitter network + MQTT config requests now sent during receiver connection initialisation to prime dashboard/transmitter cache earlier.
+3. Dashboard receiver static-mode indicator now uses `ReceiverNetworkConfig::useStaticIP()` (removed hardcoded static flag path).
+4. Dashboard transmitter IP rendering now uses cached transmitter network data independently of Ethernet link-state transitions.
+5. Hardened settings save paths to prevent `value:null` payloads on numeric fields (client-side validation in battery/hardware settings pages).
+6. Hardened `/api/save_setting` to reject null values explicitly with category/field diagnostics.
+7. Fixed LCD simulated LED parity: `msg_flash_led` now updates `ESPNow::current_led_color/effect` and is applied by the LVGL indicator renderer (continuous/flash/heartbeat), with initial LED-state request on connect.
 
-**Validation:** OTA firmware update completes successfully.
+**Post-E hardening validation state:**
+- Compile/build validated (`[SUCCESS]`).
+- Serial upload availability is intermittent: successful upload/monitor runs have occurred, but some retries still fail with transient `COM7` open errors.
+- Final on-device verification remains pending for the newest simulated-LED parity behavior under transmitter fault conditions (e.g., CAN battery missing).
+
+### Phase F: MQTT ✅ IMPLEMENTED (code parity complete) — 2026-04-16
+1. **Ported `src/mqtt/`** (`mqtt_client.*`, `mqtt_task.*`) from `_2` with include-path adaptation only.
+2. **Added `MqttClient` task** to `RuntimeTaskStartup` (pinned worker core startup path).
+3. **Confirmed MQTT subscription handlers** (`spec_data`, type catalogs, cell data/event logs) route into shared caches used by webserver APIs/pages.
+
+**Validation:**
+- Code parity check against `_2` confirms identical MQTT logic except path/log include adaptation.
+- `pio run -e waveshare_esp32s3_lcd7_lvgl -j 12` → `[SUCCESS]` with MQTT objects linked.
+- Upload capability is intermittent (some successful upload/monitor sessions, some transient `COM7` failures).
+- Runtime broker/topic validation still pending explicit on-device verification pass.
+
+### Phase G: OTA + health gate ✅ IMPLEMENTED (code integration complete) — 2026-04-16
+1. **Integrated `OtaBootGuard` startup hook** in LCD `bootstrap_hardware()` path (`OtaBootGuard::begin("RX_LCD_BOOT_GUARD")`).
+2. **Integrated `SetupHealthGate` application** during `setup()` after bootstrap phases.
+3. **Added startup health checks** for free heap threshold, LVGL mutex availability, ESP-NOW queue availability, and display queue availability.
+
+**Validation:**
+- Compile/build validated (`pio run -e waveshare_esp32s3_lcd7_lvgl -j 12` → `[SUCCESS]`).
+- Upload capability is intermittent (some successful upload/monitor sessions, some transient `COM7` failures).
+- Final on-device OTA/health-gate runtime validation remains pending explicit verification capture.
 
 ### Phase H: Display expansion
 1. **Extend `UI::Runtime::set_state`** to accept full `TelemetrySnapshot` (or a dedicated LCD display struct).  
@@ -394,9 +493,8 @@ Each phase should build and validate independently before the next begins.
 | New file | Purpose |
 |---|---|
 | `src/common_lcd.h` | Replaces `common.h`; no display includes, no TFT globals |
-| `src/ui/widgets/connection_status_widget.*` | LVGL on-screen connection status indicator (replaces TFT circle draw path) |
 | `src/config/display_queue_bridge.*` | Thin adapter: `DisplayUpdateQueue` → `UI::Runtime::set_state()` |
-| `partitions_16mb_ota.csv` | Copied/adapted from `espnowreceiver_2` |
+| `partitions_8mb_ota.csv` | OTA-capable partition layout for detected 8 MB flash target |
 
 ### Files to remove/retire
 | File | Reason |
@@ -446,8 +544,8 @@ The existing `RTOS::tft_mutex` from `espnowreceiver_2` can be repurposed as the 
 
 ```ini
 board_build.filesystem = littlefs
-board_build.partitions = partitions_16mb_ota.csv
-board_build.flash_size = 16MB
+board_build.partitions = partitions_8mb_ota.csv
+board_build.flash_size = 8MB
 
 extra_scripts = pre:../esp32common/scripts/version_firmware.py
 lib_extra_dirs = ../esp32common
@@ -565,41 +663,80 @@ Even then, the migration could be done incrementally (IDF component + `ARDUINO_R
 
 ## 10. Summary Checklist
 
+### Current implementation position (as of 2026-04-16)
+- **Completed:** Phases **A, B, C, D, D.5, E, F (implementation)**
+- **In progress:** Post-Phase-E/F on-device validation (dashboard/settings + MQTT runtime broker verification)
+- **Pending:** Phases **G (OTA health/boot guard enablement)**, **H (expanded LCD telemetry UI model)**
+
 ### Phase A — Foundation
-- [ ] Fix `boards/waveshare_esp32s3_n16r8.json` — flash 8 MB → 16 MB
-- [ ] Add `partitions_16mb_ota.csv`
-- [ ] Migrate SPIFFS → LittleFS in `splash_sequence.cpp` + `platformio.ini`
-- [ ] Add `lib_extra_dirs = ../esp32common` + version script to `platformio.ini`
-- [ ] Port `task_config.h`, `logging_config.h`, `helpers.*`
-- [ ] Create `common_lcd.h` (no TFT/display)
+- [x] Align `boards/waveshare_esp32s3_n16r8.json` with target unit flash size (8 MB)
+- [x] Add `partitions_8mb_ota.csv`
+- [x] Migrate SPIFFS → LittleFS in `splash_sequence.cpp` + `platformio.ini`
+- [x] Add `lib_extra_dirs = ../esp32common` + version script to `platformio.ini`
+- [x] Port `task_config.h`, `logging_config.h`, `helpers.*`
+- [x] Create `common_lcd.h` (no TFT/display)
 
 ### Phase B — FreeRTOS
-- [ ] Create dedicated LVGL task (owns `lv_timer_handler()`)
-- [ ] Port `DisplayUpdateQueue` adapted for `UI::Runtime::set_state()`
-- [ ] Port `RuntimeTaskStartup` with PSRAM stacks
-- [ ] Refactor `setup()` → `BootstrapPhaseRunner`
+- [x] Create dedicated LVGL task (owns `lv_timer_handler()`)
+- [x] Port `DisplayUpdateQueue` adapted for `UI::Runtime::set_state()`
+- [x] Port `RuntimeTaskStartup` (LVGL primitives + task startup)
+- [x] Refactor `setup()` → `BootstrapPhaseRunner`
 
 ### Phase C — WiFi + Config
-- [ ] Port `lib/receiver_config/receiver_config_manager.*`
-- [ ] Port `config/wifi_setup.*`
-- [ ] Add LittleFS + WiFi bootstrap phases
+- [x] Port `lib/receiver_config/receiver_config_manager.*`
+- [x] Port `config/wifi_setup.*`
+- [x] Add LittleFS + WiFi bootstrap phases
 
-### Phase D — Webserver
-- [ ] Copy `lib/webserver/` tree
-- [ ] Add webserver bootstrap phase + build flags
+### Phase D — Webserver (Minimal)
+- [x] Create `lib/webserver_lcd/` library with minimal httpd
+- [x] Add API handlers for network config GET/POST
+- [x] Create self-contained HTML config page
+- [x] Extend WiFi setup with mDNS + AP fallback
+- [x] Add IP label display to LVGL UI
+- [x] Add deferred webserver startup task
+- [x] Update build flags and dependencies
+- [x] Validate boot + webserver response + no watchdog
+
+### Phase D.5 — Full Webserver
+- [x] Port `lib/webserver/` tree from espnowreceiver_2
+- [x] Adapt page handlers for LCD display context (no TFT-eSPI calls)
+- [x] Implement dashboard page with live telemetry
+- [x] Implement transmitter hub page
+- [x] Implement settings pages (battery/inverter type)
+- [x] Add SSE (Server-Sent Events) for real-time browser updates
+- [x] Wire REST API endpoints to live `BatteryData::TelemetrySnapshot`
+- [x] Validate all pages compile and serve in LCD runtime
 
 ### Phase E — ESP-NOW
-- [ ] Port entire `src/espnow/` subtree
-- [ ] Wire data flow to `DisplayUpdateQueue`
-- [ ] Add `ConnectionStatusWidget` (replaces TFT circle indicator rendering)
-- [ ] Remove `DemoModel` once real data verified
+- [x] Add ESP-NOW runtime init + callbacks (`espnow_runtime.*`)
+- [x] Add ESP-NOW worker task + RX queue path
+- [x] Wire `msg_data`/`msg_battery_status` to `DisplayUpdateQueue`
+- [x] Bind link state to existing LVGL status indicator color (green/red)
+- [x] Remove `DemoModel` from active runtime loop
+- [x] Port full `src/espnow/` subtree parity with `espnowreceiver_2` (receiver-side runtime scope)
+- [x] Add full typed telemetry routing (battery/charger/inverter/system)
+- [x] Add heartbeat/state-machine/settings-sync parity
+
+### Phase E.5 — Post-port hardening (active)
+- [x] Fix receiver dashboard static/DHCP mode source (NVS-backed, not hardcoded)
+- [x] Ensure transmitter dashboard IP/mode survives link-state-only transitions via cached network info
+- [x] Add startup transmitter config request priming (network + MQTT)
+- [x] Restore receiver local temperature sampling lifecycle for dashboard/API
+- [x] Prevent invalid numeric settings from being serialized as `value:null` in web UI save flows
+- [x] Add backend guardrail for null setting payloads (`/api/save_setting` explicit rejection + diagnostics)
+- [x] Restore simulated LED parity: handle `msg_flash_led` into LVGL indicator color/effect (continuous/flash/heartbeat) and request LED state on connect
+- [x] Audit full webserver port parity vs `_2` (intentional deltas only)
+- [ ] Final on-device confirmation of latest dashboard/settings + simulated LED fault-state behavior (`/` parity, `/receiver/config` UX parity, no null-save errors, LED fault color/effect)
 
 ### Phase F — MQTT
-- [ ] Port `src/mqtt/` subtree
-- [ ] Add MQTT task to startup
+- [x] Port `src/mqtt/` subtree
+- [x] Add MQTT task to startup
+- [x] Verify parity with `_2` logic (include-path adaptation only)
+- [ ] Final on-device broker/topic runtime validation
 
 ### Phase G — OTA
-- [ ] Enable `OtaBootGuard` + `SetupHealthGate` from esp32common
+- [x] Enable `OtaBootGuard` + `SetupHealthGate` from esp32common
+- [ ] Final on-device OTA/health-gate runtime validation
 
 ### Phase H — Display expansion
 - [ ] Expand `UI::Runtime::set_state` to `TelemetrySnapshot`

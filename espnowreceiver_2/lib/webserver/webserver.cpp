@@ -15,11 +15,6 @@
 #include <PubSubClient.h>
 #include <LittleFS.h>
 
-// Legacy compatibility globals (defined in src/globals.cpp)
-extern bool test_mode_enabled;
-extern volatile int g_test_soc;
-extern volatile int32_t g_test_power;
-
 // ═══════════════════════════════════════════════════════════════════════
 // NOTE: PAGE_DEFINITIONS moved to page_definitions.h/cpp
 // Navigation buttons moved to common/nav_buttons.h/cpp
@@ -71,22 +66,26 @@ void init_webserver() {
         return;
     }
     
-    // Verify WiFi is connected - retry a few times if not yet ready
+    // Accept STA connected OR AP mode.
+    auto wifi_ready = []() {
+        return WiFi.status() == WL_CONNECTED
+            || WiFi.getMode() == WIFI_MODE_AP
+            || WiFi.getMode() == WIFI_MODE_APSTA;
+    };
     int wifi_retries = 0;
-    while (WiFi.status() != WL_CONNECTED && wifi_retries < 5) {
-        LOG_WARN("WEBSERVER", "WiFi not connected yet, retrying... (%d/5)", wifi_retries + 1);
+    while (!wifi_ready() && wifi_retries < 5) {
+        LOG_WARN("WEBSERVER", "WiFi not ready yet, retrying... (%d/5)", wifi_retries + 1);
         delay(500);
         wifi_retries++;
     }
-    
-    if (WiFi.status() != WL_CONNECTED) {
+
+    if (!wifi_ready()) {
         g_webserver_metrics.init_failures++;
-        LOG_ERROR("WEBSERVER", "WiFi still not connected after retries - webserver startup delayed");
-        LOG_INFO("WEBSERVER", "Will try to start webserver when WiFi connects");
+        LOG_ERROR("WEBSERVER", "WiFi not available after retries - webserver startup aborted");
         return;
     }
-    
-    LOG_INFO("WEBSERVER", "WiFi connected - proceeding with initialization");
+
+    LOG_INFO("WEBSERVER", "WiFi ready - proceeding with initialization");
     
     // Compute expected handlers from registries (prevents stale constants).
     const int expected_page_handler_count = PageRegistrationFactory::get_expected_page_handler_count();

@@ -11,116 +11,128 @@
 #include <channel_manager.h>
 #include <espnow_peer_manager.h>
 #include <espnow_transmitter.h>
+#include <espnow_discovery.h>
 #include <firmware_version.h>
 #include <esp_now.h>
 #include <Arduino.h>
 #include <cstring>
+
+// ---------------------------------------------------------------------------
+// Singleton
+// ---------------------------------------------------------------------------
 
 ReceiverConnectionHandler& ReceiverConnectionHandler::instance() {
     static ReceiverConnectionHandler instance;
     return instance;
 }
 
-static esp_err_t send_config_section_request(const uint8_t* transmitter_mac,
-                                             config_section_t section,
-                                             uint32_t requested_version = 0) {
-    config_section_request_t request{};
-    request.type = msg_config_section_request;
-    request.section = section;
-    request.requested_version = requested_version;
-    return esp_now_send(transmitter_mac, reinterpret_cast<const uint8_t*>(&request), sizeof(request));
-}
-
-static esp_err_t send_request_data_message(const uint8_t* transmitter_mac, uint8_t subtype) {
-    request_data_t request{msg_request_data, subtype};
-    return esp_now_send(transmitter_mac, reinterpret_cast<const uint8_t*>(&request), sizeof(request));
-}
+// ---------------------------------------------------------------------------
+// Constructor
+// ---------------------------------------------------------------------------
 
 ReceiverConnectionHandler::ReceiverConnectionHandler()
     : last_rx_time_ms_(0),
       power_data_confirmed_(false),
       connected_at_ms_(0),
-    last_retry_ms_(0),
-    last_catalog_retry_ms_(0),
-    catalog_versions_received_(false),
-    versions_retry_count_(0),
-    battery_catalog_retry_count_(0),
-    inverter_catalog_retry_count_(0),
-    inverter_interface_retry_count_(0) {
+      last_retry_ms_(0) {
     memset(transmitter_mac_, 0, sizeof(transmitter_mac_));
-        memset(deferred_peer_mac_, 0, sizeof(deferred_peer_mac_));
 }
+
+// ---------------------------------------------------------------------------
+// Static helpers
+// ---------------------------------------------------------------------------
+
+static esp_err_t send_config_section_request(const uint8_t* mac,
+                                              config_section_t section,
+                                              uint32_t requested_version = 0) {
+    config_section_request_t request{};
+    request.type              = msg_config_section_request;
+    request.section           = section;
+    request.requested_version = requested_version;
+    return esp_now_send(mac, reinterpret_cast<const uint8_t*>(&request), sizeof(request));
+}
+
+static esp_err_t send_request_data_message(const uint8_t* mac, uint8_t subtype) {
+    request_data_t request{msg_request_data, subtype};
+    return esp_now_send(mac, reinterpret_cast<const uint8_t*>(&request), sizeof(request));
+}
+
+// ---------------------------------------------------------------------------
+// init
+// ---------------------------------------------------------------------------
 
 void ReceiverConnectionHandler::init() {
     last_rx_time_ms_ = millis();
 
-    // Make common connection manager the single owner of connection timeout.
-    // Receiver treats any ESP-NOW traffic as keep-alive and uses 90s threshold.
     EspNowConnectionManager::instance().set_heartbeat_timeout_ms(90000);
     EspNowConnectionManager::instance().set_heartbeat_timeout_enabled(true);
-    
-    // Register state change callback
+
     EspNowConnectionManager::instance().register_state_callback(
         [](EspNowConnectionState old_state, EspNowConnectionState new_state) {
             LOG_INFO("RX_CONN", "State change: %s → %s",
                      espnow_state_to_string(old_state),
                      espnow_state_to_string(new_state));
-            
+
+            auto& self = ReceiverConnectionHandler::instance();
+
             if (new_state == EspNowConnectionState::CONNECTED) {
                 RxStateMachine::instance().on_connection_established();
-                ReceiverConnectionHandler::instance().peer_registered_event_posted_ = false;
-                ReceiverConnectionHandler::instance().peer_registered_deferred_ = false;
-                // Lock channel when connected (receiver doesn't hop but should lock)
-                uint8_t current_channel = ChannelManager::instance().get_channel();
-                ChannelManager::instance().lock_channel(current_channel, "RX_CONN");
-                LOG_INFO("RX_CONN", "✓ Connected - channel locked at %d", current_channel);
-                
-                // PHASE 0: Reset heartbeat monitor on connection
                 RxHeartbeatManager::instance().on_connection_established();
-                
-                // Arm the REQUEST_DATA retry timer
-                ReceiverConnectionHandler::instance().connected_at_ms_ = millis();
-                ReceiverConnectionHandler::instance().last_retry_ms_    = millis();
-                ReceiverConnectionHandler::instance().power_data_confirmed_ = false;
 
-                // Send initialization requests now that connection is fully established
-                ReceiverConnectionHandler::instance().send_initialization_requests(
+                // Suspend discovery while connected to avoid channel interference
+                EspnowDiscovery::instance().suspend();
+
+                self.deferred_peer_.reset();
+
+                const uint8_t current_channel = ChannelManager::instance().get_channel();
+                ChannelManager::instance().lock_channel(current_channel, "RX_CONN");
+                LOG_INFO("RX_CONN", "✓ Connected - channel locked at %d, discovery suspended",
+                         current_channel);
+
+                // Arm REQUEST_DATA retry timer
+                self.connected_at_ms_      = millis();
+                self.last_retry_ms_        = millis();
+                self.power_data_confirmed_ = false;
+
+                self.send_initialization_requests(
                     EspNowConnectionManager::instance().get_peer_mac());
-                
-            } else if (old_state == EspNowConnectionState::CONNECTED && 
+
+            } else if (old_state == EspNowConnectionState::CONNECTED &&
                        new_state == EspNowConnectionState::IDLE) {
                 RxStateMachine::instance().on_connection_lost();
-                ReceiverConnectionHandler::instance().on_connection_lost();
-                ReceiverConnectionHandler::instance().peer_registered_event_posted_ = false;
-                ReceiverConnectionHandler::instance().peer_registered_deferred_ = false;
-                // Clean up peer when connection lost
-                const uint8_t* peer_mac = ReceiverConnectionHandler::instance().get_transmitter_mac();
-                if (peer_mac) {
-                    if (!EspNowMacUtils::is_broadcast_mac(peer_mac) && EspnowPeerManager::is_peer_registered(peer_mac)) {
-                        if (EspnowPeerManager::remove_peer(peer_mac)) {
-                            LOG_INFO("RX_CONN", "✓ Removed peer on connection loss");
-                        } else {
-                            LOG_WARN("RX_CONN", "Failed to remove peer on connection loss");
-                        }
+                self.on_connection_lost();
+                self.deferred_peer_.reset();
+
+                // Clean up peer registration
+                const uint8_t* peer_mac = self.get_transmitter_mac();
+                if (peer_mac && !EspNowMacUtils::is_broadcast_mac(peer_mac) &&
+                    EspnowPeerManager::is_peer_registered(peer_mac)) {
+                    if (EspnowPeerManager::remove_peer(peer_mac)) {
+                        LOG_INFO("RX_CONN", "✓ Removed peer on connection loss");
+                    } else {
+                        LOG_WARN("RX_CONN", "Failed to remove peer on connection loss");
                     }
                 }
-                
-                // Unlock channel when connection lost
+
                 ChannelManager::instance().unlock_channel("RX_CONN");
-                LOG_INFO("RX_CONN", "✓ Connection lost - peer cleaned up, channel unlocked");
+                EspnowDiscovery::instance().resume();
+                LOG_INFO("RX_CONN",
+                         "✓ Connection lost - peer cleaned up, channel unlocked, discovery resumed");
+
             } else if (new_state == EspNowConnectionState::CONNECTING) {
-                ReceiverConnectionHandler::instance().peer_registered_event_posted_ = false;
-                ReceiverConnectionHandler::instance().flush_deferred_peer_registered();
+                EspnowDiscovery::instance().resume();
+                // Attempt to flush any deferred PEER_REGISTERED that arrived early
+                self.flush_deferred_peer_registered();
             }
-        }
-    );
-    
-    // Post CONNECTION_START event to kick state machine from IDLE → CONNECTING
-    // This ensures the receiver is ready to receive peer registration events
+        });
+
     post_connection_event(EspNowEvent::CONNECTION_START, nullptr);
-    
     LOG_INFO("RX_CONN", "✓ Receiver connection handler initialized");
 }
+
+// ---------------------------------------------------------------------------
+// Event handlers
+// ---------------------------------------------------------------------------
 
 void ReceiverConnectionHandler::on_probe_received(const uint8_t* transmitter_mac) {
     if (transmitter_mac) {
@@ -128,10 +140,7 @@ void ReceiverConnectionHandler::on_probe_received(const uint8_t* transmitter_mac
     }
     last_rx_time_ms_ = millis();
 
-    // Post PEER_FOUND event (common manager)
     post_connection_event(EspNowEvent::PEER_FOUND, transmitter_mac_);
-
-    // If we latched a registration event while not CONNECTING, attempt to flush now.
     flush_deferred_peer_registered();
 }
 
@@ -141,39 +150,23 @@ void ReceiverConnectionHandler::on_peer_registered(const uint8_t* transmitter_ma
     }
     last_rx_time_ms_ = millis();
 
-    // When peer is registered, we're moving towards connected state
-    // Notify heartbeat manager to reset its timeout
     RxHeartbeatManager::instance().on_connection_established();
 
-    // Post PEER_REGISTERED only once while CONNECTING.
-    // If we are not CONNECTING, latch a real deferred event with TTL.
-    EspNowConnectionManager& conn_mgr = EspNowConnectionManager::instance();
-    const auto state = conn_mgr.get_state();
+    const auto state = EspNowConnectionManager::instance().get_state();
+    const bool is_connecting = (state == EspNowConnectionState::CONNECTING);
+    const bool is_connected  = (state == EspNowConnectionState::CONNECTED);
 
-    if (state == EspNowConnectionState::CONNECTING) {
-        if (peer_registered_event_posted_) {
-            LOG_DEBUG("RX_CONN", "Duplicate on_peer_registered() while CONNECTING - ignoring");
-            return;
-        }
+    if (is_connected) {
+        LOG_DEBUG("RX_CONN", "on_peer_registered() while CONNECTED - ignoring duplicate");
+        return;
+    }
+
+    const bool should_post = deferred_peer_.on_peer_registered(
+        transmitter_mac_, is_connecting, millis());
+
+    if (should_post) {
         post_connection_event(EspNowEvent::PEER_REGISTERED, transmitter_mac_);
-        peer_registered_event_posted_ = true;
-        peer_registered_deferred_ = false;
-        deferred_peer_registered_ms_ = 0;
-        memset(deferred_peer_mac_, 0, sizeof(deferred_peer_mac_));
-    } else if (state == EspNowConnectionState::CONNECTED) {
-        // Expected on reboot/discovery noise while already connected; do not warn.
-        LOG_DEBUG("RX_CONN", "on_peer_registered() received while CONNECTED - ignoring duplicate");
-    } else {
-        peer_registered_deferred_ = EspNowMacUtils::has_valid_mac(transmitter_mac_);
-        if (peer_registered_deferred_) {
-            memcpy(deferred_peer_mac_, transmitter_mac_, sizeof(deferred_peer_mac_));
-            deferred_peer_registered_ms_ = millis();
-            LOG_INFO("RX_CONN", "on_peer_registered() in state %d - deferred until CONNECTING",
-                     static_cast<int>(state));
-        } else {
-            LOG_WARN("RX_CONN", "on_peer_registered() in state %d but MAC invalid - dropping",
-                     static_cast<int>(state));
-        }
+        deferred_peer_.on_event_posted();
     }
 }
 
@@ -182,11 +175,8 @@ void ReceiverConnectionHandler::on_data_received(const uint8_t* transmitter_mac)
         memcpy(transmitter_mac_, transmitter_mac, sizeof(transmitter_mac_));
     }
     last_rx_time_ms_ = millis();
-    
-    // PHASE 0: Notify connection manager of heartbeat
-    EspNowConnectionManager::instance().on_heartbeat_received();
 
-    // Post DATA_RECEIVED event (common manager)
+    EspNowConnectionManager::instance().on_heartbeat_received();
     post_connection_event(EspNowEvent::DATA_RECEIVED, transmitter_mac_);
 }
 
@@ -198,167 +188,10 @@ void ReceiverConnectionHandler::on_link_activity(const uint8_t* transmitter_mac)
 
     if (connected_at_ms_ == 0 && EspNowMacUtils::has_valid_mac(transmitter_mac_)) {
         connected_at_ms_ = millis();
-        last_retry_ms_ = millis();
+        last_retry_ms_   = millis();
     }
 
     flush_deferred_peer_registered();
-}
-
-void ReceiverConnectionHandler::flush_deferred_peer_registered() {
-    if (!peer_registered_deferred_) {
-        return;
-    }
-
-    const uint32_t now = millis();
-    if (deferred_peer_registered_ms_ > 0 && (now - deferred_peer_registered_ms_) > DEFERRED_PEER_TTL_MS) {
-        LOG_WARN("RX_CONN", "Dropping stale deferred PEER_REGISTERED (%lu ms old)",
-                 now - deferred_peer_registered_ms_);
-        peer_registered_deferred_ = false;
-        deferred_peer_registered_ms_ = 0;
-        memset(deferred_peer_mac_, 0, sizeof(deferred_peer_mac_));
-        return;
-    }
-
-    if (EspNowConnectionManager::instance().get_state() != EspNowConnectionState::CONNECTING) {
-        return;
-    }
-
-    if (peer_registered_event_posted_) {
-        return;
-    }
-
-    post_connection_event(EspNowEvent::PEER_REGISTERED, deferred_peer_mac_);
-    peer_registered_event_posted_ = true;
-    peer_registered_deferred_ = false;
-    deferred_peer_registered_ms_ = 0;
-    memset(deferred_peer_mac_, 0, sizeof(deferred_peer_mac_));
-    LOG_INFO("RX_CONN", "Flushed deferred PEER_REGISTERED in CONNECTING state");
-}
-
-void ReceiverConnectionHandler::send_initialization_requests(const uint8_t* transmitter_mac) {
-    if (!transmitter_mac) {
-        LOG_WARN("CONN_HANDLER", "Cannot send initialization - invalid transmitter MAC");
-        return;
-    }
-    
-    // Check if device is in CONNECTED state before sending requests
-    auto& conn_mgr = EspNowConnectionManager::instance();
-    auto state = conn_mgr.get_state();
-    
-    if (state != EspNowConnectionState::CONNECTED) {
-        LOG_WARN("CONN_HANDLER", "Cannot send initialization - transmitter state is %u (need CONNECTED)",
-                 (uint8_t)state);
-        return;
-    }
-    
-    // Mark that we've sent initialization for this connection
-    // Flag will be reset only when connection is lost
-    first_data_received_ = true;
-
-    // Reset catalog retry state for this connection window
-    catalog_versions_received_ = false;
-    versions_retry_count_ = 0;
-    battery_catalog_retry_count_ = 0;
-    inverter_catalog_retry_count_ = 0;
-    inverter_interface_retry_count_ = 0;
-    last_catalog_retry_ms_ = millis();
-    
-    LOG_INFO("CONN_HANDLER", "[INIT] Connection CONFIRMED (both devices ready) - sending initialization requests");
-
-    // Request static config sections immediately (no legacy snapshot)
-    static constexpr struct {
-        config_section_t section;
-        const char* label;
-    } kInitSections[] = {
-        {config_section_mqtt, "MQTT"},
-        {config_section_network, "NETWORK"},
-        {config_section_metadata, "METADATA"},
-        {config_section_battery, "BATTERY"},
-    };
-
-    for (const auto& entry : kInitSections) {
-        esp_err_t section_result = send_config_section_request(transmitter_mac, entry.section, 0);
-        if (section_result != ESP_OK) {
-            LOG_WARN("CONN_HANDLER", "Failed to request %s config section: %s",
-                     entry.label, esp_err_to_name(section_result));
-        }
-    }
-    
-    // Send REQUEST_DATA to ensure power profile stream is active
-    esp_err_t result = send_request_data_message(transmitter_mac, subtype_power_profile);
-    if (result == ESP_OK) {
-        LOG_INFO("CONN_HANDLER", "Requested power profile data stream");
-    } else if (result == ESP_ERR_ESPNOW_NOT_FOUND) {
-        LOG_WARN("CONN_HANDLER", "Transmitter peer not yet ready for data request - will retry");
-    } else {
-        LOG_WARN("CONN_HANDLER", "Failed to request power profile: %s", esp_err_to_name(result));
-    }
-    
-    // Send version information (static data, sent once on connection)
-    version_announce_t announce;
-    announce.type = msg_version_announce;
-    announce.firmware_version = FW_VERSION_NUMBER;
-    announce.protocol_version = PROTOCOL_VERSION;
-    strncpy(announce.device_type, DEVICE_NAME, sizeof(announce.device_type) - 1);
-    announce.device_type[sizeof(announce.device_type) - 1] = '\0';
-    strncpy(announce.build_date, __DATE__, sizeof(announce.build_date) - 1);
-    announce.build_date[sizeof(announce.build_date) - 1] = '\0';
-    strncpy(announce.build_time, __TIME__, sizeof(announce.build_time) - 1);
-    announce.build_time[sizeof(announce.build_time) - 1] = '\0';
-    
-    result = esp_now_send(transmitter_mac, (const uint8_t*)&announce, sizeof(announce));
-    if (result == ESP_OK) {
-        LOG_INFO("CONN_HANDLER", "Sent version info to transmitter: %d.%d.%d", 
-                 FW_VERSION_MAJOR, FW_VERSION_MINOR, FW_VERSION_PATCH);
-    } else if (result == ESP_ERR_ESPNOW_NOT_FOUND) {
-        LOG_WARN("CONN_HANDLER", "Transmitter peer not yet ready for version - will retry");
-    } else {
-        LOG_WARN("CONN_HANDLER", "Failed to send version info: %s", esp_err_to_name(result));
-    }
-
-    // Request current transmitter LED state explicitly on connect so receiver
-    // converges quickly after TX reboot, independent of config-section timing.
-    const bool led_request_sent = send_led_state_request();
-    if (led_request_sent) {
-        LOG_INFO("CONN_HANDLER", "[INIT] Requested transmitter LED state");
-    } else {
-        LOG_WARN("CONN_HANDLER", "[INIT] Failed to request transmitter LED state");
-    }
-
-    // Option B: bounded silent retry window (max attempts, no per-attempt warnings).
-    led_sync_pending_ = true;
-    led_sync_started_ms_ = millis();
-    led_sync_attempt_count_ = led_request_sent ? 1 : 0;
-    last_led_sync_request_ms_ = led_request_sent ? led_sync_started_ms_ : 0;
-
-    // Request transmitter catalog versions first (freshness check).
-    // Receiver will request catalogs selectively when versions differ.
-    send_type_catalog_versions_request();
-
-    // Immediate fallback: request catalogs when local cache is empty
-    // (covers first boot and any version-response loss).
-    if (!TypeCatalogCache::has_battery_entries()) {
-        send_battery_types_request();
-        LOG_INFO("CONN_HANDLER", "[INIT] Requested battery type catalog (cache empty)");
-    } else {
-        LOG_INFO("CONN_HANDLER", "[INIT] Skipped battery type catalog request (cache populated; awaiting version check)");
-    }
-
-    if (!TypeCatalogCache::has_inverter_entries()) {
-        send_inverter_types_request();
-        LOG_INFO("CONN_HANDLER", "[INIT] Requested inverter type catalog (cache empty)");
-    } else {
-        LOG_INFO("CONN_HANDLER", "[INIT] Skipped inverter type catalog request (cache populated; awaiting version check)");
-    }
-
-    if (!TypeCatalogCache::has_inverter_interface_entries()) {
-        send_inverter_interfaces_request();
-        LOG_INFO("CONN_HANDLER", "[INIT] Requested inverter interface catalog (cache empty)");
-    } else {
-        LOG_INFO("CONN_HANDLER", "[INIT] Skipped inverter interface catalog request (cache populated)");
-    }
-    
-    LOG_INFO("CONN_HANDLER", "[INIT] Initialization requests sent (will retry any that failed)");
 }
 
 void ReceiverConnectionHandler::on_power_data_received() {
@@ -368,177 +201,235 @@ void ReceiverConnectionHandler::on_power_data_received() {
     }
 }
 
-void ReceiverConnectionHandler::tick() {
-    flush_deferred_peer_registered();
+void ReceiverConnectionHandler::on_transmitter_reboot_detected() {
+    power_data_confirmed_ = false;
+    connected_at_ms_      = millis();
+    last_retry_ms_        = 0;
+    LOG_WARN("CONN_HANDLER", "[RETRY] TX reboot detected - re-arming REQUEST_DATA retry window");
+}
 
-    const auto rx_state = RxStateMachine::instance().connection_state();
-    const auto rx_stats = RxStateMachine::instance().stats();
-    const uint32_t now = millis();
+void ReceiverConnectionHandler::on_type_catalog_versions_received() {
+    catalog_retry_.on_versions_received();
+}
 
-    // LED sync retry engine (Option B): bounded silent retries, one summary warning.
-    if (led_sync_pending_ &&
-        EspNowConnectionManager::instance().is_connected() &&
-        EspNowMacUtils::has_valid_mac(transmitter_mac_)) {
-        if (led_sync_attempt_count_ >= LED_SYNC_MAX_ATTEMPTS) {
-            LOG_WARN("CONN_HANDLER", "[LED_SYNC] No LED response after %u attempt(s)",
-                     static_cast<unsigned>(led_sync_attempt_count_));
-            led_sync_pending_ = false;
-        } else if (last_led_sync_request_ms_ == 0 ||
-                   (now - last_led_sync_request_ms_) >= LED_SYNC_RETRY_INTERVAL_MS) {
-            if (send_led_state_request()) {
-                ++led_sync_attempt_count_;
-                last_led_sync_request_ms_ = now;
-            }
+void ReceiverConnectionHandler::on_led_state_received() {
+    if (led_sync_.is_pending()) {
+        LOG_INFO("CONN_HANDLER", "[LED_SYNC] Completed after %u attempt(s)",
+                 static_cast<unsigned>(led_sync_.attempt_count()));
+        led_sync_.on_response_received();
+    }
+}
+
+void ReceiverConnectionHandler::on_config_update_sent() {
+    RxStateMachine::instance().on_config_update_sent();
+    LOG_DEBUG("CONN_HANDLER", "Config update sent - stale detection grace window started");
+}
+
+void ReceiverConnectionHandler::on_connection_lost() {
+    if (first_data_received_) {
+        LOG_INFO("CONN_HANDLER", "[CONN_LOST] Clearing first_data_received for reconnection");
+        first_data_received_ = false;
+    }
+
+    power_data_confirmed_ = false;
+    connected_at_ms_      = 0;
+    last_retry_ms_        = 0;
+
+    led_sync_.reset();
+    catalog_retry_.reset();
+    deferred_peer_.reset();
+
+    LOG_WARN("CONN_HANDLER", "[CONN_LOST] Connection lost - ready for reconnection");
+}
+
+// ---------------------------------------------------------------------------
+// flush_deferred_peer_registered
+// ---------------------------------------------------------------------------
+
+void ReceiverConnectionHandler::flush_deferred_peer_registered() {
+    const auto state = EspNowConnectionManager::instance().get_state();
+    const bool is_connecting = (state == EspNowConnectionState::CONNECTING);
+
+    uint8_t flush_mac[6] = {};
+    if (deferred_peer_.try_flush(is_connecting, millis(), flush_mac)) {
+        post_connection_event(EspNowEvent::PEER_REGISTERED, flush_mac);
+        deferred_peer_.on_event_posted();
+        LOG_INFO("RX_CONN", "Flushed deferred PEER_REGISTERED in CONNECTING state");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// send_initialization_requests
+// ---------------------------------------------------------------------------
+
+void ReceiverConnectionHandler::send_initialization_requests(const uint8_t* transmitter_mac) {
+    if (!transmitter_mac) {
+        LOG_WARN("CONN_HANDLER", "Cannot send initialization - invalid transmitter MAC");
+        return;
+    }
+
+    const auto state = EspNowConnectionManager::instance().get_state();
+    if (state != EspNowConnectionState::CONNECTED) {
+        LOG_WARN("CONN_HANDLER",
+                 "Cannot send initialization - state is %u (need CONNECTED)",
+                 static_cast<uint8_t>(state));
+        return;
+    }
+
+    first_data_received_ = true;
+
+    // Reset catalog retry state for this connection window
+    catalog_retry_.reset();
+    LOG_INFO("CONN_HANDLER", "[INIT] Connection confirmed - sending initialization requests");
+
+    // Request static config sections
+    static constexpr struct { config_section_t section; const char* label; } kSections[] = {
+        {config_section_mqtt,     "MQTT"},
+        {config_section_network,  "NETWORK"},
+        {config_section_metadata, "METADATA"},
+        {config_section_battery,  "BATTERY"},
+    };
+    for (const auto& s : kSections) {
+        esp_err_t r = send_config_section_request(transmitter_mac, s.section, 0);
+        if (r != ESP_OK) {
+            LOG_WARN("CONN_HANDLER", "Failed to request %s config section: %s",
+                     s.label, esp_err_to_name(r));
         }
     }
 
-    const bool recent_power_data =
-        (rx_stats.last_message_ms > 0) && ((now - rx_stats.last_message_ms) <= POWER_DATA_FRESHNESS_MS);
+    // Request power profile data stream
+    esp_err_t r = send_request_data_message(transmitter_mac, subtype_power_profile);
+    if (r == ESP_OK) {
+        LOG_INFO("CONN_HANDLER", "Requested power profile data stream");
+    } else {
+        LOG_WARN("CONN_HANDLER", "Failed to request power profile: %s", esp_err_to_name(r));
+    }
 
-    // Do not rely on ACTIVE state alone here: ACTIVE may lag stale transition by up to the
-    // configured stale timeout window. Freshness-based gating allows faster REQUEST_DATA retries.
+    // Send version announcement
+    version_announce_t announce{};
+    announce.type             = msg_version_announce;
+    announce.firmware_version = FW_VERSION_NUMBER;
+    announce.protocol_version = PROTOCOL_VERSION;
+    strncpy(announce.device_type, DEVICE_NAME, sizeof(announce.device_type) - 1);
+    strncpy(announce.build_date, __DATE__, sizeof(announce.build_date) - 1);
+    strncpy(announce.build_time, __TIME__, sizeof(announce.build_time) - 1);
+    r = esp_now_send(transmitter_mac, reinterpret_cast<const uint8_t*>(&announce), sizeof(announce));
+    if (r == ESP_OK) {
+        LOG_INFO("CONN_HANDLER", "Sent version info: %d.%d.%d",
+                 FW_VERSION_MAJOR, FW_VERSION_MINOR, FW_VERSION_PATCH);
+    } else {
+        LOG_WARN("CONN_HANDLER", "Failed to send version info: %s", esp_err_to_name(r));
+    }
+
+    // LED state sync (bounded retry via policy)
+    const bool led_sent = send_led_state_request();
+    led_sync_.arm(led_sent, millis());
+    LOG_INFO("CONN_HANDLER", "[INIT] LED sync %s", led_sent ? "armed" : "armed (initial send failed)");
+
+    // Catalog version check — selective catalog population
+    send_type_catalog_versions_request();
+
+    if (!TypeCatalogCache::has_battery_entries()) {
+        send_battery_types_request();
+        LOG_INFO("CONN_HANDLER", "[INIT] Requested battery type catalog (cache empty)");
+    }
+    if (!TypeCatalogCache::has_inverter_entries()) {
+        send_inverter_types_request();
+        LOG_INFO("CONN_HANDLER", "[INIT] Requested inverter type catalog (cache empty)");
+    }
+    if (!TypeCatalogCache::has_inverter_interface_entries()) {
+        send_inverter_interfaces_request();
+        LOG_INFO("CONN_HANDLER", "[INIT] Requested inverter interface catalog (cache empty)");
+    }
+
+    LOG_INFO("CONN_HANDLER", "[INIT] Initialization requests sent");
+}
+
+// ---------------------------------------------------------------------------
+// tick
+// ---------------------------------------------------------------------------
+
+void ReceiverConnectionHandler::tick() {
+    flush_deferred_peer_registered();
+
+    const auto rx_state  = RxStateMachine::instance().connection_state();
+    const auto rx_stats  = RxStateMachine::instance().stats();
+    const uint32_t now   = millis();
+
+    // ---- LED sync bounded retry ----
+    if (led_sync_.is_pending() &&
+        EspNowConnectionManager::instance().is_connected() &&
+        EspNowMacUtils::has_valid_mac(transmitter_mac_)) {
+        if (led_sync_.tick(now)) {
+            if (send_led_state_request()) {
+                led_sync_.mark_sent(now);
+            }
+        }
+        if (!led_sync_.is_pending() && led_sync_.attempt_count() >= RxLedSyncPolicy::MAX_ATTEMPTS) {
+            LOG_WARN("CONN_HANDLER", "[LED_SYNC] No LED response after %u attempt(s)",
+                     static_cast<unsigned>(led_sync_.attempt_count()));
+        }
+    }
+
+    // ---- REQUEST_DATA retry ----
+    const bool recent_power_data =
+        (rx_stats.last_message_ms > 0) &&
+        ((now - rx_stats.last_message_ms) <= POWER_DATA_FRESHNESS_MS);
+
     const bool data_stream_active = (rx_state == EspNowDeviceState::ACTIVE) && recent_power_data;
     power_data_confirmed_ = data_stream_active;
 
     if (data_stream_active) {
-        return;
+        goto catalog_retry;
     }
 
     if (connected_at_ms_ == 0 || !EspNowMacUtils::has_valid_mac(transmitter_mac_)) {
         return;
     }
 
-    const bool recent_link_activity = EspNowConnectionManager::instance().ms_since_last_heartbeat() < 20000;
-    if (!recent_link_activity) {
+    if (EspNowConnectionManager::instance().ms_since_last_heartbeat() >= 20000) {
         return;
     }
 
-    // Wait RETRY_REQUEST_TIMEOUT_MS after connecting before first retry
-    if ((now - connected_at_ms_) < RETRY_REQUEST_TIMEOUT_MS) return;
-
-    // Throttle retries to RETRY_INTERVAL_MS
-    if ((now - last_retry_ms_) < RETRY_INTERVAL_MS) return;
+    if ((now - connected_at_ms_) < RETRY_REQUEST_TIMEOUT_MS) goto catalog_retry;
+    if ((now - last_retry_ms_)   < RETRY_INTERVAL_MS)        goto catalog_retry;
 
     last_retry_ms_ = now;
-    LOG_WARN("CONN_HANDLER", "[RETRY] No power-profile data yet — re-sending REQUEST_DATA (connected %lu ms ago)",
-             now - connected_at_ms_);
-
-    esp_err_t result = send_request_data_message(transmitter_mac_, subtype_power_profile);
-    if (result != ESP_OK) {
-        LOG_WARN("CONN_HANDLER", "[RETRY] esp_now_send failed: %s", esp_err_to_name(result));
-    }
-
-    // Catalog request retry engine (version + battery + inverter + interfaces)
-    if ((now - connected_at_ms_) < CATALOG_RETRY_INITIAL_DELAY_MS) {
-        return;
-    }
-
-    if ((now - last_catalog_retry_ms_) < CATALOG_RETRY_INTERVAL_MS) {
-        return;
-    }
-
-    last_catalog_retry_ms_ = now;
-
-    struct CatalogRetryItem {
-        const char* label;
-        bool should_request;
-        bool (*send_fn)();
-        uint8_t* retry_count;
-    };
-
-    CatalogRetryItem retry_items[] = {
-        {"catalog versions", !catalog_versions_received_, &send_type_catalog_versions_request, &versions_retry_count_},
-        {"battery catalog",
-         (TypeCatalogCache::battery_refresh_required() || !TypeCatalogCache::has_battery_entries()),
-         &send_battery_types_request,
-         &battery_catalog_retry_count_},
-        {"inverter catalog",
-         (TypeCatalogCache::inverter_refresh_required() || !TypeCatalogCache::has_inverter_entries()),
-         &send_inverter_types_request,
-         &inverter_catalog_retry_count_},
-        {"inverter interfaces", !TypeCatalogCache::has_inverter_interface_entries(), &send_inverter_interfaces_request,
-         &inverter_interface_retry_count_},
-    };
-
-    for (auto& item : retry_items) {
-        if (!item.should_request || *(item.retry_count) >= CATALOG_MAX_RETRIES) {
-            continue;
+    LOG_WARN("CONN_HANDLER",
+             "[RETRY] No power-profile data yet — re-sending REQUEST_DATA (connected %lu ms ago)",
+             static_cast<unsigned long>(now - connected_at_ms_));
+    {
+        esp_err_t r = send_request_data_message(transmitter_mac_, subtype_power_profile);
+        if (r != ESP_OK) {
+            LOG_WARN("CONN_HANDLER", "[RETRY] esp_now_send failed: %s", esp_err_to_name(r));
         }
-
-        if (!item.send_fn()) {
-            continue;
-        }
-
-        ++(*(item.retry_count));
-        LOG_INFO("CONN_HANDLER", "[CATALOG_RETRY] Re-requested %s (%u/%u)",
-                 item.label,
-                 (unsigned)(*(item.retry_count)),
-                 (unsigned)CATALOG_MAX_RETRIES);
     }
-}
 
-void ReceiverConnectionHandler::on_type_catalog_versions_received() {
-    catalog_versions_received_ = true;
-}
-
-void ReceiverConnectionHandler::on_led_state_received() {
-    if (!led_sync_pending_) {
+catalog_retry:
+    // ---- Catalog retry engine ----
+    if (!catalog_retry_.is_due(now, connected_at_ms_)) {
         return;
     }
 
-    led_sync_pending_ = false;
-    LOG_INFO("CONN_HANDLER", "[LED_SYNC] Completed after %u attempt(s)",
-             static_cast<unsigned>(led_sync_attempt_count_));
+    catalog_retry_.tick_item("catalog versions",
+        !catalog_retry_.versions_received(),
+        &send_type_catalog_versions_request,
+        catalog_retry_.versions_retry_count, now);
+
+    catalog_retry_.tick_item("battery catalog",
+        TypeCatalogCache::battery_refresh_required() || !TypeCatalogCache::has_battery_entries(),
+        &send_battery_types_request,
+        catalog_retry_.battery_retry_count, now);
+
+    catalog_retry_.tick_item("inverter catalog",
+        TypeCatalogCache::inverter_refresh_required() || !TypeCatalogCache::has_inverter_entries(),
+        &send_inverter_types_request,
+        catalog_retry_.inverter_retry_count, now);
+
+    catalog_retry_.tick_item("inverter interfaces",
+        !TypeCatalogCache::has_inverter_interface_entries(),
+        &send_inverter_interfaces_request,
+        catalog_retry_.interface_retry_count, now);
+
+    catalog_retry_.mark_ticked(now);
 }
-
-void ReceiverConnectionHandler::on_transmitter_reboot_detected() {
-    // TX reboot usually resets TX state to CONNECTED and stops stream until REQUEST_DATA is
-    // received again. Re-arm retry engine immediately so recovery happens in seconds, not after
-    // stale timeout.
-    power_data_confirmed_ = false;
-    connected_at_ms_ = millis();
-    last_retry_ms_ = 0;  // allow near-immediate retry after RETRY_REQUEST_TIMEOUT_MS
-
-    LOG_WARN("CONN_HANDLER", "[RETRY] TX reboot detected - re-arming REQUEST_DATA retry window");
-}
-
-void ReceiverConnectionHandler::on_connection_lost() {
-    // Reset first_data_received flag to allow re-initialization on reconnect
-    // This ensures that if connection is lost and then re-established,
-    // we'll send initialization requests again on the next connection
-    if (first_data_received_) {
-        LOG_INFO("CONN_HANDLER", "[CONN_LOST] Clearing 'first data received' flag for reconnection");
-        first_data_received_ = false;
-    }
-    
-    // Reset REQUEST_DATA retry state
-    power_data_confirmed_ = false;
-    connected_at_ms_      = 0;
-    last_retry_ms_        = 0;
-    last_catalog_retry_ms_ = 0;
-    catalog_versions_received_ = false;
-    versions_retry_count_ = 0;
-    battery_catalog_retry_count_ = 0;
-    inverter_catalog_retry_count_ = 0;
-    inverter_interface_retry_count_ = 0;
-    led_sync_pending_ = false;
-    led_sync_attempt_count_ = 0;
-    led_sync_started_ms_ = 0;
-    last_led_sync_request_ms_ = 0;
-    peer_registered_event_posted_ = false;
-    peer_registered_deferred_ = false;
-    deferred_peer_registered_ms_ = 0;
-    memset(deferred_peer_mac_, 0, sizeof(deferred_peer_mac_));
-
-    // Log connection loss event
-    LOG_WARN("CONN_HANDLER", "[CONN_LOST] Connection lost - ready for reconnection");
-}
-
-void ReceiverConnectionHandler::on_config_update_sent() {
-    // Notify state machine that a config update was sent
-    // This extends the stale detection grace window to prevent false timeouts
-    // during rare config synchronization events (ethernet/MQTT changes)
-    RxStateMachine::instance().on_config_update_sent();
-    LOG_DEBUG("CONN_HANDLER", "Config update sent - stale detection grace window started");
-}
-

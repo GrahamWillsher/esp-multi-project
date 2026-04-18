@@ -1,0 +1,65 @@
+#include "mqtt_client.h"
+#include "../../lib/webserver_lcd/utils/transmitter_manager.h"
+#include "../../lib/receiver_config/receiver_config_manager.h"
+#include "../../include/common_lcd.h"
+#include "logging_config.h"
+#include <esp32common/config/timing_config.h>
+
+/**
+ * @brief FreeRTOS task for MQTT client
+ * Connects to broker and processes incoming messages
+ * 
+ * Uses receiver's own MQTT configuration from ReceiverNetworkConfig.
+ * The receiver subscribes to spec topics published by the transmitter.
+ */
+void task_mqtt_client(void* parameter) {
+    LOG_INFO("MQTT_TASK", "Started");
+    
+    // Wait for WiFi and ReceiverNetworkConfig to fully initialise before
+    // attempting the first MQTT connection.
+    vTaskDelay(pdMS_TO_TICKS(TimingConfig::MQTT_TASK_STARTUP_DELAY_MS));
+    
+    while (true) {
+        // Check if receiver MQTT is enabled and configured
+        if (ReceiverNetworkConfig::isMqttEnabled()) {
+            const uint8_t* mqtt_server = ReceiverNetworkConfig::getMqttServer();
+            
+            // Validate server IP is configured (not 0.0.0.0)
+            if (mqtt_server[0] != 0 || mqtt_server[1] != 0 || mqtt_server[2] != 0 || mqtt_server[3] != 0) {
+                // Initialize client if not already done
+                static bool initialized = false;
+                if (!initialized) {
+                    LOG_INFO("MQTT_TASK", "Initializing MQTT client");
+                    MqttClient::init(
+                        mqtt_server,
+                        ReceiverNetworkConfig::getMqttPort(),
+                        "espnow_receiver"
+                    );
+                    
+                    const char* mqtt_username = ReceiverNetworkConfig::getMqttUsername();
+                    if (mqtt_username && mqtt_username[0] != '\0') {
+                        MqttClient::setAuth(
+                            mqtt_username,
+                            ReceiverNetworkConfig::getMqttPassword()
+                        );
+                    }
+                    
+                    MqttClient::setEnabled(true);
+                    initialized = true;
+                }
+                
+                // Process MQTT messages
+                MqttClient::loop();
+            } else {
+                // Server not configured, disable client
+                MqttClient::setEnabled(false);
+            }
+        } else {
+            // MQTT not enabled, disable client
+            MqttClient::setEnabled(false);
+        }
+        
+        // Yield — poll at TimingConfig::MQTT_TASK_POLL_MS cadence (10x/sec).
+        vTaskDelay(pdMS_TO_TICKS(TimingConfig::MQTT_TASK_POLL_MS));
+    }
+}

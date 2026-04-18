@@ -1,0 +1,848 @@
+#include "api_control_handlers.h"
+
+#include "api_response_utils.h"
+#include "../utils/transmitter_manager.h"
+#include "../logging.h"
+#include "../../src/memory/memory_sampler.h"
+#include "../../../src/espnow/espnow_send.h"
+
+#include <Arduino.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiClient.h>
+#include <ArduinoJson.h>
+#include <Update.h>
+#include <esp_now.h>
+#include <esp32common/espnow/common.h>
+#include <firmware_version.h>
+#include <firmware_compatibility_policy.h>
+#include <mbedtls/sha256.h>
+
+namespace ESPNow {
+    extern uint8_t current_led_color;
+    extern uint8_t current_led_effect;
+    extern volatile bool receiver_ota_led_override_active;
+}
+
+namespace {
+constexpr size_t OTA_IMAGE_SHA256_HEX_LEN = 64;
+constexpr size_t OTA_RESPONSE_BODY_MAX_LEN = 512;
+constexpr uint8_t OTA_CHALLENGE_FETCH_ATTEMPTS = 6;
+constexpr uint32_t OTA_CHALLENGE_FETCH_RETRY_DELAY_MS = 300;
+constexpr uint32_t OTA_CHALLENGE_HTTP_TIMEOUT_MS = 9000;
+constexpr uint8_t OTA_PREARM_STATUS_FETCH_ATTEMPTS = 2;
+constexpr uint32_t OTA_PREARM_STATUS_FETCH_RETRY_DELAY_MS = 150;
+// Throughput tuning (conservative): use shorter poll sleeps and larger stream chunks
+// to reduce upload wall time without removing backpressure handling.
+constexpr uint32_t OTA_HTTP_READ_POLL_DELAY_MS = 2;
+constexpr uint32_t OTA_FORWARD_RETRY_POLL_DELAY_MS = 1;
+constexpr uint32_t OTA_RESPONSE_WAIT_POLL_DELAY_MS = 5;
+constexpr uint32_t OTA_STREAM_STALL_TIMEOUT_MS = 60000;
+constexpr uint32_t OTA_TX_SOCKET_TIMEOUT_MS = 60000;
+constexpr uint32_t OTA_RESPONSE_WAIT_TIMEOUT_MS = 70000;
+constexpr uint32_t OTA_EARLY_RESPONSE_TIMEOUT_MS = 1200;
+constexpr uint32_t OTA_FINAL_RESPONSE_PARSE_TIMEOUT_MS = 3000;
+constexpr uint32_t OTA_START_CONTROL_SETTLE_DELAY_MS = 200;
+constexpr uint32_t OTA_RX_REBOOT_DELAY_MS = 250;
+constexpr size_t OTA_UPLOAD_CHUNK_BYTES = 2048;
+
+// RAII guard: increments the burst-mode reference count on construction and
+// releases it on destruction. Placed at the top of OTA upload handlers so
+// every return path (success, validation failure, forward error) automatically
+// deactivates burst mode when the upload session ends.
+struct BurstModeGuard {
+    BurstModeGuard()  { MemorySampler::burst_clients_add(); }
+    ~BurstModeGuard() { MemorySampler::burst_clients_release(); }
+    // Non-copyable
+    BurstModeGuard(const BurstModeGuard&) = delete;
+    BurstModeGuard& operator=(const BurstModeGuard&) = delete;
+};
+
+struct ReceiverOtaLedOverrideGuard {
+    ReceiverOtaLedOverrideGuard() {
+        constexpr uint8_t kLedBlue = 3;
+        constexpr uint8_t kEffectEnergyFlow = 1;
+        ESPNow::receiver_ota_led_override_active = true;
+        ESPNow::current_led_color = kLedBlue;
+        ESPNow::current_led_effect = kEffectEnergyFlow;
+        LOG_INFO("OTA_RX", "Receiver self-OTA LED override enabled: BLUE + ENERGY FLOW");
+    }
+
+    ~ReceiverOtaLedOverrideGuard() {
+        ESPNow::receiver_ota_led_override_active = false;
+        const bool requested = send_led_state_request();
+        LOG_INFO("OTA_RX", "Receiver self-OTA LED override disabled; requested transmitter LED sync=%s",
+                 requested ? "yes" : "no");
+    }
+
+    ReceiverOtaLedOverrideGuard(const ReceiverOtaLedOverrideGuard&) = delete;
+    ReceiverOtaLedOverrideGuard& operator=(const ReceiverOtaLedOverrideGuard&) = delete;
+};
+
+struct OtaSessionChallenge {
+    char session_id[40];
+    char nonce[40];
+    char expires_str[24];
+    char signature[80];
+};
+
+enum class OtaForwardError {
+    None,
+    UploadReceiveFailed,
+    TransmitterRejectedEarly,
+    ChunkForwardStalled,
+};
+
+struct OtaForwardResult {
+    OtaForwardError error = OtaForwardError::None;
+    size_t total_forwarded = 0;
+    int transmitter_status = -1;
+    String transmitter_body;
+};
+
+struct OtaResponseResult {
+    enum class State { Ok, TimedOut, ParseFailed };
+    State state = State::Ok;
+    int status_code = -1;
+    String body;
+};
+
+bool is_hex_sha256(const char* value) {
+    if (!value) {
+        return false;
+    }
+
+    size_t len = 0;
+    while (value[len] != '\0') {
+        const char ch = value[len];
+        const bool is_hex = (ch >= '0' && ch <= '9') ||
+                            (ch >= 'a' && ch <= 'f') ||
+                            (ch >= 'A' && ch <= 'F');
+        if (!is_hex) {
+            return false;
+        }
+        ++len;
+    }
+
+    return len == OTA_IMAGE_SHA256_HEX_LEN;
+}
+
+bool read_http_response_from_transmitter(WiFiClient& client,
+                                         int* out_status,
+                                         String* out_body,
+                                         uint32_t body_timeout_ms,
+                                         size_t body_cap,
+                                         bool require_available) {
+    if (!out_status || !out_body) {
+        return false;
+    }
+
+    if (require_available && !client.available()) {
+        return false;
+    }
+
+    String status_line = client.readStringUntil('\n');
+    status_line.trim();
+
+    int status_code = -1;
+    int sp1 = status_line.indexOf(' ');
+    if (sp1 > 0 && status_line.length() >= sp1 + 4) {
+        status_code = status_line.substring(sp1 + 1, sp1 + 4).toInt();
+    }
+
+    while (client.available()) {
+        String h = client.readStringUntil('\n');
+        if (h == "\r" || h.length() == 0) {
+            break;
+        }
+    }
+
+    String body = "";
+    const unsigned long body_start = millis();
+    while ((client.connected() || client.available()) && (millis() - body_start < body_timeout_ms)) {
+        while (client.available()) {
+            body += static_cast<char>(client.read());
+            if (body.length() > body_cap) {
+                break;
+            }
+        }
+        if (body.length() > body_cap) {
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(OTA_HTTP_READ_POLL_DELAY_MS));
+    }
+
+    *out_status = status_code;
+    *out_body = body;
+    return true;
+}
+
+bool store_ota_challenge(OtaSessionChallenge* out_challenge,
+                         const char* session_id,
+                         const char* nonce,
+                         const char* signature,
+                         uint32_t expires_at_ms) {
+    if (!out_challenge) {
+        return false;
+    }
+
+    strlcpy(out_challenge->session_id, session_id ? session_id : "", sizeof(out_challenge->session_id));
+    strlcpy(out_challenge->nonce, nonce ? nonce : "", sizeof(out_challenge->nonce));
+    strlcpy(out_challenge->signature, signature ? signature : "", sizeof(out_challenge->signature));
+    snprintf(out_challenge->expires_str, sizeof(out_challenge->expires_str), "%lu", (unsigned long)expires_at_ms);
+
+    return out_challenge->session_id[0] != '\0' &&
+           out_challenge->nonce[0] != '\0' &&
+           out_challenge->signature[0] != '\0' &&
+           expires_at_ms > 0;
+}
+
+bool try_get_prearmed_ota_challenge(OtaSessionChallenge* out_challenge,
+                                    String* out_error_detail) {
+    const String status_url = TransmitterManager::getURL() + "/api/ota_status";
+    bool challenge_ready = false;
+    int status_code = -1;
+
+    for (uint8_t status_attempt = 1; status_attempt <= OTA_PREARM_STATUS_FETCH_ATTEMPTS; ++status_attempt) {
+        HTTPClient status_client;
+        status_client.begin(status_url);
+        status_client.setTimeout(OTA_CHALLENGE_HTTP_TIMEOUT_MS);
+
+        status_code = status_client.GET();
+        if (status_code == 200) {
+            String status_body = status_client.getString();
+            StaticJsonDocument<1024> status_doc;
+            const bool status_ok = !deserializeJson(status_doc, status_body) && status_doc["success"].as<bool>();
+            if (status_ok &&
+                (status_doc["session_active"] | false) &&
+                (status_doc["signature_available"] | false)) {
+                const uint32_t expires_at_ms = status_doc["expires_at_ms"] | 0U;
+                challenge_ready = store_ota_challenge(out_challenge,
+                                                      status_doc["session_id"] | "",
+                                                      status_doc["nonce"] | "",
+                                                      status_doc["signature"] | "",
+                                                      expires_at_ms);
+                if (challenge_ready) {
+                    LOG_INFO("OTA", "Reusing pre-armed OTA challenge from /api/ota_status, id=%.8s...", out_challenge->session_id);
+                }
+            }
+
+            status_client.end();
+            break;
+        }
+
+        status_client.end();
+
+        if (status_code < 0 && status_attempt < OTA_PREARM_STATUS_FETCH_ATTEMPTS) {
+            vTaskDelay(pdMS_TO_TICKS(OTA_PREARM_STATUS_FETCH_RETRY_DELAY_MS));
+        }
+    }
+
+    if (status_code < 0) {
+        if (out_error_detail) {
+            *out_error_detail = "Status fetch transport error (HTTP " + String(status_code) + ")";
+        }
+        LOG_WARN("OTA", "Failed to fetch pre-armed challenge from %s (HTTP %d) after %u attempt(s)",
+                 status_url.c_str(),
+                 status_code,
+                 OTA_PREARM_STATUS_FETCH_ATTEMPTS);
+    }
+
+    return challenge_ready;
+}
+
+bool try_arm_ota_challenge(OtaSessionChallenge* out_challenge, String* out_error_detail) {
+    const String arm_url = TransmitterManager::getURL() + "/api/ota_arm";
+    HTTPClient arm_client;
+    arm_client.begin(arm_url);
+    arm_client.setTimeout(OTA_CHALLENGE_HTTP_TIMEOUT_MS);
+    arm_client.addHeader("Content-Type", "application/json");
+
+    const int arm_code = arm_client.POST("{}");
+    String arm_body = arm_client.getString();
+    arm_client.end();
+
+    if (arm_code != 200) {
+        String detail = "HTTP " + String(arm_code);
+        StaticJsonDocument<256> err_doc;
+        if (!deserializeJson(err_doc, arm_body)) {
+            const char* msg = err_doc["message"] | "";
+            const char* details = err_doc["details"] | "";
+            if (msg[0] != '\0') {
+                detail = String(msg);
+                if (details[0] != '\0') {
+                    detail += ": ";
+                    detail += details;
+                }
+            }
+        }
+
+        if (arm_code < 0) {
+            detail = "Transport error contacting /api/ota_arm (HTTP " + String(arm_code) + ")";
+        }
+
+        if (out_error_detail) {
+            *out_error_detail = detail;
+        }
+        LOG_ERROR("OTA", "Failed to arm OTA session on transmitter via %s (%s)", arm_url.c_str(), detail.c_str());
+        return false;
+    }
+
+    StaticJsonDocument<400> arm_doc;
+    if (deserializeJson(arm_doc, arm_body) || !arm_doc["success"].as<bool>()) {
+        if (out_error_detail) {
+            *out_error_detail = "Invalid OTA arm response from transmitter";
+        }
+        LOG_ERROR("OTA", "Invalid OTA arm response from transmitter");
+        return false;
+    }
+
+    const uint32_t expires_at_ms = arm_doc["expires_at_ms"] | 0U;
+    const bool challenge_ready = store_ota_challenge(out_challenge,
+                                                     arm_doc["session_id"] | "",
+                                                     arm_doc["nonce"] | "",
+                                                     arm_doc["signature"] | "",
+                                                     expires_at_ms);
+    if (challenge_ready) {
+        LOG_INFO("OTA", "Session armed, id=%.8s... expires_at=%s", out_challenge->session_id, out_challenge->expires_str);
+        return true;
+    }
+
+    if (out_error_detail) {
+        *out_error_detail = "Invalid OTA arm challenge fields";
+    }
+    LOG_ERROR("OTA", "OTA arm response missing required challenge fields");
+    return false;
+}
+
+bool acquire_ota_session_challenge(OtaSessionChallenge* out_challenge, String* out_error_detail) {
+    String last_error;
+
+    for (uint8_t attempt = 1; attempt <= OTA_CHALLENGE_FETCH_ATTEMPTS; ++attempt) {
+        String status_error;
+        if (try_get_prearmed_ota_challenge(out_challenge, &status_error)) {
+            return true;
+        }
+
+        String arm_error;
+        if (try_arm_ota_challenge(out_challenge, &arm_error)) {
+            return true;
+        }
+
+        if (arm_error.length() > 0) {
+            last_error = arm_error;
+        } else if (status_error.length() > 0) {
+            last_error = status_error;
+        }
+
+        if (attempt < OTA_CHALLENGE_FETCH_ATTEMPTS) {
+            const String reason_suffix = last_error.length() > 0
+                                             ? (" (" + last_error + ")")
+                                             : "";
+            LOG_WARN("OTA", "Challenge acquisition attempt %u/%u failed%s; retrying in %lu ms",
+                     attempt,
+                     OTA_CHALLENGE_FETCH_ATTEMPTS,
+                     reason_suffix.c_str(),
+                     static_cast<unsigned long>(OTA_CHALLENGE_FETCH_RETRY_DELAY_MS));
+            vTaskDelay(pdMS_TO_TICKS(OTA_CHALLENGE_FETCH_RETRY_DELAY_MS));
+        }
+    }
+
+    if (out_error_detail) {
+        *out_error_detail = last_error.length() > 0
+                                ? last_error
+                                : "Unable to obtain OTA challenge from transmitter";
+    }
+    return false;
+}
+
+OtaForwardResult forward_ota_stream_to_transmitter(httpd_req_t* req,
+                                                   WiFiClient& tx_client,
+                                                   size_t firmware_size) {
+    OtaForwardResult result;
+    if (!req) {
+        result.error = OtaForwardError::UploadReceiveFailed;
+        return result;
+    }
+
+    char buf[OTA_UPLOAD_CHUNK_BYTES];
+    size_t remaining = firmware_size;
+
+    while (remaining > 0) {
+        int read_len = httpd_req_recv(req,
+                                      buf,
+                                      (remaining < sizeof(buf)) ? static_cast<int>(remaining) : static_cast<int>(sizeof(buf)));
+        if (read_len <= 0) {
+            if (read_len == HTTPD_SOCK_ERR_TIMEOUT) {
+                continue;
+            }
+
+            result.error = OtaForwardError::UploadReceiveFailed;
+            return result;
+        }
+
+        size_t offset = 0;
+        const uint32_t write_start_ms = millis();
+        while (offset < static_cast<size_t>(read_len)) {
+            const size_t to_write = static_cast<size_t>(read_len) - offset;
+            const size_t sent = tx_client.write(reinterpret_cast<const uint8_t*>(buf) + offset, to_write);
+            if (sent > 0) {
+                offset += sent;
+                continue;
+            }
+
+            int early_status = -1;
+            String early_body;
+            if (read_http_response_from_transmitter(tx_client,
+                                                    &early_status,
+                                                    &early_body,
+                                                    OTA_EARLY_RESPONSE_TIMEOUT_MS,
+                                                    OTA_RESPONSE_BODY_MAX_LEN,
+                                                    true)) {
+                result.error = OtaForwardError::TransmitterRejectedEarly;
+                result.transmitter_status = early_status;
+                result.transmitter_body = early_body;
+                result.total_forwarded += offset;
+                LOG_ERROR("OTA", "Transmitter replied early with HTTP %d while forwarding at byte %u",
+                          early_status,
+                          static_cast<unsigned>(result.total_forwarded));
+                return result;
+            }
+
+            // No progress: allow generous retry window for transient socket backpressure
+            // on WiFi/LWIP path during long OTA streams.
+            if (!tx_client.connected() || (millis() - write_start_ms) > OTA_STREAM_STALL_TIMEOUT_MS) {
+                LOG_ERROR("OTA", "Stream stall while forwarding at byte=%u chunk_offset=%u connected=%d",
+                          static_cast<unsigned>(result.total_forwarded),
+                          static_cast<unsigned>(offset),
+                          tx_client.connected() ? 1 : 0);
+                result.error = OtaForwardError::ChunkForwardStalled;
+                result.total_forwarded += offset;
+                return result;
+            }
+            vTaskDelay(pdMS_TO_TICKS(OTA_FORWARD_RETRY_POLL_DELAY_MS));
+        }
+
+        remaining -= static_cast<size_t>(read_len);
+        result.total_forwarded += static_cast<size_t>(read_len);
+    }
+
+    return result;
+}
+
+bool open_ota_transmitter_connection(WiFiClient& tx_client,
+                                      const OtaSessionChallenge& challenge,
+                                      const char* image_sha256_hex,
+                                      size_t firmware_size) {
+    const uint8_t* ip = TransmitterManager::getIP();
+    IPAddress tx_ip(ip[0], ip[1], ip[2], ip[3]);
+    tx_client.setTimeout(OTA_TX_SOCKET_TIMEOUT_MS);
+
+    if (!tx_client.connect(tx_ip, 80)) {
+        return false;
+    }
+    tx_client.setNoDelay(true);
+
+    tx_client.print("POST /ota_upload HTTP/1.1\r\n");
+    tx_client.print("Host: ");
+    tx_client.print(tx_ip.toString());
+    tx_client.print("\r\n");
+    tx_client.print("Content-Type: application/octet-stream\r\n");
+    tx_client.print("Content-Length: ");
+    tx_client.print((unsigned)firmware_size);
+    tx_client.print("\r\n");
+    tx_client.print("X-OTA-Session: ");
+    tx_client.print(challenge.session_id);
+    tx_client.print("\r\n");
+    tx_client.print("X-OTA-Nonce: ");
+    tx_client.print(challenge.nonce);
+    tx_client.print("\r\n");
+    tx_client.print("X-OTA-Expires: ");
+    tx_client.print(challenge.expires_str);
+    tx_client.print("\r\n");
+    tx_client.print("X-OTA-Signature: ");
+    tx_client.print(challenge.signature);
+    tx_client.print("\r\n");
+    tx_client.print("X-OTA-Image-SHA256: ");
+    tx_client.print(image_sha256_hex);
+    tx_client.print("\r\n");
+    tx_client.print("Connection: close\r\n\r\n");
+
+    return true;
+}
+
+OtaResponseResult await_and_parse_ota_response(WiFiClient& tx_client) {
+    OtaResponseResult result;
+
+    unsigned long wait_start = millis();
+    while (!tx_client.available() && tx_client.connected() && (millis() - wait_start < OTA_RESPONSE_WAIT_TIMEOUT_MS)) {
+        vTaskDelay(pdMS_TO_TICKS(OTA_RESPONSE_WAIT_POLL_DELAY_MS));
+    }
+
+    if (!tx_client.available()) {
+        result.state = OtaResponseResult::State::TimedOut;
+        return result;
+    }
+
+    if (!read_http_response_from_transmitter(tx_client,
+                                             &result.status_code,
+                                             &result.body,
+                                             OTA_FINAL_RESPONSE_PARSE_TIMEOUT_MS,
+                                             OTA_RESPONSE_BODY_MAX_LEN,
+                                             false)) {
+        result.state = OtaResponseResult::State::ParseFailed;
+        return result;
+    }
+
+    return result;
+}
+}
+
+esp_err_t api_reboot_handler(httpd_req_t *req) {
+    const uint8_t* target_mac = TransmitterManager::getMAC();
+    const char* mac_source = "TransmitterManager";
+
+    if (target_mac != nullptr) {
+        reboot_t reboot_msg = { msg_reboot };
+        esp_err_t result = esp_now_send(target_mac, (const uint8_t*)&reboot_msg, sizeof(reboot_msg));
+        if (result == ESP_OK) {
+            LOG_INFO("REBOOT", "Sent command to transmitter via %s", mac_source);
+            return ApiResponseUtils::send_jsonf(req,
+                                                "{\"success\":true,\"message\":\"Reboot command sent\",\"source\":\"%s\"}",
+                                                mac_source);
+        } else {
+            LOG_ERROR("REBOOT", "Failed to send command: %s", esp_err_to_name(result));
+            return ApiResponseUtils::send_error_message(req, esp_err_to_name(result));
+        }
+    } else {
+        LOG_WARN("REBOOT", "Transmitter MAC unknown, cannot send command");
+        return ApiResponseUtils::send_error_message(req, "Transmitter MAC unknown");
+    }
+}
+
+esp_err_t api_transmitter_ota_status_handler(httpd_req_t *req) {
+    if (!TransmitterManager::isIPKnown()) {
+        return ApiResponseUtils::send_error_message(req, "Transmitter IP unknown");
+    }
+
+    const String status_url = TransmitterManager::getURL() + "/api/ota_status";
+    HTTPClient http;
+    http.begin(status_url);
+    http.setTimeout(3000);
+
+    int code = http.GET();
+    if (code == 200) {
+        String body = http.getString();
+        http.end();
+
+        StaticJsonDocument<1024> doc;
+        DeserializationError err = deserializeJson(doc, body);
+        if (err) {
+            LOG_ERROR("OTA", "Failed to parse transmitter OTA status JSON: %s", err.c_str());
+            return ApiResponseUtils::send_jsonf(req,
+                                                "{\"success\":false,\"message\":\"Invalid OTA status JSON\",\"detail\":\"%s\"}",
+                                                err.c_str());
+        }
+
+        // Build response with quote-safe string fields
+        char safe_last_error[128];
+        char safe_rollback_reason[128];
+        char safe_commit_detail[128];
+        ApiResponseUtils::escape_double_quotes(doc["last_error"] | "", safe_last_error, sizeof(safe_last_error));
+        ApiResponseUtils::escape_double_quotes(doc["rollback_reason"] | "", safe_rollback_reason, sizeof(safe_rollback_reason));
+        ApiResponseUtils::escape_double_quotes(doc["commit_detail"] | "", safe_commit_detail, sizeof(safe_commit_detail));
+
+        StaticJsonDocument<512> out_doc;
+        out_doc["success"] = true;
+        out_doc["in_progress"] = doc["in_progress"] | false;
+        out_doc["ready_for_reboot"] = doc["ready_for_reboot"] | false;
+        out_doc["last_success"] = doc["last_success"] | false;
+        out_doc["ota_txn_id"] = doc["ota_txn_id"] | 0U;
+        out_doc["commit_state"] = doc["commit_state"] | "unknown";
+        out_doc["commit_detail"] = safe_commit_detail;
+        out_doc["state_since_ms"] = doc["state_since_ms"] | 0U;
+        out_doc["last_update_ms"] = doc["last_update_ms"] | 0U;
+        out_doc["last_error"] = safe_last_error;
+        out_doc["rollback_pending"] = doc["rollback_pending"] | false;
+        out_doc["boot_guard_passed"] = doc["boot_guard_passed"] | false;
+        out_doc["boot_guard_state"] = doc["boot_guard_state"] | "unknown";
+        out_doc["rollback_reason"] = safe_rollback_reason;
+
+        return ApiResponseUtils::send_json_doc(req, out_doc);
+    }
+
+    http.end();
+    StaticJsonDocument<256> error_doc;
+    error_doc["success"] = false;
+    error_doc["message"] = "Status HTTP error: " + String(code);
+    error_doc["in_progress"] = false;
+    error_doc["ready_for_reboot"] = false;
+    error_doc["last_success"] = false;
+    return ApiResponseUtils::send_json_doc(req, error_doc);
+}
+
+esp_err_t api_ota_upload_receiver_handler(httpd_req_t *req) {
+    const BurstModeGuard burst_guard;
+    if (req->content_len <= 0) {
+        return ApiResponseUtils::send_error_message(req, "Firmware payload required");
+    }
+
+    char image_sha256_hex[OTA_IMAGE_SHA256_HEX_LEN + 1] = {0};
+    if (httpd_req_get_hdr_value_str(req,
+                                    "X-OTA-Image-SHA256",
+                                    image_sha256_hex,
+                                    sizeof(image_sha256_hex)) != ESP_OK ||
+        !is_hex_sha256(image_sha256_hex)) {
+        return ApiResponseUtils::send_error_message(req, "Missing or invalid X-OTA-Image-SHA256 header");
+    }
+
+    char content_type[96] = {0};
+    const bool has_content_type = (httpd_req_get_hdr_value_str(req, "Content-Type", content_type, sizeof(content_type)) == ESP_OK);
+    const bool is_raw_upload = has_content_type && (strstr(content_type, "application/octet-stream") != nullptr);
+    if (!is_raw_upload) {
+        return ApiResponseUtils::send_error_message(req, "Unsupported upload type. Use raw application/octet-stream");
+    }
+
+    LOG_INFO("OTA_RX", "Starting receiver self-OTA upload, size=%d", req->content_len);
+
+    const ReceiverOtaLedOverrideGuard led_override_guard;
+
+    if (!Update.begin(static_cast<size_t>(req->content_len))) {
+        LOG_ERROR("OTA_RX", "Update.begin failed: %s", Update.errorString());
+        return ApiResponseUtils::send_error_message(req, Update.errorString());
+    }
+
+    char buf[OTA_UPLOAD_CHUNK_BYTES];
+    size_t remaining = static_cast<size_t>(req->content_len);
+    size_t written_total = 0;
+    mbedtls_sha256_context sha_ctx;
+    mbedtls_sha256_init(&sha_ctx);
+    FirmwareCompatibilityPolicy::MetadataScan metadata_scan;
+    if (mbedtls_sha256_starts_ret(&sha_ctx, 0) != 0) {
+        Update.abort();
+        mbedtls_sha256_free(&sha_ctx);
+        return ApiResponseUtils::send_error_message(req, "Failed to initialize image hash");
+    }
+
+    while (remaining > 0) {
+        const int recv_len = httpd_req_recv(req,
+                                            buf,
+                                            (remaining < sizeof(buf)) ? static_cast<int>(remaining) : static_cast<int>(sizeof(buf)));
+
+        if (recv_len <= 0) {
+            if (recv_len == HTTPD_SOCK_ERR_TIMEOUT) {
+                continue;
+            }
+            Update.abort();
+            mbedtls_sha256_free(&sha_ctx);
+            LOG_ERROR("OTA_RX", "Upload receive error while streaming receiver OTA");
+            return ApiResponseUtils::send_error_message(req, "Upload receive failed");
+        }
+
+        const size_t written = Update.write(reinterpret_cast<uint8_t*>(buf), static_cast<size_t>(recv_len));
+        if (written != static_cast<size_t>(recv_len)) {
+            Update.abort();
+            mbedtls_sha256_free(&sha_ctx);
+            LOG_ERROR("OTA_RX", "Update.write failed: %s", Update.errorString());
+            return ApiResponseUtils::send_error_message(req, Update.errorString());
+        }
+
+        if (mbedtls_sha256_update_ret(&sha_ctx,
+                                      reinterpret_cast<const unsigned char*>(buf),
+                                      static_cast<size_t>(recv_len)) != 0) {
+            Update.abort();
+            mbedtls_sha256_free(&sha_ctx);
+            return ApiResponseUtils::send_error_message(req, "Image hash update failed");
+        }
+
+        metadata_scan.consume(reinterpret_cast<const uint8_t*>(buf), static_cast<size_t>(recv_len));
+
+        remaining -= static_cast<size_t>(recv_len);
+        written_total += static_cast<size_t>(recv_len);
+    }
+
+    unsigned char computed_sha[32] = {0};
+    if (mbedtls_sha256_finish_ret(&sha_ctx, computed_sha) != 0) {
+        Update.abort();
+        mbedtls_sha256_free(&sha_ctx);
+        return ApiResponseUtils::send_error_message(req, "Image hash finalize failed");
+    }
+    mbedtls_sha256_free(&sha_ctx);
+
+    char computed_sha_hex[OTA_IMAGE_SHA256_HEX_LEN + 1] = {0};
+    for (size_t index = 0; index < sizeof(computed_sha); ++index) {
+        (void)snprintf(&computed_sha_hex[index * 2], 3, "%02x", computed_sha[index]);
+    }
+
+    if (strcasecmp(computed_sha_hex, image_sha256_hex) != 0) {
+        Update.abort();
+        LOG_ERROR("OTA_RX", "Image SHA-256 mismatch: expected=%s computed=%s", image_sha256_hex, computed_sha_hex);
+        return ApiResponseUtils::send_error_message(req, "Image hash verification failed");
+    }
+
+    const auto compatibility = FirmwareCompatibilityPolicy::validate_scan(
+        metadata_scan,
+        "RECEIVER",
+        static_cast<uint8_t>(FW_VERSION_MAJOR));
+
+    if (!compatibility.allowed) {
+        const char* user_message = "Firmware compatibility policy rejected image";
+
+        switch (compatibility.code) {
+            case FirmwareCompatibilityPolicy::ValidationCode::InvalidMetadataStructure:
+                user_message = "Invalid firmware metadata structure";
+                break;
+            case FirmwareCompatibilityPolicy::ValidationCode::DeviceTypeMismatch:
+                user_message = "Firmware target mismatch (expected RECEIVER)";
+                break;
+            case FirmwareCompatibilityPolicy::ValidationCode::MajorVersionIncompatible:
+                user_message = "Firmware major version incompatible with running receiver";
+                break;
+            case FirmwareCompatibilityPolicy::ValidationCode::MinimumCompatibleMajorIncompatible:
+                user_message = "Firmware requires newer receiver major compatibility";
+                break;
+            default:
+                break;
+        }
+
+        Update.abort();
+        LOG_ERROR("OTA_RX",
+                  "Compatibility reject code=%s device=%s image_major=%u min_compat_major=%u running_major=%u",
+                  FirmwareCompatibilityPolicy::validation_code_to_string(compatibility.code),
+                  compatibility.normalized_device_type,
+                  static_cast<unsigned>(compatibility.image_major),
+                  static_cast<unsigned>(compatibility.image_min_compatible_major),
+                  static_cast<unsigned>(FW_VERSION_MAJOR));
+        return ApiResponseUtils::send_error_message(req, user_message);
+    }
+
+    if (compatibility.code == FirmwareCompatibilityPolicy::ValidationCode::LegacyAllowed) {
+        LOG_WARN("OTA_RX", "%s", compatibility.message);
+    }
+
+    if (!Update.end(true)) {
+        LOG_ERROR("OTA_RX", "Update.end failed: %s", Update.errorString());
+        return ApiResponseUtils::send_error_message(req, Update.errorString());
+    }
+
+    LOG_INFO("OTA_RX", "Receiver OTA successful, written=%u bytes", static_cast<unsigned>(written_total));
+    const esp_err_t response_result = ApiResponseUtils::send_success_message(req, "Receiver firmware uploaded. Rebooting...");
+
+    // Give HTTP stack a short window to flush response bytes, then reboot into new firmware.
+    vTaskDelay(pdMS_TO_TICKS(OTA_RX_REBOOT_DELAY_MS));
+    ESP.restart();
+
+    // Not expected to execute (ESP.restart should not return), but keep a deterministic fallback.
+    return response_result;
+}
+
+esp_err_t api_ota_upload_handler(httpd_req_t *req) {
+    const BurstModeGuard burst_guard;
+    size_t remaining = req->content_len;
+    LOG_INFO("OTA", "Receiving firmware upload, total size: %d bytes", remaining);
+
+    char image_sha256_hex[OTA_IMAGE_SHA256_HEX_LEN + 1] = {0};
+    if (httpd_req_get_hdr_value_str(req,
+                                    "X-OTA-Image-SHA256",
+                                    image_sha256_hex,
+                                    sizeof(image_sha256_hex)) != ESP_OK ||
+        !is_hex_sha256(image_sha256_hex)) {
+        return ApiResponseUtils::send_error_message(req, "Missing or invalid X-OTA-Image-SHA256 header");
+    }
+
+    char content_type[96] = {0};
+    bool has_content_type = (httpd_req_get_hdr_value_str(req, "Content-Type", content_type, sizeof(content_type)) == ESP_OK);
+    bool is_raw_upload = has_content_type && (strstr(content_type, "application/octet-stream") != nullptr);
+    LOG_INFO("OTA", "Content-Type: %s (%s mode)", has_content_type ? content_type : "<none>", is_raw_upload ? "raw/stream" : "unsupported");
+
+    if (!is_raw_upload) {
+        return ApiResponseUtils::send_error_message(req, "Unsupported upload type. Use raw application/octet-stream");
+    }
+
+    if (!TransmitterManager::isIPKnown()) {
+        return ApiResponseUtils::send_error_message(req, "Transmitter IP unknown");
+    }
+
+    const size_t firmware_size = remaining;
+
+    if (TransmitterManager::isMACKnown()) {
+        ota_start_t ota_msg = { msg_ota_start, (uint32_t)firmware_size };
+        esp_now_send(TransmitterManager::getMAC(), (const uint8_t*)&ota_msg, sizeof(ota_msg));
+        vTaskDelay(pdMS_TO_TICKS(OTA_START_CONTROL_SETTLE_DELAY_MS));
+    }
+
+    // Fetch OTA session challenge from transmitter so auth headers can be sent with the upload.
+    // Preferred: use pre-armed challenge from /api/ota_status (after OTA_START control msg).
+    // Fallback: explicitly call /api/ota_arm.
+    OtaSessionChallenge challenge = {};
+    String challenge_error;
+    if (!acquire_ota_session_challenge(&challenge, &challenge_error)) {
+        LOG_ERROR("OTA", "Unable to obtain OTA challenge from transmitter status/arm endpoints");
+        if (challenge_error.indexOf("OTA secret not provisioned") >= 0) {
+            return ApiResponseUtils::send_error_message(req, "Transmitter OTA secret not provisioned (set security/ota_psk in NVS)");
+        }
+        const char* error_message = challenge_error.length() > 0
+                                        ? challenge_error.c_str()
+                                        : "Unable to obtain OTA challenge from transmitter";
+        return ApiResponseUtils::send_error_message(req, error_message);
+    }
+
+    WiFiClient tx_client;
+    if (!open_ota_transmitter_connection(tx_client, challenge, image_sha256_hex, firmware_size)) {
+        return ApiResponseUtils::send_error_message(req, "Failed to connect to transmitter OTA server");
+    }
+
+    const OtaForwardResult forward_result = forward_ota_stream_to_transmitter(req, tx_client, firmware_size);
+    if (forward_result.error == OtaForwardError::UploadReceiveFailed) {
+        tx_client.stop();
+        return ApiResponseUtils::send_error_message(req, "Upload receive failed during streaming");
+    }
+    if (forward_result.error == OtaForwardError::ChunkForwardStalled) {
+        tx_client.stop();
+        return ApiResponseUtils::send_error_message(req, "Failed to forward OTA chunk to transmitter");
+    }
+    if (forward_result.error == OtaForwardError::TransmitterRejectedEarly) {
+        tx_client.stop();
+        String early_body = forward_result.transmitter_body;
+        early_body.replace("\"", "'");
+        StaticJsonDocument<768> out_doc;
+        char message[96];
+        snprintf(message, sizeof(message), "Transmitter OTA rejected upload: HTTP %d", forward_result.transmitter_status);
+        out_doc["success"] = false;
+        out_doc["message"] = message;
+        out_doc["detail"] = early_body;
+        return ApiResponseUtils::send_json_doc(req, out_doc);
+    }
+
+    const OtaResponseResult response_result = await_and_parse_ota_response(tx_client);
+    tx_client.stop();
+
+    if (response_result.state == OtaResponseResult::State::TimedOut) {
+        return ApiResponseUtils::send_error_message(req, "No response from transmitter after streaming OTA");
+    }
+    if (response_result.state == OtaResponseResult::State::ParseFailed) {
+        return ApiResponseUtils::send_error_message(req, "Failed to parse transmitter OTA response");
+    }
+
+    LOG_INFO("OTA", "Streamed %u bytes to transmitter, HTTP status=%d",
+             static_cast<unsigned>(forward_result.total_forwarded),
+             response_result.status_code);
+
+    if (response_result.status_code == 200) {
+        StaticJsonDocument<128> success_doc;
+        success_doc["success"] = true;
+        success_doc["message"] = "Firmware streamed to transmitter";
+        success_doc["status"] = "forwarded";
+        return ApiResponseUtils::send_json_doc(req, success_doc);
+    } else {
+        String body = response_result.body;
+        body.replace("\"", "'");
+        StaticJsonDocument<768> out_doc;
+        char message[80];
+        snprintf(message, sizeof(message), "Transmitter OTA HTTP error: %d", response_result.status_code);
+        out_doc["success"] = false;
+        out_doc["message"] = message;
+        out_doc["detail"] = body;
+        return ApiResponseUtils::send_json_doc(req, out_doc);
+    }
+}

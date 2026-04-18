@@ -29,7 +29,9 @@ constexpr size_t OTA_IMAGE_SHA256_HEX_LEN = 64;
 constexpr size_t OTA_RESPONSE_BODY_MAX_LEN = 512;
 constexpr uint8_t OTA_CHALLENGE_FETCH_ATTEMPTS = 6;
 constexpr uint32_t OTA_CHALLENGE_FETCH_RETRY_DELAY_MS = 300;
-constexpr uint32_t OTA_CHALLENGE_HTTP_TIMEOUT_MS = 5000;
+constexpr uint32_t OTA_CHALLENGE_HTTP_TIMEOUT_MS = 9000;
+constexpr uint8_t OTA_PREARM_STATUS_FETCH_ATTEMPTS = 2;
+constexpr uint32_t OTA_PREARM_STATUS_FETCH_RETRY_DELAY_MS = 150;
 // Throughput tuning (conservative): use shorter poll sleeps and larger stream chunks
 // to reduce upload wall time without removing backpressure handling.
 constexpr uint32_t OTA_HTTP_READ_POLL_DELAY_MS = 2;
@@ -198,39 +200,53 @@ bool store_ota_challenge(OtaSessionChallenge* out_challenge,
 bool try_get_prearmed_ota_challenge(OtaSessionChallenge* out_challenge,
                                     String* out_error_detail) {
     const String status_url = TransmitterManager::getURL() + "/api/ota_status";
-    HTTPClient status_client;
-    status_client.begin(status_url);
-    status_client.setTimeout(OTA_CHALLENGE_HTTP_TIMEOUT_MS);
-
     bool challenge_ready = false;
-    int status_code = status_client.GET();
-    if (status_code == 200) {
-        String status_body = status_client.getString();
-        StaticJsonDocument<1024> status_doc;
-        const bool status_ok = !deserializeJson(status_doc, status_body) && status_doc["success"].as<bool>();
-        if (status_ok &&
-            (status_doc["session_active"] | false) &&
-            (status_doc["signature_available"] | false)) {
-            const uint32_t expires_at_ms = status_doc["expires_at_ms"] | 0U;
-            challenge_ready = store_ota_challenge(out_challenge,
-                                                  status_doc["session_id"] | "",
-                                                  status_doc["nonce"] | "",
-                                                  status_doc["signature"] | "",
-                                                  expires_at_ms);
-            if (challenge_ready) {
-                LOG_INFO("OTA", "Reusing pre-armed OTA challenge from /api/ota_status, id=%.8s...", out_challenge->session_id);
+    int status_code = -1;
+
+    for (uint8_t status_attempt = 1; status_attempt <= OTA_PREARM_STATUS_FETCH_ATTEMPTS; ++status_attempt) {
+        HTTPClient status_client;
+        status_client.begin(status_url);
+        status_client.setTimeout(OTA_CHALLENGE_HTTP_TIMEOUT_MS);
+
+        status_code = status_client.GET();
+        if (status_code == 200) {
+            String status_body = status_client.getString();
+            StaticJsonDocument<1024> status_doc;
+            const bool status_ok = !deserializeJson(status_doc, status_body) && status_doc["success"].as<bool>();
+            if (status_ok &&
+                (status_doc["session_active"] | false) &&
+                (status_doc["signature_available"] | false)) {
+                const uint32_t expires_at_ms = status_doc["expires_at_ms"] | 0U;
+                challenge_ready = store_ota_challenge(out_challenge,
+                                                      status_doc["session_id"] | "",
+                                                      status_doc["nonce"] | "",
+                                                      status_doc["signature"] | "",
+                                                      expires_at_ms);
+                if (challenge_ready) {
+                    LOG_INFO("OTA", "Reusing pre-armed OTA challenge from /api/ota_status, id=%.8s...", out_challenge->session_id);
+                }
             }
+
+            status_client.end();
+            break;
         }
-    } else if (status_code < 0) {
+
+        status_client.end();
+
+        if (status_code < 0 && status_attempt < OTA_PREARM_STATUS_FETCH_ATTEMPTS) {
+            vTaskDelay(pdMS_TO_TICKS(OTA_PREARM_STATUS_FETCH_RETRY_DELAY_MS));
+        }
+    }
+
+    if (status_code < 0) {
         if (out_error_detail) {
             *out_error_detail = "Status fetch transport error (HTTP " + String(status_code) + ")";
         }
-        LOG_WARN("OTA", "Failed to fetch pre-armed challenge from %s (HTTP %d)",
+        LOG_WARN("OTA", "Failed to fetch pre-armed challenge from %s (HTTP %d) after %u attempt(s)",
                  status_url.c_str(),
-                 status_code);
+                 status_code,
+                 OTA_PREARM_STATUS_FETCH_ATTEMPTS);
     }
-
-    status_client.end();
     return challenge_ready;
 }
 

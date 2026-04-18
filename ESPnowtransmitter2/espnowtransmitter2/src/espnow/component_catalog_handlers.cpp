@@ -18,6 +18,7 @@
 #include <Preferences.h>
 #include <firmware_version.h>
 #include <esp32common/espnow/packet_utils.h>
+#include <esp32common/espnow/mac_utils.h>
 #include <vector>
 #include <cstddef>
 #include <cstring>
@@ -144,12 +145,24 @@ uint8_t comm_interface_to_wire_id(comm_interface iface) {
 }
 #endif
 
-void send_type_catalog_fragments(const uint8_t* target_mac,
+const uint8_t* resolve_target_mac(const uint8_t* msg_mac, const uint8_t* receiver_mac) {
+    if (msg_mac && EspNowMacUtils::has_valid_mac(msg_mac) && !EspNowMacUtils::is_broadcast_mac(msg_mac)) {
+        return msg_mac;
+    }
+
+    if (receiver_mac && EspNowMacUtils::has_valid_mac(receiver_mac) && !EspNowMacUtils::is_broadcast_mac(receiver_mac)) {
+        return receiver_mac;
+    }
+
+    return nullptr;
+}
+
+bool send_type_catalog_fragments(const uint8_t* target_mac,
                                  uint8_t response_type,
                                  const std::vector<type_catalog_entry_t>& entries,
                                  const char* log_tag) {
     if (!target_mac) {
-        return;
+        return false;
     }
 
     const size_t per_fragment = TYPE_CATALOG_MAX_ENTRIES_PER_FRAGMENT;
@@ -189,9 +202,11 @@ void send_type_catalog_fragments(const uint8_t* target_mac,
                      static_cast<unsigned>(fragment_index + 1),
                      static_cast<unsigned>(total_fragments),
                      esp_err_to_name(result));
-            break;
+            return false;
         }
     }
+
+    return true;
 }
 
 } // namespace
@@ -545,7 +560,15 @@ void handle_component_apply_request(const espnow_queue_msg_t& msg) {
 }
 
 void handle_request_battery_types(const espnow_queue_msg_t& msg, uint8_t* receiver_mac) {
-    memcpy(receiver_mac, msg.mac, 6);
+    if (receiver_mac != nullptr && EspNowMacUtils::has_valid_mac(msg.mac) && !EspNowMacUtils::is_broadcast_mac(msg.mac)) {
+        memcpy(receiver_mac, msg.mac, 6);
+    }
+
+    const uint8_t* target_mac = resolve_target_mac(msg.mac, receiver_mac);
+    if (!target_mac) {
+        LOG_WARN("TYPE_CATALOG", "Battery catalog request has no valid target MAC");
+        return;
+    }
 
     std::vector<type_catalog_entry_t> entries;
 
@@ -570,12 +593,24 @@ void handle_request_battery_types(const espnow_queue_msg_t& msg, uint8_t* receiv
     entries.push_back(fallback);
 #endif
 
-    send_type_catalog_fragments(msg.mac, msg_battery_types_fragment, entries, "battery_types_fragment");
-    LOG_INFO("TYPE_CATALOG", "Sent battery catalog (%u entries)", (unsigned)entries.size());
+    const bool sent = send_type_catalog_fragments(target_mac, msg_battery_types_fragment, entries, "battery_types_fragment");
+    if (sent) {
+        LOG_INFO("TYPE_CATALOG", "Sent battery catalog (%u entries)", (unsigned)entries.size());
+    } else {
+        LOG_WARN("TYPE_CATALOG", "Battery catalog send incomplete (%u entries)", (unsigned)entries.size());
+    }
 }
 
 void handle_request_inverter_types(const espnow_queue_msg_t& msg, uint8_t* receiver_mac) {
-    memcpy(receiver_mac, msg.mac, 6);
+    if (receiver_mac != nullptr && EspNowMacUtils::has_valid_mac(msg.mac) && !EspNowMacUtils::is_broadcast_mac(msg.mac)) {
+        memcpy(receiver_mac, msg.mac, 6);
+    }
+
+    const uint8_t* target_mac = resolve_target_mac(msg.mac, receiver_mac);
+    if (!target_mac) {
+        LOG_WARN("TYPE_CATALOG", "Inverter catalog request has no valid target MAC");
+        return;
+    }
 
     std::vector<type_catalog_entry_t> entries;
 
@@ -632,12 +667,24 @@ void handle_request_inverter_types(const espnow_queue_msg_t& msg, uint8_t* recei
         entries.push_back(entry);
     }
 
-    send_type_catalog_fragments(msg.mac, msg_inverter_types_fragment, entries, "inverter_types_fragment");
-    LOG_INFO("TYPE_CATALOG", "Sent inverter catalog (%u entries)", (unsigned)entries.size());
+    const bool sent = send_type_catalog_fragments(target_mac, msg_inverter_types_fragment, entries, "inverter_types_fragment");
+    if (sent) {
+        LOG_INFO("TYPE_CATALOG", "Sent inverter catalog (%u entries)", (unsigned)entries.size());
+    } else {
+        LOG_WARN("TYPE_CATALOG", "Inverter catalog send incomplete (%u entries)", (unsigned)entries.size());
+    }
 }
 
 void handle_request_inverter_interfaces(const espnow_queue_msg_t& msg, uint8_t* receiver_mac) {
-    memcpy(receiver_mac, msg.mac, 6);
+    if (receiver_mac != nullptr && EspNowMacUtils::has_valid_mac(msg.mac) && !EspNowMacUtils::is_broadcast_mac(msg.mac)) {
+        memcpy(receiver_mac, msg.mac, 6);
+    }
+
+    const uint8_t* target_mac = resolve_target_mac(msg.mac, receiver_mac);
+    if (!target_mac) {
+        LOG_WARN("TYPE_CATALOG", "Inverter interface request has no valid target MAC");
+        return;
+    }
 
     std::vector<type_catalog_entry_t> entries;
 
@@ -672,12 +719,24 @@ void handle_request_inverter_interfaces(const espnow_queue_msg_t& msg, uint8_t* 
         entries.push_back(entry);
     }
 
-    send_type_catalog_fragments(msg.mac, msg_inverter_interfaces_fragment, entries, "inverter_interfaces_fragment");
-    LOG_INFO("TYPE_CATALOG", "Sent inverter interface catalog (%u entries)", (unsigned)entries.size());
+    const bool sent = send_type_catalog_fragments(target_mac, msg_inverter_interfaces_fragment, entries, "inverter_interfaces_fragment");
+    if (sent) {
+        LOG_INFO("TYPE_CATALOG", "Sent inverter interface catalog (%u entries)", (unsigned)entries.size());
+    } else {
+        LOG_WARN("TYPE_CATALOG", "Inverter interface catalog send incomplete (%u entries)", (unsigned)entries.size());
+    }
 }
 
 void handle_request_type_catalog_versions(const espnow_queue_msg_t& msg, uint8_t* receiver_mac) {
-    memcpy(receiver_mac, msg.mac, 6);
+    if (receiver_mac != nullptr && EspNowMacUtils::has_valid_mac(msg.mac) && !EspNowMacUtils::is_broadcast_mac(msg.mac)) {
+        memcpy(receiver_mac, msg.mac, 6);
+    }
+
+    const uint8_t* target_mac = resolve_target_mac(msg.mac, receiver_mac);
+    if (!target_mac) {
+        LOG_WARN("TYPE_CATALOG", "Catalog version request has no valid target MAC");
+        return;
+    }
 
     type_catalog_versions_t versions{};
     versions.type = msg_type_catalog_versions;
@@ -685,7 +744,7 @@ void handle_request_type_catalog_versions(const espnow_queue_msg_t& msg, uint8_t
     versions.inverter_catalog_version = inverter_type_catalog_version();
 
     esp_err_t result = TxSendGuard::send_to_receiver_guarded(
-        msg.mac,
+        target_mac,
         reinterpret_cast<const uint8_t*>(&versions),
         sizeof(versions),
         "type_catalog_versions"

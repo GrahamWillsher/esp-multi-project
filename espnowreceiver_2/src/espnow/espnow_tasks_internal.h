@@ -21,6 +21,7 @@ void handle_packet_cell_info(const espnow_queue_msg_t* msg);
 void handle_packet_unknown(const espnow_queue_msg_t* msg, uint8_t subtype);
 
 // Settings sync handler declarations — defined in espnow_settings_sync.cpp
-void handle_settings_update_ack(const espnow_queue_msg_t* msg);
-void handle_settings_changed(const espnow_queue_msg_t* msg);
-void handle_component_apply_ack_message(const espnow_queue_msg_t* msg);
+#include "espnow_settings_sync.h"
+// EspnowSettingsSync::handle_settings_update_ack
+// EspnowSettingsSync::handle_settings_changed
+// EspnowSettingsSync::handle_component_apply_ack

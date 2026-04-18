@@ -400,19 +400,19 @@ void setup_message_routes() {
     
     router.register_route(msg_settings_update_ack,
         [](const espnow_queue_msg_t* msg, void* ctx) {
-            handle_settings_update_ack(msg);
+            EspnowSettingsSync::handle_settings_update_ack(msg);
         },
         0xFF, nullptr);
     
     router.register_route(msg_settings_changed,
         [](const espnow_queue_msg_t* msg, void* ctx) {
-            handle_settings_changed(msg);
+            EspnowSettingsSync::handle_settings_changed(msg);
         },
         0xFF, nullptr);
 
     router.register_route(msg_component_apply_ack,
         [](const espnow_queue_msg_t* msg, void* ctx) {
-            handle_component_apply_ack_message(msg);
+            EspnowSettingsSync::handle_component_apply_ack(msg);
         },
         0xFF, nullptr);
     

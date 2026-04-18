@@ -101,6 +101,7 @@ void EspnowDiscovery::restart() {
 
 void EspnowDiscovery::task_impl(void* parameter) {
     TaskConfig* config = static_cast<TaskConfig*>(parameter);
+    uint32_t announce_count = 0;
     
     LOG_INFO("DISCOVERY", "Periodic announcement started (bidirectional discovery)");
     
@@ -136,8 +137,11 @@ void EspnowDiscovery::task_impl(void* parameter) {
                                        sizeof(announce));
         
         if (result == ESP_OK) {
-            LOG_DEBUG("DISCOVERY", "Sent announcement (seq=%u) on channel %d", 
-                          announce.seq, WiFi.channel());
+            announce_count++;
+            LOG_INFO("DISCOVERY", "TX PROBE #%lu seq=%u ch=%d",
+                     static_cast<unsigned long>(announce_count),
+                     announce.seq,
+                     WiFi.channel());
         } else {
             LOG_WARN("DISCOVERY", "Send failed: %s", esp_err_to_name(result));
         }

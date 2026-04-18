@@ -9,8 +9,8 @@
 // Track the last debug level sent to transmitter
 static uint8_t last_debug_level_sent = 6;  // Default to INFO level
 
-// Track the last test data mode sent to transmitter
-static uint8_t last_test_data_mode_sent = 2;  // Default to FULL_BATTERY_DATA
+// Track the last test data mode selected by operator
+static uint8_t last_test_data_mode_sent = 0;  // Default to OFF
 
 uint8_t get_last_debug_level() {
     return last_debug_level_sent;
@@ -175,6 +175,9 @@ bool send_test_data_mode_control(uint8_t mode) {
         LOG_ERROR("ESP-NOW", "Invalid test data mode: %d (must be 0-2)", mode);
         return false;
     }
+
+    // Always cache the selected mode locally for UI behavior.
+    last_test_data_mode_sent = mode;
     
     // Check if transmitter is connected
     if (RxStateMachine::instance().message_state() != RxStateMachine::MessageState::VALID) {
@@ -214,8 +217,6 @@ bool send_test_data_mode_control(uint8_t mode) {
     
     if (result == ESP_OK) {
         const char* mode_str[] = {"OFF", "SOC_POWER_ONLY", "FULL_BATTERY_DATA"};
-        // Store the mode we just sent for local caching
-        last_test_data_mode_sent = mode;
         LOG_DEBUG("ESP-NOW", "Test data mode control sent: mode=%s to %02X:%02X:%02X:%02X:%02X:%02X",
                      mode_str[mode],
                      ESPNow::transmitter_mac[0], ESPNow::transmitter_mac[1], ESPNow::transmitter_mac[2],

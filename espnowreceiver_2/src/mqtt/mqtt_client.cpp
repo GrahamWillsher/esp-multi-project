@@ -44,6 +44,7 @@ unsigned long MqttClient::last_connect_attempt_ = 0;
 int MqttClient::cell_data_subscribers_ = 0;
 MqttClient::CellDataSubscriptionState MqttClient::cell_data_state_ = MqttClient::PAUSED;
 TimerHandle_t MqttClient::cell_data_pause_timer_ = nullptr;
+volatile bool MqttClient::cell_data_pause_requested_ = false;
 
 // Event log subscription management
 int MqttClient::event_log_subscribers_ = 0;
@@ -129,6 +130,8 @@ bool MqttClient::isConnected() {
 
 void MqttClient::loop() {
     if (!enabled_) return;
+
+    processDeferredSubscriptionActions();
     
     if (!mqtt_client_.connected()) {
         connect();
@@ -471,9 +474,14 @@ void MqttClient::incrementCellDataSubscribers() {
             cell_data_pause_timer_ = nullptr;
             LOG_INFO("SUBSCRIPTION", "Cancelled grace period - SSE client reconnected");
         }
+
+        if (cell_data_pause_requested_) {
+            cell_data_pause_requested_ = false;
+            LOG_INFO("SUBSCRIPTION", "Cancelled deferred cell_data pause request");
+        }
         
         // Ensure subscription is active (if we were paused)
-        if (cell_data_state_ == PAUSED) {
+        if (cell_data_state_ == PAUSED || cell_data_state_ == ERROR) {
             if (mqtt_client_.connected()) {
                 // Set state BEFORE calling subscribeToTopics() so it knows to subscribe to cell_data
                 cell_data_state_ = SUBSCRIBED;
@@ -483,6 +491,9 @@ void MqttClient::incrementCellDataSubscribers() {
             } else {
                 LOG_WARN("SUBSCRIPTION", "Cannot resume cell_data - MQTT not connected");
             }
+        } else if (cell_data_state_ == PAUSING) {
+            cell_data_state_ = SUBSCRIBED;
+            LOG_INFO("SUBSCRIPTION", "Aborted pending pause - SSE client reconnected");
         } else {
             LOG_INFO("SUBSCRIPTION", "First SSE client connected (count: 0→%d, state: %s)", 
                      cell_data_subscribers_, getCellDataSubscriptionState());
@@ -607,19 +618,11 @@ int MqttClient::getEventLogSubscriberCount() {
  */
 void MqttClient::cellDataGracePeriodCallback(TimerHandle_t xTimer) {
     if (cell_data_subscribers_ <= 0) {
-        // No new clients connected during grace period - pause subscription
-        
-        // Unsubscribe from cell_data by re-subscribing to other topics only
-        if (mqtt_client_.connected()) {
-            mqtt_client_.unsubscribe("transmitter/BE/cell_data");
-            
-            cell_data_state_ = PAUSED;
-            LOG_INFO("SUBSCRIPTION", "Paused cell_data subscription after grace period");
-            LOG_INFO("SUBSCRIPTION", "Expected savings: ~30MB/month bandwidth, 43,200 JSON ops/day");
-        } else {
-            LOG_WARN("SUBSCRIPTION", "Cannot pause - not connected to MQTT");
-            cell_data_state_ = ERROR;
-        }
+        // No new clients connected during grace period - defer MQTT unsubscribe
+        // to MqttClient::loop() task context (PubSubClient is not thread-safe).
+        cell_data_pause_requested_ = true;
+        cell_data_state_ = PAUSING;
+        LOG_INFO("SUBSCRIPTION", "Grace period expired - queued cell_data pause");
     } else {
         LOG_INFO("SUBSCRIPTION", "Grace period expired but new SSE clients connected (%d active) - keeping subscription active",
                  cell_data_subscribers_);
@@ -627,5 +630,36 @@ void MqttClient::cellDataGracePeriodCallback(TimerHandle_t xTimer) {
     
     // Timer auto-deletes when auto-reload=false, but we can clean up
     cell_data_pause_timer_ = nullptr;
+}
+
+void MqttClient::processDeferredSubscriptionActions() {
+    if (!cell_data_pause_requested_) {
+        return;
+    }
+
+    // Clear request first to avoid repeated processing if this path logs/errors.
+    cell_data_pause_requested_ = false;
+
+    if (cell_data_subscribers_ > 0) {
+        cell_data_state_ = SUBSCRIBED;
+        LOG_INFO("SUBSCRIPTION", "Deferred pause skipped - SSE clients active (%d)", cell_data_subscribers_);
+        return;
+    }
+
+    if (!mqtt_client_.connected()) {
+        LOG_WARN("SUBSCRIPTION", "Cannot pause - not connected to MQTT");
+        cell_data_state_ = ERROR;
+        return;
+    }
+
+    const bool unsubscribed = mqtt_client_.unsubscribe("transmitter/BE/cell_data");
+    if (unsubscribed) {
+        cell_data_state_ = PAUSED;
+        LOG_INFO("SUBSCRIPTION", "Paused cell_data subscription after grace period");
+        LOG_INFO("SUBSCRIPTION", "Expected savings: ~30MB/month bandwidth, 43,200 JSON ops/day");
+    } else {
+        cell_data_state_ = ERROR;
+        LOG_WARN("SUBSCRIPTION", "Failed to pause cell_data subscription (unsubscribe failed)");
+    }
 }
 

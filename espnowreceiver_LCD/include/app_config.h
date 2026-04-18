@@ -15,7 +15,7 @@ constexpr int BAR_EDGE_MARGIN = 0;                  // extend bar to full displa
 constexpr int BAR_CENTER_GAP = 2;
 
 constexpr int LED_RADIUS = 17;                      // ~2/3 of previous size (25)
-constexpr int LED_MARGIN_RIGHT = 20;
+constexpr int LED_MARGIN_RIGHT = 0;                 // flush to RHS edge
 
 constexpr float SOC_MIN = 0.0f;
 constexpr float SOC_MAX = 100.0f;

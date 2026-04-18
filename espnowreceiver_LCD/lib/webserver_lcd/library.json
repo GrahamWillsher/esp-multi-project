@@ -1,0 +1,8 @@
+{
+  "name": "webserver_lcd",
+  "version": "1.0.0",
+  "description": "Minimal ESP-IDF httpd webserver for espnowreceiver_LCD: network config page, REST API",
+  "dependencies": {
+    "bblanchon/ArduinoJson": "^6.21.5"
+  }
+}

@@ -9,6 +9,11 @@
 #include <ArduinoJson.h>
 #include <cstring>
 
+extern bool test_mode_enabled;
+extern volatile int g_test_soc;
+extern volatile int32_t g_test_power;
+extern volatile uint32_t g_test_voltage_mv;
+
 esp_err_t api_get_test_data_mode_handler(httpd_req_t *req) {
     static const char* mode_names[] = {"OFF", "SOC_POWER_ONLY", "FULL_BATTERY_DATA"};
 
@@ -48,16 +53,36 @@ esp_err_t api_set_test_data_mode_handler(httpd_req_t *req) {
         }
     }
 
-    if (send_test_data_mode_control(mode)) {
-        static const char* mode_names[] = {"OFF", "SOC_POWER_ONLY", "FULL_BATTERY_DATA"};
-        StaticJsonDocument<128> doc;
-        doc["success"] = true;
-        doc["mode"]    = mode_names[mode];
-        doc["message"] = "Test data mode changed";
-        return ApiResponseUtils::send_json_doc(req, doc);
+    // Apply local preview mode immediately so web display can be validated
+    // even if the transmitter is disconnected.
+    if (mode == 0) {
+        test_mode_enabled = false;
+        g_test_soc = 0;
+        g_test_power = 0;
+        g_test_voltage_mv = 0;
+    } else {
+        test_mode_enabled = true;
+        if (g_test_soc <= 0) {
+            g_test_soc = 62;
+        }
+        if (g_test_power == 0) {
+            g_test_power = 1450;
+        }
+        if (g_test_voltage_mv == 0) {
+            g_test_voltage_mv = 51200;
+        }
     }
 
-    return ApiResponseUtils::send_error_message(req, "Failed to send command to transmitter");
+    const bool sent = send_test_data_mode_control(mode);
+    static const char* mode_names[] = {"OFF", "SOC_POWER_ONLY", "FULL_BATTERY_DATA"};
+    StaticJsonDocument<192> response;
+    response["success"] = true;
+    response["mode"] = mode_names[mode];
+    response["transmitter_command_sent"] = sent;
+    response["message"] = sent
+        ? "Test data mode changed"
+        : "Local test mode changed (transmitter not reachable)";
+    return ApiResponseUtils::send_json_doc(req, response);
 }
 
 esp_err_t api_event_logs_subscribe_handler(httpd_req_t *req) {

@@ -3,6 +3,7 @@
 #include "dashboard_page_script.h"
 #include "../common/page_generator.h"
 #include "../utils/transmitter_manager.h"
+#include "../../receiver_config/receiver_config_manager.h"
 #include <Arduino.h>
 #include <WiFi.h>
 #include <firmware_metadata.h>
@@ -18,22 +19,20 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
     bool tx_connected = TransmitterManager::isEthernetConnected();
     String tx_status = "Disconnected";
     String tx_status_color = "#ff6b35"; // Red
-    String tx_ip = "Unknown";
+    String tx_ip = TransmitterManager::getIPString();
     String tx_ip_mode = "";  // (D) or (S)
     String tx_version = "Unknown";
     String tx_device_name = "Unknown Device";  // Default matches receiver fallback
-    
+
+    if (tx_ip == "0.0.0.0") {
+        tx_ip = "Not available";
+    } else if (tx_ip != "Unknown") {
+        tx_ip_mode = TransmitterManager::isStaticIP() ? " (S)" : " (D)";
+    }
+
     if (tx_connected) {
         tx_status = "Connected";
         tx_status_color = "#4CAF50"; // Green
-        tx_ip = TransmitterManager::getIPString();
-        if (tx_ip == "0.0.0.0") {
-            tx_ip = "Not available";
-        } else {
-            // Show IP mode immediately
-            tx_ip_mode = TransmitterManager::isStaticIP() ? " (S)" : " (D)";
-        }
-        
     }
 
     if (TransmitterManager::hasMetadata()) {
@@ -52,7 +51,7 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
     // Receiver status (always online)
     String rx_version = "Unknown";
     String rx_ip = WiFi.localIP().toString();
-    String rx_ip_mode = " (S)";  // Receiver always uses static IP from Config
+    String rx_ip_mode = ReceiverNetworkConfig::useStaticIP() ? " (S)" : " (D)";
     
     // Get receiver device name from metadata
     String rx_device_name = "Unknown Device";
