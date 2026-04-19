@@ -120,7 +120,7 @@ void send_mqtt_config_ack(const uint8_t* receiver_mac, bool success, const char*
     strncpy(ack.message, message, sizeof(ack.message) - 1);
     ack.message[sizeof(ack.message) - 1] = '\0';
 
-    ack.checksum = EspnowPacketUtils::calculate_message_checksum(&ack);
+    ack.checksum = EspnowPacketUtils::calculate_message_crc32_zeroed(&ack);
 
     if (!TxConfigHandlerCommon::ensure_peer_registered(receiver_mac, "MQTT_CFG")) {
         return;

@@ -16,7 +16,7 @@ namespace EspnowPacketUtils {
         uint16_t frag_total;       // Total fragment count
         uint16_t payload_len;      // Length of actual data in payload
         uint8_t subtype;           // Packet subtype
-        uint16_t checksum;         // Payload checksum
+        uint32_t checksum;         // Payload CRC32 checksum
         const uint8_t* payload;    // Pointer to payload data
         
         PacketInfo() : seq(0), frag_index(0), frag_total(0), 
@@ -64,36 +64,6 @@ namespace EspnowPacketUtils {
     }
 
     /**
-     * @brief Calculate simple checksum for packet payload
-     * 
-     * @param payload Pointer to payload data
-     * @param len Length of payload
-     * @return uint16_t Calculated checksum
-     */
-    inline uint16_t calculate_checksum(const uint8_t* payload, uint16_t len) {
-        if (!payload || len == 0) return 0;
-        
-        uint16_t checksum = 0;
-        for (uint16_t i = 0; i < len; i++) {
-            checksum += payload[i];
-        }
-        return checksum;
-    }
-
-    /**
-     * @brief Validate packet payload checksum
-     * 
-     * @param info PacketInfo containing payload and stored checksum
-     * @return true if calculated checksum matches stored checksum
-     */
-    inline bool validate_checksum(const PacketInfo& info) {
-        if (!info.payload || info.payload_len == 0) return false;
-        
-        uint16_t calculated = calculate_checksum(info.payload, info.payload_len);
-        return calculated == info.checksum;
-    }
-
-    /**
      * @brief Print packet info for debugging.
      *
      * Emits a structured log at DEBUG level via ESP_LOGD; compiles to a no-op
@@ -106,11 +76,11 @@ namespace EspnowPacketUtils {
      */
     inline void print_packet_info(const PacketInfo& info, const char* subtype_name = nullptr) {
         if (subtype_name) {
-            ESP_LOGD("espnow_pkt", "%s: seq=%u, frag=%u/%u, len=%u, checksum=0x%04X",
+            ESP_LOGD("espnow_pkt", "%s: seq=%u, frag=%u/%u, len=%u, checksum=0x%08lX",
                      subtype_name, info.seq, info.frag_index, info.frag_total,
                      info.payload_len, info.checksum);
         } else {
-            ESP_LOGD("espnow_pkt", "subtype=%u: seq=%u, frag=%u/%u, len=%u, checksum=0x%04X",
+            ESP_LOGD("espnow_pkt", "subtype=%u: seq=%u, frag=%u/%u, len=%u, checksum=0x%08lX",
                      info.subtype, info.seq, info.frag_index, info.frag_total,
                      info.payload_len, info.checksum);
         }
@@ -148,47 +118,8 @@ namespace EspnowPacketUtils {
     }
 
     // =========================================================================
-    // Common Checksum Utilities (used by settings sync, etc.)
+    // CRC32 Checksum Utilities
     // =========================================================================
-
-    /**
-     * @brief Calculate XOR checksum for a message structure
-     * 
-     * Calculates XOR checksum over all bytes except the checksum field itself.
-     * Template handles any message type with a uint16_t checksum field.
-     * 
-     * @tparam T Message structure type (must have uint16_t checksum field)
-     * @param message Pointer to message structure
-     * @return uint16_t Calculated checksum value
-     */
-    template<typename T>
-    inline uint16_t calculate_message_checksum(const T* message) {
-        uint16_t checksum = 0;
-        const uint8_t* bytes = reinterpret_cast<const uint8_t*>(message);
-        // XOR all bytes except the checksum field (last 2 bytes for uint16_t)
-        for (size_t i = 0; i < sizeof(T) - sizeof(uint16_t); i++) {
-            checksum ^= bytes[i];
-        }
-        return checksum;
-    }
-
-    /**
-     * @brief Verify XOR checksum for a message structure
-     * 
-     * Recalculates checksum and compares with message's checksum field.
-     * 
-     * @tparam T Message structure type (must have uint16_t checksum field)
-     * @param message Pointer to message structure
-     * @return true if calculated checksum matches message checksum
-     */
-    template<typename T>
-    inline bool verify_message_checksum(const T* message) {
-        uint16_t calculated = calculate_message_checksum(message);
-        // Assume checksum is the last field (standard convention)
-        const uint8_t* bytes = reinterpret_cast<const uint8_t*>(message);
-        const uint16_t* stored_checksum = reinterpret_cast<const uint16_t*>(bytes + sizeof(T) - sizeof(uint16_t));
-        return calculated == *stored_checksum;
-    }
 
     /**
      * @brief Calculate standard CRC32-IEEE for an arbitrary byte buffer.

@@ -51,7 +51,7 @@ typedef struct __attribute__((packed)) {
     uint8_t type;          // msg_data
     uint8_t soc;           // 0-100
     int16_t power;         // W
-    uint16_t checksum;
+    uint32_t checksum;
 } espnow_payload_min_t;
 
 typedef struct __attribute__((packed)) {
@@ -80,7 +80,7 @@ typedef struct __attribute__((packed)) {
     uint16_t max_charge_power_W;
     uint16_t max_discharge_power_W;
     uint8_t bms_status;
-    uint16_t checksum;
+    uint32_t checksum;
 } battery_status_min_t;
 
 typedef struct __attribute__((packed)) {

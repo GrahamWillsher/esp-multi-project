@@ -28,12 +28,7 @@ battery_settings_full_msg_t build_battery_settings_message() {
     settings_msg.chemistry = SettingsManager::instance().get_battery_chemistry();
     settings_msg.led_mode = SettingsManager::instance().get_battery_led_mode();
 
-    uint16_t sum = 0;
-    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&settings_msg);
-    for (size_t i = 0; i < offsetof(battery_settings_full_msg_t, checksum); i++) {
-        sum += bytes[i];
-    }
-    settings_msg.checksum = sum;
+    settings_msg.checksum = EspnowPacketUtils::calculate_message_crc32_zeroed(&settings_msg);
 
     return settings_msg;
 }
@@ -99,7 +94,7 @@ void handle_request_data(const espnow_queue_msg_t& msg) {
                     packet.payload[8 + i] = subnet[i];
                 }
 
-                packet.checksum = EspnowPacketUtils::calculate_checksum(packet.payload, packet.payload_len);
+                packet.checksum = EspnowPacketUtils::crc32_packet(packet.payload, packet.payload_len);
                 esp_err_t result = TxSendGuard::send_to_receiver_guarded(
                     msg.mac,
                     (const uint8_t*)&packet,

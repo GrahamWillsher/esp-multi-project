@@ -11,6 +11,7 @@
 #include "../network/transmission_selector.h"  // Phase 2: Smart transmission routing
 #include <Arduino.h>
 #include <espnow_transmitter.h>
+#include <esp32common/espnow/packet_utils.h>
 
 DataSender& DataSender::instance() {
     static DataSender instance;
@@ -95,7 +96,7 @@ void DataSender::send_battery_data() {
     LOG_TRACE("DATA_SENDER", "Using %s data: SOC:%d%%, Power:%dW", mode_str,
              tx_data.soc, tx_data.power);
     
-    tx_data.checksum = calculate_checksum(&tx_data);
+    tx_data.checksum = EspnowPacketUtils::calculate_message_crc32_zeroed(&tx_data);
     
     // Section 11: ALWAYS write to cache first (cache-centric pattern)
     // Background transmission task will handle sending from cache

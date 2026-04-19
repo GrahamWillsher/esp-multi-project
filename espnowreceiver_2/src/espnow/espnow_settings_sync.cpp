@@ -142,11 +142,9 @@ bool handle_settings_changed(const espnow_queue_msg_t* msg) {
 
     const auto* change = reinterpret_cast<const settings_changed_msg_t*>(msg->data);
 
-    if (!EspnowPacketUtils::verify_message_checksum(change)) {
-        const uint16_t calc = EspnowPacketUtils::calculate_message_checksum(change);
-        LOG_WARN("SETTINGS", "Changed checksum mismatch: calc=%u recv=%u",
-                 static_cast<unsigned>(calc),
-                 static_cast<unsigned>(change->checksum));
+    if (!EspnowPacketUtils::verify_message_crc32(change)) {
+        LOG_WARN("SETTINGS", "Changed CRC32 mismatch: stored=0x%08lX",
+                 static_cast<unsigned long>(change->checksum));
         return false;
     }
 

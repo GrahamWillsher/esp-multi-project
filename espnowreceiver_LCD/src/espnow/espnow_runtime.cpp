@@ -90,57 +90,12 @@ void mark_protocol_activity(const uint8_t* mac) {
 }
 
 template <typename T>
-bool validate_additive_trailing_checksum(const T* payload,
-                                         uint16_t* calc_out = nullptr,
-                                         uint16_t* recv_out = nullptr) {
-    if (!payload || sizeof(T) < sizeof(uint16_t)) {
-        return false;
-    }
-
-    const auto* bytes = reinterpret_cast<const uint8_t*>(payload);
-    const uint16_t calculated = EspnowPacketUtils::calculate_checksum(
-        bytes, static_cast<uint16_t>(sizeof(T) - sizeof(uint16_t)));
-    uint16_t received = 0;
-    memcpy(&received, bytes + sizeof(T) - sizeof(uint16_t), sizeof(received));
-
-    if (calc_out) {
-        *calc_out = calculated;
-    }
-    if (recv_out) {
-        *recv_out = received;
-    }
-
-    return calculated == received;
-}
-
-template <typename T>
 bool validate_struct_size(const espnow_queue_msg_t* msg, const char* label) {
     if (!msg || msg->len < static_cast<int>(sizeof(T))) {
         LOG_WARN("ESPNOW", "%s too short: %d bytes", label, msg ? msg->len : -1);
         return false;
     }
     return true;
-}
-
-template <typename T>
-void handle_additive_checksum_message(const espnow_queue_msg_t* msg, const char* label) {
-    if (!validate_struct_size<T>(msg, label)) {
-        return;
-    }
-
-    const auto* payload = reinterpret_cast<const T*>(msg->data);
-    uint16_t calc_checksum = 0;
-    uint16_t recv_checksum = 0;
-    if (!validate_additive_trailing_checksum(payload, &calc_checksum, &recv_checksum)) {
-        LOG_WARN("ESPNOW", "%s checksum mismatch (calc=%u recv=%u)",
-                 label,
-                 static_cast<unsigned>(calc_checksum),
-                 static_cast<unsigned>(recv_checksum));
-        return;
-    }
-
-    mark_protocol_activity(msg->mac);
-    log_type_once(payload->type, label);
 }
 
 template <typename T>
@@ -249,11 +204,9 @@ void handle_mqtt_config_ack_message(const espnow_queue_msg_t* msg) {
     }
 
     const auto* ack = reinterpret_cast<const mqtt_config_ack_t*>(msg->data);
-    if (!EspnowPacketUtils::verify_message_checksum(ack)) {
-        const uint16_t calc_checksum = EspnowPacketUtils::calculate_message_checksum(ack);
-        LOG_WARN("ESPNOW", "MQTT_CONFIG_ACK checksum mismatch (calc=%u recv=%u)",
-                 static_cast<unsigned>(calc_checksum),
-                 static_cast<unsigned>(ack->checksum));
+    if (!EspnowPacketUtils::verify_message_crc32(ack)) {
+        LOG_WARN("ESPNOW", "MQTT_CONFIG_ACK CRC32 mismatch (stored=0x%08lX)",
+                 static_cast<unsigned long>(ack->checksum));
         return;
     }
 
@@ -387,13 +340,12 @@ void handle_packet_subtype_message(const espnow_queue_msg_t* msg, const char* la
         return;
     }
 
-    if (!EspnowPacketUtils::validate_checksum(info)) {
-        const uint16_t calc_checksum =
-            EspnowPacketUtils::calculate_checksum(info.payload, info.payload_len);
-        LOG_WARN("ESPNOW", "%s packet checksum mismatch (calc=%u recv=%u)",
+    const uint32_t calc_crc = EspnowPacketUtils::crc32_packet(info.payload, info.payload_len);
+    if (calc_crc != info.checksum) {
+        LOG_WARN("ESPNOW", "%s packet CRC32 mismatch (calc=0x%08lX recv=0x%08lX)",
                  label,
-                 static_cast<unsigned>(calc_checksum),
-                 static_cast<unsigned>(info.checksum));
+                 static_cast<unsigned long>(calc_crc),
+                 static_cast<unsigned long>(info.checksum));
         return;
     }
 
@@ -407,12 +359,9 @@ void handle_data_message(const espnow_queue_msg_t* msg) {
     }
 
     const auto* payload = reinterpret_cast<const espnow_payload_t*>(msg->data);
-    const uint16_t calc_checksum =
-        static_cast<uint16_t>(payload->soc) + static_cast<uint16_t>(payload->power);
-    if (calc_checksum != payload->checksum) {
-        LOG_WARN("ESPNOW", "Invalid msg_data checksum (calc=%u recv=%u)",
-                 static_cast<unsigned>(calc_checksum),
-                 static_cast<unsigned>(payload->checksum));
+    if (!EspnowPacketUtils::verify_message_crc32(payload)) {
+        LOG_WARN("ESPNOW", "Invalid msg_data CRC32 (stored=0x%08lX)",
+                 static_cast<unsigned long>(payload->checksum));
         return;
     }
 
@@ -438,12 +387,9 @@ void handle_battery_status_message(const espnow_queue_msg_t* msg) {
     }
 
     const auto* payload = reinterpret_cast<const battery_status_msg_t*>(msg->data);
-    uint16_t calc_checksum = 0;
-    uint16_t recv_checksum = 0;
-    if (!validate_additive_trailing_checksum(payload, &calc_checksum, &recv_checksum)) {
-        LOG_WARN("ESPNOW", "Invalid battery status checksum (calc=%u recv=%u)",
-                 static_cast<unsigned>(calc_checksum),
-                 static_cast<unsigned>(recv_checksum));
+    if (!EspnowPacketUtils::verify_message_crc32(payload)) {
+        LOG_WARN("ESPNOW", "Invalid battery status CRC32 (stored=0x%08lX)",
+                 static_cast<unsigned long>(payload->checksum));
         return;
     }
 

@@ -83,10 +83,7 @@ bool save_interface_selection(uint8_t battery_interface, uint8_t inverter_interf
 }
 
 void populate_component_apply_ack_checksum(component_apply_ack_t& ack) {
-    ack.checksum = 0;
-    ack.checksum = EspnowPacketUtils::calculate_checksum(
-        reinterpret_cast<const uint8_t*>(&ack),
-        static_cast<uint16_t>(sizeof(ack) - sizeof(ack.checksum)));
+    ack.checksum = EspnowPacketUtils::calculate_message_crc32_zeroed(&ack);
 }
 
 void send_component_apply_ack(const uint8_t* target_mac, component_apply_ack_t& ack) {
@@ -221,14 +218,8 @@ void handle_component_config(const espnow_queue_msg_t& msg) {
 
     const component_config_msg_t* config = reinterpret_cast<const component_config_msg_t*>(msg.data);
 
-    uint16_t calculated = 0;
-    const uint8_t* data = reinterpret_cast<const uint8_t*>(config);
-    for (size_t i = 0; i < sizeof(component_config_msg_t) - sizeof(config->checksum); i++) {
-        calculated += data[i];
-    }
-
-    if (calculated != config->checksum) {
-        LOG_WARN("COMP_CFG", "Checksum mismatch: calc=%u, recv=%u", calculated, config->checksum);
+    if (!EspnowPacketUtils::verify_message_crc32(config)) {
+        LOG_WARN("COMP_CFG", "CRC32 mismatch in component_config_msg_t");
         return;
     }
 
@@ -385,11 +376,8 @@ void handle_component_apply_request(const espnow_queue_msg_t& msg) {
     strncpy(ack.message, "Apply failed", sizeof(ack.message) - 1);
     ack.message[sizeof(ack.message) - 1] = '\0';
 
-    const uint16_t calculated = EspnowPacketUtils::calculate_checksum(
-        reinterpret_cast<const uint8_t*>(request),
-        static_cast<uint16_t>(sizeof(component_apply_request_t) - sizeof(request->checksum)));
-    if (calculated != request->checksum) {
-        strncpy(ack.message, "Checksum mismatch", sizeof(ack.message) - 1);
+    if (!EspnowPacketUtils::verify_message_crc32(request)) {
+        strncpy(ack.message, "CRC32 mismatch", sizeof(ack.message) - 1);
         load_interface_selection(ack.battery_interface, ack.inverter_interface);
         ack.battery_type = SystemSettings::instance().get_battery_profile_type();
         ack.inverter_type = SystemSettings::instance().get_inverter_type();

@@ -277,15 +277,11 @@ bool ComponentConfigHandler::save_to_nvs() {
 }
 
 bool ComponentConfigHandler::validate_checksum(const uint8_t* data, size_t len) const {
-  if (!data || len < sizeof(uint16_t)) {
+  if (!data || len < sizeof(uint32_t)) {
     return false;
   }
 
-  const uint16_t calculated = EspnowPacketUtils::calculate_checksum(
-      data, static_cast<uint16_t>(len - sizeof(uint16_t)));
-
-  uint16_t stored = 0;
-  memcpy(&stored, data + len - sizeof(uint16_t), sizeof(stored));
-
-  return calculated == stored;
+  uint32_t stored = 0;
+  memcpy(&stored, data + len - sizeof(uint32_t), sizeof(stored));
+  return EspnowPacketUtils::crc32_packet(data, len - sizeof(uint32_t)) == stored;
 }

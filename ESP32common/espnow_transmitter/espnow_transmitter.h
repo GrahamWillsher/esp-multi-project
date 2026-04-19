@@ -22,7 +22,6 @@ extern QueueHandle_t espnow_rx_queue;  // Project-specific queue
 // ============================================================================
 
 // Utility functions
-uint16_t calculate_checksum(espnow_payload_t* data);
 bool set_channel(uint8_t ch);
 
 // ESP-NOW callbacks (Wi-Fi task context - keep callback work minimal)

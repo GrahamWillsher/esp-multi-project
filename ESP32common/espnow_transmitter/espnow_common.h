@@ -151,7 +151,7 @@ typedef struct __attribute__((packed)) {
     uint8_t type;          // msg_data
     uint8_t soc;           // SOC: 0-100%
     int16_t power;         // Power in Watts: -4000 to +4000 (2 bytes, signed)
-    uint16_t checksum;     // Simple checksum for data integrity
+    uint32_t checksum;     // CRC32 checksum for data integrity
 } espnow_payload_t;
 
 typedef struct __attribute__((packed)) {
@@ -377,8 +377,8 @@ typedef struct __attribute__((packed)) {
     uint16_t  frag_index;    // Index of this fragment (0-based)
     uint16_t  frag_total;    // Total fragment count
     uint16_t  payload_len;   // Length of actual data in payload[]
-    uint16_t  checksum;      // Simple checksum for payload integrity
-    uint8_t   payload[230];  // Payload data (230 bytes max to keep total <= 250)
+    uint32_t checksum;      // CRC32 checksum for payload integrity
+    uint8_t   payload[228];  // Payload data (228 bytes max to keep total <= 250)
 } espnow_packet_t;
 
 // Firmware version announcement packet
@@ -448,8 +448,8 @@ typedef struct __attribute__((packed)) {
     uint16_t max_charge_power_W;     // Maximum charge power limit
     uint16_t max_discharge_power_W;  // Maximum discharge power limit
     uint8_t bms_status;              // BMS status (bms_status_t enum)
-    uint16_t checksum;               // Message checksum
-} battery_status_msg_t;  // Total: 27 bytes
+    uint32_t checksum;               // Message checksum
+} battery_status_msg_t;  // Total: 29 bytes
 
 // Battery info message - Static data (sent once on connection)
 typedef struct __attribute__((packed)) {
@@ -463,8 +463,8 @@ typedef struct __attribute__((packed)) {
     uint16_t max_cell_deviation_mV;      // Max allowed cell deviation
     uint8_t number_of_cells;             // Total cells in pack
     uint8_t chemistry;                   // Battery chemistry (0=NCA, 1=NMC, 2=LFP, 3=LTO)
-    uint16_t checksum;                   // Message checksum
-} battery_info_msg_t;  // Total: 26 bytes
+    uint32_t checksum;                   // Message checksum
+} battery_info_msg_t;  // Total: 28 bytes
 
 // Battery settings full message - All configurable battery settings (for bidirectional sync)
 typedef struct __attribute__((packed)) {
@@ -479,8 +479,8 @@ typedef struct __attribute__((packed)) {
     uint8_t cell_count;                  // Number of cells in series
     uint8_t chemistry;                   // Battery chemistry (0=NCA, 1=NMC, 2=LFP, 3=LTO)
     uint8_t led_mode;                    // LED policy mode (0=Classic, 1=Energy Flow, 2=Heartbeat)
-    uint16_t checksum;                   // Message checksum
-} battery_settings_full_msg_t;  // Total: 29 bytes
+    uint32_t checksum;                   // Message checksum
+} battery_settings_full_msg_t;  // Total: 31 bytes
 
 // Charger status message - Real-time data (200ms updates)
 typedef struct __attribute__((packed)) {
@@ -493,8 +493,8 @@ typedef struct __attribute__((packed)) {
     int16_t ac_current_dA;           // AC current in dA (signed)
     uint16_t power_W;                // Charger power in W
     uint8_t charger_status;          // Charger state (0=off, 1=charging, 2=fault)
-    uint16_t checksum;               // Message checksum
-} charger_status_msg_t;  // Total: 20 bytes
+    uint32_t checksum;               // Message checksum
+} charger_status_msg_t;  // Total: 22 bytes
 
 // Inverter status message - Real-time data (200ms updates)  
 typedef struct __attribute__((packed)) {
@@ -504,8 +504,8 @@ typedef struct __attribute__((packed)) {
     int16_t ac_current_dA;           // AC current in dA (signed)
     int32_t power_W;                 // Inverter power in W (signed)
     uint8_t inverter_status;         // Inverter state (0=off, 1=on, 2=fault)
-    uint16_t checksum;               // Message checksum
-} inverter_status_msg_t;  // Total: 14 bytes
+    uint32_t checksum;               // Message checksum
+} inverter_status_msg_t;  // Total: 16 bytes
 
 // System status message - Real-time data (200ms updates)
 typedef struct __attribute__((packed)) {
@@ -514,8 +514,8 @@ typedef struct __attribute__((packed)) {
     uint8_t error_flags;             // Error flags (bit mask)
     uint8_t warning_flags;           // Warning flags (bit mask)
     uint32_t uptime_seconds;         // System uptime in seconds
-    uint16_t checksum;               // Message checksum
-} system_status_msg_t;  // Total: 10 bytes
+    uint32_t checksum;               // Message checksum
+} system_status_msg_t;  // Total: 12 bytes
 
 // Component configuration message - Active component selections (sent on connect + every 5s)
 typedef struct __attribute__((packed)) {
@@ -528,16 +528,16 @@ typedef struct __attribute__((packed)) {
     uint8_t shunt_type;              // Shunt type (0-2, 0=disabled)
     uint8_t multi_battery_enabled;   // Multi-battery mode (0=off, 1=on)
     uint32_t config_version;         // Configuration version for change tracking
-    uint16_t checksum;               // Message checksum
-} component_config_msg_t;  // Total: 16 bytes
+    uint32_t checksum;               // Message checksum
+} component_config_msg_t;  // Total: 18 bytes
 
 // Component interface selection message - receiver-selected comm interfaces
 typedef struct __attribute__((packed)) {
     uint8_t type;                    // msg_component_interface
     uint8_t battery_interface;       // comm_interface enum (0-5)
     uint8_t inverter_interface;      // comm_interface enum (0-5)
-    uint16_t checksum;               // Message checksum
-} component_interface_msg_t;  // Total: 5 bytes
+    uint32_t checksum;               // Message checksum
+} component_interface_msg_t;  // Total: 7 bytes
 
 // Component apply field mask bits
 enum component_apply_mask_t : uint8_t {
@@ -556,8 +556,8 @@ typedef struct __attribute__((packed)) {
     uint8_t inverter_type;           // Desired inverter type
     uint8_t battery_interface;       // Desired battery comm interface
     uint8_t inverter_interface;      // Desired inverter comm interface
-    uint16_t checksum;               // Message checksum
-} component_apply_request_t;  // Total: 12 bytes
+    uint32_t checksum;               // Message checksum
+} component_apply_request_t;  // Total: 14 bytes
 
 // Component apply acknowledgment (transmitter -> receiver)
 typedef struct __attribute__((packed)) {
@@ -574,8 +574,8 @@ typedef struct __attribute__((packed)) {
     uint8_t inverter_interface;      // Persisted inverter interface
     uint32_t settings_version;       // Optional transmitter-side settings/config version snapshot
     char message[48];                // Human-readable status
-    uint16_t checksum;               // Message checksum
-} component_apply_ack_t;  // Total: 67 bytes
+    uint32_t checksum;               // Message checksum
+} component_apply_ack_t;  // Total: 69 bytes
 
 // =============================================================================
 // PHASE 2: Settings Bidirectional Flow Message Structures
@@ -664,8 +664,8 @@ typedef struct __attribute__((packed)) {
     uint32_t value_uint32;       // Integer value
     float value_float;           // Float value (use appropriate field based on setting type)
     char value_string[32];       // String value (for text settings like MQTT server)
-    uint16_t checksum;           // Message checksum
-} settings_update_msg_t;  // Total: 44 bytes
+    uint32_t checksum;           // Message checksum
+} settings_update_msg_t;  // Total: 46 bytes
 
 // Settings update acknowledgment - Transmitter → Receiver
 typedef struct __attribute__((packed)) {
@@ -675,16 +675,16 @@ typedef struct __attribute__((packed)) {
     bool success;                // True if setting was saved successfully
     uint32_t new_version;        // New version number after update
     char error_msg[44];          // Error description if failed (reduced to fit new_version)
-    uint16_t checksum;           // Message checksum
-} settings_update_ack_msg_t;  // Total: 54 bytes
+    uint32_t checksum;           // Message checksum
+} settings_update_ack_msg_t;  // Total: 56 bytes
 
 // Settings change notification - Transmitter → Receiver (push-based sync)
 typedef struct __attribute__((packed)) {
     uint8_t type;                // msg_settings_changed
     uint8_t category;            // Which settings section changed
     uint32_t new_version;        // New version number
-    uint16_t checksum;           // Message checksum
-} settings_changed_msg_t;  // Total: 8 bytes
+    uint32_t checksum;           // Message checksum
+} settings_changed_msg_t;  // Total: 10 bytes
 
 // =============================================================================
 // PHASE 3: Network Configuration Message Structures
@@ -705,8 +705,8 @@ typedef struct __attribute__((packed)) {
     uint8_t dns_primary[4];      // Primary DNS server octets
     uint8_t dns_secondary[4];    // Secondary DNS server octets
     uint32_t config_version;     // Version number for tracking
-    uint16_t checksum;           // Simple checksum for integrity
-} network_config_update_t;  // Total: 32 bytes
+    uint32_t checksum;           // CRC32 checksum for integrity
+} network_config_update_t;  // Total: 34 bytes
 
 // Network configuration ACK - Transmitter → Receiver
 typedef struct __attribute__((packed)) {
@@ -749,8 +749,8 @@ typedef struct __attribute__((packed)) {
     char password[32];           // Password (empty string if none)
     char client_id[32];          // Client ID
     uint32_t config_version;     // Version for tracking
-    uint16_t checksum;           // Integrity check
-} mqtt_config_update_t;  // Total: 106 bytes
+    uint32_t checksum;           // CRC32 integrity check
+} mqtt_config_update_t;  // Total: 108 bytes
 
 // MQTT configuration ACK - Transmitter → Receiver
 typedef struct __attribute__((packed)) {
@@ -765,8 +765,8 @@ typedef struct __attribute__((packed)) {
     uint8_t connected;           // MQTT connection status (0 = disconnected, 1 = connected)
     uint32_t config_version;     // Configuration version
     char message[64];            // Status message
-    uint16_t checksum;           // Integrity check
-} mqtt_config_ack_t;  // Total: 179 bytes
+    uint32_t checksum;           // CRC32 integrity check
+} mqtt_config_ack_t;  // Total: 181 bytes
 
 // =========================================================================
 // PHASE 4: Version-Based Cache Synchronization Structures

@@ -36,16 +36,14 @@ bool process_status_message(const espnow_queue_msg_t* msg,
 }  // namespace
 
 bool validate_checksum(const void* data, size_t len) {
-    if (!data || len < sizeof(uint16_t)) {
+    if (!data || len < sizeof(uint32_t)) {
         return false;
     }
 
     const uint8_t* bytes = reinterpret_cast<const uint8_t*>(data);
-    const uint16_t calculated = EspnowPacketUtils::calculate_checksum(
-        bytes, static_cast<uint16_t>(len - sizeof(uint16_t)));
-    uint16_t stored = 0;
-    memcpy(&stored, bytes + len - sizeof(uint16_t), sizeof(stored));
-    return calculated == stored;
+    uint32_t stored = 0;
+    memcpy(&stored, bytes + len - sizeof(uint32_t), sizeof(stored));
+    return EspnowPacketUtils::crc32_packet(bytes, len - sizeof(uint32_t)) == stored;
 }
 
 bool handle_battery_status(const espnow_queue_msg_t* msg) {

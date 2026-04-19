@@ -43,25 +43,19 @@ void SettingsManager::handle_settings_update(const espnow_queue_msg_t& msg) {
              update->type, update->category, update->field_id);
     LOG_INFO("SETTINGS", "Values - uint32=%u, float=%.2f, string='%s'",
              update->value_uint32, update->value_float, safe_value_string);
-    LOG_INFO("SETTINGS", "Checksum: %u", update->checksum);
+    LOG_INFO("SETTINGS", "CRC32: 0x%08lX", update->checksum);
 
-    // Verify XOR checksum
-    uint8_t calculated_checksum = 0;
-    const uint8_t* bytes = (const uint8_t*)update;
-    for (size_t i = 0;
-         i < sizeof(settings_update_msg_t) - sizeof(update->checksum); i++) {
-        calculated_checksum ^= bytes[i];
-    }
-
-    if (calculated_checksum != update->checksum) {
+    // Verify CRC32 checksum
+    if (!EspnowPacketUtils::verify_message_crc32(update)) {
         LOG_ERROR("SETTINGS",
-                  "Checksum mismatch! Expected=%u, Got=%u",
-                  calculated_checksum, update->checksum);
+                  "CRC32 mismatch! Stored=0x%08lX, Calculated=0x%08lX",
+                  update->checksum,
+                  EspnowPacketUtils::calculate_message_crc32_zeroed(update));
         send_settings_ack(msg.mac, update->category, update->field_id,
                           false, 0, "Checksum error");
         return;
     }
-    LOG_INFO("SETTINGS", "✓ Checksum valid");
+    LOG_INFO("SETTINGS", "✓ CRC32 valid");
 
     bool success     = false;
     char error_msg[48] = "";
@@ -140,7 +134,7 @@ void SettingsManager::send_settings_ack(const uint8_t* mac,
         ack.error_msg[0] = '\0';
     }
 
-    ack.checksum = EspnowPacketUtils::calculate_message_checksum(&ack);
+    ack.checksum = EspnowPacketUtils::calculate_message_crc32_zeroed(&ack);
 
     const esp_err_t result =
         esp_now_send(mac, (const uint8_t*)&ack, sizeof(ack));
@@ -163,7 +157,7 @@ void SettingsManager::send_settings_changed_notification(uint8_t category,
     notification.new_version = new_version;
 
     notification.checksum =
-        EspnowPacketUtils::calculate_message_checksum(&notification);
+        EspnowPacketUtils::calculate_message_crc32_zeroed(&notification);
 
     const uint8_t* peer_mac =
         EspNowConnectionManager::instance().get_peer_mac();

@@ -1,269 +1,158 @@
-# Checksum Mechanisms Review and Rationalisation Recommendations (2026-04-18)
+# ESP-NOW Checksum Rationalisation: Migration to CRC32 (2026-04-18)
 
-## Executive summary
+## Objective
 
-Yes: there are currently too many integrity/hash mechanisms in active use, and the overlap is now creating more maintenance and migration risk than benefit.
+Migrate all ESP-NOW message integrity checks to a **single algorithm — CRC32** — using the shared helpers already present in `esp32common`.
 
-The current state is understandable (incremental evolution + backward compatibility), but it is now a **complexity tax**:
+This eliminates the current mix of additive sum, XOR16, and legacy `soc+power` checks across ESP-NOW message types, which has grown into a maintenance and debugging burden without providing meaningful differentiation in protection.
 
-- different algorithms for similar message classes,
-- duplicated ad-hoc implementations,
-- weak checks in some critical control paths,
-- and protocol semantics that are not obvious from message type alone.
-
-### Bottom line
-
-- Keep multiple mechanisms only when they serve **different threat models** (integrity vs authenticity vs artifact identity).
-- Collapse ESP-NOW payload integrity to **one standard algorithm** for structured messages.
-- Move all checksum computation/verification through **shared helpers only**.
-- Keep OTA cryptographic protections (SHA-256 + HMAC-SHA256), but centralise implementation.
+OTA cryptographic protections (SHA-256, HMAC-SHA256) and MQTT routing hashes (FNV-1a) are **out of scope** — they serve different purposes and are not changing.
 
 ---
 
-## What is in use today
+## Current ESP-NOW checksum landscape
 
-## 1) Additive 16-bit payload checksum (sum of bytes)
+There are currently three distinct integrity algorithms in use across ESP-NOW messages:
 
-Used via shared helper:
+### 1) Additive 16-bit sum
 
-- `EspnowPacketUtils::calculate_checksum(...)` in:
-  - esp32common/espnow_common_utils/espnow_packet_utils.h
-
-Used in packet payload and several message validators/senders, for example:
-
-- espnowreceiver_LCD/src/espnow/espnow_runtime.cpp
-- espnowreceiver_LCD/src/espnow/battery_handlers.cpp
-- espnowreceiver_LCD/src/espnow/component_config_handler.cpp
-- ESPnowtransmitter2/espnowtransmitter2/src/espnow/component_catalog_handlers.cpp
-
-Also appears in ad-hoc/manual loops for some full-struct messages (not helper-driven):
-
-- ESPnowtransmitter2/espnowtransmitter2/src/espnow/request_data_handlers.cpp
-- ESPnowtransmitter2/espnowtransmitter2/src/espnow/version_beacon_manager.cpp
-
-## 2) XOR “message checksum” (stored in uint16)
-
-Shared helper exists:
-
-- `EspnowPacketUtils::calculate_message_checksum(...)`
-- `EspnowPacketUtils::verify_message_checksum(...)`
-- in esp32common/espnow_common_utils/espnow_packet_utils.h
-
-Used in settings sync ACK/change flows, for example:
-
-- ESPnowtransmitter2/espnowtransmitter2/src/settings/settings_espnow.cpp
-- espnowreceiver_LCD/src/espnow/espnow_settings_sync.cpp
-
-But there are still duplicate manual XOR implementations, for example:
-
-- espnowreceiver_LCD/lib/webserver_lcd/api/api_settings_handlers.cpp
-- espnowreceiver_2/lib/webserver/api/api_settings_handlers.cpp
-
-## 3) Legacy `soc + power` checksum for `msg_data`
-
-Legacy helper and validation style:
-
-- esp32common/espnow_transmitter/espnow_transmitter.cpp
-- espnowreceiver_2/src/helpers.cpp
-- espnowreceiver_LCD/src/espnow/espnow_runtime.cpp (inline calc in handler)
-
-This is effectively a special-case checksum path separate from generic packet/message helpers.
-
-## 4) CRC32 (stronger integrity)
-
-Shared CRC32 helpers exist and are already used in key areas:
-
-- `crc32_packet(...)`
-- `calculate_message_crc32_zeroed(...)`
-- `verify_message_crc32(...)`
-- in esp32common/espnow_common_utils/espnow_packet_utils.h
+Shared helper: `EspnowPacketUtils::calculate_checksum(...)` in `esp32common/espnow_common_utils/espnow_packet_utils.h`
 
 Used in:
 
-- heartbeats and heartbeat ACKs:
-  - ESPnowtransmitter2/espnowtransmitter2/src/espnow/heartbeat_manager.cpp
-  - espnowreceiver_LCD/src/espnow/rx_heartbeat_manager.cpp
-- persisted settings blobs:
-  - ESPnowtransmitter2/espnowtransmitter2/src/settings/settings_persistence.cpp
+- `espnowreceiver_LCD/src/espnow/battery_handlers.cpp`
+- `espnowreceiver_LCD/src/espnow/component_config_handler.cpp`
+- `ESPnowtransmitter2/espnowtransmitter2/src/espnow/component_catalog_handlers.cpp`
 
-## 5) OTA SHA-256 image hash
+Also duplicated as manual inline loops (not using the helper) in:
 
-Used for firmware artifact integrity verification:
+- `ESPnowtransmitter2/espnowtransmitter2/src/espnow/request_data_handlers.cpp`
+- `ESPnowtransmitter2/espnowtransmitter2/src/espnow/version_beacon_manager.cpp`
 
-- ESPnowtransmitter2/espnowtransmitter2/src/network/ota_upload_handler.cpp
-- espnowreceiver_2/lib/webserver/api/api_control_handlers.cpp
+### 2) XOR16
 
-## 6) OTA HMAC-SHA256 signatures
+Shared helpers: `EspnowPacketUtils::calculate_message_checksum(...)` / `verify_message_checksum(...)` in `esp32common/espnow_common_utils/espnow_packet_utils.h`
 
-Used for OTA session authentication (PSK-based):
+Used in:
 
-- esp32common/webserver_common_utils/src/ota_auth_utils.cpp
-- esp32common/webserver_common_utils/src/ota_session_utils.cpp
+- `ESPnowtransmitter2/espnowtransmitter2/src/settings/settings_espnow.cpp`
+- `espnowreceiver_LCD/src/espnow/espnow_settings_sync.cpp`
 
-## 7) FNV-1a hash in MQTT routing (not integrity)
+Also duplicated as manual inline loops in:
 
-Used for topic dispatch speed, not corruption/auth checks:
+- `espnowreceiver_LCD/lib/webserver_lcd/api/api_settings_handlers.cpp`
+- `espnowreceiver_2/lib/webserver/api/api_settings_handlers.cpp`
 
-- espnowreceiver_2/src/mqtt/mqtt_client.cpp
+### 3) Legacy `soc + power` field sum
 
-This should not be treated as a checksum policy mechanism.
+Inline calculation with no shared helper, used in:
 
----
+- `esp32common/espnow_transmitter/espnow_transmitter.cpp`
+- `espnowreceiver_2/src/helpers.cpp`
+- `espnowreceiver_LCD/src/espnow/espnow_runtime.cpp`
 
-## Why this happened (and why it is not “wrong”, just now costly)
+### 4) CRC32 — target algorithm (already in use)
 
-1. **Protocol eras overlap**
-   - Early lightweight checks (sum/XOR) remained while newer CRC32 and OTA crypto were added.
+Shared helpers already exist and are used correctly in heartbeat and settings persistence paths:
 
-2. **Different channels had different goals**
-   - ESP-NOW packet corruption check vs NVS blob integrity vs OTA authenticity.
+- `EspnowPacketUtils::calculate_message_crc32_zeroed(...)`
+- `EspnowPacketUtils::verify_message_crc32(...)`
+- `EspnowPacketUtils::crc32_packet(...)`
 
-3. **Incremental migration with compatibility requirements**
-   - Example: settings persistence still has legacy fallback paths.
+in `esp32common/espnow_common_utils/espnow_packet_utils.h`
 
-4. **Local implementations survived after shared utilities were introduced**
-   - Manual loops in multiple files now duplicate logic.
+Currently used in:
 
----
-
-## Does it cause more issues than it fixes?
-
-## What it still fixes well
-
-- OTA SHA-256 + HMAC-SHA256 are absolutely justified and should remain.
-- CRC32 on persisted blobs and heartbeat control-plane traffic is appropriate.
-
-## What is now net-negative
-
-- Multiple non-cryptographic checksum variants (sum, XOR, `soc+power`) for neighboring message families.
-- Same conceptual message class using different checksum rules depending on code path.
-- Manual per-file checksum code duplication instead of one canonical helper.
-- Weak XOR checks in settings update path for control-plane messages.
-
-### Net assessment
-
-For ESP-NOW app-layer integrity paths, complexity is now high enough that it likely causes more integration/debug burden than protection value. The protection itself is uneven because weaker algorithms and ad-hoc implementations remain in active paths.
+- `ESPnowtransmitter2/espnowtransmitter2/src/espnow/heartbeat_manager.cpp`
+- `espnowreceiver_LCD/src/espnow/rx_heartbeat_manager.cpp`
+- `ESPnowtransmitter2/espnowtransmitter2/src/settings/settings_persistence.cpp`
 
 ---
 
-## Recommendation: target integrity architecture
+## Target state
 
-## A) Keep three layers, each with a single clear purpose
+All ESP-NOW message types use a single trailing `uint32_t checksum` field computed as CRC32, using the canonical shared helpers only:
 
-1. **Artifact integrity (OTA):** SHA-256
-2. **Artifact/session authenticity (OTA):** HMAC-SHA256
-3. **Runtime message integrity (ESP-NOW app payloads + persisted blobs):** CRC32
+- **compute:** `EspnowPacketUtils::calculate_message_crc32_zeroed(&msg, sizeof(msg))`
+- **verify:** `EspnowPacketUtils::verify_message_crc32(&msg, sizeof(msg))`
 
-Everything else should be deprecated over time.
-
-## B) Standardise ESP-NOW structured messages on CRC32
-
-For all structured control/config/state messages (settings, component apply, battery/info/status/config, etc):
-
-- use trailing `uint32_t checksum` interpreted as CRC32,
-- compute with shared helper only (`calculate_message_crc32_zeroed`),
-- verify with shared helper only (`verify_message_crc32`).
-
-## C) Contain legacy fast-path data checks
-
-For ultra-high-rate tiny telemetry (`msg_data`):
-
-- Option 1 (preferred long-term): migrate to CRC32 and version-gate protocol.
-- Option 2 (short-term compatibility): keep legacy `soc+power` verification but isolate it behind one shared helper (`verify_legacy_msg_data_checksum`) and mark deprecated.
-
-## D) Remove manual checksum loops
-
-Replace all local XOR/sum loops with calls to canonical helpers.
-
-This includes at least:
-
-- ESPnowtransmitter2/espnowtransmitter2/src/espnow/request_data_handlers.cpp
-- ESPnowtransmitter2/espnowtransmitter2/src/espnow/version_beacon_manager.cpp
-- ESPnowtransmitter2/espnowtransmitter2/src/settings/settings_espnow.cpp (inbound verify path)
-- espnowreceiver_LCD/lib/webserver_lcd/api/api_settings_handlers.cpp
-- espnowreceiver_2/lib/webserver/api/api_settings_handlers.cpp
-
-## E) Introduce explicit checksum policy metadata
-
-In common protocol header/docs, define per message type:
-
-- algorithm (`LEGACY_SOC_POWER`, `SUM16`, `XOR16`, `CRC32`),
-- field location and width,
-- migration state (`legacy`, `current`, `deprecated_after`).
-
-This avoids “guess from code” behavior.
+No additive sum, XOR16, or `soc+power` checks remain in any ESP-NOW send or receive path.
 
 ---
 
-## Concrete tidy-up plan (phased)
+## Migration plan
 
-## Phase 0 (documentation + guardrails, low risk)
+### Phase 0 — Preparation (no wire change, no compatibility risk)
 
-1. Add `CHECKSUM_POLICY.md` under esp32common with message-to-algorithm matrix.
-2. Add lint/test rule: no raw checksum loops outside `espnow_packet_utils.h` (except clearly marked legacy wrappers).
-3. Add naming rules:
-   - only `*_crc32` for CRC32 fields,
-   - avoid generic `checksum` for new messages.
+**Goal:** lay groundwork and prevent regression before any protocol changes.
 
-## Phase 1 (deduplicate implementations, no wire change)
+1. Add a `CHECKSUM_POLICY.md` to `esp32common/espnow_common_utils/` listing every message struct, its current checksum field name, type, and algorithm.
+2. Replace all manual inline XOR/sum loops with calls to the existing shared helpers. This is a refactor only — no wire format change. Affected files:
+   - `ESPnowtransmitter2/espnowtransmitter2/src/espnow/request_data_handlers.cpp`
+   - `ESPnowtransmitter2/espnowtransmitter2/src/espnow/version_beacon_manager.cpp`
+   - `ESPnowtransmitter2/espnowtransmitter2/src/settings/settings_espnow.cpp`
+   - `espnowreceiver_LCD/lib/webserver_lcd/api/api_settings_handlers.cpp`
+   - `espnowreceiver_2/lib/webserver/api/api_settings_handlers.cpp`
+3. Wrap the legacy `soc+power` check behind a single shared helper — `EspnowPacketUtils::verify_legacy_msg_data_checksum(...)` — so there is one place to update or remove it later.
+4. Add unit tests asserting that each helper produces output matching current wire behavior, so Phase 1 changes can be validated without hardware.
 
-1. Replace manual XOR/sum loops with helper calls only.
-2. Add helper wrappers for legacy formulas (`soc+power`) and use them everywhere that path remains.
-3. Add tests ensuring helper parity with current wire behavior.
+### Phase 1 — Migrate structured control/config/state messages to CRC32
 
-## Phase 2 (strengthen control-plane integrity)
+**Goal:** all non-high-rate structured messages use CRC32. Transmitter and receiver must be updated together (or dual-accept logic added — see below).
 
-1. Migrate settings update path from XOR16 to CRC32 (new message version or new type IDs).
-2. Support dual-accept during migration window:
-   - accept old XOR messages,
-   - emit new CRC32 messages,
-   - log old format usage.
+**Message families to migrate (additive sum → CRC32):**
 
-## Phase 3 (retire weak algorithms)
+| Message type | Current algorithm | Checksum field | Change |
+|---|---|---|---|
+| battery info/status/config | additive sum | `uint16_t checksum` | → `uint32_t checksum` (CRC32) |
+| component config apply | additive sum | `uint16_t checksum` | → `uint32_t checksum` (CRC32) |
+| component catalog fragment | additive sum | `uint16_t checksum` | → `uint32_t checksum` (CRC32) |
+| version beacon | additive sum (inline) | `uint16_t checksum` | → `uint32_t checksum` (CRC32) |
+| request data | additive sum (inline) | `uint16_t checksum` | → `uint32_t checksum` (CRC32) |
 
-1. Remove XOR16 for settings paths.
-2. Remove additive sum for structured config/control payloads.
-3. Keep only:
-   - CRC32 for runtime structured data and persisted blobs,
-   - SHA-256 + HMAC-SHA256 for OTA/security.
+**Message families to migrate (XOR16 → CRC32):**
+
+| Message type | Current algorithm | Checksum field | Change |
+|---|---|---|---|
+| settings change / sync | XOR16 | `uint16_t checksum` | → `uint32_t checksum` (CRC32) |
+| settings ACK | XOR16 | `uint16_t checksum` | → `uint32_t checksum` (CRC32) |
+
+**Migration procedure for each message family:**
+
+1. Rename the checksum field from `uint16_t checksum` to `uint32_t checksum` in the message struct. This is a wire-breaking change: bump the message version or protocol generation constant at the same time.
+2. Update the sender to call `calculate_message_crc32_zeroed`.
+3. Update the receiver to call `verify_message_crc32`.
+4. If transmitter and receiver cannot be flashed simultaneously, add a dual-accept window:
+   - Accept both old (16-bit) and new (32-bit) formats, keyed on message version field.
+   - Log old-format receptions as `[WARN] legacy checksum format received`.
+   - Remove dual-accept path once all devices on the network are updated.
+
+**Completion criterion:** no call to `calculate_checksum`, `calculate_message_checksum`, or `verify_message_checksum` remains in any ESP-NOW send or receive path.
+
+### Phase 2 — Migrate high-rate telemetry (`msg_data` / `soc+power`)
+
+**Goal:** retire the `soc+power` path. Deferred to Phase 2 because `msg_data` is the highest-rate message type and has the widest compatibility surface.
+
+1. Define a new `msg_data_v2` struct with a trailing `uint32_t checksum` (CRC32) field.
+2. Transmitter emits `msg_data_v2` alongside `msg_data` during a compatibility window (keyed on a new message type ID).
+3. Receiver prefers `msg_data_v2` when recognised; falls back to legacy for older transmitters.
+4. Once all transmitters on the network are updated, remove `msg_data` emission and delete `verify_legacy_msg_data_checksum`.
+
+### Phase 3 — Cleanup
+
+1. Delete deprecated helpers: `calculate_checksum`, `calculate_message_checksum`, `verify_message_checksum`, `verify_legacy_msg_data_checksum`.
+2. Update `CHECKSUM_POLICY.md` to reflect the completed single-algorithm state.
+3. Add a CI/lint assertion: no symbol matching `calculate_checksum|calculate_message_checksum|verify_message_checksum` exists outside `espnow_packet_utils.h`.
 
 ---
 
-## Priority recommendations (what to do first)
+## Phase summary
 
-1. **Immediate:** stop adding any new XOR/sum checksum paths.
-2. **Immediate:** centralise remaining legacy checks into shared helpers.
-3. **Next:** migrate settings/control paths to CRC32 before adding more config message families.
-4. **Keep:** OTA SHA-256/HMAC design (already aligned with good practice).
+| Phase | What changes | Wire change? | Risk |
+|---|---|---|---|
+| 0 | Centralise inline loops, wrap legacy helper, add tests | No | Low |
+| 1 | Structured messages: sum/XOR → CRC32 | Yes (version-gated) | Medium |
+| 2 | High-rate telemetry: soc+power → CRC32 | Yes (dual-accept) | Medium |
+| 3 | Delete deprecated helpers and old code paths | No | Low |
 
----
-
-## Expected impact
-
-### Benefits
-
-- fewer protocol regressions during refactors,
-- easier onboarding/debugging,
-- clearer security/integrity model,
-- better resilience against accidental corruption in control paths.
-
-### Costs
-
-- temporary compatibility complexity during dual-format migration,
-- small wire-size increase when moving 16-bit checks to CRC32,
-- test matrix updates.
-
-Net result is strongly positive.
-
----
-
-## Final recommendation
-
-Treat checksum/hashing as a **platform contract**, not a per-feature local choice.
-
-- Keep cryptographic OTA protections unchanged.
-- Converge ESP-NOW message integrity on CRC32.
-- Remove ad-hoc checksum code from feature modules.
-- Plan and execute a compatibility-window migration, then retire legacy sum/XOR paths.
-
-This will reduce defects and integration friction without sacrificing safety.
+After Phase 3, every ESP-NOW message integrity check uses CRC32, computed and verified via two shared functions in `espnow_packet_utils.h`. No per-feature checksum logic remains in any message handler.

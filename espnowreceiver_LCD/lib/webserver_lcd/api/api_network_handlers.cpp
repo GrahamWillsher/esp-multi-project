@@ -11,6 +11,7 @@
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp32common/espnow/common.h>
+#include <esp32common/espnow/packet_utils.h>
 #include <cstring>
 
 esp_err_t api_get_receiver_network_handler(httpd_req_t *req) {
@@ -258,7 +259,7 @@ esp_err_t api_save_network_config_handler(httpd_req_t *req) {
     }
 
     msg.config_version = 0;
-    msg.checksum = 0;
+    msg.checksum = EspnowPacketUtils::calculate_message_crc32_zeroed(&msg);
 
     esp_err_t result = esp_now_send(TransmitterManager::getMAC(), (const uint8_t*)&msg, sizeof(msg));
     if (result == ESP_OK) {
@@ -358,7 +359,7 @@ esp_err_t api_save_mqtt_config_handler(httpd_req_t *req) {
     strncpy(msg.client_id, client_id, sizeof(msg.client_id) - 1);
 
     msg.config_version = 0;
-    msg.checksum = 0;
+    msg.checksum = EspnowPacketUtils::calculate_message_crc32_zeroed(&msg);
 
     LOG_INFO("API", "Sending MQTT config: %s, %d.%d.%d.%d:%d",
              msg.enabled ? "ENABLED" : "DISABLED",

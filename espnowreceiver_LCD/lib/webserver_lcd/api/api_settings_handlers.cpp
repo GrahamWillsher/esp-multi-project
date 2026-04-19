@@ -9,6 +9,7 @@
 #include <ArduinoJson.h>
 #include <esp_now.h>
 #include <esp32common/espnow/common.h>
+#include <esp32common/espnow/packet_utils.h>
 #include <cstring>
 
 esp_err_t api_get_battery_settings_handler(httpd_req_t *req) {
@@ -121,14 +122,11 @@ esp_err_t api_save_setting_handler(httpd_req_t *req) {
         return ApiResponseUtils::send_error_message(req, "Unsupported value type for field update");
     }
 
-    msg.checksum = 0;
-    uint8_t* bytes = (uint8_t*)&msg;
-    for (size_t i = 0; i < sizeof(msg) - sizeof(msg.checksum); i++) {
-        msg.checksum ^= bytes[i];
-    }
+    msg.checksum = EspnowPacketUtils::calculate_message_crc32_zeroed(&msg);
 
-    LOG_INFO("API", "Message prepared - type=%d, category=%d, field=%d, checksum=%u, size=%d bytes",
-             msg.type, msg.category, msg.field_id, msg.checksum, sizeof(msg));
+    LOG_INFO("API", "Message prepared - type=%d, category=%d, field=%d, checksum=0x%08lX, size=%d bytes",
+             msg.type, msg.category, msg.field_id,
+             static_cast<unsigned long>(msg.checksum), static_cast<int>(sizeof(msg)));
 
     if (!TransmitterManager::isMACKnown()) {
         LOG_ERROR("API", "Transmitter not connected");

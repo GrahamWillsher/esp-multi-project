@@ -215,7 +215,7 @@ void VersionBeaconManager::send_config_section(config_section_t section, const u
             strncpy(mqtt_msg.message, "Config sent in response to version mismatch", sizeof(mqtt_msg.message) - 1);
             mqtt_msg.message[sizeof(mqtt_msg.message) - 1] = '\0';
             
-            mqtt_msg.checksum = EspnowPacketUtils::calculate_message_checksum(&mqtt_msg);
+            mqtt_msg.checksum = EspnowPacketUtils::calculate_message_crc32_zeroed(&mqtt_msg);
             
             esp_err_t send_result = TxSendGuard::send_to_receiver_guarded(
                 receiver_mac,

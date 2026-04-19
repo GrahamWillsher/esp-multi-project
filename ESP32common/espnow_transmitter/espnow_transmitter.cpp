@@ -1,6 +1,7 @@
 #include "espnow_transmitter.h"
 #include "../logging_utilities/mqtt_logger.h"
 #include "../espnow_common_utils/espnow_send_utils.h"
+#include "../espnow_common_utils/espnow_packet_utils.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/queue.h>
@@ -16,10 +17,6 @@ espnow_payload_t tx_data;
 // espnow_rx_queue is defined by project runtime context (project-specific)
 
 uint8_t requester_mac[6] = {0};  // Track who requested data
-
-uint16_t calculate_checksum(espnow_payload_t* data) {
-    return (uint16_t)(data->soc + data->power);
-}
 
 bool set_channel(uint8_t ch) {
     return esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE) == ESP_OK;
@@ -161,7 +158,7 @@ void send_test_data() {
         if (tx_data.soc <= 20) soc_increasing = true;
     }
     tx_data.power = random(-4000, 4001);
-    tx_data.checksum = calculate_checksum(&tx_data);
+    tx_data.checksum = EspnowPacketUtils::calculate_message_crc32_zeroed(&tx_data);
     // Legacy send_test_data() function removed - modern code uses DataSender class
 }
 

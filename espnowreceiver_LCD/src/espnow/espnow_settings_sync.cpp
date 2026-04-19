@@ -89,11 +89,9 @@ bool handle_settings_update_ack(const espnow_queue_msg_t* msg) {
 
     const auto* ack = reinterpret_cast<const settings_update_ack_msg_t*>(msg->data);
 
-    if (!EspnowPacketUtils::verify_message_checksum(ack)) {
-        const uint16_t calc = EspnowPacketUtils::calculate_message_checksum(ack);
-        LOG_WARN("SETTINGS", "ACK checksum mismatch: calc=%u recv=%u",
-                 static_cast<unsigned>(calc),
-                 static_cast<unsigned>(ack->checksum));
+    if (!EspnowPacketUtils::verify_message_crc32(ack)) {
+        LOG_WARN("SETTINGS", "ACK CRC32 mismatch: stored=0x%08lX",
+                 static_cast<unsigned long>(ack->checksum));
         return false;
     }
 
@@ -139,11 +137,9 @@ bool handle_settings_changed(const espnow_queue_msg_t* msg) {
 
     const auto* change = reinterpret_cast<const settings_changed_msg_t*>(msg->data);
 
-    if (!EspnowPacketUtils::verify_message_checksum(change)) {
-        const uint16_t calc = EspnowPacketUtils::calculate_message_checksum(change);
-        LOG_WARN("SETTINGS", "Changed checksum mismatch: calc=%u recv=%u",
-                 static_cast<unsigned>(calc),
-                 static_cast<unsigned>(change->checksum));
+    if (!EspnowPacketUtils::verify_message_crc32(change)) {
+        LOG_WARN("SETTINGS", "Changed CRC32 mismatch: stored=0x%08lX",
+                 static_cast<unsigned long>(change->checksum));
         return false;
     }
 
@@ -175,14 +171,9 @@ bool handle_component_apply_ack(const espnow_queue_msg_t* msg) {
 
     const auto* ack = reinterpret_cast<const component_apply_ack_t*>(msg->data);
 
-    const uint16_t calculated = EspnowPacketUtils::calculate_checksum(
-        reinterpret_cast<const uint8_t*>(ack),
-        static_cast<uint16_t>(sizeof(component_apply_ack_t) - sizeof(ack->checksum)));
-
-    if (calculated != ack->checksum) {
-        LOG_WARN("SETTINGS", "Component apply ACK checksum mismatch: calc=%u recv=%u",
-                 static_cast<unsigned>(calculated),
-                 static_cast<unsigned>(ack->checksum));
+    if (!EspnowPacketUtils::verify_message_crc32(ack)) {
+        LOG_WARN("SETTINGS", "Component apply ACK CRC32 mismatch: stored=0x%08lX",
+                 static_cast<unsigned long>(ack->checksum));
         return false;
     }
 

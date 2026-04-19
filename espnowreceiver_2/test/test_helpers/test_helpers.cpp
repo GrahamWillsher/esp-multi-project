@@ -2,6 +2,7 @@
 #include <unity.h>
 
 #include "../../src/helpers.h"
+#include <esp32common/espnow/packet_utils.h>
 
 void test_gradient_endpoints_match_start_and_end() {
     uint16_t gradient[11] = {0};
@@ -14,22 +15,20 @@ void test_gradient_endpoints_match_start_and_end() {
     TEST_ASSERT_EQUAL_HEX16(end, gradient[10]);
 }
 
-void test_calculate_checksum_uses_soc_plus_power_low16() {
+void test_payload_crc32_round_trip() {
     espnow_payload_t payload = {};
+    payload.type = msg_data;
     payload.soc = 80;
     payload.power = -100;
+    payload.checksum = EspnowPacketUtils::calculate_message_crc32_zeroed(&payload);
 
-    // Function behavior: uint16_t sum = soc + (uint16_t)power
-    uint16_t expected = static_cast<uint16_t>(80 + static_cast<uint16_t>(-100));
-    uint16_t actual = calculate_checksum(&payload);
-
-    TEST_ASSERT_EQUAL_HEX16(expected, actual);
+    TEST_ASSERT_TRUE(EspnowPacketUtils::verify_message_crc32(&payload));
 }
 
 void setup() {
     UNITY_BEGIN();
     RUN_TEST(test_gradient_endpoints_match_start_and_end);
-    RUN_TEST(test_calculate_checksum_uses_soc_plus_power_low16);
+    RUN_TEST(test_payload_crc32_round_trip);
     UNITY_END();
 }
 
