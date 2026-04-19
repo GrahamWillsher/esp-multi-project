@@ -234,6 +234,15 @@ esp_err_t api_firmware_info_handler(httpd_req_t *req) {
         doc["message"] = "Embedded firmware metadata unavailable";
     }
 
+    // Expose WiFi mode so the OTA page can gate transmitter OTA in AP/config mode.
+    const wifi_mode_t wifi_mode = WiFi.getMode();
+    doc["sta_connected"] = (wifi_mode == WIFI_MODE_STA) && (WiFi.status() == WL_CONNECTED);
+    const char* wifi_mode_str =
+        (wifi_mode == WIFI_MODE_STA)   ? "STA"   :
+        (wifi_mode == WIFI_MODE_AP)    ? "AP"    :
+        (wifi_mode == WIFI_MODE_APSTA) ? "APSTA" : "NULL";
+    doc["wifi_mode"] = wifi_mode_str;
+
     String json;
     serializeJson(doc, json);
     return HttpJsonUtils::send_json(req, json.c_str());

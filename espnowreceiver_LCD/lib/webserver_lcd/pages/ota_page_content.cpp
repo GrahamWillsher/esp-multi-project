@@ -59,8 +59,13 @@ String get_ota_page_content() {
     </div>
     
     <!-- Transmitter OTA Section -->
-    <div class='info-box' style='text-align: center;'>
+    <div id='transmitterOtaSection' class='info-box' style='text-align: center;'>
         <h3>📡 Update Transmitter</h3>
+        <div id='txApModeWarning' style='display:none; margin: 0 0 16px 0; padding: 12px 16px; background: #2a1f00; border: 1px solid #FFD700; border-radius: 6px; color: #FFD700; font-size: 14px; text-align: left;'>
+            ⚠️ <strong>Transmitter OTA is unavailable in AP/config mode.</strong><br>
+            This device is not connected to your WiFi network. Connect to your network first,
+            then return to this page to update the transmitter firmware.
+        </div>
         <div id='statusTransmitter' style='margin: 20px 0; font-size: 18px;'>
             📁 Select firmware file (.bin)
         </div>

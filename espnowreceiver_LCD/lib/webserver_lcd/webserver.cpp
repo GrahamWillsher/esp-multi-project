@@ -171,7 +171,16 @@ void init_webserver() {
     g_webserver_metrics.registered_handlers = static_cast<uint16_t>(registered_count);
     
     // Log accessible URLs for debugging
-    LOG_INFO("WEBSERVER", "Access webserver at: http://%s", WiFi.localIP().toString().c_str());
+    const wifi_mode_t mode = WiFi.getMode();
+    if (mode == WIFI_MODE_APSTA) {
+        LOG_INFO("WEBSERVER", "Access webserver at: http://%s (STA) or http://%s (AP)",
+                 WiFi.localIP().toString().c_str(),
+                 WiFi.softAPIP().toString().c_str());
+    } else if (mode == WIFI_MODE_AP) {
+        LOG_INFO("WEBSERVER", "Access webserver at: http://%s (AP mode)", WiFi.softAPIP().toString().c_str());
+    } else {
+        LOG_INFO("WEBSERVER", "Access webserver at: http://%s", WiFi.localIP().toString().c_str());
+    }
     LOG_DEBUG("WEBSERVER", "Pages available:");
     for (int i = 0; i < PAGE_COUNT; i++) {
         LOG_DEBUG("WEBSERVER", "  - %s (%s)", PAGE_DEFINITIONS[i].uri, PAGE_DEFINITIONS[i].name);

@@ -27,9 +27,10 @@ namespace ESPNow {
 namespace {
 constexpr size_t OTA_IMAGE_SHA256_HEX_LEN = 64;
 constexpr size_t OTA_RESPONSE_BODY_MAX_LEN = 512;
-constexpr uint8_t OTA_CHALLENGE_FETCH_ATTEMPTS = 6;
+constexpr uint8_t OTA_CHALLENGE_FETCH_ATTEMPTS = 2;         // Reduced from 6: LAN should succeed first attempt
 constexpr uint32_t OTA_CHALLENGE_FETCH_RETRY_DELAY_MS = 300;
-constexpr uint32_t OTA_CHALLENGE_HTTP_TIMEOUT_MS = 9000;
+constexpr uint32_t OTA_CHALLENGE_HTTP_TIMEOUT_MS = 3000;    // Reduced from 9000: LAN RTT never needs 9s
+constexpr uint32_t OTA_CHALLENGE_CONNECT_TIMEOUT_MS = 1500;
 constexpr uint8_t OTA_PREARM_STATUS_FETCH_ATTEMPTS = 2;
 constexpr uint32_t OTA_PREARM_STATUS_FETCH_RETRY_DELAY_MS = 150;
 // Throughput tuning (conservative): use shorter poll sleeps and larger stream chunks
@@ -38,8 +39,10 @@ constexpr uint32_t OTA_HTTP_READ_POLL_DELAY_MS = 2;
 constexpr uint32_t OTA_FORWARD_RETRY_POLL_DELAY_MS = 1;
 constexpr uint32_t OTA_RESPONSE_WAIT_POLL_DELAY_MS = 5;
 constexpr uint32_t OTA_STREAM_STALL_TIMEOUT_MS = 60000;
-constexpr uint32_t OTA_TX_SOCKET_TIMEOUT_MS = 60000;
+constexpr uint32_t OTA_TX_CONNECT_TIMEOUT_MS = 3000;
+constexpr uint32_t OTA_TX_SOCKET_TIMEOUT_MS = 15000;       // Reduced from 60000: LAN streams never stall 60s
 constexpr uint32_t OTA_RESPONSE_WAIT_TIMEOUT_MS = 70000;
+constexpr uint32_t OTA_TCP_PROBE_CONNECT_TIMEOUT_MS = 1500;
 constexpr uint32_t OTA_EARLY_RESPONSE_TIMEOUT_MS = 1200;
 constexpr uint32_t OTA_FINAL_RESPONSE_PARSE_TIMEOUT_MS = 3000;
 constexpr uint32_t OTA_START_CONTROL_SETTLE_DELAY_MS = 200;
@@ -206,6 +209,7 @@ bool try_get_prearmed_ota_challenge(OtaSessionChallenge* out_challenge,
     for (uint8_t status_attempt = 1; status_attempt <= OTA_PREARM_STATUS_FETCH_ATTEMPTS; ++status_attempt) {
         HTTPClient status_client;
         status_client.begin(status_url);
+        status_client.setConnectTimeout(OTA_CHALLENGE_CONNECT_TIMEOUT_MS);
         status_client.setTimeout(OTA_CHALLENGE_HTTP_TIMEOUT_MS);
 
         status_code = status_client.GET();
@@ -255,6 +259,7 @@ bool try_arm_ota_challenge(OtaSessionChallenge* out_challenge, String* out_error
     const String arm_url = TransmitterManager::getURL() + "/api/ota_arm";
     HTTPClient arm_client;
     arm_client.begin(arm_url);
+    arm_client.setConnectTimeout(OTA_CHALLENGE_CONNECT_TIMEOUT_MS);
     arm_client.setTimeout(OTA_CHALLENGE_HTTP_TIMEOUT_MS);
     arm_client.addHeader("Content-Type", "application/json");
 
@@ -438,7 +443,7 @@ bool open_ota_transmitter_connection(WiFiClient& tx_client,
     IPAddress tx_ip(ip[0], ip[1], ip[2], ip[3]);
     tx_client.setTimeout(OTA_TX_SOCKET_TIMEOUT_MS);
 
-    if (!tx_client.connect(tx_ip, 80)) {
+    if (!tx_client.connect(tx_ip, 80, OTA_TX_CONNECT_TIMEOUT_MS)) {
         return false;
     }
     tx_client.setNoDelay(true);
@@ -528,6 +533,7 @@ esp_err_t api_transmitter_ota_status_handler(httpd_req_t *req) {
     const String status_url = TransmitterManager::getURL() + "/api/ota_status";
     HTTPClient http;
     http.begin(status_url);
+    http.setConnectTimeout(OTA_CHALLENGE_CONNECT_TIMEOUT_MS);
     http.setTimeout(3000);
 
     int code = http.GET();
@@ -759,8 +765,41 @@ esp_err_t api_ota_upload_handler(httpd_req_t *req) {
         return ApiResponseUtils::send_error_message(req, "Unsupported upload type. Use raw application/octet-stream");
     }
 
+    // Fix 1: Transmitter OTA requires active STA link — reject immediately in AP/APSTA fallback
+    // and also in disconnected STA mode to avoid long blocking connect/challenge attempts.
+    // In AP+STA mode the transmitter IP in NVS is stale and the challenge loop would block
+    // the httpd worker task for up to 164 s, timing out every concurrent browser request.
+    {
+        const wifi_mode_t wifi_mode = WiFi.getMode();
+        const wl_status_t sta_status = WiFi.status();
+        if (wifi_mode != WIFI_MODE_STA || sta_status != WL_CONNECTED) {
+            LOG_WARN("OTA", "Transmitter OTA rejected: wifi_mode=%d sta_status=%d",
+                     static_cast<int>(wifi_mode),
+                     static_cast<int>(sta_status));
+            return ApiResponseUtils::send_error_message(req,
+                "Transmitter OTA unavailable: receiver is not connected in STA mode. "
+                "Connect to your WiFi network first, then retry.");
+        }
+    }
+
     if (!TransmitterManager::isIPKnown()) {
         return ApiResponseUtils::send_error_message(req, "Transmitter IP unknown");
+    }
+
+    // Fix 2: fast TCP reachability probe — fail in 2 s rather than 164 s if stale IP.
+    {
+        const uint8_t* ip = TransmitterManager::getIP();
+        IPAddress probe_ip(ip[0], ip[1], ip[2], ip[3]);
+        WiFiClient probe;
+        probe.setTimeout(2000);
+        if (!probe.connect(probe_ip, 80, OTA_TCP_PROBE_CONNECT_TIMEOUT_MS)) {
+            probe.stop();
+            LOG_WARN("OTA", "Transmitter not reachable at %s:80 — aborting OTA",
+                     probe_ip.toString().c_str());
+            return ApiResponseUtils::send_error_message(req,
+                "Transmitter not reachable. Check it is powered on and connected to the same network.");
+        }
+        probe.stop();
     }
 
     const size_t firmware_size = remaining;

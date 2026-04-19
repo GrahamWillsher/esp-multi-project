@@ -11,8 +11,15 @@ bool setup_from_loaded_config();
 bool is_sta_connected();
 
 // Starts AP mode so the user can connect and configure via the webserver.
+// If has_credentials=true, starts AP+STA recovery mode and retries STA periodically.
+// If has_credentials=false, starts AP-only provisioning mode.
 // SSID = "ESP32-LCD-Setup", open (no password), IP = 192.168.4.1.
-void start_ap_fallback();
+void start_ap_fallback(bool has_credentials);
+
+// Runs periodic STA recovery while in AP+STA fallback mode.
+// Returns true once STA has been stably connected and a reboot is recommended
+// to bring up the full stack in normal STA mode.
+bool service_recovery();
 
 // Returns true when currently operating as a soft-AP (AP or AP+STA).
 bool is_ap_mode();

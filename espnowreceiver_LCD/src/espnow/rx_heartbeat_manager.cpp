@@ -1,6 +1,8 @@
 #include "espnow/rx_heartbeat_manager.h"
 
 #include <esp_now.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <esp32common/espnow/packet_utils.h>
 #include <esp32common/config/timing_config.h>
 #include <runtime_common_utils/device_temperature.h>
@@ -18,6 +20,14 @@ RxHeartbeatManager& RxHeartbeatManager::instance() {
     return inst;
 }
 
+namespace {
+constexpr uint8_t kAckNoMemRetryAttempts = 6;
+constexpr uint32_t kAckNoMemRetryDelayMs = 8;
+constexpr uint32_t kAckWarnRateLimitMs = 5000;
+uint32_t g_ack_no_mem_drops_since_log = 0;
+uint32_t g_ack_last_warn_ms = 0;
+}
+
 void RxHeartbeatManager::init() {
     if (m_initialized) {
         return;
@@ -28,6 +38,8 @@ void RxHeartbeatManager::init() {
     m_heartbeats_received = 0;
     m_acks_sent = 0;
     m_initialized = true;
+    g_ack_no_mem_drops_since_log = 0;
+    g_ack_last_warn_ms = millis();
 
     DeviceTemperature::init();
     DeviceTemperature::sample_now();
@@ -79,14 +91,44 @@ void RxHeartbeatManager::send_ack(uint32_t ack_seq, const uint8_t* mac) {
     ack.state = static_cast<uint8_t>(RxStateMachine::instance().connection_state());
     ack.checksum = EspnowPacketUtils::calculate_message_crc32_zeroed(&ack);
 
-    const esp_err_t result = esp_now_send(mac, reinterpret_cast<const uint8_t*>(&ack), sizeof(ack));
-    if (result == ESP_OK) {
-        m_acks_sent++;
-    } else {
-        LOG_WARN("HEARTBEAT", "Failed to send ACK seq=%lu: %s",
-                 static_cast<unsigned long>(ack_seq),
-                 esp_err_to_name(result));
+    esp_err_t result = ESP_FAIL;
+    for (uint8_t attempt = 0; attempt < kAckNoMemRetryAttempts; ++attempt) {
+        result = esp_now_send(mac, reinterpret_cast<const uint8_t*>(&ack), sizeof(ack));
+        if (result == ESP_OK) {
+            m_acks_sent++;
+            return;
+        }
+
+        // ESP-NOW tx queue can be transiently full under burst traffic.
+        // Retry a few times with a short backoff before logging a warning.
+        if (result == ESP_ERR_ESPNOW_NO_MEM && (attempt + 1U) < kAckNoMemRetryAttempts) {
+            // Exponential-ish backoff to let the ESPNOW tx queue drain under WiFi/OTA load.
+            const uint32_t backoff_ms = kAckNoMemRetryDelayMs * (attempt + 1U);
+            vTaskDelay(pdMS_TO_TICKS(backoff_ms));
+            continue;
+        }
+
+        break;
     }
+
+    if (result == ESP_ERR_ESPNOW_NO_MEM) {
+        ++g_ack_no_mem_drops_since_log;
+        const uint32_t now = millis();
+        if ((now - g_ack_last_warn_ms) >= kAckWarnRateLimitMs) {
+            LOG_WARN("HEARTBEAT", "ACK tx queue saturated (NO_MEM): dropped=%lu in last %lums, latest seq=%lu",
+                     static_cast<unsigned long>(g_ack_no_mem_drops_since_log),
+                     static_cast<unsigned long>(now - g_ack_last_warn_ms),
+                     static_cast<unsigned long>(ack_seq));
+            g_ack_last_warn_ms = now;
+            g_ack_no_mem_drops_since_log = 0;
+        }
+        return;
+    }
+
+    LOG_WARN("HEARTBEAT", "Failed to send ACK seq=%lu after %u attempt(s): %s",
+             static_cast<unsigned long>(ack_seq),
+             static_cast<unsigned>(kAckNoMemRetryAttempts),
+             esp_err_to_name(result));
 }
 
 void RxHeartbeatManager::reset() {

@@ -238,23 +238,39 @@ String get_network_config_page_script() {
                 const data = await response.json();
                 
                 if (data.success) {
+                    // Show reboot notice and start countdown (same UX format as transmitter reboot countdown)
+                    document.getElementById('rebootNotice').style.display = 'block';
+
+                    let countdown = 10;
+                    const countdownEl = document.getElementById('countdown');
+                    countdownEl.textContent = countdown;
+
                     SaveOperation.setButtonState(btn, {
-                        text: '✓ Saved! Device will reboot...',
-                        backgroundColor: '#28a745',
+                        text: `Reboot in ${countdown}s...`,
+                        backgroundColor: '#ff9800',
                         disabled: true,
                         cursor: 'not-allowed'
                     });
-                    
-                    // Show reboot notice and start countdown
-                    document.getElementById('rebootNotice').style.display = 'block';
-                    
-                    let countdown = 3;
-                    const countdownEl = document.getElementById('countdown');
+
                     const interval = setInterval(() => {
                         countdown--;
                         countdownEl.textContent = countdown;
+
+                        SaveOperation.setButtonState(btn, {
+                            text: `Reboot in ${countdown}s...`,
+                            backgroundColor: '#ff9800',
+                            disabled: true,
+                            cursor: 'not-allowed'
+                        });
+
                         if (countdown <= 0) {
                             clearInterval(interval);
+                            SaveOperation.setButtonState(btn, {
+                                text: 'Rebooting now...',
+                                backgroundColor: '#ff9800',
+                                disabled: true,
+                                cursor: 'not-allowed'
+                            });
                             // Device will reboot, redirect to potential new IP
                             window.location.href = '/';
                         }

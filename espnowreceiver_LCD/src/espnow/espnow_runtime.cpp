@@ -16,6 +16,7 @@
 #include "common_lcd.h"
 #include "espnow/battery_data_store.h"
 #include "espnow/battery_handlers.h"
+#include "espnow/type_catalog_cache.h"
 #include "espnow/rx_connection_handler.h"
 #include "espnow/rx_heartbeat_manager.h"
 #include "espnow/rx_state_machine.h"
@@ -334,11 +335,43 @@ void handle_time_transitions_snapshot_message(const espnow_queue_msg_t* msg) {
 }
 
 void handle_type_catalog_fragment_message(const espnow_queue_msg_t* msg, const char* label) {
-    if (!validate_struct_size<type_catalog_fragment_t>(msg, label)) {
+    if (!msg || msg->len < static_cast<int>(offsetof(type_catalog_fragment_t, entries))) {
+        LOG_WARN("ESPNOW", "%s too short: %d bytes", label, msg ? msg->len : -1);
         return;
     }
 
     const auto* fragment = reinterpret_cast<const type_catalog_fragment_t*>(msg->data);
+
+    if (fragment->entry_count > TYPE_CATALOG_MAX_ENTRIES_PER_FRAGMENT) {
+        LOG_WARN("ESPNOW", "%s invalid entry_count=%u", label, static_cast<unsigned>(fragment->entry_count));
+        return;
+    }
+
+    const size_t expected_len = offsetof(type_catalog_fragment_t, entries) +
+                                (static_cast<size_t>(fragment->entry_count) * sizeof(type_catalog_entry_t));
+    if (msg->len < static_cast<int>(expected_len)) {
+        LOG_WARN("ESPNOW", "%s too short: %d bytes (expected >= %u)",
+                 label,
+                 msg->len,
+                 static_cast<unsigned>(expected_len));
+        return;
+    }
+
+    switch (fragment->type) {
+        case msg_battery_types_fragment:
+            TypeCatalogCache::handle_battery_fragment(fragment, static_cast<size_t>(msg->len));
+            break;
+        case msg_inverter_types_fragment:
+            TypeCatalogCache::handle_inverter_fragment(fragment, static_cast<size_t>(msg->len));
+            break;
+        case msg_inverter_interfaces_fragment:
+            TypeCatalogCache::handle_inverter_interface_fragment(fragment, static_cast<size_t>(msg->len));
+            break;
+        default:
+            LOG_WARN("ESPNOW", "%s unexpected type=%u", label, static_cast<unsigned>(fragment->type));
+            return;
+    }
+
     mark_protocol_activity(msg->mac);
     log_type_once(fragment->type, label);
 }

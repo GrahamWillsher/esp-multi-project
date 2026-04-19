@@ -61,6 +61,16 @@ const char* get_ota_page_script() {
 
         let receiverVersionForCompat = null;
         let transmitterVersionForCompat = null;
+        let g_sta_connected = true;  // updated by /api/firmware_info on page load
+        let g_transmitter_metadata_poll_id = null;
+        let g_fetch_transmitter_metadata = null;
+
+        function pauseTransmitterMetadataPolling() {
+            if (g_transmitter_metadata_poll_id !== null) {
+                clearInterval(g_transmitter_metadata_poll_id);
+                g_transmitter_metadata_poll_id = null;
+            }
+        }
 
         function redirectToDashboardAfterDelay(delayMs) {
             const ms = Number.isFinite(delayMs) ? delayMs : 3000;
@@ -585,6 +595,10 @@ const char* get_ota_page_script() {
             });
 
             uploadBtn.addEventListener('click', async function() {
+                // Block all interaction when device is not in STA mode.
+                if (!g_sta_connected) {
+                    return;
+                }
                 if (!selectedFile) {
                     fileInput.click();
                     return;
@@ -609,6 +623,13 @@ const char* get_ota_page_script() {
                 }
 
                 console.log('Starting ' + config.device + ' OTA upload...');
+
+                // Avoid background /api/transmitter_metadata fetches while transmitter OTA upload is in-flight.
+                // The ESP-IDF httpd worker is single-threaded; concurrent polls can timeout and clutter the UI.
+                if (config.device === 'Transmitter') {
+                    pauseTransmitterMetadataPolling();
+                }
+
                 uploadBtn.style.display = 'none';
                 progressBarDiv.style.display = 'block';
                 progressFill.style.width = '0%';
@@ -630,6 +651,12 @@ const char* get_ota_page_script() {
                         statusDiv.innerHTML = config.httpErrorPrefix + xhr.status;
                         progressBarDiv.style.display = 'none';
                         uploadBtn.style.display = '';
+                        if (config.device === 'Transmitter') {
+                            // Allow metadata refresh again after immediate upload failure.
+                            if (g_transmitter_metadata_poll_id === null && g_fetch_transmitter_metadata) {
+                                g_transmitter_metadata_poll_id = setInterval(g_fetch_transmitter_metadata, 5000);
+                            }
+                        }
                         setUploadButtonState(uploadBtn, 'Retry Upload', '#ff6b35', false);
                         return;
                     }
@@ -641,6 +668,11 @@ const char* get_ota_page_script() {
                         statusDiv.innerHTML = config.parseErrorMessage;
                         progressBarDiv.style.display = 'none';
                         uploadBtn.style.display = '';
+                        if (config.device === 'Transmitter') {
+                            if (g_transmitter_metadata_poll_id === null && g_fetch_transmitter_metadata) {
+                                g_transmitter_metadata_poll_id = setInterval(g_fetch_transmitter_metadata, 5000);
+                            }
+                        }
                         setUploadButtonState(uploadBtn, 'Retry Upload', '#ff6b35', false);
                     }
                 });
@@ -649,6 +681,11 @@ const char* get_ota_page_script() {
                     statusDiv.innerHTML = config.networkErrorMessage;
                     progressBarDiv.style.display = 'none';
                     uploadBtn.style.display = '';
+                    if (config.device === 'Transmitter') {
+                        if (g_transmitter_metadata_poll_id === null && g_fetch_transmitter_metadata) {
+                            g_transmitter_metadata_poll_id = setInterval(g_fetch_transmitter_metadata, 5000);
+                        }
+                    }
                     setUploadButtonState(uploadBtn, 'Retry Upload', '#ff6b35', false);
                 });
 
@@ -659,6 +696,32 @@ const char* get_ota_page_script() {
             });
         }
         
+        // Called when firmware_info reports sta_connected === false (AP/APSTA mode).
+        // Greys out the transmitter OTA section and blocks all interaction.
+        function applyTransmitterApModeLock(wifiMode) {
+            g_sta_connected = false;
+
+            const warning = document.getElementById('txApModeWarning');
+            if (warning) warning.style.display = 'block';
+
+            const btn = document.getElementById('uploadBtnTransmitter');
+            if (btn) {
+                btn.disabled = true;
+                btn.style.backgroundColor = '#444';
+                btn.style.color = '#888';
+                btn.style.cursor = 'not-allowed';
+                btn.style.opacity = '0.55';
+                btn.innerText = 'Not available in AP mode';
+                btn.title = 'Transmitter OTA is only available when this device is connected to your WiFi network (STA mode). Currently in ' + (wifiMode || 'AP') + ' mode.';
+            }
+
+            const fileInput = document.getElementById('firmwareFileTransmitter');
+            if (fileInput) fileInput.disabled = true;
+
+            const statusDiv = document.getElementById('statusTransmitter');
+            if (statusDiv) statusDiv.innerHTML = '';
+        }
+
             window.onload = function() {
             console.log('OTA page loaded');
 
@@ -692,7 +755,7 @@ const char* get_ota_page_script() {
                     });
             }
             
-            // Load current receiver firmware info
+            // Load current receiver firmware info and check WiFi mode
             fetch('/api/firmware_info')
                 .then(response => response.json())
                 .then(data => {
@@ -710,6 +773,11 @@ const char* get_ota_page_script() {
                         receiverVersionForCompat = null;
                     }
                     updateCompatibilityStatus();
+
+                    // Gate transmitter OTA section based on WiFi mode reported by the device.
+                    if (data.sta_connected === false) {
+                        applyTransmitterApModeLock(data.wifi_mode || 'AP');
+                    }
                 })
                 .catch(err => {
                     console.error('Failed to fetch firmware info:', err);
@@ -809,12 +877,14 @@ const char* get_ota_page_script() {
                         });
                     });
             }
+
+                    g_fetch_transmitter_metadata = fetchTransmitterMetadata;
             
             // Initial fetch
             fetchTransmitterMetadata();
             
             // Periodically refresh transmitter metadata
-            setInterval(fetchTransmitterMetadata, 5000);
+            g_transmitter_metadata_poll_id = setInterval(fetchTransmitterMetadata, 5000);
         };
     )rawliteral";
 }

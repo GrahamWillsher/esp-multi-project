@@ -81,7 +81,7 @@ void bootstrap_filesystem() {
     if (!wifi_ok) {
         // No config saved or connection failed — fall back to AP so user can configure.
         log_line("boot: starting AP fallback (ESP32-LCD-Setup)");
-        WiFiSetup::start_ap_fallback();
+        WiFiSetup::start_ap_fallback(/*has_credentials=*/cfg_loaded);
     }
 
     g_espnow_transport_enabled = WiFiSetup::is_sta_connected();
@@ -192,6 +192,12 @@ void setup() {
 
 void loop() {
     const uint32_t now = millis();
+
+    if (!g_espnow_transport_enabled && WiFiSetup::service_recovery()) {
+        LOG_INFO("MAIN", "STA recovery succeeded; rebooting to initialize full runtime stack in STA mode");
+        smart_delay(250);
+        ESP.restart();
+    }
 
     if (now - last_log_ms >= 1000) {
         const char* espnow_status = "disabled";
