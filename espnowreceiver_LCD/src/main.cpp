@@ -17,6 +17,7 @@
 #include "logging_config.h"
 #include <receiver_config_manager.h>
 #include "runtime/display_update_queue.h"
+#include "runtime/nvs_bootstrap.h"
 #include "runtime/runtime_task_startup.h"
 #include "ui/runtime/ui_runtime.h"
 #include "ui/runtime/ui_backend.h"
@@ -103,6 +104,10 @@ void webserver_startup_task(void* /*arg*/) {
 }
 
 void bootstrap_services() {
+    if (!RuntimeNvs::ensure_initialized()) {
+        handle_error(ErrorSeverity::FATAL, "NVS", "default NVS initialization failed");
+    }
+
     TransmitterManager::init();  // Creates NVS debounce timer before ESP-NOW handlers run.
 
     // Start webserver in a background task to avoid blocking setup().
@@ -204,7 +209,7 @@ void loop() {
         const char* conn_state = "n/a";
         const char* discovery_state = "n/a";
         int channel = static_cast<int>(WiFi.channel());
-        const unsigned long rx_cb = static_cast<unsigned long>(ESPNow::rx_callback_count);
+        const unsigned long rx_cb = static_cast<unsigned long>(ESPNow::rx_callback_count.load());
         if (g_espnow_transport_enabled) {
             espnow_status = ESPNowRuntime::is_connected() ? "connected" : "waiting";
             conn_state = espnow_state_to_string(EspNowConnectionManager::instance().get_state());

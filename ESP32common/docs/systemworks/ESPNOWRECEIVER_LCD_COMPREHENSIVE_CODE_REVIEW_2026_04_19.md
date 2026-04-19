@@ -13,8 +13,8 @@ This codebase is functional and advancing quickly, but it is **not yet at produc
 - **Security posture is weak by commercial/production standards** (unauthenticated control endpoints, credential exposure patterns, sensitive payload logging), though some of this is acceptable for a private DIY LAN deployment.
 - **Packet-boundary validation has now been tightened** in shared packet parsing, removing the previously identified untrusted-length CRC path.
 - **Shared/common checksum drift has now been corrected**; remaining active ESP-NOW data handlers are aligned on CRC32.
-- **Concurrency discipline is uneven** (some globals protected by mutexes, many others rely on convention/volatiles).
-- **Maintainability is acceptable but brittle** due to large god-files and mixed abstraction levels.
+- **Concurrency discipline is improved but still not fully uniform**; the LCD runtime now uses atomics for its shared counters/flags, but some shared/common modules still rely on implicit task ownership.
+- **Maintainability has improved materially** after splitting the LCD ESP-NOW runtime, though additional test coverage and further decomposition would still help.
 
 If this were a regulated, commercial, or externally exposed product, this would currently fail a serious architecture/security review. For a private DIY installation on an isolated local network, some security findings are lower priority and may be reasonably accepted by the owner.
 
@@ -122,27 +122,32 @@ Shared/common code previously still validated `msg_data` via the legacy `soc + p
 
 ## 4) High Severity Findings
 
-## H1. Monolithic dispatch file (`espnow_runtime.cpp`) is a maintenance hotspot
-~950 lines mixing queue callback, parsing, routing, state transitions, storage updates, UI side-effects.
+## H1. Monolithic dispatch file (`espnow_runtime.cpp`) is a maintenance hotspot (resolved 2026-04-19)
+The LCD ESP-NOW runtime was split into smaller units:
+- `espnow_runtime.cpp` retained lifecycle/worker orchestration
+- `espnow_runtime_messages.cpp` now owns message handlers and RX/TX callbacks
+- `espnow_runtime_routes.cpp` now owns route registration
+- `espnow_runtime_detail.h` centralizes the internal runtime contract
 
-**Impact:** difficult review/testing, high regression risk, weak separation of concerns.
+**Result:** the main runtime file is no longer a monolithic dispatch hotspot, and handler/route concerns are separated.
 
-**Improve:** split by domain (`runtime_ingress`, `runtime_routes`, `runtime_handlers_config`, `runtime_handlers_status`, `runtime_handlers_catalog`, etc.).
+**Follow-up:** per-domain tests are still desirable, but they were not added in this phase because `espnowreceiver_LCD` does not currently have an existing test harness.
 
 ---
 
-## H2. Shared-state concurrency model is mixed and partially implicit
+## H2. Shared-state concurrency model is mixed and partially implicit (partially resolved 2026-04-19)
 **Where:** many modules  
 - Some state guarded by mutex (`BatteryData`, settings sync snapshots).
-- Some state via globals/volatiles and convention.
+- Some state via globals and convention.
 - ISR/callback/task interactions rely on assumptions not mechanically enforced.
 
 **Impact:** race-condition risk under load and future refactors.
 
-**Improve:**
-- Adopt explicit ownership model (single-writer task pattern for each mutable domain).
-- Use atomic wrappers where truly lock-free shared counters are needed.
-- Document thread ownership per variable.
+**Implemented in this phase:**
+- LCD runtime counters/flags previously declared as `volatile` (`rx_callback_count`, `rx_queue_drop_count`, `rx_queue_high_watermark`, LED state, OTA LED override flag) now use `std::atomic`.
+- Callback/task call sites were updated to use `.load()`, `.store()`, and `fetch_add()`/CAS patterns explicitly.
+
+**Remaining gap:** shared/common modules such as send/backoff state still rely on ownership conventions rather than a fully documented synchronization contract.
 
 ---
 
@@ -155,23 +160,22 @@ Shared/common code previously still validated `msg_data` via the legacy `soc + p
 
 ---
 
-## H4. `connection_manager` singleton uses heap allocation (`new`) and never deletes
+## H4. `connection_manager` singleton uses heap allocation (`new`) and never deletes (resolved 2026-04-19)
 **Where:** `connection_manager.cpp`  
 Classic embedded anti-pattern: dynamic singleton allocation with process-lifetime leak.
 
-**Impact:** avoidable fragmentation risk/pattern drift.
-
-**Improve:** function-local static object (`static EspNowConnectionManager instance;`).
+**Implemented:** replaced heap allocation with a function-local static singleton instance.
 
 ---
 
-## H5. Re-initializing NVS inside feature module
+## H5. Re-initializing NVS inside feature module (resolved 2026-04-19)
 **Where:** `component_config_handler.cpp::init()`  
 `nvs_flash_init()` and potential erase are done inside component handler.
 
-**Impact:** ownership confusion; module should not own global NVS bootstrap.
-
-**Improve:** centralize NVS init at startup once; feature module should assume NVS ready and fail gracefully otherwise.
+**Implemented:**
+- Added centralized startup-owned NVS bootstrap in `src/runtime/nvs_bootstrap.cpp`.
+- `main.cpp` now ensures NVS is initialized before higher-level services start.
+- `component_config_handler.cpp` now assumes NVS is already available and only opens/loads its namespace.
 
 ---
 
@@ -249,10 +253,10 @@ There is still broad informational logging in processing paths and repeated rout
 4. Optionally remove password exposure in API responses and redact incoming JSON logs if the device will ever be shared, deployed, or exposed more broadly.
 
 ## Phase 1 (Stability and standards, 3–7 days)
-1. Split `espnow_runtime.cpp` into smaller units with per-domain tests.
-2. Formalize shared-state ownership and introduce atomics/mutexes where required.
-3. Replace singleton heap allocations with static storage-duration objects.
-4. Centralize NVS initialization and remove feature-level init duplication.
+1. ✅ Split `espnow_runtime.cpp` into smaller units. Completed 2026-04-19 via `espnow_runtime_messages.cpp`, `espnow_runtime_routes.cpp`, and `espnow_runtime_detail.h`. Per-domain tests remain deferred because `espnowreceiver_LCD` does not currently have an existing test harness.
+2. ✅ Formalize shared-state ownership and introduce atomics/mutexes where required. Completed 2026-04-19 for the LCD ESP-NOW runtime counters/flags shared across callbacks/tasks.
+3. ✅ Replace singleton heap allocations with static storage-duration objects. Completed 2026-04-19 in shared `connection_manager.cpp`.
+4. ✅ Centralize NVS initialization and remove feature-level init duplication. Completed 2026-04-19 with startup-owned NVS bootstrap and removal of feature-level NVS init from the LCD component config handler.
 
 ## Phase 2 (Architecture upgrade, 1–3 weeks)
 1. Introduce message schema validation layer (typed validator per message family).
@@ -297,7 +301,7 @@ If this is intended for deployed/hostile or semi-hostile environments, **securit
 
 1. **Blocker:** auth gate for config/reboot/OTA endpoints.
 2. **Blocker:** stop password exposure in both API output and logs.
-3. Split giant runtime source into testable modules.
-4. Formalize concurrency ownership and synchronization policy.
+3. Add an LCD test harness so future runtime refactors can land with domain-level tests.
+4. Formalize remaining concurrency ownership and synchronization policy in shared/common modules.
 5. Standardize coding style: `constexpr`, enum classes, cast hygiene, JSON safety.
 6. Add regression tests for malformed packets and API schema violations.

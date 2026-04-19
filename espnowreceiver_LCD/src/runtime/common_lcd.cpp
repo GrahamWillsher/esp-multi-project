@@ -21,13 +21,13 @@ uint8_t* peer_mac = transmitter_mac;  // Alias for LCD runtime compatibility
 QueueHandle_t message_queue = nullptr;
 QueueHandle_t& queue = message_queue;  // Alias of message_queue
 
-volatile uint32_t rx_callback_count     = 0;
-volatile uint32_t rx_queue_drop_count   = 0;
-volatile uint32_t rx_queue_high_watermark = 0;
+std::atomic<uint32_t> rx_callback_count{0};
+std::atomic<uint32_t> rx_queue_drop_count{0};
+std::atomic<uint32_t> rx_queue_high_watermark{0};
 
-volatile uint8_t current_led_color              = 0;
-volatile uint8_t current_led_effect             = 0;
-volatile bool    receiver_ota_led_override_active = false;
+std::atomic<uint8_t> current_led_color{0};
+std::atomic<uint8_t> current_led_effect{0};
+std::atomic<bool> receiver_ota_led_override_active{false};
 
 }  // namespace ESPNow
 

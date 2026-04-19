@@ -37,7 +37,8 @@ class ComponentConfigHandler {
   static ComponentConfigHandler& instance();
   
   /**
-   * @brief Initialize NVS and load stored configuration
+    * @brief Open the component-config namespace and load stored configuration
+    *        (requires system NVS to already be initialized at startup)
    * @return true if successful
    */
   bool init();

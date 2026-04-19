@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <atomic>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
@@ -50,14 +51,14 @@ namespace ESPNow {
     extern QueueHandle_t& queue;
 
     // ESP-NOW receive statistics (updated in recv callback).
-    extern volatile uint32_t rx_callback_count;
-    extern volatile uint32_t rx_queue_drop_count;
-    extern volatile uint32_t rx_queue_high_watermark;
+    extern std::atomic<uint32_t> rx_callback_count;
+    extern std::atomic<uint32_t> rx_queue_drop_count;
+    extern std::atomic<uint32_t> rx_queue_high_watermark;
 
     // LED state (display-rendered status indicator). LCD stub — no physical LED.
-    extern volatile uint8_t  current_led_color;
-    extern volatile uint8_t  current_led_effect;
-    extern volatile bool     receiver_ota_led_override_active;
+    extern std::atomic<uint8_t> current_led_color;
+    extern std::atomic<uint8_t> current_led_effect;
+    extern std::atomic<bool>    receiver_ota_led_override_active;
 
 }  // namespace ESPNow
 

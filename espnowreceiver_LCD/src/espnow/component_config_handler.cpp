@@ -8,7 +8,6 @@
 #include <esp_log.h>
 #include <esp32common/espnow/common.h>
 #include <esp32common/espnow/packet_utils.h>
-#include <nvs_flash.h>
 #include <cstring>
 
 static const char* TAG = "COMP_CFG";
@@ -73,22 +72,9 @@ ComponentConfigHandler::~ComponentConfigHandler() {
 
 bool ComponentConfigHandler::init() {
   ESP_LOGI(TAG, "Initializing component config handler...");
-  
-  // Initialize NVS
-  esp_err_t err = nvs_flash_init();
-  if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-    ESP_LOGW(TAG, "NVS partition needs erasing, reinitializing...");
-    ESP_ERROR_CHECK(nvs_flash_erase());
-    err = nvs_flash_init();
-  }
-  
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "NVS init failed: %d", err);
-    return false;
-  }
-  
+
   // Open NVS handle
-  err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle_);
+  const esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle_);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to open NVS namespace: %d", err);
     return false;

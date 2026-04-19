@@ -13,14 +13,9 @@
 // Global event queue (created on init)
 QueueHandle_t g_connection_event_queue = nullptr;
 
-// Singleton instance
-static EspNowConnectionManager* g_manager = nullptr;
-
 EspNowConnectionManager& EspNowConnectionManager::instance() {
-    if (g_manager == nullptr) {
-        g_manager = new EspNowConnectionManager();
-    }
-    return *g_manager;
+    static EspNowConnectionManager manager;
+    return manager;
 }
 
 EspNowConnectionManager::EspNowConnectionManager()
