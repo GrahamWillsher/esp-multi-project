@@ -77,18 +77,15 @@ void handle_debug_ack_message(const espnow_queue_msg_t* msg) {
 void handle_data_message(const espnow_queue_msg_t* msg) {
     if (msg->len >= (int)sizeof(espnow_payload_t)) {
         const espnow_payload_t* payload = reinterpret_cast<const espnow_payload_t*>(msg->data);
-        
-        uint16_t calc_checksum = payload->soc + (uint16_t)payload->power;
-        
-        if (calc_checksum == payload->checksum) {
+
+        if (EspnowPacketUtils::verify_message_crc32(payload)) {
             // Mark RxStateMachine as active when actual data arrives (not just keep-alive)
             RxStateMachine::instance().on_activity();
 
             apply_telemetry_sample(msg->mac, payload->soc, payload->power, "DATA", true);
         } else {
-            // CRC mismatch
-            LOG_WARN(kLogTag, "CRC failed: expected 0x%04X, got 0x%04X", 
-                         calc_checksum, payload->checksum);
+            LOG_WARN(kLogTag, "Invalid msg_data CRC32 (stored=0x%08lX)",
+                     static_cast<unsigned long>(payload->checksum));
         }
     } else {
         LOG_WARN(kLogTag, "DATA packet too short: %d bytes (expected %d)",
@@ -103,8 +100,9 @@ void handle_packet_events(const espnow_queue_msg_t* msg) {
         return;
     }
     
-    LOG_DEBUG(kLogTag, "PACKET/EVENTS: seq=%u, frag=%u/%u, len=%u, checksum=0x%04X",
-              info.seq, info.frag_index, info.frag_total, info.payload_len, info.checksum);
+    LOG_DEBUG(kLogTag, "PACKET/EVENTS: seq=%u, frag=%u/%u, len=%u, checksum=0x%08lX",
+              info.seq, info.frag_index, info.frag_total, info.payload_len,
+              static_cast<unsigned long>(info.checksum));
 
     if (info.payload_len >= 5) {
         uint8_t soc = info.payload[0];
@@ -118,16 +116,18 @@ void handle_packet_events(const espnow_queue_msg_t* msg) {
 void handle_packet_logs(const espnow_queue_msg_t* msg) {
     EspnowPacketUtils::PacketInfo info;
     if (EspnowPacketUtils::get_packet_info(msg, info)) {
-        LOG_DEBUG(kLogTag, "PACKET/LOGS: seq=%u, frag=%u/%u, len=%u, checksum=0x%04X",
-                  info.seq, info.frag_index, info.frag_total, info.payload_len, info.checksum);
+        LOG_DEBUG(kLogTag, "PACKET/LOGS: seq=%u, frag=%u/%u, len=%u, checksum=0x%08lX",
+                  info.seq, info.frag_index, info.frag_total, info.payload_len,
+                  static_cast<unsigned long>(info.checksum));
     }
 }
 
 void handle_packet_cell_info(const espnow_queue_msg_t* msg) {
     EspnowPacketUtils::PacketInfo info;
     if (EspnowPacketUtils::get_packet_info(msg, info)) {
-        LOG_DEBUG(kLogTag, "PACKET/CELL_INFO: seq=%u, frag=%u/%u, len=%u, checksum=0x%04X",
-                  info.seq, info.frag_index, info.frag_total, info.payload_len, info.checksum);
+        LOG_DEBUG(kLogTag, "PACKET/CELL_INFO: seq=%u, frag=%u/%u, len=%u, checksum=0x%08lX",
+                  info.seq, info.frag_index, info.frag_total, info.payload_len,
+                  static_cast<unsigned long>(info.checksum));
     }
 }
 

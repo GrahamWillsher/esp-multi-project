@@ -81,9 +81,9 @@ namespace EspnowStandardHandlers {
     void handle_ack(const espnow_queue_msg_t* msg, void* context);
     
     /**
-     * @brief Standard DATA message handler with checksum validation
+     * @brief Standard DATA message handler with CRC32 validation
      * 
-     * Validates checksum and calls user callback with validated data.
+     * Validates CRC32 and calls user callback with validated data.
      * 
      * @param msg Incoming message
      * @param context Pointer to std::function<void(const espnow_payload_t*)>

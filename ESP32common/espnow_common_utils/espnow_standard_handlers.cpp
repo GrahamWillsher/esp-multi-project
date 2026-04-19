@@ -5,6 +5,7 @@
 
 #include "espnow_standard_handlers.h"
 #include "espnow_peer_manager.h"
+#include "espnow_packet_utils.h"
 #include <Arduino.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
@@ -145,11 +146,9 @@ void handle_data(const espnow_queue_msg_t* msg, void* context) {
     
     const espnow_payload_t* payload = reinterpret_cast<const espnow_payload_t*>(msg->data);
     
-    // Validate checksum
-    uint16_t calc_checksum = payload->soc + (uint16_t)payload->power;
-    if (calc_checksum != payload->checksum) {
-        LOG_WARN("DATA", "Checksum mismatch (calc=%u, recv=%u)",
-                       calc_checksum, payload->checksum);
+    if (!EspnowPacketUtils::verify_message_crc32(payload)) {
+        LOG_WARN("DATA", "CRC32 mismatch (stored=0x%08lX)",
+                 static_cast<unsigned long>(payload->checksum));
         return;
     }
     

@@ -10,6 +10,7 @@
 #pragma once
 
 #include <esp32common/espnow/common.h>
+#include "espnow_packet_utils.h"
 #include <functional>
 
 /**
@@ -114,10 +115,11 @@ namespace EspnowMessageUtils {
      * @return Subtype, or 0xFF if not a packet message or too short
      */
     inline uint8_t get_packet_subtype(const espnow_queue_msg_t& msg) {
-        if (msg.len < (int)sizeof(espnow_packet_t)) return 0xFF;
+        if (msg.len <= 0) return 0xFF;
         if (msg.data[0] != msg_packet) return 0xFF;
-        const espnow_packet_t* pkt = reinterpret_cast<const espnow_packet_t*>(msg.data);
-        return pkt->subtype;
+
+        EspnowPacketUtils::PacketInfo info;
+        return EspnowPacketUtils::get_packet_info(&msg, info) ? info.subtype : 0xFF;
     }
     
     /**

@@ -7,6 +7,9 @@
 
 namespace EspnowPacketUtils {
 
+    constexpr size_t kPacketPayloadCapacity = sizeof(((espnow_packet_t*)0)->payload);
+    constexpr size_t kPacketHeaderSize = sizeof(espnow_packet_t) - kPacketPayloadCapacity;
+
     /**
      * @brief Structure containing extracted packet metadata and payload pointer
      */
@@ -30,8 +33,8 @@ namespace EspnowPacketUtils {
      * @return true if message is large enough to contain espnow_packet_t header
      */
     inline bool validate_packet(const espnow_queue_msg_t* msg) {
-        if (!msg) return false;
-        return msg->len >= (int)sizeof(espnow_packet_t);
+        if (!msg || msg->len < 0) return false;
+        return static_cast<size_t>(msg->len) >= kPacketHeaderSize;
     }
 
     /**
@@ -51,11 +54,21 @@ namespace EspnowPacketUtils {
         }
         
         const espnow_packet_t* pkt = reinterpret_cast<const espnow_packet_t*>(msg->data);
+        const size_t received_len = static_cast<size_t>(msg->len);
+        const size_t payload_len = pkt->payload_len;
+
+        if (payload_len > kPacketPayloadCapacity) {
+            return false;
+        }
+
+        if ((kPacketHeaderSize + payload_len) > received_len) {
+            return false;
+        }
         
         info.seq = pkt->seq;
         info.frag_index = pkt->frag_index;
         info.frag_total = pkt->frag_total;
-        info.payload_len = pkt->payload_len;
+        info.payload_len = static_cast<uint16_t>(payload_len);
         info.subtype = pkt->subtype;
         info.checksum = pkt->checksum;
         info.payload = pkt->payload;
