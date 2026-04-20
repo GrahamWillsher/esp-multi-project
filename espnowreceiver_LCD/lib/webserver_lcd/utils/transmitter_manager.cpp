@@ -8,12 +8,6 @@
 #include "transmitter_state.h"
 #include "../logging.h"
 
-namespace {
-TransmitterManager::EventLogSummary g_event_log_summary;
-TransmitterManager::EventLogClearAck g_event_log_clear_ack;
-TransmitterManager::TemperatureReport g_temperature_report;
-}
-
 void TransmitterManager::init() {
     TransmitterNvsPersistence::init();
 }
@@ -374,61 +368,53 @@ void TransmitterManager::getEventLogsSnapshot(std::vector<EventLogEntry>& out_lo
 }
 
 void TransmitterManager::storeEventLogSummary(const event_log_summary_t& summary) {
-    g_event_log_summary.known = true;
-    g_event_log_summary.seq = summary.seq;
-    g_event_log_summary.total_historical = summary.total_historical;
-    g_event_log_summary.error_historical = summary.error_historical;
-    g_event_log_summary.new_since_last_report_total = summary.new_since_last_report_total;
-    g_event_log_summary.new_since_last_report_error = summary.new_since_last_report_error;
-    g_event_log_summary.uptime_ms = summary.uptime_ms;
-    g_event_log_summary.last_update_ms = millis();
-
-    LOG_DEBUG("TX_MGR", "Stored event summary seq=%lu total=%lu error=%lu new=%lu new_error=%lu",
-              static_cast<unsigned long>(g_event_log_summary.seq),
-              static_cast<unsigned long>(g_event_log_summary.total_historical),
-              static_cast<unsigned long>(g_event_log_summary.error_historical),
-              static_cast<unsigned long>(g_event_log_summary.new_since_last_report_total),
-              static_cast<unsigned long>(g_event_log_summary.new_since_last_report_error));
+    TransmitterState::store_event_log_summary(summary);
 }
 
 TransmitterManager::EventLogSummary TransmitterManager::getEventLogSummary() {
-    return g_event_log_summary;
+    const auto snapshot = TransmitterState::get_event_log_summary();
+
+    EventLogSummary summary;
+    summary.known = snapshot.known;
+    summary.seq = snapshot.seq;
+    summary.total_historical = snapshot.total_historical;
+    summary.error_historical = snapshot.error_historical;
+    summary.new_since_last_report_total = snapshot.new_since_last_report_total;
+    summary.new_since_last_report_error = snapshot.new_since_last_report_error;
+    summary.uptime_ms = snapshot.uptime_ms;
+    summary.last_update_ms = snapshot.last_update_ms;
+    return summary;
 }
 
 void TransmitterManager::storeEventLogClearAck(const event_logs_clear_ack_t& ack) {
-    g_event_log_clear_ack.known = true;
-    g_event_log_clear_ack.status = ack.status;
-    g_event_log_clear_ack.summary_seq = ack.summary_seq;
-    g_event_log_clear_ack.uptime_ms = ack.uptime_ms;
-    g_event_log_clear_ack.last_update_ms = millis();
-
-    LOG_INFO("TX_MGR", "Stored event clear ack status=%u summary_seq=%lu",
-             static_cast<unsigned>(g_event_log_clear_ack.status),
-             static_cast<unsigned long>(g_event_log_clear_ack.summary_seq));
+    TransmitterState::store_event_log_clear_ack(ack);
 }
 
 TransmitterManager::EventLogClearAck TransmitterManager::getEventLogClearAck() {
-    return g_event_log_clear_ack;
+    const auto snapshot = TransmitterState::get_event_log_clear_ack();
+
+    EventLogClearAck ack;
+    ack.known = snapshot.known;
+    ack.status = snapshot.status;
+    ack.summary_seq = snapshot.summary_seq;
+    ack.uptime_ms = snapshot.uptime_ms;
+    ack.last_update_ms = snapshot.last_update_ms;
+    return ack;
 }
 
 void TransmitterManager::storeTemperatureReport(const temperature_report_t& report) {
-    g_temperature_report.known = true;
-    g_temperature_report.valid = report.valid != 0;
-    g_temperature_report.seq = report.seq;
-    g_temperature_report.temperature_centi_c = report.temperature_centi_c;
-    g_temperature_report.uptime_ms = report.uptime_ms;
-    g_temperature_report.last_update_ms = millis();
-
-    if (g_temperature_report.valid) {
-        LOG_INFO("TX_MGR", "Stored TX temperature seq=%lu value=%.2fC",
-                 static_cast<unsigned long>(g_temperature_report.seq),
-                 static_cast<double>(g_temperature_report.temperature_centi_c) / 100.0);
-    } else {
-        LOG_WARN("TX_MGR", "Stored TX temperature seq=%lu as invalid",
-                 static_cast<unsigned long>(g_temperature_report.seq));
-    }
+    TransmitterState::store_temperature_report(report);
 }
 
 TransmitterManager::TemperatureReport TransmitterManager::getTemperatureReport() {
-    return g_temperature_report;
+    const auto snapshot = TransmitterState::get_temperature_report();
+
+    TemperatureReport report;
+    report.known = snapshot.known;
+    report.valid = snapshot.valid;
+    report.seq = snapshot.seq;
+    report.temperature_centi_c = snapshot.temperature_centi_c;
+    report.uptime_ms = snapshot.uptime_ms;
+    report.last_update_ms = snapshot.last_update_ms;
+    return report;
 }

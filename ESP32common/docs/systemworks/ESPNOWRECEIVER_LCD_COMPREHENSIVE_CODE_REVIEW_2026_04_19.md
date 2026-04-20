@@ -329,7 +329,12 @@ There is still broad informational logging in processing paths and repeated rout
   - Migrated API route registration to middleware-backed route tables and removed legacy direct per-route registration in the core handler path.
   - Removed legacy raw full-request JSON logging in mutating network/settings handlers to reduce sensitive payload leakage in logs.
   - `/api/v1/network` registration now uses the same middleware/policy path as the rest of the API control plane.
-3. State-store rewrite. Not started.
+3. ✅ **State-store rewrite.** Completed 2026-04-20 in `espnowreceiver_LCD`.
+  - Introduced a consolidated typed state store in `TransmitterState` for runtime status, metadata, event-log summary/ack, and transmitter temperature report.
+  - Added reducer-style typed state transitions for runtime/time/heartbeat/metadata/event-summary/ack/temperature updates.
+  - Added snapshot-oriented state reads (`get_state_snapshot()` plus typed snapshot getters) to reduce ad hoc field-level global access patterns.
+  - Removed legacy ad hoc state globals in `transmitter_manager.cpp` (`g_event_log_summary`, `g_event_log_clear_ack`, `g_temperature_report`) and routed all reads/writes through the centralized store.
+  - Added critical-section guards around state read/write operations in `TransmitterState` for deterministic cross-context snapshots.
 
 ---
 
@@ -370,12 +375,12 @@ There is still broad informational logging in processing paths and repeated rout
    - 🔄 **Remaining follow-up:** optional stronger auth policy implementation if deployment scope moves beyond trusted private LAN.
 
 3. **State-store rewrite**
-   - **Replace ad-hoc global snapshots with a typed store + event reducer model.**
-     - Centralize state transitions via explicit events/actions.
-     - Make state mutation paths auditable and deterministic.
-   - **Single writer, immutable snapshot reads for lock minimization and determinism.**
-     - One owner mutates state; readers consume immutable snapshots.
-     - Reduces lock contention and race-condition surface while preserving runtime clarity.
+   - ✅ **Replaced ad-hoc global snapshots with a typed store + reducer-style transition model (completed 2026-04-20 in LCD runtime).**
+     - Runtime, metadata, event-summary/ack, and temperature state now live in one consolidated `TransmitterState` store.
+     - Mutation paths were centralized behind typed transition helpers instead of scattered direct global assignments.
+   - ✅ **Implemented snapshot-oriented reads with synchronization.**
+     - Added typed snapshot getters (including full-store snapshot) and critical-section guarded reads/writes.
+     - Removed legacy `TransmitterManager` ad hoc globals to reduce duplication and drift.
 
 ---
 
