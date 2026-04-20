@@ -55,7 +55,7 @@ void setup_message_routes() {
                     (memcmp(g_last_probe_ack_mac, msg->mac, sizeof(g_last_probe_ack_mac)) == 0);
                 const bool same_seq = same_peer && (probe->seq == g_last_probe_ack_seq);
                 const uint32_t min_interval_ms =
-                    (state == EspNowConnectionState::CONNECTED) ? 120U : 40U;
+                    (state == EspNowConnectionState::CONNECTED) ? 120U : 80U;
 
                 if (same_seq && ((now - g_last_probe_ack_ms) < min_interval_ms)) {
                     send_probe_ack = false;

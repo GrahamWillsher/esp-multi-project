@@ -49,6 +49,8 @@ volatile bool MqttClient::cell_data_pause_requested_ = false;
 
 // Event log subscription management
 int MqttClient::event_log_subscribers_ = 0;
+volatile bool MqttClient::event_log_subscribe_requested_ = false;
+volatile bool MqttClient::event_log_unsubscribe_requested_ = false;
 
 void MqttClient::init(const uint8_t* mqtt_server, uint16_t mqtt_port, const char* client_id) {
     if (!mqtt_server) return;
@@ -223,14 +225,18 @@ void MqttClient::subscribeToTopics() {
     mqtt_client_.subscribe("transmitter/BE/battery_specs");
     mqtt_client_.subscribe("transmitter/BE/battery_type_catalog");
     mqtt_client_.subscribe("transmitter/BE/inverter_type_catalog");
-    mqtt_client_.subscribe("transmitter/BE/event_logs");
     
     // Only subscribe to cell_data if not paused (subscription optimization)
     if (cell_data_state_ != PAUSED) {
         mqtt_client_.subscribe("transmitter/BE/cell_data");
-        LOG_INFO("SUBSCRIPTION", "Subscribed to all topics including cell_data");
+        LOG_INFO("SUBSCRIPTION", "Subscribed to spec topics including cell_data");
     } else {
         LOG_INFO("SUBSCRIPTION", "Subscribed to spec topics only (cell_data paused)");
+    }
+
+    if (event_log_subscribers_ > 0) {
+        mqtt_client_.subscribe("transmitter/BE/event_logs");
+        LOG_INFO("SUBSCRIPTION", "Subscribed to event_logs (active viewers: %d)", event_log_subscribers_);
     }
 }
 
@@ -586,6 +592,8 @@ void MqttClient::incrementEventLogSubscribers() {
         // Start fresh receiver-side snapshot session on /events open.
         TransmitterEventLogCache::begin_snapshot_session(true);
         send_event_logs_control(true);
+        event_log_unsubscribe_requested_ = false;
+        event_log_subscribe_requested_ = true;
     }
 }
 
@@ -600,6 +608,8 @@ void MqttClient::decrementEventLogSubscribers() {
 
             // /events close semantics: clear receiver cache/session state.
             TransmitterEventLogCache::end_snapshot_session(true);
+            event_log_subscribe_requested_ = false;
+            event_log_unsubscribe_requested_ = true;
         }
     }
 }
@@ -634,6 +644,30 @@ void MqttClient::cellDataGracePeriodCallback(TimerHandle_t xTimer) {
 }
 
 void MqttClient::processDeferredSubscriptionActions() {
+    if (event_log_subscribe_requested_) {
+        if (!mqtt_client_.connected()) {
+            LOG_DEBUG("SUBSCRIPTION", "Deferred event_logs subscribe pending - MQTT not connected yet");
+        } else if (mqtt_client_.subscribe("transmitter/BE/event_logs")) {
+            event_log_subscribe_requested_ = false;
+            LOG_INFO("SUBSCRIPTION", "Subscribed to event_logs after first viewer connected");
+        } else {
+            LOG_WARN("SUBSCRIPTION", "Failed to subscribe to event_logs (will retry)");
+        }
+    }
+
+    if (event_log_unsubscribe_requested_) {
+        if (event_log_subscribers_ > 0) {
+            event_log_unsubscribe_requested_ = false;
+        } else if (!mqtt_client_.connected()) {
+            LOG_DEBUG("SUBSCRIPTION", "Deferred event_logs unsubscribe pending - MQTT not connected");
+        } else if (mqtt_client_.unsubscribe("transmitter/BE/event_logs")) {
+            event_log_unsubscribe_requested_ = false;
+            LOG_INFO("SUBSCRIPTION", "Unsubscribed from event_logs after last viewer disconnected");
+        } else {
+            LOG_WARN("SUBSCRIPTION", "Failed to unsubscribe from event_logs (will retry)");
+        }
+    }
+
     if (!cell_data_pause_requested_) {
         return;
     }

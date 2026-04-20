@@ -12,6 +12,8 @@ private:
     
 public:
     static void init();
+    static void monitorClientConnected();
+    static void monitorClientDisconnected();
     static void notifyDataUpdated();
     static void notifyCellDataUpdated();
     static bool waitForUpdate(TickType_t timeout_ms);

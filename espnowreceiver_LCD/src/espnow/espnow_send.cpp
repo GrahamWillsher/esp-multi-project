@@ -2,6 +2,7 @@
 #include "../../include/common_lcd.h"
 #include "rx_state_machine.h"
 #include <esp32common/espnow/connection_manager.h>
+#include <esp32common/espnow/tx_scheduler.h>
 #include <esp_now.h>
 #include <esp32common/espnow/common.h>
 #include <esp32common/espnow/packet_utils.h>
@@ -53,7 +54,7 @@ bool send_debug_level_control(uint8_t level) {
     packet.checksum = 0;
     uint8_t* data = (uint8_t*)&packet;
     for (size_t i = 0; i < sizeof(packet) - 1; i++) packet.checksum ^= data[i];
-    esp_err_t result = esp_now_send(ESPNow::peer_mac, (uint8_t*)&packet, sizeof(packet));
+    esp_err_t result = EspnowTxScheduler::send(ESPNow::peer_mac, &packet, sizeof(packet), "DEBUG_CONTROL");
     if (result == ESP_OK) { last_debug_level_sent = level; return true; }
     LOG_ERROR("ESP-NOW", "Failed to send debug control: %s", esp_err_to_name(result));
     return false;
@@ -83,8 +84,7 @@ bool send_component_apply_request(uint32_t request_id,
     const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&packet);
     for (size_t i = 0; i < sizeof(component_apply_request_t) - sizeof(packet.checksum); ++i)
         packet.checksum += bytes[i];
-    esp_err_t result = esp_now_send(ESPNow::peer_mac,
-                                    reinterpret_cast<const uint8_t*>(&packet), sizeof(packet));
+    esp_err_t result = EspnowTxScheduler::send(ESPNow::peer_mac, &packet, sizeof(packet), "COMPONENT_APPLY_REQ");
     if (result == ESP_OK) return true;
     LOG_ERROR("ESP-NOW", "Failed to send component apply request: %s", esp_err_to_name(result));
     return false;
@@ -108,7 +108,7 @@ bool send_test_data_mode_control(uint8_t mode) {
     packet.checksum = 0;
     uint8_t* data = (uint8_t*)&packet;
     for (size_t i = 0; i < sizeof(packet) - 1; i++) packet.checksum ^= data[i];
-    esp_err_t result = esp_now_send(ESPNow::peer_mac, (uint8_t*)&packet, sizeof(packet));
+    esp_err_t result = EspnowTxScheduler::send(ESPNow::peer_mac, &packet, sizeof(packet), "TEST_DATA_CONTROL");
     if (result == ESP_OK) { return true; }
     LOG_ERROR("ESP-NOW", "Failed to send test data mode control: %s", esp_err_to_name(result));
     return false;
@@ -123,7 +123,7 @@ bool send_event_logs_control(bool subscribe) {
     event_logs_control_t packet{};
     packet.type   = msg_event_logs_control;
     packet.action = subscribe ? EVENT_LOGS_ACTION_SUBSCRIBE : EVENT_LOGS_ACTION_UNSUBSCRIBE;
-    esp_err_t result = esp_now_send(ESPNow::peer_mac, (uint8_t*)&packet, sizeof(packet));
+    esp_err_t result = EspnowTxScheduler::send(ESPNow::peer_mac, &packet, sizeof(packet), "EVENT_LOGS_CONTROL");
     if (result == ESP_OK) return true;
     LOG_ERROR("ESP-NOW", "Failed to send event logs control: %s", esp_err_to_name(result));
     return false;
@@ -138,7 +138,7 @@ bool send_event_logs_clear_request() {
     event_logs_control_t packet{};
     packet.type   = msg_event_logs_control;
     packet.action = EVENT_LOGS_ACTION_CLEAR;
-    esp_err_t result = esp_now_send(ESPNow::peer_mac, (uint8_t*)&packet, sizeof(packet));
+    esp_err_t result = EspnowTxScheduler::send(ESPNow::peer_mac, &packet, sizeof(packet), "EVENT_LOGS_CLEAR");
     if (result == ESP_OK) return true;
     LOG_ERROR("ESP-NOW", "Failed to send event logs clear: %s", esp_err_to_name(result));
     return false;
@@ -148,7 +148,7 @@ bool send_battery_types_request() {
     if (!can_send_catalog_request()) return false;
     type_catalog_request_t req{};
     req.type = msg_request_battery_types;
-    esp_err_t r = esp_now_send(ESPNow::peer_mac, reinterpret_cast<uint8_t*>(&req), sizeof(req));
+    esp_err_t r = EspnowTxScheduler::send(ESPNow::peer_mac, &req, sizeof(req), "REQUEST_BATTERY_TYPES");
     return r == ESP_OK;
 }
 
@@ -156,7 +156,7 @@ bool send_inverter_types_request() {
     if (!can_send_catalog_request()) return false;
     type_catalog_request_t req{};
     req.type = msg_request_inverter_types;
-    esp_err_t r = esp_now_send(ESPNow::peer_mac, reinterpret_cast<uint8_t*>(&req), sizeof(req));
+    esp_err_t r = EspnowTxScheduler::send(ESPNow::peer_mac, &req, sizeof(req), "REQUEST_INVERTER_TYPES");
     return r == ESP_OK;
 }
 
@@ -164,7 +164,7 @@ bool send_inverter_interfaces_request() {
     if (!can_send_catalog_request()) return false;
     type_catalog_request_t req{};
     req.type = msg_request_inverter_interfaces;
-    esp_err_t r = esp_now_send(ESPNow::peer_mac, reinterpret_cast<uint8_t*>(&req), sizeof(req));
+    esp_err_t r = EspnowTxScheduler::send(ESPNow::peer_mac, &req, sizeof(req), "REQUEST_INVERTER_INTERFACES");
     return r == ESP_OK;
 }
 
@@ -172,7 +172,7 @@ bool send_type_catalog_versions_request() {
     if (!can_send_catalog_request()) return false;
     type_catalog_versions_request_t req{};
     req.type = msg_request_type_catalog_versions;
-    esp_err_t r = esp_now_send(ESPNow::peer_mac, reinterpret_cast<uint8_t*>(&req), sizeof(req));
+    esp_err_t r = EspnowTxScheduler::send(ESPNow::peer_mac, &req, sizeof(req), "REQUEST_CATALOG_VERSIONS");
     return r == ESP_OK;
 }
 
@@ -180,7 +180,6 @@ bool send_led_state_request() {
     if (!can_send_catalog_request()) return false;
     led_state_request_t packet{};
     packet.type = msg_led_state_request;
-    esp_err_t r = esp_now_send(ESPNow::peer_mac,
-                               reinterpret_cast<uint8_t*>(&packet), sizeof(packet));
+    esp_err_t r = EspnowTxScheduler::send(ESPNow::peer_mac, &packet, sizeof(packet), "LED_STATE_REQUEST");
     return r == ESP_OK;
 }

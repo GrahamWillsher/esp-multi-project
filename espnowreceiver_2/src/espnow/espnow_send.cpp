@@ -2,6 +2,7 @@
 #include "../common.h"
 #include "../espnow/rx_state_machine.h"
 #include <esp32common/espnow/connection_manager.h>
+#include <esp32common/espnow/tx_scheduler.h>
 #include <esp_now.h>
 #include <esp32common/espnow/common.h>
 #include <esp32common/espnow/packet_utils.h>
@@ -91,7 +92,7 @@ bool send_debug_level_control(uint8_t level) {
     }
     
     // Send via ESP-NOW
-    esp_err_t result = esp_now_send(ESPNow::transmitter_mac, (uint8_t*)&packet, sizeof(packet));
+    esp_err_t result = EspnowTxScheduler::send(ESPNow::transmitter_mac, &packet, sizeof(packet), "DEBUG_CONTROL");
     
     if (result == ESP_OK) {
         // Store the level we just sent
@@ -153,7 +154,7 @@ bool send_component_apply_request(uint32_t request_id,
         packet.checksum += bytes[i];
     }
 
-    const esp_err_t result = esp_now_send(ESPNow::transmitter_mac, reinterpret_cast<const uint8_t*>(&packet), sizeof(packet));
+    const esp_err_t result = EspnowTxScheduler::send(ESPNow::transmitter_mac, &packet, sizeof(packet), "COMPONENT_APPLY_REQ");
     if (result == ESP_OK) {
         LOG_INFO("ESP-NOW", "Component apply request sent: request_id=%lu mask=0x%02X batt=%u inv=%u batt_if=%u inv_if=%u",
                  static_cast<unsigned long>(request_id),
@@ -213,7 +214,7 @@ bool send_test_data_mode_control(uint8_t mode) {
     }
     
     // Send via ESP-NOW
-    esp_err_t result = esp_now_send(ESPNow::transmitter_mac, (uint8_t*)&packet, sizeof(packet));
+    esp_err_t result = EspnowTxScheduler::send(ESPNow::transmitter_mac, &packet, sizeof(packet), "TEST_DATA_CONTROL");
     
     if (result == ESP_OK) {
         const char* mode_str[] = {"OFF", "SOC_POWER_ONLY", "FULL_BATTERY_DATA"};
@@ -253,7 +254,7 @@ bool send_event_logs_control(bool subscribe) {
     packet.type = msg_event_logs_control;
     packet.action = subscribe ? EVENT_LOGS_ACTION_SUBSCRIBE : EVENT_LOGS_ACTION_UNSUBSCRIBE;
 
-    esp_err_t result = esp_now_send(ESPNow::transmitter_mac, (uint8_t*)&packet, sizeof(packet));
+    esp_err_t result = EspnowTxScheduler::send(ESPNow::transmitter_mac, &packet, sizeof(packet), "EVENT_LOGS_CONTROL");
     if (result == ESP_OK) {
         LOG_DEBUG("ESP-NOW", "Event logs control sent: %s to %02X:%02X:%02X:%02X:%02X:%02X",
                      subscribe ? "subscribe" : "unsubscribe",
@@ -281,7 +282,7 @@ bool send_event_logs_clear_request() {
     packet.type = msg_event_logs_control;
     packet.action = EVENT_LOGS_ACTION_CLEAR;
 
-    esp_err_t result = esp_now_send(ESPNow::transmitter_mac, (uint8_t*)&packet, sizeof(packet));
+    esp_err_t result = EspnowTxScheduler::send(ESPNow::transmitter_mac, &packet, sizeof(packet), "EVENT_LOGS_CLEAR");
     if (result == ESP_OK) {
         LOG_DEBUG("ESP-NOW", "Event logs clear request sent to %02X:%02X:%02X:%02X:%02X:%02X",
                   ESPNow::transmitter_mac[0], ESPNow::transmitter_mac[1], ESPNow::transmitter_mac[2],
@@ -301,7 +302,7 @@ bool send_battery_types_request() {
     type_catalog_request_t req{};
     req.type = msg_request_battery_types;
 
-    esp_err_t result = esp_now_send(ESPNow::transmitter_mac, reinterpret_cast<uint8_t*>(&req), sizeof(req));
+    esp_err_t result = EspnowTxScheduler::send(ESPNow::transmitter_mac, &req, sizeof(req), "REQUEST_BATTERY_TYPES");
     if (result != ESP_OK) {
         LOG_WARN("ESP-NOW", "Failed to request battery types: %s", esp_err_to_name(result));
         return false;
@@ -319,7 +320,7 @@ bool send_inverter_types_request() {
     type_catalog_request_t req{};
     req.type = msg_request_inverter_types;
 
-    esp_err_t result = esp_now_send(ESPNow::transmitter_mac, reinterpret_cast<uint8_t*>(&req), sizeof(req));
+    esp_err_t result = EspnowTxScheduler::send(ESPNow::transmitter_mac, &req, sizeof(req), "REQUEST_INVERTER_TYPES");
     if (result != ESP_OK) {
         LOG_WARN("ESP-NOW", "Failed to request inverter types: %s", esp_err_to_name(result));
         return false;
@@ -337,7 +338,7 @@ bool send_inverter_interfaces_request() {
     type_catalog_request_t req{};
     req.type = msg_request_inverter_interfaces;
 
-    esp_err_t result = esp_now_send(ESPNow::transmitter_mac, reinterpret_cast<uint8_t*>(&req), sizeof(req));
+    esp_err_t result = EspnowTxScheduler::send(ESPNow::transmitter_mac, &req, sizeof(req), "REQUEST_INVERTER_INTERFACES");
     if (result != ESP_OK) {
         LOG_WARN("ESP-NOW", "Failed to request inverter interfaces: %s", esp_err_to_name(result));
         return false;
@@ -355,7 +356,7 @@ bool send_type_catalog_versions_request() {
     type_catalog_versions_request_t req{};
     req.type = msg_request_type_catalog_versions;
 
-    esp_err_t result = esp_now_send(ESPNow::transmitter_mac, reinterpret_cast<uint8_t*>(&req), sizeof(req));
+    esp_err_t result = EspnowTxScheduler::send(ESPNow::transmitter_mac, &req, sizeof(req), "REQUEST_CATALOG_VERSIONS");
     if (result != ESP_OK) {
         LOG_WARN("ESP-NOW", "Failed to request catalog versions: %s", esp_err_to_name(result));
         return false;
@@ -386,9 +387,7 @@ bool send_led_state_request() {
     led_state_request_t packet{};
     packet.type = msg_led_state_request;
 
-    esp_err_t result = esp_now_send(ESPNow::transmitter_mac,
-                                    reinterpret_cast<uint8_t*>(&packet),
-                                    sizeof(packet));
+    esp_err_t result = EspnowTxScheduler::send(ESPNow::transmitter_mac, &packet, sizeof(packet), "LED_STATE_REQUEST");
     if (result == ESP_OK) {
         LOG_DEBUG("ESP-NOW", "LED state request sent to %02X:%02X:%02X:%02X:%02X:%02X",
                   ESPNow::transmitter_mac[0], ESPNow::transmitter_mac[1], ESPNow::transmitter_mac[2],

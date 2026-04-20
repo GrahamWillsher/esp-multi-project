@@ -12,6 +12,7 @@
 
 #include "espnow_settings_sync.h"
 
+#include <Arduino.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
@@ -19,9 +20,15 @@
 #include "component_apply_tracker.h"
 #include "../config/logging_config.h"
 #include <esp32common/espnow/packet_utils.h>
+#include <esp32common/espnow/tx_scheduler.h>
 #include <esp_now.h>
 
 namespace {
+
+constexpr uint32_t kRefreshMinIntervalMs = 8000;
+constexpr uint8_t kRefreshThrottleSlots = 16;
+
+uint32_t g_last_refresh_request_ms[kRefreshThrottleSlots] = {};
 
 SemaphoreHandle_t g_mutex    = nullptr;
 EspnowSettingsSync::Snapshot g_snapshot;
@@ -46,6 +53,17 @@ void unlock_state() {
 // ---------------------------------------------------------------------------
 
 static void request_category_refresh(const uint8_t* mac, uint8_t category, const char* reason) {
+    const uint8_t throttle_index = (category < kRefreshThrottleSlots)
+        ? category
+        : static_cast<uint8_t>(kRefreshThrottleSlots - 1U);
+    const uint32_t now = millis();
+    if (g_last_refresh_request_ms[throttle_index] != 0 &&
+        (now - g_last_refresh_request_ms[throttle_index]) < kRefreshMinIntervalMs) {
+        LOG_DEBUG("SETTINGS", "Skipping category %u refresh (throttled)",
+                  static_cast<unsigned>(category));
+        return;
+    }
+
     esp_err_t result = ESP_OK;
 
     switch (category) {
@@ -56,7 +74,10 @@ static void request_category_refresh(const uint8_t* mac, uint8_t category, const
             LOG_INFO("SETTINGS", "Requesting battery/hardware settings refresh %s (category=%u)",
                      reason, static_cast<unsigned>(category));
             request_data_t req = {msg_request_data, subtype_battery_config};
-            result = esp_now_send(mac, reinterpret_cast<const uint8_t*>(&req), sizeof(req));
+            result = EspnowTxScheduler::send(mac, &req, sizeof(req), "SETTINGS_REFRESH");
+            if (result == ESP_OK) {
+                g_last_refresh_request_ms[throttle_index] = now;
+            }
             break;
         }
         case SETTINGS_CHARGER:

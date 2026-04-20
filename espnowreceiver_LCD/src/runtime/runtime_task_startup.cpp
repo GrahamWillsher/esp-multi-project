@@ -5,6 +5,7 @@
 #include <freertos/task.h>
 #include <esp32common/config/timing_config.h>
 #include <espnow_discovery.h>
+#include <esp32common/espnow/tx_scheduler.h>
 
 #include "common_lcd.h"
 #include "espnow/espnow_runtime.h"
@@ -59,6 +60,20 @@ bool create_runtime_primitives() {
 
     if (!ESPNowRuntime::prepare_runtime()) {
         handle_error(ErrorSeverity::FATAL, "RTOS", "Failed to prepare ESP-NOW runtime");
+        return false;
+    }
+
+    EspnowTxScheduler::InitOptions tx_options{};
+    tx_options.queue_depth = 24;
+    tx_options.no_mem_retry_attempts = 6;
+    tx_options.retry_base_delay_ms = 4;
+    tx_options.inter_frame_delay_ms = 2;
+    tx_options.task_priority = TaskConfig::ESPNOW_TX_PRIORITY;
+    tx_options.task_stack = TaskConfig::ESPNOW_TX_STACK;
+    tx_options.task_core = TaskConfig::WORKER_CORE;
+    tx_options.task_name = "EspnowTx";
+    if (!EspnowTxScheduler::init(tx_options)) {
+        handle_error(ErrorSeverity::FATAL, "RTOS", "Failed to initialize ESP-NOW TX scheduler");
         return false;
     }
 

@@ -141,6 +141,8 @@ private:
     
     // Event log subscription management
     static int event_log_subscribers_;  // Count of clients viewing /events page
+    static volatile bool event_log_subscribe_requested_;
+    static volatile bool event_log_unsubscribe_requested_;
     
     /**
      * @brief Timer callback: Pause cell_data subscription after grace period

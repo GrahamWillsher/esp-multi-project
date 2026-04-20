@@ -11,6 +11,7 @@
 #include <esp_wifi.h>
 #include <WiFi.h>
 #include <logging_config.h>
+#include <esp32common/espnow/tx_scheduler.h>
 
 namespace EspnowStandardHandlers {
 
@@ -162,8 +163,20 @@ void handle_data(const espnow_queue_msg_t* msg, void* context) {
 
 bool send_ack_response(const uint8_t* peer_mac, uint32_t seq, uint8_t channel) {
     ack_t ack { msg_ack, seq, channel };
+
+    if (EspnowTxScheduler::is_ready()) {
+        const esp_err_t queued = EspnowTxScheduler::send(peer_mac, &ack, sizeof(ack), "ACK");
+        if (queued == ESP_OK) {
+            LOG_DEBUG("ACK", "Queued response (seq=%u, channel=%d)", seq, channel);
+            return true;
+        }
+        LOG_WARN("ACK", "Queue send failed: %s", esp_err_to_name(queued));
+        return false;
+    }
+
     esp_err_t result = ESP_FAIL;
-    constexpr uint8_t kMaxNoMemRetries = 2;
+    constexpr uint8_t kMaxNoMemRetries = 5;
+    constexpr uint32_t kRetryBaseDelayMs = 4;
 
     for (uint8_t attempt = 0; attempt <= kMaxNoMemRetries; ++attempt) {
         result = esp_now_send(peer_mac,
@@ -178,8 +191,9 @@ bool send_ack_response(const uint8_t* peer_mac, uint32_t seq, uint8_t channel) {
             break;
         }
 
-        // Transient ESP-NOW TX queue pressure: brief cooperative backoff and retry.
-        delay(2);
+        // Transient ESP-NOW TX queue pressure: cooperative linear backoff.
+        // Mirrors the more resilient heartbeat ACK behavior without blocking for long.
+        delay(kRetryBaseDelayMs * (attempt + 1U));
     }
     
     if (result == ESP_OK) {
@@ -194,6 +208,16 @@ bool send_ack_response(const uint8_t* peer_mac, uint32_t seq, uint8_t channel) {
 bool send_probe_announcement(uint32_t seq) {
     probe_t probe { msg_probe, seq };
     const uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+    if (EspnowTxScheduler::is_ready()) {
+        const esp_err_t queued = EspnowTxScheduler::send(broadcast_mac, &probe, sizeof(probe), "PROBE");
+        if (queued == ESP_OK) {
+            LOG_DEBUG("PROBE", "Queued announcement (seq=%u) on channel %d", seq, WiFi.channel());
+            return true;
+        }
+        LOG_WARN("PROBE", "Queue send failed: %s", esp_err_to_name(queued));
+        return false;
+    }
     
     esp_err_t result = esp_now_send(broadcast_mac,
                                     reinterpret_cast<const uint8_t*>(&probe),

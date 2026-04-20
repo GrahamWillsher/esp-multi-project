@@ -28,6 +28,9 @@ namespace TaskConfig {
     // ESP-NOW receive callbacks → message queue → worker task.
     constexpr uint32_t ESPNOW_WORKER_STACK = 4096;
 
+    // Serialized outbound ESP-NOW sender task.
+    constexpr uint32_t ESPNOW_TX_STACK = 4096;
+
     // MQTT connection, pub/sub, JSON serialisation.
     // Larger stack accommodates ArduinoJson scratch buffer.
     constexpr uint32_t MQTT_CLIENT_STACK = 10240;
@@ -43,6 +46,7 @@ namespace TaskConfig {
     constexpr uint8_t DISPLAY_RENDERER_PRIORITY  = 1;
     constexpr uint8_t LED_RENDERER_PRIORITY       = 1;
     constexpr uint8_t ESPNOW_WORKER_PRIORITY      = 2;
+    constexpr uint8_t ESPNOW_TX_PRIORITY          = 1;
     constexpr uint8_t MQTT_CLIENT_PRIORITY        = 0;
     constexpr uint8_t ANNOUNCEMENT_PRIORITY       = 1;
     constexpr uint8_t MEMORY_SAMPLER_PRIORITY     = 0;

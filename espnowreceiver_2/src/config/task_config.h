@@ -27,6 +27,11 @@ namespace TaskConfig {
      * Increase if: Task runs out of stack during message processing
      */
     constexpr uint32_t ESPNOW_WORKER_STACK = 4096;
+
+    /**
+     * @brief Serialized outbound ESP-NOW sender task stack size
+     */
+    constexpr uint32_t ESPNOW_TX_STACK = 4096;
     
     /**
      * @brief MQTT client task stack size
@@ -78,6 +83,11 @@ namespace TaskConfig {
      * Scale: 0 (lowest) to 25 (highest on ESP32)
      */
     constexpr uint8_t ESPNOW_WORKER_PRIORITY = 2;
+
+    /**
+     * @brief Serialized outbound ESP-NOW sender priority
+     */
+    constexpr uint8_t ESPNOW_TX_PRIORITY = 1;
     
     /**
      * @brief MQTT client task priority

@@ -23,6 +23,7 @@
 #include <esp32common/espnow/message_router.h>
 #include <esp32common/espnow/standard_handlers.h>
 #include <esp32common/espnow/packet_utils.h>
+#include <esp32common/espnow/tx_scheduler.h>
 #include <esp32common/config/timing_config.h>
 #include <runtime_common_utils/device_temperature.h>
 #include <firmware_version.h>
@@ -34,6 +35,9 @@ static uint32_t g_rx_message_seq = 0;
 static bool g_received_data_initialized = false;
 static uint8_t g_last_received_soc = 0;
 static int32_t g_last_received_power = 0;
+static uint32_t g_last_probe_ack_ms = 0;
+static uint32_t g_last_probe_ack_seq = 0;
+static uint8_t g_last_probe_ack_mac[6] = {0};
 
 void store_transmitter_mac(const uint8_t* mac) {
     if (!mac) {
@@ -151,7 +155,7 @@ static void request_config_section(const uint8_t* mac, config_section_t section,
     request.section = section;
     request.requested_version = requested_version;
 
-    esp_err_t result = esp_now_send(mac, reinterpret_cast<const uint8_t*>(&request), sizeof(request));
+    esp_err_t result = EspnowTxScheduler::send(mac, &request, sizeof(request), "CONFIG_SECTION_REQ");
     if (result == ESP_OK) {
         LOG_INFO(kLogTag, "[CONFIG_REQ] Sent %s request (v%u)", label, requested_version);
     } else {
@@ -197,6 +201,31 @@ void setup_message_routes() {
     // Register standard message handlers
     router.register_route(msg_probe, 
         [](const espnow_queue_msg_t* msg, void* ctx) {
+            const auto state = EspNowConnectionManager::instance().get_state();
+            bool send_probe_ack = true;
+
+            if (msg && msg->len >= static_cast<int>(sizeof(probe_t))) {
+                const auto* probe = reinterpret_cast<const probe_t*>(msg->data);
+                const uint32_t now = millis();
+
+                const bool same_peer =
+                    (memcmp(g_last_probe_ack_mac, msg->mac, sizeof(g_last_probe_ack_mac)) == 0);
+                const bool same_seq = same_peer && (probe->seq == g_last_probe_ack_seq);
+                const uint32_t min_interval_ms =
+                    (state == EspNowConnectionState::CONNECTED) ? 120U : 80U;
+
+                if (same_seq && ((now - g_last_probe_ack_ms) < min_interval_ms)) {
+                    send_probe_ack = false;
+                }
+
+                if (send_probe_ack) {
+                    g_last_probe_ack_ms = now;
+                    g_last_probe_ack_seq = probe->seq;
+                    memcpy(g_last_probe_ack_mac, msg->mac, sizeof(g_last_probe_ack_mac));
+                }
+            }
+
+            probe_config.send_ack_response = send_probe_ack;
             EspnowStandardHandlers::handle_probe(msg, &probe_config);
         }, 
         0xFF, nullptr);

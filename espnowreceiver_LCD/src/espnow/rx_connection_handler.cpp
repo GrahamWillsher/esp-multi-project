@@ -7,6 +7,7 @@
 #include <esp32common/espnow/connection_manager.h>
 #include <esp32common/espnow/mac_utils.h>
 #include <esp32common/espnow/common.h>
+#include <esp32common/espnow/tx_scheduler.h>
 #include <channel_manager.h>
 #include <espnow_discovery.h>
 #include <espnow_peer_manager.h>
@@ -51,12 +52,12 @@ static esp_err_t send_config_section_request(const uint8_t* mac,
     request.type              = msg_config_section_request;
     request.section           = section;
     request.requested_version = requested_version;
-    return esp_now_send(mac, reinterpret_cast<const uint8_t*>(&request), sizeof(request));
+    return EspnowTxScheduler::send(mac, &request, sizeof(request), "CONFIG_SECTION_REQ");
 }
 
 static esp_err_t send_request_data_message(const uint8_t* mac, uint8_t subtype) {
     request_data_t request{msg_request_data, subtype};
-    return esp_now_send(mac, reinterpret_cast<const uint8_t*>(&request), sizeof(request));
+    return EspnowTxScheduler::send(mac, &request, sizeof(request), "REQUEST_DATA");
 }
 
 // ---------------------------------------------------------------------------
@@ -306,7 +307,7 @@ void ReceiverConnectionHandler::send_initialization_requests(const uint8_t* tran
     strncpy(announce.device_type, DEVICE_NAME, sizeof(announce.device_type) - 1);
     strncpy(announce.build_date, __DATE__, sizeof(announce.build_date) - 1);
     strncpy(announce.build_time, __TIME__, sizeof(announce.build_time) - 1);
-    r = esp_now_send(transmitter_mac, reinterpret_cast<const uint8_t*>(&announce), sizeof(announce));
+    r = EspnowTxScheduler::send(transmitter_mac, &announce, sizeof(announce), "VERSION_ANNOUNCE");
     if (r == ESP_OK) {
         LOG_INFO("RX_CONN", "Sent version info: %d.%d.%d",
                  FW_VERSION_MAJOR, FW_VERSION_MINOR, FW_VERSION_PATCH);

@@ -12,6 +12,7 @@
 
 #include <espnow_discovery.h>
 #include "../memory/memory_sampler.h"
+#include <esp32common/espnow/tx_scheduler.h>
 
 namespace RuntimeTaskStartup {
 
@@ -57,6 +58,20 @@ void create_runtime_primitives() {
         handle_error(ErrorSeverity::FATAL, "RTOS", "Failed to create ESP-NOW queue");
     }
     LOG_DEBUG("MAIN", "ESP-NOW queue created (size=%d)", ESPNow::QUEUE_SIZE);
+
+    EspnowTxScheduler::InitOptions tx_options{};
+    tx_options.queue_depth = 24;
+    tx_options.no_mem_retry_attempts = 6;
+    tx_options.retry_base_delay_ms = 4;
+    tx_options.inter_frame_delay_ms = 2;
+    tx_options.task_priority = TaskConfig::ESPNOW_TX_PRIORITY;
+    tx_options.task_stack = TaskConfig::ESPNOW_TX_STACK;
+    tx_options.task_core = TaskConfig::WORKER_CORE;
+    tx_options.task_name = "EspnowTx";
+
+    if (!EspnowTxScheduler::init(tx_options)) {
+        handle_error(ErrorSeverity::FATAL, "RTOS", "Failed to initialize ESP-NOW TX scheduler");
+    }
 
     // CRITICAL: Setup message routes BEFORE starting worker task
     // This prevents race condition where PROBE messages arrive before handlers are registered

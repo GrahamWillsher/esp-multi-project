@@ -5,6 +5,7 @@
 #include <espnow_transmitter.h>
 #include <esp32common/espnow/packet_utils.h>
 #include <esp32common/espnow/connection_event.h>
+#include <esp32common/espnow/tx_scheduler.h>
 #include <esp32common/config/timing_config.h>
 #include <runtime_common_utils/device_temperature.h>
 #include "../webserver/utils/transmitter_manager.h"
@@ -93,13 +94,13 @@ void RxHeartbeatManager::send_ack(uint32_t ack_seq, const uint8_t* mac) {
     // Calculate CRC32 over all fields except trailing checksum
     ack.checksum = EspnowPacketUtils::calculate_message_crc32_zeroed(&ack);
     
-    esp_err_t result = esp_now_send(mac, (uint8_t*)&ack, sizeof(ack));
+    esp_err_t result = EspnowTxScheduler::send(mac, &ack, sizeof(ack), "HEARTBEAT_ACK");
     
     if (result == ESP_OK) {
         m_acks_sent++;
         LOG_DEBUG("HEARTBEAT", "Sent ACK seq=%u, uptime=%u ms", ack.ack_seq, ack.uptime_ms);
     } else {
-        LOG_ERROR("HEARTBEAT", "Failed to send ACK seq=%u: %s", ack.ack_seq, esp_err_to_name(result));
+        LOG_ERROR("HEARTBEAT", "Failed to queue ACK seq=%u: %s", ack.ack_seq, esp_err_to_name(result));
     }
 }
 

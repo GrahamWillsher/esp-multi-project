@@ -176,8 +176,10 @@ esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
     g_sse_metrics.monitor_active_clients++;
     portEXIT_CRITICAL(&g_sse_metrics_mux);
     MemorySampler::burst_clients_add();
+    SSENotifier::monitorClientConnected();
 
     if (HttpSseUtils::begin_sse(req) != ESP_OK || HttpSseUtils::send_retry_hint(req) != ESP_OK) {
+        SSENotifier::monitorClientDisconnected();
         recordMonitorSessionEnd(millis() - session_start_ms);
         return ESP_FAIL;
     }
@@ -210,6 +212,7 @@ esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
         portENTER_CRITICAL(&g_sse_metrics_mux);
         g_sse_metrics.monitor_send_failures++;
         portEXIT_CRITICAL(&g_sse_metrics_mux);
+        SSENotifier::monitorClientDisconnected();
         recordMonitorSessionEnd(millis() - session_start_ms);
         return ESP_FAIL;
     }
@@ -258,6 +261,7 @@ esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
     }
 
     HttpSseUtils::end_sse(req);
+    SSENotifier::monitorClientDisconnected();
     recordMonitorSessionEnd(millis() - session_start_ms);
     return ESP_OK;
 }
