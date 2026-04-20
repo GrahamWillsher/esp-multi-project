@@ -4,6 +4,7 @@
 #include <atomic>
 #include <esp_now.h>
 #include <esp32common/espnow/common.h>
+#include <esp32common/espnow/packet_utils.h>
 #include <esp32common/espnow/standard_handlers.h>
 
 #include "espnow/battery_data_store.h"
@@ -38,6 +39,19 @@ void enqueue_snapshot(float soc_percent, int32_t power_w);
 void log_type_once(uint8_t type, const char* label);
 void mark_protocol_activity(const uint8_t* mac);
 
+struct IngressParseResult {
+    const espnow_queue_msg_t* msg = nullptr;
+    uint8_t type = 0;
+    uint8_t subtype = 0xFF;
+    bool has_packet_info = false;
+    EspnowPacketUtils::PacketInfo packet_info{};
+};
+
+bool parse_ingress_message(const espnow_queue_msg_t& msg, IngressParseResult& out);
+bool validate_ingress_message(const IngressParseResult& parsed);
+bool dispatch_ingress_message(const IngressParseResult& parsed);
+bool process_ingress_message(const espnow_queue_msg_t& msg);
+
 template <typename T>
 inline bool validate_struct_size(const espnow_queue_msg_t* msg, const char* label) {
     if (!msg || msg->len < static_cast<int>(sizeof(T))) {
@@ -48,12 +62,51 @@ inline bool validate_struct_size(const espnow_queue_msg_t* msg, const char* labe
 }
 
 template <typename T>
-inline void handle_known_struct_message(const espnow_queue_msg_t* msg, const char* label) {
+inline const T* decode_struct_message(const espnow_queue_msg_t* msg,
+                                      const char* label,
+                                      uint8_t expected_type = 0xFF) {
     if (!validate_struct_size<T>(msg, label)) {
-        return;
+        return nullptr;
     }
 
     const auto* payload = reinterpret_cast<const T*>(msg->data);
+    if (expected_type != 0xFF && payload->type != expected_type) {
+        LOG_WARN("ESPNOW", "%s type mismatch: got=%u expected=%u",
+                 label,
+                 static_cast<unsigned>(payload->type),
+                 static_cast<unsigned>(expected_type));
+        return nullptr;
+    }
+
+    return payload;
+}
+
+template <typename T>
+inline const T* decode_crc32_message(const espnow_queue_msg_t* msg,
+                                     const char* label,
+                                     uint8_t expected_type = 0xFF) {
+    const auto* payload = decode_struct_message<T>(msg, label, expected_type);
+    if (!payload) {
+        return nullptr;
+    }
+
+    if (!EspnowPacketUtils::verify_message_crc32(payload)) {
+        LOG_WARN("ESPNOW", "%s CRC32 mismatch (stored=0x%08lX)",
+                 label,
+                 static_cast<unsigned long>(payload->checksum));
+        return nullptr;
+    }
+
+    return payload;
+}
+
+template <typename T>
+inline void handle_known_struct_message(const espnow_queue_msg_t* msg, const char* label) {
+    const auto* payload = decode_struct_message<T>(msg, label);
+    if (!payload) {
+        return;
+    }
+
     mark_protocol_activity(msg->mac);
     log_type_once(payload->type, label);
 }

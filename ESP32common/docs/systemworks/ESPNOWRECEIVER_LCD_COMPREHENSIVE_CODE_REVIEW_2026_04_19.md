@@ -259,32 +259,117 @@ There is still broad informational logging in processing paths and repeated rout
 4. ✅ Centralize NVS initialization and remove feature-level init duplication. Completed 2026-04-19 with startup-owned NVS bootstrap and removal of feature-level NVS init from the LCD component config handler.
 
 ## Phase 2 (Architecture upgrade, 1–3 weeks)
-1. Introduce message schema validation layer (typed validator per message family).
-2. Introduce API schema contract (request/response structs + validation map).
-3. Add fuzz-style tests for malformed ESP-NOW packet ingestion.
-4. Add CI static checks for banned APIs/patterns (legacy checksums, raw secret logs).
+1. **Introduce message schema validation layer (typed validator per message family).**
+   - **What this means:** every ESP-NOW message is validated in two stages before handler logic runs: structural validation (length/CRC/type/subtype/version) and semantic validation (field ranges, enum legality, cross-field consistency).
+   - **Why this matters:** CRC32 confirms integrity, but not correctness. A packet can pass CRC and still carry invalid values (e.g., impossible voltage ranges, unsupported enum values, invalid subtype for payload).
+   - **Implementation intent:**
+     - Create a centralized validator entry point used by all ingress paths.
+     - Implement typed validators per family (battery status/info, charger/inverter/system status, config sync, type catalog, heartbeat/control).
+     - Return explicit validation outcomes (`ok`, `reject_reason`, optional code) and reject pre-handler on failure.
+   - **Acceptance criteria:**
+     - No handler processes unvalidated payloads.
+     - All known message families are covered by typed validators.
+     - Rejections are logged with bounded/rate-limited diagnostics.
+
+2. **Introduce API schema contract (request/response structs + validation map).**
+   - **What this means:** define strict request/response contracts per endpoint (required fields, optional fields, types, ranges, defaults, error response format).
+   - **Why this matters:** ad-hoc parsing is flexible short-term but drifts over time and increases regression risk when fields evolve.
+   - **Implementation intent:**
+     - Add DTO-style request parsing and validation for each endpoint family.
+     - Add centralized response serialization to enforce stable output shape.
+     - Add one common error envelope format for all API failures.
+   - **Acceptance criteria:**
+     - Mutating endpoints fail fast on invalid schema.
+     - Endpoint behavior is deterministic and contract-driven.
+     - Contract/version compatibility rules are documented for future evolution.
+
+3. **Add fuzz-style tests for malformed ESP-NOW packet ingestion (not necessary at the moment for current DIY/local-only scope).**
+   - **What this means:** run automated malformed/randomized input against packet parse/validation entry points to catch crash and undefined-behavior classes not covered by normal tests.
+   - **Why this matters:** malformed inputs are where parser bugs surface (truncation, boundary values, invalid combinations, inconsistent declared lengths).
+   - **Implementation intent:**
+     - Build a host-side fuzz harness around parse/validate boundaries.
+     - Seed corpus with real captured packets plus targeted malformed variants.
+     - Persist regression corpus for any bug found.
+   - **Status note (2026-04-19):** deferred for now as lower priority versus active feature/runtime work in a private LAN deployment.
+   - **Acceptance criteria (when resumed):**
+     - No crashes/hangs/OOB behavior under fuzz workload.
+     - Invalid packets are rejected predictably.
+     - A time-bounded fuzz pass is runnable in CI.
+
+4. **Add CI static checks for banned APIs/patterns (legacy checksums, raw secret logs).**
+   - **What this means:** enforce repository-level guardrails so known bad patterns cannot re-enter the codebase.
+   - **Why this matters:** one-time cleanup is insufficient without automated prevention.
+   - **Implementation intent:**
+     - Add CI checks for banned checksum patterns, plaintext secret logging, and other disallowed constructs.
+     - Fail CI on violations, with explicit allowlist/suppression mechanism for justified exceptions.
+   - **Acceptance criteria:**
+     - CI blocks reintroduction of legacy checksum logic and raw secret logs.
+     - Rules are documented and maintainable.
+     - False positives are controlled via explicit, reviewable suppression only.
+
+  ### Phase 2 performance/latency impact note (message communications)
+
+  - **Runtime validation checks (items 1 and parts of 2):** these add small CPU work per message and can add minor per-packet processing overhead, but should not materially delay ESP-NOW communication if implemented as lightweight, non-blocking checks.
+  - **Key implementation constraint:** avoid heavy logging, dynamic allocation, or blocking operations in hot receive/callback paths; those are the main sources of noticeable latency.
+  - **Fuzz testing (item 3):** no runtime communication delay in production firmware. Fuzzing runs in test/harness contexts, not in deployed message paths.
+  - **CI static checks (item 4):** zero runtime communication impact; they only affect development/CI pipeline time.
+
+## Phase 3 (Controlled rewrites)
+1. ✅ **ESP-NOW ingress pipeline rewrite.** Completed 2026-04-20 in `espnowreceiver_LCD`.
+   - Added an explicit staged ingress path: parse -> validate -> dispatch (`parse_ingress_message()`, `validate_ingress_message()`, `dispatch_ingress_message()`, `process_ingress_message()`).
+   - Worker loop now routes all queued messages through staged ingress processing before handler dispatch.
+   - Type-catalog fragment structural validation moved to the ingress validation stage.
+   - Packet (`msg_packet`) structural + CRC validation moved to ingress validation stage before routing.
+   - Legacy/duplicate ingress checks that became redundant after the staged rewrite were removed from handler-level paths.
+   - Direct reinterpret-cast decoding previously scattered across runtime handlers/routes was consolidated behind shared typed decode helpers (`decode_struct_message()`, `decode_crc32_message()`).
+
+2. Web API control plane rewrite. Not started.
+3. State-store rewrite. Not started.
 
 ---
 
 ## 9) “Better coding” vs “rewrite” opportunities
 
 ## Better coding (incremental, low risk)
-- Add auth middleware and secret redaction.
-- Refactor logging and validation utilities.
-- Clean concurrency with documented ownership.
+- **Add auth middleware and secret redaction.**
+  - Add a shared middleware gate for mutating routes (config/reboot/OTA/control).
+  - Redact sensitive fields in request/response logging paths (passwords, credentials, tokens).
+  - Keep this incremental and non-disruptive to existing endpoint handlers.
+
+- **Refactor logging and validation utilities.**
+  - Centralize repeated validation/error construction logic to one utility path.
+  - Standardize log levels and rate limits in high-frequency paths.
+  - Reduce copy/paste validator drift by using reusable helpers.
+
+- **Clean concurrency with documented ownership.**
+  - Document owner task/context per shared variable.
+  - Use atomics or mutexes where cross-task reads/writes are required.
+  - Keep single-writer ownership where possible to reduce synchronization complexity.
 
 ## Full/partial rewrite candidates (high ROI)
-1. **ESP-NOW ingress pipeline rewrite**
-   - Build a staged parser/validator/router pipeline with explicit parse result types.
-   - Eliminate direct reinterpret-cast processing scattered across handlers.
+1. **ESP-NOW ingress pipeline rewrite (completed 2026-04-20 in LCD runtime)**
+   - ✅ **Build a staged parser/validator/router pipeline with explicit parse result types.**
+     - Pipeline stages: frame intake -> structural parse -> semantic validation -> typed dispatch.
+     - Handlers receive validated typed payloads instead of raw frame pointers.
+   - ✅ **Eliminate direct reinterpret-cast processing scattered across handlers.**
+     - Consolidate decode logic into one ingress layer.
+     - Remove duplicated low-level parsing assumptions from business handlers.
 
 2. **Web API control plane rewrite**
-   - Introduce centralized router + auth + schema validation middleware stack.
-   - Separate transport concerns from business logic handlers.
+   - **Introduce centralized router + auth + schema validation middleware stack.**
+     - Apply consistent pre-handler enforcement for authentication, authorization, and request validity.
+     - Reduce endpoint-by-endpoint variance in security and error behavior.
+   - **Separate transport concerns from business logic handlers.**
+     - Keep HTTP parsing/response formatting in transport adapters.
+     - Move domain logic into typed services that are easier to test in isolation.
 
 3. **State-store rewrite**
-   - Replace ad-hoc global snapshots with a typed store + event reducer model.
-   - Single writer, immutable snapshot reads for lock minimization and determinism.
+   - **Replace ad-hoc global snapshots with a typed store + event reducer model.**
+     - Centralize state transitions via explicit events/actions.
+     - Make state mutation paths auditable and deterministic.
+   - **Single writer, immutable snapshot reads for lock minimization and determinism.**
+     - One owner mutates state; readers consume immutable snapshots.
+     - Reduces lock contention and race-condition surface while preserving runtime clarity.
 
 ---
 

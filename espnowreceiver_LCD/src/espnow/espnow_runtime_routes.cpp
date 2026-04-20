@@ -47,8 +47,8 @@ void setup_message_routes() {
             const auto state = EspNowConnectionManager::instance().get_state();
             bool send_probe_ack = true;
 
-            if (msg->len >= static_cast<int>(sizeof(probe_t))) {
-                const auto* probe = reinterpret_cast<const probe_t*>(msg->data);
+            const auto* probe = decode_struct_message<probe_t>(msg, "PROBE", msg_probe);
+            if (probe) {
                 const uint32_t now = millis();
 
                 const bool same_peer =

@@ -5,7 +5,6 @@
 #include <esp_wifi.h>
 #include <esp32common/config/timing_config.h>
 #include <esp32common/espnow/connection_manager.h>
-#include <esp32common/espnow/message_router.h>
 #include <channel_manager.h>
 #include <espnow_discovery.h>
 #include <espnow_peer_manager.h>
@@ -133,7 +132,6 @@ bool init_state() {
 }
 
 void task_worker(void* /*parameter*/) {
-    auto& router = EspnowMessageRouter::instance();
     auto& connection_handler = ReceiverConnectionHandler::instance();
     auto& connection_manager = EspNowConnectionManager::instance();
 
@@ -160,7 +158,7 @@ void task_worker(void* /*parameter*/) {
                     connection_handler.on_peer_registered(msg.mac);
                 }
 
-                if (!router.route_message(msg)) {
+                if (!Detail::process_ingress_message(msg)) {
                     RxStateMachine::instance().on_message_error();
                     LOG_WARN("ESPNOW", "Unhandled message type=%u len=%d",
                              static_cast<unsigned>(msg_type), msg.len);
