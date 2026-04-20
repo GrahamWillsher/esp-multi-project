@@ -2,6 +2,7 @@
 
 #include "api_request_utils.h"
 #include "api_response_utils.h"
+#include "api_schema_contract.h"
 #include "../utils/transmitter_event_log_cache.h"
 #include "../../src/espnow/espnow_send.h"
 #include "../../src/mqtt/mqtt_client.h"
@@ -29,6 +30,11 @@ esp_err_t api_set_test_data_mode_handler(httpd_req_t *req) {
     esp_err_t response_error = ESP_OK;
     if (!ApiRequestUtils::read_json_body_or_respond(req, buffer, sizeof(buffer), doc, &response_error)) {
         return response_error;
+    }
+
+    const char* schema_error = nullptr;
+    if (!ApiSchemaContract::validate(doc, ApiSchemaContract::SchemaId::SetTestDataMode, &schema_error)) {
+        return ApiResponseUtils::send_error_message(req, schema_error ? schema_error : "Invalid request schema");
     }
 
     uint8_t mode = 0;

@@ -1,5 +1,7 @@
 #include "api_network.h"
 #include "api_utils.h"
+#include "api_middleware.h"
+#include "api_schema_contract.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -50,6 +52,11 @@ esp_err_t handle_post(httpd_req_t* req) {
     StaticJsonDocument<640> doc;
     if (!ApiUtils::read_json(req, buf, sizeof(buf), doc, &err_resp)) {
         return err_resp;
+    }
+
+    const char* schema_error = nullptr;
+    if (!ApiSchemaContract::validate(doc, ApiSchemaContract::SchemaId::NetworkV1Post, &schema_error)) {
+        return ApiUtils::send_err(req, schema_error ? schema_error : "Invalid request schema");
     }
 
     // --- WiFi credentials ---
@@ -106,21 +113,23 @@ esp_err_t handle_post(httpd_req_t* req) {
 }
 
 esp_err_t register_handlers(httpd_handle_t server) {
-    httpd_uri_t get_uri = {
-        .uri      = "/api/v1/network",
-        .method   = HTTP_GET,
-        .handler  = handle_get,
-        .user_ctx = nullptr,
+    const ApiMiddleware::RouteContext get_route = {
+        .uri = "/api/v1/network",
+        .method = HTTP_GET,
+        .handler = handle_get,
+        .policy = ApiMiddleware::RoutePolicy::ReadOnly,
     };
-    httpd_uri_t post_uri = {
-        .uri      = "/api/v1/network",
-        .method   = HTTP_POST,
-        .handler  = handle_post,
-        .user_ctx = nullptr,
+
+    const ApiMiddleware::RouteContext post_route = {
+        .uri = "/api/v1/network",
+        .method = HTTP_POST,
+        .handler = handle_post,
+        .policy = ApiMiddleware::RoutePolicy::MutatingJson,
     };
-    const esp_err_t g = httpd_register_uri_handler(server, &get_uri);
-    const esp_err_t p = httpd_register_uri_handler(server, &post_uri);
-    return (g == ESP_OK && p == ESP_OK) ? ESP_OK : ESP_FAIL;
+
+    const bool g = ApiMiddleware::register_route(server, get_route);
+    const bool p = ApiMiddleware::register_route(server, post_route);
+    return (g && p) ? ESP_OK : ESP_FAIL;
 }
 
 }  // namespace ApiNetwork

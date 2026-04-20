@@ -2,6 +2,7 @@
 
 #include "api_request_utils.h"
 #include "api_response_utils.h"
+#include "api_schema_contract.h"
 #include "../utils/transmitter_manager.h"
 #include "../logging.h"
 #include "../../receiver_config/receiver_config_manager.h"
@@ -82,6 +83,11 @@ esp_err_t api_save_receiver_network_handler(httpd_req_t *req) {
     esp_err_t response_error = ESP_OK;
     if (!ApiRequestUtils::read_json_body_or_respond(req, buf, sizeof(buf), doc, &response_error)) {
         return response_error;
+    }
+
+    const char* schema_error = nullptr;
+    if (!ApiSchemaContract::validate(doc, ApiSchemaContract::SchemaId::SaveReceiverNetwork, &schema_error)) {
+        return ApiResponseUtils::send_error_message(req, schema_error ? schema_error : "Invalid request schema");
     }
 
     const char* hostname = doc["hostname"] | "";
@@ -225,7 +231,10 @@ esp_err_t api_save_network_config_handler(httpd_req_t *req) {
         return response_error;
     }
 
-    LOG_INFO("API", "Received network config JSON: %s", buf);
+    const char* schema_error = nullptr;
+    if (!ApiSchemaContract::validate(doc, ApiSchemaContract::SchemaId::SaveNetworkConfig, &schema_error)) {
+        return ApiResponseUtils::send_error_message(req, schema_error ? schema_error : "Invalid request schema");
+    }
 
     if (!TransmitterManager::isMACKnown()) {
         return ApiResponseUtils::send_transmitter_mac_unknown(req);
@@ -327,7 +336,10 @@ esp_err_t api_save_mqtt_config_handler(httpd_req_t *req) {
         return response_error;
     }
 
-    LOG_INFO("API", "Received MQTT config JSON: %s", buf);
+    const char* schema_error = nullptr;
+    if (!ApiSchemaContract::validate(doc, ApiSchemaContract::SchemaId::SaveMqttConfig, &schema_error)) {
+        return ApiResponseUtils::send_error_message(req, schema_error ? schema_error : "Invalid request schema");
+    }
 
     if (!TransmitterManager::isMACKnown()) {
         return ApiResponseUtils::send_transmitter_mac_unknown(req);

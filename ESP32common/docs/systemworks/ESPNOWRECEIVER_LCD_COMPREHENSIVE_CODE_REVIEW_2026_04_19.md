@@ -323,7 +323,12 @@ There is still broad informational logging in processing paths and repeated rout
    - Legacy/duplicate ingress checks that became redundant after the staged rewrite were removed from handler-level paths.
    - Direct reinterpret-cast decoding previously scattered across runtime handlers/routes was consolidated behind shared typed decode helpers (`decode_struct_message()`, `decode_crc32_message()`).
 
-2. Web API control plane rewrite. Not started.
+2. ✅ **Web API control plane rewrite.** Completed 2026-04-20 in `espnowreceiver_LCD`.
+  - Added centralized route middleware and policy-driven registration for core API endpoints (`ReadOnly`, `MutatingNoBody`, `MutatingJson`).
+  - Added centralized request schema-contract validation for key mutating endpoints (`save_setting`, receiver/network/mqtt saves, test-data mode, and `/api/v1/network` POST).
+  - Migrated API route registration to middleware-backed route tables and removed legacy direct per-route registration in the core handler path.
+  - Removed legacy raw full-request JSON logging in mutating network/settings handlers to reduce sensitive payload leakage in logs.
+  - `/api/v1/network` registration now uses the same middleware/policy path as the rest of the API control plane.
 3. State-store rewrite. Not started.
 
 ---
@@ -355,13 +360,14 @@ There is still broad informational logging in processing paths and repeated rout
      - Consolidate decode logic into one ingress layer.
      - Remove duplicated low-level parsing assumptions from business handlers.
 
-2. **Web API control plane rewrite**
-   - **Introduce centralized router + auth + schema validation middleware stack.**
-     - Apply consistent pre-handler enforcement for authentication, authorization, and request validity.
-     - Reduce endpoint-by-endpoint variance in security and error behavior.
-   - **Separate transport concerns from business logic handlers.**
-     - Keep HTTP parsing/response formatting in transport adapters.
-     - Move domain logic into typed services that are easier to test in isolation.
+2. **Web API control plane rewrite (completed 2026-04-20 in LCD runtime)**
+   - ✅ **Introduced centralized router + policy + schema validation middleware stack.**
+     - Core API and `/api/v1/network` routes now use one registration/dispatch path.
+     - Request policy checks are now endpoint-declared rather than ad hoc per handler.
+   - ✅ **Reduced legacy control-plane variance and duplication.**
+     - Removed legacy direct route-registration path in the core API table.
+     - Removed raw mutating request-body logs in the updated handlers.
+   - 🔄 **Remaining follow-up:** optional stronger auth policy implementation if deployment scope moves beyond trusted private LAN.
 
 3. **State-store rewrite**
    - **Replace ad-hoc global snapshots with a typed store + event reducer model.**

@@ -2,6 +2,7 @@
 
 #include "api_request_utils.h"
 #include "api_response_utils.h"
+#include "api_schema_contract.h"
 #include "../utils/transmitter_manager.h"
 #include "../logging.h"
 
@@ -83,11 +84,10 @@ esp_err_t api_save_setting_handler(httpd_req_t *req) {
         return response_error;
     }
 
-    LOG_INFO("API", "Received JSON: %s", buf);
-
-    if (!doc.containsKey("category") || !doc.containsKey("field") || !doc.containsKey("value")) {
-        LOG_ERROR("API", "Missing required fields in JSON");
-        return ApiResponseUtils::send_error_message(req, "Missing required fields (category, field, value)");
+    const char* schema_error = nullptr;
+    if (!ApiSchemaContract::validate(doc, ApiSchemaContract::SchemaId::SaveSetting, &schema_error)) {
+        LOG_ERROR("API", "save_setting schema validation failed: %s", schema_error ? schema_error : "unknown");
+        return ApiResponseUtils::send_error_message(req, schema_error ? schema_error : "Invalid request schema");
     }
 
     uint8_t category = doc["category"];
