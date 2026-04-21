@@ -127,6 +127,20 @@ String get_systeminfo_page_content() {
     </div>
 
     <div class='settings-card'>
+        <h3>Display Configuration</h3>
+        <div class='settings-row'>
+            <label>Power Bar Renderer:</label>
+            <select id='powerBarRendererMode' class='editable-field'>
+                <option value='0'>Original</option>
+                <option value='4'>Original (Rounded Ends)</option>
+                <option value='1'>Soft</option>
+                <option value='2'>Linear</option>
+                <option value='3'>Hybrid</option>
+            </select>
+        </div>
+    </div>
+
+    <div class='settings-card'>
         <h3>MQTT Client Configuration (Receiver)</h3>
         <p style='color: #666; font-size: 14px; margin-bottom: 15px;'>
             Configure the receiver's MQTT client to subscribe to battery emulator specs

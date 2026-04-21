@@ -6,6 +6,7 @@
 #include "../utils/transmitter_manager.h"
 #include "../logging.h"
 #include "../../receiver_config/receiver_config_manager.h"
+#include "common_lcd.h"
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -14,6 +15,33 @@
 #include <esp32common/espnow/common.h>
 #include <esp32common/espnow/packet_utils.h>
 #include <cstring>
+
+namespace UI::Runtime::Backend {
+enum class PowerBarRendererMode : uint8_t;
+}
+
+namespace UI::Runtime {
+void set_power_bar_mode(Backend::PowerBarRendererMode mode);
+}
+
+namespace {
+
+UI::Runtime::Backend::PowerBarRendererMode to_ui_power_bar_mode(ReceiverNetworkConfig::PowerBarRendererMode mode) {
+    return static_cast<UI::Runtime::Backend::PowerBarRendererMode>(static_cast<uint8_t>(mode));
+}
+
+void apply_live_power_bar_mode(ReceiverNetworkConfig::PowerBarRendererMode mode) {
+    if (RTOS::lvgl_mutex == nullptr) {
+        return;
+    }
+
+    if (xSemaphoreTake(RTOS::lvgl_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        UI::Runtime::set_power_bar_mode(to_ui_power_bar_mode(mode));
+        xSemaphoreGive(RTOS::lvgl_mutex);
+    }
+}
+
+}  // namespace
 
 esp_err_t api_get_receiver_network_handler(httpd_req_t *req) {
     String wifi_mac = WiFi.macAddress();
@@ -68,6 +96,7 @@ esp_err_t api_get_receiver_network_handler(httpd_req_t *req) {
     doc["mqtt_port"]      = mqtt_port;
     doc["mqtt_username"]  = mqtt_username;
     doc["mqtt_password"]  = "********";
+    doc["power_bar_renderer_mode"] = static_cast<uint8_t>(ReceiverNetworkConfig::getPowerBarRendererMode());
 
     return ApiResponseUtils::send_json_doc(req, doc);
 }
@@ -100,6 +129,16 @@ esp_err_t api_save_receiver_network_handler(httpd_req_t *req) {
     uint16_t mqtt_port = doc["mqtt_port"] | 1883;
     const char* mqtt_username = doc["mqtt_username"] | "";
     const char* mqtt_password = doc["mqtt_password"] | "";
+    const uint8_t power_bar_mode_raw = static_cast<uint8_t>(
+        doc["power_bar_renderer_mode"] |
+        static_cast<uint8_t>(ReceiverNetworkConfig::getPowerBarRendererMode()));
+
+    auto mode_validation = ReceiverNetworkConfig::validatePowerBarRendererMode(power_bar_mode_raw);
+    if (!mode_validation.valid) {
+        return ApiResponseUtils::send_error_message(req, mode_validation.error_message);
+    }
+
+    const auto power_bar_mode = static_cast<ReceiverNetworkConfig::PowerBarRendererMode>(power_bar_mode_raw);
 
     if (!ssid || ssid[0] == '\0') {
         return ApiResponseUtils::send_error_message(req, "SSID is required");
@@ -158,6 +197,8 @@ esp_err_t api_save_receiver_network_handler(httpd_req_t *req) {
     );
 
     if (saved) {
+        ReceiverNetworkConfig::setPowerBarRendererMode(power_bar_mode);
+        apply_live_power_bar_mode(power_bar_mode);
         return ApiResponseUtils::send_success_message(req, "Receiver network config saved");
     } else {
         return ApiResponseUtils::send_error_message(req, "Failed to save receiver config");

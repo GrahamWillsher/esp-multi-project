@@ -29,6 +29,23 @@ lgfx_custom::LGFX_Waveshare7* display = nullptr;
 uint32_t last_log_ms = 0;
 bool g_espnow_transport_enabled = false;
 
+UI::Runtime::Backend::PowerBarRendererMode to_ui_power_bar_mode(ReceiverNetworkConfig::PowerBarRendererMode mode) {
+    switch (mode) {
+        case ReceiverNetworkConfig::PowerBarRendererMode::Original:
+            return UI::Runtime::Backend::PowerBarRendererMode::Original;
+        case ReceiverNetworkConfig::PowerBarRendererMode::Soft:
+            return UI::Runtime::Backend::PowerBarRendererMode::Soft;
+        case ReceiverNetworkConfig::PowerBarRendererMode::Linear:
+            return UI::Runtime::Backend::PowerBarRendererMode::Linear;
+        case ReceiverNetworkConfig::PowerBarRendererMode::Hybrid:
+            return UI::Runtime::Backend::PowerBarRendererMode::Hybrid;
+        case ReceiverNetworkConfig::PowerBarRendererMode::OriginalRounded:
+            return UI::Runtime::Backend::PowerBarRendererMode::OriginalRounded;
+        default:
+            return UI::Runtime::Backend::PowerBarRendererMode::Original;
+    }
+}
+
 void log_line(const char* msg) {
     LOG_INFO("MAIN", "%s", msg);
 }
@@ -72,6 +89,10 @@ void bootstrap_filesystem() {
 
     const bool cfg_loaded = ReceiverNetworkConfig::loadConfig();
     LOG_INFO("MAIN", "boot: receiver config=%s", cfg_loaded ? "loaded" : "missing");
+
+    const auto power_bar_mode = ReceiverNetworkConfig::getPowerBarRendererMode();
+    UI::Runtime::set_power_bar_mode(to_ui_power_bar_mode(power_bar_mode));
+    LOG_INFO("MAIN", "boot: power bar mode=%u", static_cast<unsigned>(power_bar_mode));
 
     bool wifi_ok = false;
     if (cfg_loaded) {

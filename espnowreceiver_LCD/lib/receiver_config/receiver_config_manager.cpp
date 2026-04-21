@@ -25,6 +25,7 @@ uint8_t ReceiverNetworkConfig::inverter_type_ = 0;      // Default to NONE
 uint8_t ReceiverNetworkConfig::battery_interface_ = 2;  // Default to CAN (Native)
 uint8_t ReceiverNetworkConfig::inverter_interface_ = 2; // Default to CAN (Native)
 bool ReceiverNetworkConfig::simulation_mode_ = true;    // Default to simulated data
+uint8_t ReceiverNetworkConfig::power_bar_renderer_mode_ = static_cast<uint8_t>(ReceiverNetworkConfig::PowerBarRendererMode::Original);
 
 ReceiverNetworkConfig::ValidationResult ReceiverNetworkConfig::validateIPAddress(const uint8_t ip[4]) {
     if (!ip) {
@@ -100,6 +101,19 @@ ReceiverNetworkConfig::ValidationResult ReceiverNetworkConfig::validateInterface
     return {true, ""};
 }
 
+ReceiverNetworkConfig::ValidationResult ReceiverNetworkConfig::validatePowerBarRendererMode(uint8_t mode) {
+    switch (static_cast<PowerBarRendererMode>(mode)) {
+        case PowerBarRendererMode::Original:
+        case PowerBarRendererMode::Soft:
+        case PowerBarRendererMode::Linear:
+        case PowerBarRendererMode::Hybrid:
+        case PowerBarRendererMode::OriginalRounded:
+            return {true, ""};
+        default:
+            return {false, "Power bar renderer mode must be in range 0-4"};
+    }
+}
+
 bool ReceiverNetworkConfig::loadConfig() {
     Preferences prefs;
     if (!prefs.begin(NVS_NAMESPACE, true)) {  // true = read-only
@@ -159,6 +173,20 @@ bool ReceiverNetworkConfig::loadConfig() {
 
     // Load simulation mode (default ON)
     simulation_mode_ = prefs.getBool(NVS_KEY_SIMULATION_MODE, true);
+
+    // Load display power bar renderer mode (default ORIGINAL)
+    const uint8_t mode = prefs.getUChar(
+        NVS_KEY_POWER_BAR_MODE,
+        static_cast<uint8_t>(PowerBarRendererMode::Original));
+    auto mode_validation = validatePowerBarRendererMode(mode);
+    if (mode_validation.valid) {
+        power_bar_renderer_mode_ = mode;
+    } else {
+        LOG_WARN("RECEIVER_CFG", "Invalid power bar mode in NVS (%u): %s. Using ORIGINAL.",
+                 static_cast<unsigned>(mode),
+                 mode_validation.error_message);
+        power_bar_renderer_mode_ = static_cast<uint8_t>(PowerBarRendererMode::Original);
+    }
 
     prefs.end();
 
@@ -379,6 +407,7 @@ void ReceiverNetworkConfig::clearConfig() {
     battery_interface_ = 2;
     inverter_interface_ = 2;
     simulation_mode_ = true;
+    power_bar_renderer_mode_ = static_cast<uint8_t>(PowerBarRendererMode::Original);
 }
 
 void ReceiverNetworkConfig::setBatteryType(uint8_t type) {
@@ -455,5 +484,27 @@ void ReceiverNetworkConfig::setSimulationMode(bool enabled) {
         LOG_INFO("RECEIVER_CFG", "Simulation mode saved: %s", enabled ? "ON" : "OFF");
     } else {
         LOG_ERROR("RECEIVER_CFG", "Failed to save simulation mode to NVS");
+    }
+}
+
+void ReceiverNetworkConfig::setPowerBarRendererMode(PowerBarRendererMode mode) {
+    const uint8_t raw_mode = static_cast<uint8_t>(mode);
+    auto validation = validatePowerBarRendererMode(raw_mode);
+    if (!validation.valid) {
+        LOG_ERROR("RECEIVER_CFG", "Invalid power bar renderer mode (%u): %s",
+                  static_cast<unsigned>(raw_mode),
+                  validation.error_message);
+        return;
+    }
+
+    power_bar_renderer_mode_ = raw_mode;
+
+    Preferences prefs;
+    if (prefs.begin(NVS_NAMESPACE, false)) {
+        prefs.putUChar(NVS_KEY_POWER_BAR_MODE, raw_mode);
+        prefs.end();
+        LOG_INFO("RECEIVER_CFG", "Power bar renderer mode saved: %u", static_cast<unsigned>(raw_mode));
+    } else {
+        LOG_ERROR("RECEIVER_CFG", "Failed to save power bar renderer mode to NVS");
     }
 }

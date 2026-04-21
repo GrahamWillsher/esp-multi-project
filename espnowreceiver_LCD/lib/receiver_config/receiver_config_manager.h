@@ -16,6 +16,15 @@
  * Configuration is persisted in NVS using uint8_t[4] arrays for IP addresses.
  */
 class ReceiverNetworkConfig {
+public:
+    enum class PowerBarRendererMode : uint8_t {
+        Original = 0,
+        Soft = 1,
+        Linear = 2,
+        Hybrid = 3,
+        OriginalRounded = 4,
+    };
+
 private:
     // WiFi credentials
     static char hostname_[32];
@@ -50,6 +59,9 @@ private:
     // Simulation mode (dashboard data source)
     static bool simulation_mode_;
 
+    // Display power bar renderer mode
+    static uint8_t power_bar_renderer_mode_;
+
     static constexpr const char* NVS_NAMESPACE = "rx_net_cfg";
     static constexpr const char* NVS_KEY_HOSTNAME = "hostname";
     static constexpr const char* NVS_KEY_SSID = "ssid";
@@ -70,6 +82,7 @@ private:
     static constexpr const char* NVS_KEY_BATTERY_INTERFACE = "batt_if";
     static constexpr const char* NVS_KEY_INVERTER_INTERFACE = "inv_if";
     static constexpr const char* NVS_KEY_SIMULATION_MODE = "sim_mode";
+    static constexpr const char* NVS_KEY_POWER_BAR_MODE = "pwrbar_mode";
 
 public:
     struct ValidationResult {
@@ -83,6 +96,7 @@ public:
     static ValidationResult validatePassword(const char* password);
     static ValidationResult validateHostname(const char* hostname);
     static ValidationResult validateInterface(uint8_t interface);
+    static ValidationResult validatePowerBarRendererMode(uint8_t mode);
 
     static bool loadConfig();
 
@@ -130,6 +144,10 @@ public:
 
     static bool isSimulationMode() { return simulation_mode_; }
 
+    static PowerBarRendererMode getPowerBarRendererMode() {
+        return static_cast<PowerBarRendererMode>(power_bar_renderer_mode_);
+    }
+
     static void setBatteryType(uint8_t type);
     static void setInverterType(uint8_t type);
 
@@ -137,6 +155,7 @@ public:
     static void setInverterInterface(uint8_t interface);
 
     static void setSimulationMode(bool enabled);
+    static void setPowerBarRendererMode(PowerBarRendererMode mode);
 };
 
 #endif // RECEIVER_NETWORK_CONFIG_H

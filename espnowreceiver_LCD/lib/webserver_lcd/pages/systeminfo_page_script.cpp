@@ -9,7 +9,8 @@ String get_systeminfo_page_script() {
             'sub0', 'sub1', 'sub2', 'sub3',
             'dns1_0', 'dns1_1', 'dns1_2', 'dns1_3',
             'dns2_0', 'dns2_1', 'dns2_2', 'dns2_3',
-            'mqttEnabled', 'mqtt0', 'mqtt1', 'mqtt2', 'mqtt3', 'mqttPort', 'mqttUsername', 'mqttPassword'
+            'mqttEnabled', 'mqtt0', 'mqtt1', 'mqtt2', 'mqtt3', 'mqttPort', 'mqttUsername', 'mqttPassword',
+            'powerBarRendererMode'
         ];
 
         let initialReceiverConfig = {};
@@ -77,6 +78,13 @@ String get_systeminfo_page_script() {
                     document.getElementById('mqttPassword').value = '********';
                 } else {
                     document.getElementById('mqttPassword').value = '';
+                }
+
+                const modeRaw = Number(data.power_bar_renderer_mode);
+                const safeMode = Number.isInteger(modeRaw) && modeRaw >= 0 && modeRaw <= 4 ? modeRaw : 0;
+                const modeEl = document.getElementById('powerBarRendererMode');
+                if (modeEl) {
+                    modeEl.value = String(safeMode);
                 }
 
                 RECEIVER_CONFIG_FIELDS.forEach(fieldId => {
@@ -163,6 +171,7 @@ String get_systeminfo_page_script() {
                     ssid: ssid,
                     password: document.getElementById('password').value,
                     use_static_ip: document.getElementById('useStaticIP').checked,
+                    power_bar_renderer_mode: parseInt(document.getElementById('powerBarRendererMode').value, 10),
                     mqtt_enabled: document.getElementById('mqttEnabled').checked,
                     mqtt_server: ReceiverNetworkFormController.collectOctets('mqtt'),
                     mqtt_port: parseInt(document.getElementById('mqttPort').value) || 1883,
@@ -186,8 +195,10 @@ String get_systeminfo_page_script() {
 
                 const result = await response.json();
                 if (result.success) {
-                    alert('Receiver configuration saved. The device will reboot if needed.');
-                    updateSaveButtonText(0);
+                    btn.disabled = false;
+                    btn.textContent = 'Saved OK';
+                    btn.style.backgroundColor = '#2196F3';
+                    return;
                 } else {
                     alert(result.message || 'Failed to save configuration');
                 }

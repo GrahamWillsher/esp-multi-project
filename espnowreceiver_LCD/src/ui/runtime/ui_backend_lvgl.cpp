@@ -16,6 +16,12 @@ namespace {
 
 constexpr int kBarCount = AppConfig::BAR_SEGMENTS_PER_SIDE;
 constexpr uint32_t kRippleMs = 1000;
+constexpr uint32_t kPeakHoldMs = 1000;
+constexpr uint32_t kLinearAttackMs = 90;
+constexpr uint32_t kLinearReleaseMs = 1300;
+constexpr uint32_t kLinearPeakReleaseMs = 900;
+constexpr float kMeterDbFloor = -40.0f;
+constexpr float kMeterEpsilon = 1e-3f;
 constexpr int kBatteryBodyW = AppConfig::SCREEN_WIDTH / 2;
 constexpr int kBatteryBodyH = (AppConfig::SCREEN_HEIGHT * 46) / 100;
 constexpr int kBatteryBodyX = (AppConfig::SCREEN_WIDTH - kBatteryBodyW) / 2;
@@ -54,6 +60,13 @@ lv_obj_t* ip_label_ = nullptr;
 lv_obj_t* center_marker_ = nullptr;
 lv_obj_t* left_bars_[kBarCount] = {};
 lv_obj_t* right_bars_[kBarCount] = {};
+lv_obj_t* left_bar_covers_[kBarCount] = {};   // corner-squelch rectangles for OriginalRounded mode
+lv_obj_t* right_bar_covers_[kBarCount] = {};
+int left_bar_x_[kBarCount] = {};
+int right_bar_x_[kBarCount] = {};
+int bar_top_ = 0;
+int bar_pitch_l_ = 0;
+int bar_pitch_r_ = 0;
 
 float current_soc_percent_ = 0.0f;
 int32_t current_power_w_ = 0;
@@ -71,10 +84,17 @@ bool current_is_charging_ = false;
 bool current_is_zero_ = true;
 int current_battery_fill_px_ = 0;
 bool bars_initialized_ = false;
+PowerBarRendererMode power_bar_mode_ = PowerBarRendererMode::Original;
 bool link_connected_ = false;
 bool remote_led_state_valid_ = false;
 uint8_t remote_led_color_ = 2;
 uint8_t remote_led_effect_ = 2;
+
+float linear_display_level_ = 0.0f;
+float linear_peak_level_ = 0.0f;
+uint32_t linear_peak_hold_until_ms_ = 0;
+uint32_t linear_last_update_ms_ = 0;
+int hybrid_prev_active_segments_ = 0;
 
 static void flush_cb(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* color_p) {
     auto* lcd = static_cast<lgfx::LGFX_Device*>(drv->user_data);
@@ -94,6 +114,31 @@ uint32_t rgb565_to_hex(uint16_t c) {
     const uint8_t g = static_cast<uint8_t>(((c >> 5) & 0x3F) * 255 / 63);
     const uint8_t b = static_cast<uint8_t>((c & 0x1F) * 255 / 31);
     return (static_cast<uint32_t>(r) << 16) | (static_cast<uint32_t>(g) << 8) | b;
+}
+
+uint32_t blend_hex_rgb(uint32_t from, uint32_t to, float t) {
+    const float clamped_t = std::max(0.0f, std::min(1.0f, t));
+    const uint8_t from_r = static_cast<uint8_t>((from >> 16) & 0xFF);
+    const uint8_t from_g = static_cast<uint8_t>((from >> 8) & 0xFF);
+    const uint8_t from_b = static_cast<uint8_t>(from & 0xFF);
+    const uint8_t to_r = static_cast<uint8_t>((to >> 16) & 0xFF);
+    const uint8_t to_g = static_cast<uint8_t>((to >> 8) & 0xFF);
+    const uint8_t to_b = static_cast<uint8_t>(to & 0xFF);
+
+    const int out_r_i = static_cast<int>(from_r) + static_cast<int>((static_cast<int>(to_r) - static_cast<int>(from_r)) * clamped_t);
+    const int out_g_i = static_cast<int>(from_g) + static_cast<int>((static_cast<int>(to_g) - static_cast<int>(from_g)) * clamped_t);
+    const int out_b_i = static_cast<int>(from_b) + static_cast<int>((static_cast<int>(to_b) - static_cast<int>(from_b)) * clamped_t);
+    const uint8_t out_r = static_cast<uint8_t>(std::max(0, std::min(255, out_r_i)));
+    const uint8_t out_g = static_cast<uint8_t>(std::max(0, std::min(255, out_g_i)));
+    const uint8_t out_b = static_cast<uint8_t>(std::max(0, std::min(255, out_b_i)));
+    return (static_cast<uint32_t>(out_r) << 16) | (static_cast<uint32_t>(out_g) << 8) | out_b;
+}
+
+float normalized_db_level(float normalized_linear) {
+    const float x = std::max(kMeterEpsilon, std::min(1.0f, normalized_linear));
+    const float db = 20.0f * log10f(x);
+    const float mapped = (db - kMeterDbFloor) / (0.0f - kMeterDbFloor);
+    return std::max(0.0f, std::min(1.0f, mapped));
 }
 
 float clamp_soc(float soc_percent) {
@@ -131,6 +176,21 @@ lv_color_t bar_lv_color(bool is_charging, int index, int max_index) {
     const uint8_t r = static_cast<uint8_t>(255.0f * t);
     const uint8_t b = static_cast<uint8_t>(255.0f * (1.0f - t));
     return lv_color_hex((r << 16) | (0 << 8) | b);
+}
+
+uint32_t bar_hex_color(bool is_charging, int index, int max_index) {
+    if (max_index <= 0) {
+        return is_charging ? 0x00FF00 : 0xFF0000;
+    }
+    const float t = static_cast<float>(index) / static_cast<float>(max_index);
+    if (is_charging) {
+        const uint8_t g = static_cast<uint8_t>(255.0f * t);
+        const uint8_t b = static_cast<uint8_t>(255.0f * (1.0f - t));
+        return (0u << 16) | (static_cast<uint32_t>(g) << 8) | static_cast<uint32_t>(b);
+    }
+    const uint8_t r = static_cast<uint8_t>(255.0f * t);
+    const uint8_t b = static_cast<uint8_t>(255.0f * (1.0f - t));
+    return (static_cast<uint32_t>(r) << 16) | (0u << 8) | static_cast<uint32_t>(b);
 }
 
 lv_color_t led_wire_color(uint8_t color) {
@@ -226,12 +286,18 @@ void init_bar_geometry() {
     const int right_pitch = std::max(2, right_space / kBarCount);
     const int top = center_y - (seg_h / 2);
 
+    bar_top_     = top;
+    bar_pitch_l_ = left_pitch;
+    bar_pitch_r_ = right_pitch;
+
     for (int i = 0; i < kBarCount; ++i) {
         const int left_w = std::max(1, left_pitch);
         const int left_x = center_x - center_gap - ((i + 1) * left_pitch);
+        left_bar_x_[i] = left_x;
         set_bar_obj(left_bars_[i], left_x, top, left_w, seg_h);
         const int right_w = std::max(1, right_pitch);
         const int right_x = center_x + center_gap + (i * right_pitch);
+        right_bar_x_[i] = right_x;
         set_bar_obj(right_bars_[i], right_x, top, right_w, seg_h);
     }
 
@@ -382,6 +448,26 @@ void create_objects() {
         lv_obj_add_flag(right_bars_[i], LV_OBJ_FLAG_HIDDEN);
     }
 
+    // Cover rectangles for OriginalRounded mode — created after bars so they render on top.
+    // Colour/opacity is set per-frame to match the owning bar segment.
+    for (int i = 0; i < kBarCount; ++i) {
+        left_bar_covers_[i] = lv_obj_create(screen_);
+        lv_obj_remove_style_all(left_bar_covers_[i]);
+        lv_obj_set_style_bg_color(left_bar_covers_[i], lv_color_hex(0x000000), 0);
+        lv_obj_set_style_bg_opa(left_bar_covers_[i], LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(left_bar_covers_[i], 0, 0);
+        lv_obj_set_style_radius(left_bar_covers_[i], 0, 0);
+        lv_obj_add_flag(left_bar_covers_[i], LV_OBJ_FLAG_HIDDEN);
+
+        right_bar_covers_[i] = lv_obj_create(screen_);
+        lv_obj_remove_style_all(right_bar_covers_[i]);
+        lv_obj_set_style_bg_color(right_bar_covers_[i], lv_color_hex(0x000000), 0);
+        lv_obj_set_style_bg_opa(right_bar_covers_[i], LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(right_bar_covers_[i], 0, 0);
+        lv_obj_set_style_radius(right_bar_covers_[i], 0, 0);
+        lv_obj_add_flag(right_bar_covers_[i], LV_OBJ_FLAG_HIDDEN);
+    }
+
     init_bar_geometry();
     lv_scr_load(screen_);
 }
@@ -389,7 +475,11 @@ void create_objects() {
 void hide_all_bars() {
     for (int i = 0; i < kBarCount; ++i) {
         lv_obj_add_flag(left_bars_[i], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_radius(left_bars_[i], 0, 0);     // reset any rounding set by OriginalRounded
         lv_obj_add_flag(right_bars_[i], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_radius(right_bars_[i], 0, 0);
+        if (left_bar_covers_[i])  lv_obj_add_flag(left_bar_covers_[i],  LV_OBJ_FLAG_HIDDEN);
+        if (right_bar_covers_[i]) lv_obj_add_flag(right_bar_covers_[i], LV_OBJ_FLAG_HIDDEN);
     }
     lv_obj_add_flag(center_marker_, LV_OBJ_FLAG_HIDDEN);
 }
@@ -409,6 +499,216 @@ void apply_power_bars(int active_segments, bool is_charging, int ripple_idx = -1
     }
 
     bars_initialized_ = true;
+}
+
+void apply_power_bars_original_rounded(int active_segments, bool is_charging, int ripple_idx = -1) {
+    hide_all_bars();
+    if (current_is_zero_) {
+        lv_obj_clear_flag(center_marker_, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+
+    // LVGL v8 has no per-corner radius, so we use a cover-rectangle approach.
+    // Each end bar gets LV_RADIUS_CIRCLE (pill), then a small black rectangle is placed
+    // over its internal-facing side, visually squaring off the unwanted rounded corners.
+    // This gives four logical block shapes:
+    //   single bar      → full pill (no cover)
+    //   outermost bar   → external end rounded, internal end flat (cover on inner side)
+    //   innermost bar   → centre-facing end rounded, outer end flat (cover on outer side)
+    //   middle bars     → flat both sides (radius = 0, no cover)
+    //
+    // Bar index 0 = nearest centre; index active_segments-1 = outermost.
+    // LEFT side: external end = LEFT edge of bar[active-1]; centre end = RIGHT edge of bar[0].
+    // RIGHT side: external end = RIGHT edge of bar[active-1]; centre end = LEFT edge of bar[0].
+
+    const int seg_h    = AppConfig::BAR_SEGMENT_H;
+    const int corner_r = seg_h / 2;  // radius applied by LV_RADIUS_CIRCLE on seg_h-tall bars
+
+    for (int i = 0; i < active_segments; ++i) {
+        lv_obj_t* bar    = is_charging ? left_bars_[i]       : right_bars_[i];
+        lv_obj_t* cover  = is_charging ? left_bar_covers_[i] : right_bar_covers_[i];
+        const int  bar_x = is_charging ? left_bar_x_[i]      : right_bar_x_[i];
+        const int  bar_w = is_charging ? bar_pitch_l_         : bar_pitch_r_;
+
+        const lv_color_t seg_color = bar_lv_color(is_charging, i, kBarCount - 1);
+        const lv_opa_t seg_opa = (i == ripple_idx) ? LV_OPA_50 : LV_OPA_COVER;
+
+        lv_obj_set_style_bg_color(bar, seg_color, 0);
+        lv_obj_set_style_bg_opa(bar, seg_opa, 0);
+        lv_obj_set_style_bg_color(cover, seg_color, 0);
+        lv_obj_set_style_bg_opa(cover, seg_opa, 0);
+        lv_obj_clear_flag(bar, LV_OBJ_FLAG_HIDDEN);
+
+        if (active_segments == 1) {
+            // Single bar — fully rounded pill, no cover needed.
+            lv_obj_set_style_radius(bar, LV_RADIUS_CIRCLE, 0);
+
+        } else if (i == active_segments - 1) {
+            // Outermost bar: round the external (far-from-centre) end only.
+            // LEFT side:  external = LEFT edge  → cover squashes the RIGHT (inner) corners.
+            // RIGHT side: external = RIGHT edge → cover squashes the LEFT (inner) corners.
+            lv_obj_set_style_radius(bar, LV_RADIUS_CIRCLE, 0);
+            const int cover_x = is_charging ? (bar_x + bar_w - corner_r) : bar_x;
+            lv_obj_set_pos(cover,  cover_x, bar_top_);
+            lv_obj_set_size(cover, corner_r, seg_h);
+            lv_obj_clear_flag(cover, LV_OBJ_FLAG_HIDDEN);
+
+        } else if (i == 0) {
+            // Innermost bar (adjacent to centre marker): round the centre-facing end only.
+            // LEFT side:  centre-facing = RIGHT edge → cover squashes the LEFT (outer) corners.
+            // RIGHT side: centre-facing = LEFT edge  → cover squashes the RIGHT (outer) corners.
+            lv_obj_set_style_radius(bar, LV_RADIUS_CIRCLE, 0);
+            const int cover_x = is_charging ? bar_x : (bar_x + bar_w - corner_r);
+            lv_obj_set_pos(cover,  cover_x, bar_top_);
+            lv_obj_set_size(cover, corner_r, seg_h);
+            lv_obj_clear_flag(cover, LV_OBJ_FLAG_HIDDEN);
+
+        } else {
+            // Middle bar — flat on both sides.
+            lv_obj_set_style_radius(bar, 0, 0);
+        }
+    }
+
+    bars_initialized_ = true;
+}
+
+void apply_power_bars_soft(int active_segments, bool is_charging, int ripple_idx = -1) {
+    hide_all_bars();
+    if (current_is_zero_) {
+        lv_obj_clear_flag(center_marker_, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+
+    constexpr uint32_t kHighlight = 0xFFFFFF;
+    constexpr uint32_t kShadow = 0x111111;
+    for (int i = 0; i < active_segments; ++i) {
+        lv_obj_t* obj = is_charging ? left_bars_[i] : right_bars_[i];
+        const uint32_t base_hex = bar_hex_color(is_charging, i, kBarCount - 1);
+        const uint32_t top_hex = blend_hex_rgb(base_hex, kHighlight, 0.28f);
+        const uint32_t bottom_hex = blend_hex_rgb(base_hex, kShadow, 0.22f);
+
+        lv_obj_set_style_radius(obj, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(obj, lv_color_hex(top_hex), 0);
+        lv_obj_set_style_bg_grad_color(obj, lv_color_hex(bottom_hex), 0);
+        lv_obj_set_style_bg_grad_dir(obj, LV_GRAD_DIR_VER, 0);
+        lv_obj_set_style_bg_opa(obj, (i == ripple_idx) ? LV_OPA_60 : LV_OPA_90, 0);
+        lv_obj_set_style_shadow_width(obj, 6, 0);
+        lv_obj_set_style_shadow_color(obj, lv_color_hex(base_hex), 0);
+        lv_obj_set_style_shadow_opa(obj, LV_OPA_30, 0);
+        lv_obj_clear_flag(obj, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    bars_initialized_ = true;
+}
+
+void apply_power_bars_linear(int active_segments, bool is_charging, int peak_idx = -1) {
+    hide_all_bars();
+    if (current_is_zero_ && active_segments <= 0 && peak_idx < 0) {
+        lv_obj_clear_flag(center_marker_, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+
+    for (int i = 0; i < active_segments; ++i) {
+        lv_obj_t* obj = is_charging ? left_bars_[i] : right_bars_[i];
+        const lv_color_t color = bar_lv_color(is_charging, i, kBarCount - 1);
+        lv_obj_set_style_radius(obj, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(obj, color, 0);
+        lv_obj_set_style_bg_grad_color(obj, color, 0);
+        lv_obj_set_style_bg_grad_dir(obj, LV_GRAD_DIR_NONE, 0);
+        lv_obj_set_style_bg_opa(obj, LV_OPA_80, 0);
+        lv_obj_set_style_shadow_width(obj, 0, 0);
+        lv_obj_clear_flag(obj, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    if (peak_idx >= 0 && peak_idx < kBarCount) {
+        lv_obj_t* peak_obj = is_charging ? left_bars_[peak_idx] : right_bars_[peak_idx];
+        lv_obj_set_style_radius(peak_obj, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(peak_obj, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_grad_color(peak_obj, lv_color_hex(0xFFD966), 0);
+        lv_obj_set_style_bg_grad_dir(peak_obj, LV_GRAD_DIR_VER, 0);
+        lv_obj_set_style_bg_opa(peak_obj, LV_OPA_COVER, 0);
+        lv_obj_set_style_shadow_width(peak_obj, 6, 0);
+        lv_obj_set_style_shadow_color(peak_obj, lv_color_hex(0xFFD966), 0);
+        lv_obj_set_style_shadow_opa(peak_obj, LV_OPA_40, 0);
+        lv_obj_clear_flag(peak_obj, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    bars_initialized_ = true;
+}
+
+void apply_power_bars_hybrid(int active_segments, bool is_charging, int peak_idx = -1, int trail_idx = -1) {
+    hide_all_bars();
+    if (current_is_zero_ && active_segments <= 0 && peak_idx < 0) {
+        lv_obj_clear_flag(center_marker_, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+
+    constexpr uint32_t kHighlight = 0xFFFFFF;
+    for (int i = 0; i < active_segments; ++i) {
+        lv_obj_t* obj = is_charging ? left_bars_[i] : right_bars_[i];
+        const uint32_t base_hex = bar_hex_color(is_charging, i, kBarCount - 1);
+        const uint32_t top_hex = blend_hex_rgb(base_hex, kHighlight, 0.22f);
+
+        lv_obj_set_style_radius(obj, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(obj, lv_color_hex(top_hex), 0);
+        lv_obj_set_style_bg_grad_color(obj, lv_color_hex(base_hex), 0);
+        lv_obj_set_style_bg_grad_dir(obj, LV_GRAD_DIR_VER, 0);
+        lv_obj_set_style_bg_opa(obj, LV_OPA_80, 0);
+        lv_obj_set_style_shadow_width(obj, 4, 0);
+        lv_obj_set_style_shadow_color(obj, lv_color_hex(base_hex), 0);
+        lv_obj_set_style_shadow_opa(obj, LV_OPA_20, 0);
+        lv_obj_clear_flag(obj, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    if (trail_idx >= 0 && trail_idx < kBarCount) {
+        lv_obj_t* trail_obj = is_charging ? left_bars_[trail_idx] : right_bars_[trail_idx];
+        const lv_color_t trail_color = bar_lv_color(is_charging, trail_idx, kBarCount - 1);
+        lv_obj_set_style_radius(trail_obj, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(trail_obj, trail_color, 0);
+        lv_obj_set_style_bg_grad_color(trail_obj, trail_color, 0);
+        lv_obj_set_style_bg_grad_dir(trail_obj, LV_GRAD_DIR_NONE, 0);
+        lv_obj_set_style_bg_opa(trail_obj, LV_OPA_30, 0);
+        lv_obj_set_style_shadow_width(trail_obj, 0, 0);
+        lv_obj_clear_flag(trail_obj, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    if (peak_idx >= 0 && peak_idx < kBarCount) {
+        lv_obj_t* peak_obj = is_charging ? left_bars_[peak_idx] : right_bars_[peak_idx];
+        lv_obj_set_style_radius(peak_obj, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(peak_obj, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_grad_color(peak_obj, lv_color_hex(0xFFF0AA), 0);
+        lv_obj_set_style_bg_grad_dir(peak_obj, LV_GRAD_DIR_VER, 0);
+        lv_obj_set_style_bg_opa(peak_obj, LV_OPA_COVER, 0);
+        lv_obj_set_style_shadow_width(peak_obj, 8, 0);
+        lv_obj_set_style_shadow_color(peak_obj, lv_color_hex(0xFFE066), 0);
+        lv_obj_set_style_shadow_opa(peak_obj, LV_OPA_50, 0);
+        lv_obj_clear_flag(peak_obj, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    bars_initialized_ = true;
+}
+
+void render_power_bars(int active_segments, bool is_charging, int ripple_idx = -1, int peak_idx = -1, int trail_idx = -1) {
+    switch (power_bar_mode_) {
+        case PowerBarRendererMode::Original:
+            apply_power_bars(active_segments, is_charging, ripple_idx);
+            return;
+        case PowerBarRendererMode::OriginalRounded:
+            apply_power_bars_original_rounded(active_segments, is_charging, ripple_idx);
+            return;
+        case PowerBarRendererMode::Soft:
+            apply_power_bars_soft(active_segments, is_charging, ripple_idx);
+            return;
+        case PowerBarRendererMode::Linear:
+            apply_power_bars_linear(active_segments, is_charging, peak_idx);
+            return;
+        case PowerBarRendererMode::Hybrid:
+            apply_power_bars_hybrid(active_segments, is_charging, peak_idx, trail_idx);
+            return;
+        default:
+            apply_power_bars(active_segments, is_charging, ripple_idx);
+            return;
+    }
 }
 
 void update_soc() {
@@ -460,24 +760,84 @@ void update_power_state(uint32_t now_ms) {
     if (!current_is_zero_ && current_bar_count_ == 0) current_bar_count_ = 1;
     if (current_bar_count_ > kBarCount) current_bar_count_ = kBarCount;
 
+    int peak_idx = -1;
+    int trail_idx = -1;
+
+    const bool use_ballistic_meter =
+        (power_bar_mode_ == PowerBarRendererMode::Linear) ||
+        (power_bar_mode_ == PowerBarRendererMode::Hybrid);
+
+    if (use_ballistic_meter) {
+        if (linear_last_update_ms_ == 0) {
+            linear_last_update_ms_ = now_ms;
+        }
+        const uint32_t dt_ms = std::max(1U, now_ms - linear_last_update_ms_);
+        linear_last_update_ms_ = now_ms;
+
+        const float normalized_linear = static_cast<float>(abs_power) / static_cast<float>(AppConfig::MAX_POWER_W);
+        const float target_level = current_is_zero_ ? 0.0f : normalized_db_level(normalized_linear);
+
+        if (target_level >= linear_display_level_) {
+            const float alpha = std::min(1.0f, static_cast<float>(dt_ms) / static_cast<float>(kLinearAttackMs));
+            linear_display_level_ += (target_level - linear_display_level_) * alpha;
+        } else {
+            const float alpha = std::min(1.0f, static_cast<float>(dt_ms) / static_cast<float>(kLinearReleaseMs));
+            linear_display_level_ += (target_level - linear_display_level_) * alpha;
+        }
+        linear_display_level_ = std::max(0.0f, std::min(1.0f, linear_display_level_));
+
+        if (linear_display_level_ >= linear_peak_level_) {
+            linear_peak_level_ = linear_display_level_;
+            linear_peak_hold_until_ms_ = now_ms + kPeakHoldMs;
+        } else if (now_ms >= linear_peak_hold_until_ms_) {
+            const float decay = static_cast<float>(dt_ms) / static_cast<float>(kLinearPeakReleaseMs);
+            linear_peak_level_ = std::max(linear_display_level_, linear_peak_level_ - decay);
+        }
+
+        const int meter_segments = static_cast<int>(linear_display_level_ * static_cast<float>(kBarCount) + 0.5f);
+        current_bar_count_ = std::max(0, std::min(kBarCount, meter_segments));
+        if (!current_is_zero_ && current_bar_count_ == 0 && linear_display_level_ > 0.01f) {
+            current_bar_count_ = 1;
+        }
+
+        if (linear_peak_level_ > 0.0f) {
+            peak_idx = static_cast<int>(ceilf(linear_peak_level_ * static_cast<float>(kBarCount))) - 1;
+            peak_idx = std::max(0, std::min(kBarCount - 1, peak_idx));
+        }
+
+        if (power_bar_mode_ == PowerBarRendererMode::Hybrid) {
+            if (current_bar_count_ > hybrid_prev_active_segments_) {
+                trail_idx = std::min(kBarCount - 1, current_bar_count_);
+            } else if (current_bar_count_ < hybrid_prev_active_segments_) {
+                trail_idx = std::max(0, hybrid_prev_active_segments_ - 1);
+            }
+            hybrid_prev_active_segments_ = current_bar_count_;
+        }
+    }
+
     const bool new_value = (last_power_text_ != current_power_w_);
     const bool same_direction = !last_was_zero_ && !current_is_zero_ && (last_was_charging_ == current_is_charging_);
 
-    if (new_value && same_direction && current_bar_count_ == last_bar_count_ && current_bar_count_ > 0) {
-        ripple_active_ = true;
-        ripple_start_ms_ = now_ms;
-    }
-    if (current_is_zero_ || (!same_direction && !current_is_zero_)) {
+    if (!use_ballistic_meter) {
+        if (new_value && same_direction && current_bar_count_ == last_bar_count_ && current_bar_count_ > 0) {
+            ripple_active_ = true;
+            ripple_start_ms_ = now_ms;
+        }
+        if (current_is_zero_ || (!same_direction && !current_is_zero_)) {
+            ripple_active_ = false;
+        }
+
+        const bool bars_changed = (!bars_initialized_) ||
+                                  (current_bar_count_ != last_bar_count_) ||
+                                  (current_is_charging_ != last_was_charging_) ||
+                                  (current_is_zero_ != last_was_zero_);
+
+        if (!ripple_active_ && bars_changed) {
+            render_power_bars(current_bar_count_, current_is_charging_);
+        }
+    } else {
         ripple_active_ = false;
-    }
-
-    const bool bars_changed = (!bars_initialized_) ||
-                              (current_bar_count_ != last_bar_count_) ||
-                              (current_is_charging_ != last_was_charging_) ||
-                              (current_is_zero_ != last_was_zero_);
-
-    if (!ripple_active_ && bars_changed) {
-        apply_power_bars(current_bar_count_, current_is_charging_);
+        render_power_bars(current_bar_count_, current_is_charging_, -1, peak_idx, trail_idx);
     }
 
     update_power_label();
@@ -503,17 +863,20 @@ void animate_led(uint32_t now_ms) {
 }
 
 void animate_power_ripple(uint32_t now_ms) {
+    if (power_bar_mode_ == PowerBarRendererMode::Linear || power_bar_mode_ == PowerBarRendererMode::Hybrid) {
+        return;
+    }
     if (!ripple_active_) {
         return;
     }
     const uint32_t elapsed = now_ms - ripple_start_ms_;
     if (elapsed >= kRippleMs) {
         ripple_active_ = false;
-        apply_power_bars(current_bar_count_, current_is_charging_);
+        render_power_bars(current_bar_count_, current_is_charging_);
         return;
     }
     const int ripple_idx = static_cast<int>((static_cast<uint64_t>(elapsed) * current_bar_count_) / kRippleMs);
-    apply_power_bars(current_bar_count_, current_is_charging_, ripple_idx);
+    render_power_bars(current_bar_count_, current_is_charging_, ripple_idx);
 }
 
 }  // namespace
@@ -590,6 +953,21 @@ void run_startup_sequence() {
 void set_state(float soc_percent, int32_t power_w) {
     current_soc_percent_ = soc_percent;
     current_power_w_ = power_w;
+}
+
+void set_power_bar_mode(PowerBarRendererMode mode) {
+    power_bar_mode_ = mode;
+    bars_initialized_ = false;
+    ripple_active_ = false;
+    linear_display_level_ = 0.0f;
+    linear_peak_level_ = 0.0f;
+    linear_peak_hold_until_ms_ = 0;
+    linear_last_update_ms_ = 0;
+    hybrid_prev_active_segments_ = 0;
+
+    if (display_ && screen_) {
+        render_power_bars(current_bar_count_, current_is_charging_);
+    }
 }
 
 void tick(uint32_t now_ms) {

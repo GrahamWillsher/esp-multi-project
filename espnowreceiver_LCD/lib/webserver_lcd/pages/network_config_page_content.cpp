@@ -151,6 +151,21 @@ String get_network_config_page_content(bool isAPMode) {
             </div>
         </div>
     </div>
+
+    <!-- Display Configuration Section -->
+    <div class='info-box'>
+        <h3>Display Configuration</h3>
+        <div class='settings-row'>
+            <label for='powerBarRendererMode'>Power Bar Renderer:</label>
+            <select id='powerBarRendererMode' class='form-control editable-field'>
+                <option value='0'>Original</option>
+                <option value='4'>Original (Rounded Ends)</option>
+                <option value='1'>Soft</option>
+                <option value='2'>Linear</option>
+                <option value='3'>Hybrid</option>
+            </select>
+        </div>
+    </div>
     
     <!-- Action Buttons -->
     <div style='text-align: center; margin-top: 30px;'>

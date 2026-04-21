@@ -11,7 +11,8 @@ String get_network_config_page_script() {
             'gw0', 'gw1', 'gw2', 'gw3',
             'sub0', 'sub1', 'sub2', 'sub3',
             'dns1_0', 'dns1_1', 'dns1_2', 'dns1_3',
-            'dns2_0', 'dns2_1', 'dns2_2', 'dns2_3'
+            'dns2_0', 'dns2_1', 'dns2_2', 'dns2_3',
+            'powerBarRendererMode'
         ];
         
         // Count changes in network configuration
@@ -114,6 +115,13 @@ String get_network_config_page_script() {
                     // Toggle visibility using shared helper
                     ReceiverNetworkFormController.toggleStaticIpFields(data.use_static_ip, 
                         ['localIpRow', 'gatewayRow', 'subnetRow', 'dns1Row', 'dns2Row']);
+
+                    const modeRaw = Number(data.power_bar_renderer_mode);
+                    const safeMode = Number.isInteger(modeRaw) && modeRaw >= 0 && modeRaw <= 4 ? modeRaw : 0;
+                    const modeEl = document.getElementById('powerBarRendererMode');
+                    if (modeEl) {
+                        modeEl.value = String(safeMode);
+                    }
                     
                     
                     // Store initial values for change tracking
@@ -191,8 +199,15 @@ String get_network_config_page_script() {
                     hostname: document.getElementById('hostname').value.trim() || 'esp32-receiver',
                     ssid: ssid,
                     password: password,
-                    use_static_ip: document.getElementById('useStaticIP').checked
+                    use_static_ip: document.getElementById('useStaticIP').checked,
+                    power_bar_renderer_mode: parseInt(document.getElementById('powerBarRendererMode').value, 10)
                 };
+
+                if (!Number.isInteger(config.power_bar_renderer_mode) || config.power_bar_renderer_mode < 0 || config.power_bar_renderer_mode > 4) {
+                    alert('Power bar renderer mode must be one of: Original, Original (Rounded Ends), Soft, Linear, Hybrid');
+                    restoreButtonState();
+                    return;
+                }
                 
                 // Add static IP fields if enabled
                 if (config.use_static_ip) {

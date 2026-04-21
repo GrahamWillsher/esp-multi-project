@@ -34,6 +34,7 @@ esp_err_t handle_get(httpd_req_t* req) {
     doc["mqtt_server"]   = mqtt_str;
     doc["mqtt_port"]     = ReceiverNetworkConfig::getMqttPort();
     doc["mqtt_username"] = ReceiverNetworkConfig::getMqttUsername();
+    doc["power_bar_renderer_mode"] = static_cast<uint8_t>(ReceiverNetworkConfig::getPowerBarRendererMode());
     doc["wifi_mac"]      = WiFi.macAddress().c_str();
     doc["wifi_ip"]       = WiFi.localIP().toString().c_str();
 
@@ -89,6 +90,16 @@ esp_err_t handle_post(httpd_req_t* req) {
     const char* mqtt_user = doc["mqtt_username"] | "";
     const char* mqtt_pass_in = doc["mqtt_password"] | "";
     const char* mqtt_pass = (mqtt_pass_in[0] != '\0') ? mqtt_pass_in : ReceiverNetworkConfig::getMqttPassword();
+    const uint8_t power_bar_mode_raw = static_cast<uint8_t>(
+        doc["power_bar_renderer_mode"] |
+        static_cast<uint8_t>(ReceiverNetworkConfig::getPowerBarRendererMode()));
+
+    auto mode_validation = ReceiverNetworkConfig::validatePowerBarRendererMode(power_bar_mode_raw);
+    if (!mode_validation.valid) {
+        return ApiUtils::send_err(req, mode_validation.error_message);
+    }
+
+    const auto power_bar_mode = static_cast<ReceiverNetworkConfig::PowerBarRendererMode>(power_bar_mode_raw);
     if (mqtt_en) {
         ApiUtils::parse_ipv4(doc["mqtt_server"] | "0.0.0.0", mqtt_ip);
     }
@@ -103,6 +114,8 @@ esp_err_t handle_post(httpd_req_t* req) {
     if (!ok) {
         return ApiUtils::send_err(req, "Failed to save config (validation error)");
     }
+
+    ReceiverNetworkConfig::setPowerBarRendererMode(power_bar_mode);
 
     LOG_INFO("WEBSERVER", "Network config saved, rebooting in 500ms");
     ApiUtils::send_ok(req);

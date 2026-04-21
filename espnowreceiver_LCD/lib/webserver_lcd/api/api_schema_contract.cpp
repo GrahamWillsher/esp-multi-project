@@ -56,6 +56,16 @@ bool validate_save_receiver_network(const JsonDocument& doc, const char** out_er
         }
     }
 
+    if (doc.containsKey("power_bar_renderer_mode")) {
+        const uint8_t mode = doc["power_bar_renderer_mode"].as<uint8_t>();
+        if (mode > 4U) {
+            if (out_error_message) {
+                *out_error_message = "power_bar_renderer_mode must be in range 0-4";
+            }
+            return false;
+        }
+    }
+
     return true;
 }
 

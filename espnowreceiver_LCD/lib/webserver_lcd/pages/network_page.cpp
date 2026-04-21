@@ -25,7 +25,7 @@ static const char kPageHtml[] PROGMEM = R"rawhtml(<!DOCTYPE html>
   h3{color:#4fc3f7;margin:0 0 12px}
   .row{display:grid;grid-template-columns:160px 1fr;gap:8px;align-items:center;margin-bottom:6px}
   label{font-size:.9em;color:#bbb}
-  input[type=text],input[type=password],input[type=number]{
+  input[type=text],input[type=password],input[type=number],select{
     width:100%;box-sizing:border-box;padding:6px 8px;background:#0f3460;
     border:1px solid #4fc3f7;border-radius:4px;color:#e0e0e0;font-size:.9em}
   input[readonly]{opacity:.6;cursor:default;border-color:#444}
@@ -83,6 +83,20 @@ static const char kPageHtml[] PROGMEM = R"rawhtml(<!DOCTYPE html>
   </div>
 </div>
 
+<div class="card">
+  <h3>&#127912; Display</h3>
+  <div class="row">
+    <label for="power_bar_renderer_mode">Power Bar Renderer</label>
+    <select id="power_bar_renderer_mode">
+      <option value="0">Original</option>
+      <option value="4">Original (Rounded Ends)</option>
+      <option value="1">Soft</option>
+      <option value="2">Linear</option>
+      <option value="3">Hybrid</option>
+    </select>
+  </div>
+</div>
+
 <button class="btn" onclick="save()">&#128190; Save &amp; Reboot</button>
 <div id="msg" class="msg"></div>
 
@@ -120,6 +134,9 @@ async function load(){
     document.getElementById('mqtt_server').value=d.mqtt_server||'';
     document.getElementById('mqtt_port').value=d.mqtt_port||1883;
     document.getElementById('mqtt_username').value=d.mqtt_username||'';
+    const mode = Number.isInteger(Number(d.power_bar_renderer_mode)) ? Number(d.power_bar_renderer_mode) : 0;
+    const safeMode = (mode >= 0 && mode <= 4) ? mode : 0;
+    document.getElementById('power_bar_renderer_mode').value=String(safeMode);
   }catch(e){msg('Network error: '+e,false);}
 }
 async function save(){
@@ -140,6 +157,7 @@ async function save(){
     mqtt_port:parseInt(document.getElementById('mqtt_port').value)||1883,
     mqtt_username:document.getElementById('mqtt_username').value.trim(),
     mqtt_password:document.getElementById('mqtt_password').value,
+    power_bar_renderer_mode:parseInt(document.getElementById('power_bar_renderer_mode').value,10),
   };
   try{
     const r=await fetch('/api/v1/network',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
