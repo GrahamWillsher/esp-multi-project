@@ -1,725 +1,382 @@
+/**
+ * @file discovery_task.cpp
+ * @brief Pure ESP-NOW channel-scan implementation.
+ *
+ * This file contains only the mechanics of scanning channels and detecting
+ * an ACK from the receiver.  All reconnect orchestration (task lifecycle,
+ * backoff, state-machine events) lives in TxReconnectManager.
+ *
+ * run_hop_scan() is called synchronously from the hop-worker task (Core 1).
+ * It blocks until the receiver ACKs or all channels are exhausted.
+ */
+
 #include "discovery_task.h"
-#include "message_handler.h"
-#include "tx_state_machine.h"
-#include "data_cache.h"  // For cache flush on connection
-#include "version_beacon_manager.h"  // For sending initial beacon on connection
-#include "tx_connection_handler.h"
-#include <esp32common/espnow/connection_manager.h>
-#include <channel_manager.h>
 #include "../config/task_config.h"
 #include "../config/logging_config.h"
 #include <esp32common/config/timing_config.h>
 #include "../queue/espnow_queue_manager.h"
 #include <Arduino.h>
-#include <espnow_discovery.h>
-#include <espnow_transmitter.h>  // For g_lock_channel and set_channel
+#include <espnow_transmitter.h>   // set_channel(), g_lock_channel
 #include <espnow_peer_manager.h>
 #include <esp_wifi.h>
 #include <WiFi.h>
 
+// ============================================================================
+// Module-level constants
+// ============================================================================
 namespace {
-constexpr uint32_t kDiscoveryLoopPollMs = 10;
+
+constexpr uint32_t kDiscoveryLoopPollMs    = 10;
 constexpr uint32_t kPostChannelSettleDelayMs = 50;
-constexpr uint32_t kMsPerSecond = 1000;
+constexpr uint32_t kMsPerSecond            = 1000;
+constexpr uint32_t kSignalExtensionMs      = 500; ///< Dwell extension on probe activity
 
 constexpr uint8_t kDiscoveryChannels[] = {
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13
 };
-
 constexpr uint8_t kDiscoveryChannelCount =
     sizeof(kDiscoveryChannels) / sizeof(kDiscoveryChannels[0]);
+
 }  // namespace
 
+// ============================================================================
+// Singleton
+// ============================================================================
 DiscoveryTask& DiscoveryTask::instance() {
-    static DiscoveryTask instance;
-    return instance;
+    static DiscoveryTask inst;
+    return inst;
 }
 
-void DiscoveryTask::start() {
-    // Use common discovery component with callback
-    // Check connection via new common connection manager
-    EspnowDiscovery::instance().start(
-        []() -> bool {
-            return EspNowConnectionManager::instance().is_connected();
-        },
-        TimingConfig::ANNOUNCEMENT_INTERVAL_MS,
-        task_config::PRIORITY_LOW,
-        task_config::STACK_SIZE_ANNOUNCEMENT
-    );
-    
-    task_handle_ = EspnowDiscovery::instance().get_task_handle();
-    LOG_DEBUG("DISCOVERY", "Using common discovery component");
-}
+// ============================================================================
+// run_hop_scan — public entry point called by hop-worker task
+// ============================================================================
+bool DiscoveryTask::run_hop_scan(uint8_t  start_channel_hint,
+                                  uint8_t* out_channel,
+                                  uint8_t* out_mac) {
+    const uint32_t scan_start_ms = millis();
+    metrics_.total_scans++;
 
-void DiscoveryTask::restart() {
-    TxStateMachine::instance().set_state(TxStateMachine::ConnectionState::RECONNECTING, "discovery restart requested");
+    const bool found = active_channel_hop_scan_impl(
+        start_channel_hint, out_channel, out_mac);
 
-    // CRITICAL: Check if we have a valid channel to restart on
-    // g_lock_channel: Written by ESP-NOW ISR when channel is locked during discovery.
-    // Safe to read here (uint8_t atomic on ESP32); 0 means no valid channel yet.
-    if (g_lock_channel == 0) {
-        LOG_ERROR("DISCOVERY", "Cannot restart - no valid channel (g_lock_channel=0)");
-        LOG_INFO("DISCOVERY", "This indicates initial discovery has not completed yet");
-        LOG_INFO("DISCOVERY", "Keep-alive manager should not trigger restart before discovery completes");
-        return;  // Abort restart - let active hopping continue
+    const uint32_t duration_ms = millis() - scan_start_ms;
+    if (duration_ms > metrics_.longest_scan_ms) {
+        metrics_.longest_scan_ms = duration_ms;
     }
 
-    if (!restart_requested_) {
-        restart_window_start_ms_ = millis();
-        restart_next_retry_ms_ = 0;
-        restart_failure_count_ = 0;
-        restart_requested_ = true;
-    }
-
-    if (restart_in_progress_) {
-        LOG_WARN("DISCOVERY", "Restart already in progress - request coalesced");
-        return;
-    }
-
-    if ((int32_t)(millis() - restart_next_retry_ms_) >= 0) {
-        (void)attempt_restart_once();
+    if (found) {
+        metrics_.successful_scans++;
+        metrics_.last_success_channel   = *out_channel;
+        metrics_.last_success_timestamp = millis();
+        LOG_INFO("DISCOVERY",
+                 "Scan succeeded: ch=%d, duration=%lu ms (total=%lu/%lu success/fail)",
+                 *out_channel,
+                 static_cast<unsigned long>(duration_ms),
+                 static_cast<unsigned long>(metrics_.successful_scans),
+                 static_cast<unsigned long>(metrics_.failed_scans));
     } else {
-        LOG_INFO("DISCOVERY", "Restart queued, next attempt in %lums", restart_next_retry_ms_ - millis());
+        metrics_.failed_scans++;
+        LOG_WARN("DISCOVERY",
+                 "Scan failed: duration=%lu ms (total=%lu/%lu success/fail)",
+                 static_cast<unsigned long>(duration_ms),
+                 static_cast<unsigned long>(metrics_.successful_scans),
+                 static_cast<unsigned long>(metrics_.failed_scans));
     }
+
+    return found;
 }
 
-bool DiscoveryTask::attempt_restart_once() {
-    if (!restart_requested_) {
+// ============================================================================
+// active_channel_hop_scan_impl — two-phase channel sweep
+// ============================================================================
+bool DiscoveryTask::active_channel_hop_scan_impl(uint8_t  start_channel_hint,
+                                                  uint8_t* out_channel,
+                                                  uint8_t* out_mac) {
+    // Resolve start index from hint
+    uint8_t saved_ch = start_channel_hint;
+    if (saved_ch < kDiscoveryChannels[0] ||
+        saved_ch > kDiscoveryChannels[kDiscoveryChannelCount - 1]) {
+        saved_ch = 0;
+    }
+
+    uint8_t start_index = 0;
+    if (saved_ch >= kDiscoveryChannels[0] &&
+        saved_ch <= kDiscoveryChannels[kDiscoveryChannelCount - 1]) {
+        start_index = saved_ch - 1;
+        LOG_INFO("DISCOVERY",
+                 "═══ Scan: starting from hint ch=%d ═══", saved_ch);
+    } else {
+        LOG_INFO("DISCOVERY",
+                 "═══ Scan: no hint — starting from ch=1 ═══");
+    }
+
+    const uint32_t BASE_DWELL_MS             = TimingConfig::TRANSMIT_DURATION_PER_CHANNEL_MS;
+    const uint32_t WEIGHTED_CENTER_DWELL_MS  = BASE_DWELL_MS * 2U;
+    const uint32_t WEIGHTED_NEIGHBOR_DWELL_MS = BASE_DWELL_MS + (BASE_DWELL_MS / 2U);
+
+    bool    ack_received = false;
+    uint8_t ack_channel  = 0;
+    uint8_t ack_mac[6]   = {};
+
+    // ── Phase 1: fast circular sweep of all 13 channels ──────────────────
+    for (uint8_t offset = 0; offset < kDiscoveryChannelCount && !ack_received; ++offset) {
+        const uint8_t i  = (start_index + offset) % kDiscoveryChannelCount;
+        const uint8_t ch = kDiscoveryChannels[i];
+        if (scan_channel_for_ack(ch, BASE_DWELL_MS, "phase1-fast", ack_mac)) {
+            ack_received = true;
+            ack_channel  = ch;
+        }
+    }
+
+    // ── Phase 2: weighted sweep ± 1 around last-known channel ─────────────
+    if (!ack_received && saved_ch != 0) {
+        LOG_INFO("DISCOVERY",
+                 "Phase 2: weighted sweep around ch=%d", saved_ch);
+
+        const uint8_t candidates[3] = {
+            saved_ch,
+            static_cast<uint8_t>((saved_ch > 1)  ? (saved_ch - 1) : saved_ch),
+            static_cast<uint8_t>((saved_ch < 13) ? (saved_ch + 1) : saved_ch)
+        };
+
+        for (uint8_t idx = 0; idx < 3 && !ack_received; ++idx) {
+            // Skip boundary duplicates (ch=1 or ch=13)
+            if (idx > 0 && candidates[idx] == candidates[idx - 1]) continue;
+
+            const uint32_t dwell =
+                (idx == 0) ? WEIGHTED_CENTER_DWELL_MS : WEIGHTED_NEIGHBOR_DWELL_MS;
+
+            if (scan_channel_for_ack(candidates[idx], dwell, "phase2-weighted", ack_mac)) {
+                ack_received = true;
+                ack_channel  = candidates[idx];
+            }
+        }
+    }
+
+    if (!ack_received) {
         return false;
     }
 
-    restart_in_progress_ = true;
-    transition_to(RecoveryState::RESTART_IN_PROGRESS);
+    // ── Found: set WiFi channel and return ─────────────────────────────────
+    // Setting the channel here (inside the worker task on Core 1) is safe;
+    // the WiFi driver is internally locked.  The manager will subsequently
+    // call ChannelManager::lock_channel() to record the change.
+    esp_wifi_set_channel(ack_channel, WIFI_SECOND_CHAN_NONE);
+    vTaskDelay(pdMS_TO_TICKS(kPostChannelSettleDelayMs));
 
-    LOG_INFO("DISCOVERY", "═══ RESTART ATTEMPT %d/%d ═══",
-             restart_failure_count_ + 1, MAX_RESTART_FAILURES);
+    *out_channel = ack_channel;
+    if (out_mac) memcpy(out_mac, ack_mac, 6);
 
-    const uint32_t restart_start_time = millis();
-    metrics_.total_restarts++;
-
-    // STEP 1: Remove ALL ESP-NOW peers for guaranteed clean slate
-    restart_cleanup_peers();
-
-    // STEP 2: Force channel lock and verify
-    if (!restart_lock_channel()) {
-        return handle_restart_failure(
-            "✗ Maximum restart failures reached - system needs attention",
-            "Restart attempt failed, scheduling retry in",
-            "max discovery restart failures"
-        );
-    }
-
-    // STEP 3: Restart discovery task with clean state
-    restart_relaunch_discovery();
-
-    // STEP 4: Final verification
-    uint8_t verify_ch = 0;
-    if (!restart_verify_channel(verify_ch)) {
-        return handle_restart_failure(
-            "✗ Maximum restart failures reached after post-restart verification",
-            "Post-restart verification failed, scheduling retry in",
-            "post-restart verification failed"
-        );
-    }
-
-    // Success!
-    TxStateMachine::instance().reset_backoff();
-    metrics_.successful_restarts++;
-    metrics_.last_restart_timestamp = millis();
-
-    const uint32_t restart_duration = millis() - restart_start_time;
-    const uint32_t total_downtime = (restart_window_start_ms_ > 0)
-        ? (millis() - restart_window_start_ms_)
-        : restart_duration;
-    if (total_downtime > metrics_.longest_downtime_ms) {
-        metrics_.longest_downtime_ms = total_downtime;
-    }
-
-    LOG_INFO("DISCOVERY", "✓ Restart complete in %dms (channel: %d, clean state)",
-             restart_duration, verify_ch);
-
-    clear_restart_request();
-    transition_to(RecoveryState::NORMAL);
-    restart_in_progress_ = false;
     return true;
 }
 
-void DiscoveryTask::restart_cleanup_peers() {
-    cleanup_all_peers();
-}
+// ============================================================================
+// scan_channel_for_ack — dwell on one channel, return true on ACK
+// ============================================================================
+bool DiscoveryTask::scan_channel_for_ack(uint8_t     ch,
+                                          uint32_t    dwell_ms,
+                                          const char* phase_label,
+                                          uint8_t*    out_mac) {
+    LOG_INFO("DISCOVERY",
+             "[%s] ch=%d dwell=%lu ms",
+             phase_label, ch, static_cast<unsigned long>(dwell_ms));
 
-bool DiscoveryTask::restart_lock_channel() {
-    // g_lock_channel: ISR-written locked channel from earlier discovery phase.
-    // Used to restore WiFi to the known receiver channel after recovery.
-    return force_and_verify_channel(g_lock_channel);
-}
+    if (!force_and_verify_channel(ch)) {
+        LOG_ERROR("DISCOVERY", "Channel set failed for ch=%d — skipping", ch);
+        return false;
+    }
 
-void DiscoveryTask::restart_relaunch_discovery() {
-    EspnowDiscovery::instance().restart();
-    task_handle_ = EspnowDiscovery::instance().get_task_handle();
+    EspnowQueueManager::instance().flush_discovery_queue();
 
-    // Give new task time to stabilize (cooperative, non-blocking wait)
-    restart_wait_for_stabilization();
-}
+    const uint32_t PROBE_INTERVAL_MS = TimingConfig::PROBE_INTERVAL_MS;
+    uint32_t start_time     = millis();
+    uint32_t last_probe_ms  = 0;
+    uint32_t effective_dwell = dwell_ms;
 
-void DiscoveryTask::restart_wait_for_stabilization() const {
-    const uint32_t wait_ms = TimingConfig::RESTART_STABILIZATION_DELAY_MS;
-    const uint32_t start_ms = millis();
+    while (millis() - start_time < effective_dwell) {
+        // Periodic probe broadcast
+        if (millis() - last_probe_ms >= PROBE_INTERVAL_MS) {
+            send_probe_on_channel(ch);
+            last_probe_ms = millis();
+        }
 
-    while ((millis() - start_ms) < wait_ms) {
+        espnow_queue_msg_t msg;
+        if (EspnowQueueManager::instance().receive_from_discovery_queue(
+                msg, kDiscoveryLoopPollMs)) {
+            if (msg.len >= 1) {
+                const uint8_t msg_type = msg.data[0];
+
+                // Extend dwell slightly if any discovery traffic is seen —
+                // the ACK may arrive fractionally after the probe echo.
+                if (msg_type == msg_probe &&
+                    effective_dwell < (dwell_ms + kSignalExtensionMs)) {
+                    effective_dwell = dwell_ms + kSignalExtensionMs;
+                    LOG_DEBUG("DISCOVERY",
+                              "[%s] Traffic on ch=%d — dwell extended to %lu ms",
+                              phase_label, ch,
+                              static_cast<unsigned long>(effective_dwell));
+                }
+
+                if (msg_type == msg_ack &&
+                    msg.len >= static_cast<int>(sizeof(ack_t))) {
+                    const ack_t* a = reinterpret_cast<const ack_t*>(msg.data);
+                    LOG_INFO("DISCOVERY",
+                             "[%s] ✓ ACK from %02X:%02X:%02X:%02X:%02X:%02X "
+                             "ch=%d seq=%u",
+                             phase_label,
+                             msg.mac[0], msg.mac[1], msg.mac[2],
+                             msg.mac[3], msg.mac[4], msg.mac[5],
+                             a->channel, a->seq);
+                    if (out_mac) memcpy(out_mac, msg.mac, 6);
+                    return true;
+                }
+            }
+        }
+
         vTaskDelay(pdMS_TO_TICKS(kDiscoveryLoopPollMs));
     }
-}
 
-bool DiscoveryTask::restart_verify_channel(uint8_t& verify_channel) const {
-    wifi_second_chan_t second;
-    esp_wifi_get_channel(&verify_channel, &second);
-
-    // g_lock_channel: ISR-written value — verify that WiFi actually locked to it.
-    if (verify_channel != g_lock_channel) {
-        LOG_ERROR("DISCOVERY", "✗ Post-restart channel mismatch: %d != %d", verify_channel, g_lock_channel);
-        return false;
-    }
-
-    return true;
-}
-
-bool DiscoveryTask::handle_restart_failure(const char* max_failure_log,
-                                           const char* retry_log,
-                                           const char* failure_state_reason) {
-    restart_failure_count_++;
-    metrics_.failed_restarts++;
-
-    if (restart_failure_count_ >= MAX_RESTART_FAILURES) {
-        LOG_ERROR("DISCOVERY", "%s (%d)", max_failure_log, MAX_RESTART_FAILURES);
-        TxStateMachine::instance().set_state(TxStateMachine::ConnectionState::FAILED, failure_state_reason);
-        transition_to(RecoveryState::PERSISTENT_FAILURE);
-        restart_in_progress_ = false;
-        return false;
-    }
-
-    const uint32_t backoff_ms = TxStateMachine::instance().next_backoff_ms();
-    LOG_WARN("DISCOVERY", "%s %lums", retry_log, backoff_ms);
-    schedule_restart_retry(backoff_ms);
-    transition_to(RecoveryState::RESTART_FAILED);
-    restart_in_progress_ = false;
+    LOG_DEBUG("DISCOVERY", "[%s] ch=%d: no ACK", phase_label, ch);
     return false;
 }
 
-void DiscoveryTask::schedule_restart_retry(uint32_t delay_ms) {
-    restart_next_retry_ms_ = millis() + delay_ms;
-}
-
-void DiscoveryTask::clear_restart_request() {
-    restart_requested_ = false;
-    restart_failure_count_ = 0;
-    restart_next_retry_ms_ = 0;
-    restart_window_start_ms_ = 0;
-}
-
-void DiscoveryTask::cleanup_all_peers() {
-    LOG_INFO("DISCOVERY", "Cleaning up all ESP-NOW peers...");
-    
+// ============================================================================
+// send_probe_on_channel
+// ============================================================================
+void DiscoveryTask::send_probe_on_channel(uint8_t channel) {
     const uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-    
-    // Remove broadcast peer
+
+    // Refresh broadcast peer to current channel (channel=0 → use WiFi channel)
     if (esp_now_is_peer_exist(broadcast_mac)) {
-        esp_err_t result = esp_now_del_peer(broadcast_mac);
-        if (result == ESP_OK) {
-            LOG_INFO("DISCOVERY", "  ✓ Broadcast peer removed");
-            metrics_.peer_cleanup_count++;
-        } else {
-            LOG_ERROR("DISCOVERY", "  ✗ Failed to remove broadcast peer: %s", esp_err_to_name(result));
-        }
-    } else {
-        LOG_DEBUG("DISCOVERY", "  - Broadcast peer not present");
+        esp_now_del_peer(broadcast_mac);
     }
-    
-    // Remove receiver peer if connected (use connection manager's peer MAC)
-    if (EspNowConnectionManager::instance().is_connected()) {
-        const uint8_t* peer_mac = EspNowConnectionManager::instance().get_peer_mac();
-        if (esp_now_is_peer_exist(peer_mac)) {
-            esp_err_t result = esp_now_del_peer(peer_mac);
-            if (result == ESP_OK) {
-                LOG_INFO("DISCOVERY", "  ✓ Receiver peer removed");
-                metrics_.peer_cleanup_count++;
-            } else {
-                LOG_ERROR("DISCOVERY", "  ✗ Failed to remove receiver peer: %s", esp_err_to_name(result));
-            }
-        } else {
-            LOG_DEBUG("DISCOVERY", "  - Receiver peer not present");
-        }
+    esp_now_peer_info_t peer{};
+    memcpy(peer.peer_addr, broadcast_mac, 6);
+    peer.channel = 0;  // use current WiFi channel
+    peer.encrypt = false;
+    peer.ifidx   = WIFI_IF_STA;
+    const esp_err_t add_rc = esp_now_add_peer(&peer);
+    if (add_rc != ESP_OK && add_rc != ESP_ERR_ESPNOW_EXIST) {
+        LOG_ERROR("DISCOVERY",
+                  "Failed to add broadcast peer on ch=%d: %s",
+                  channel, esp_err_to_name(add_rc));
+        return;
+    }
+
+    probe_t probe{};
+    probe.type = msg_probe;
+    probe.seq  = millis();
+    const esp_err_t rc = esp_now_send(broadcast_mac,
+                                      reinterpret_cast<const uint8_t*>(&probe),
+                                      sizeof(probe));
+    if (rc != ESP_OK) {
+        LOG_DEBUG("DISCOVERY", "PROBE send on ch=%d: %s", channel, esp_err_to_name(rc));
     }
 }
 
+// ============================================================================
+// force_and_verify_channel
+// ============================================================================
 bool DiscoveryTask::force_and_verify_channel(uint8_t target_channel) {
-    LOG_INFO("DISCOVERY", "Forcing channel lock to %d...", target_channel);
-    
-    // Force set channel
     if (!set_channel(target_channel)) {
-        LOG_ERROR("DISCOVERY", "  ✗ Failed to set channel to %d", target_channel);
+        LOG_ERROR("DISCOVERY", "set_channel(%d) failed", target_channel);
         return false;
     }
-    
-    LOG_DEBUG("DISCOVERY", "  - Channel set command executed");
-    
-    // Adequate delay for WiFi driver stabilization (industrial-grade)
-    delay(TimingConfig::CHANNEL_STABILIZATION_MS);
-    
-    // Verify channel was actually set
-    uint8_t actual_ch = 0;
+    vTaskDelay(pdMS_TO_TICKS(TimingConfig::CHANNEL_STABILIZATION_MS));
+
+    uint8_t actual = 0;
     wifi_second_chan_t second;
-    esp_wifi_get_channel(&actual_ch, &second);
-    
-    if (actual_ch != target_channel) {
-        LOG_ERROR("DISCOVERY", "  ✗ Channel verification failed: expected=%d, actual=%d", 
-                  target_channel, actual_ch);
+    esp_wifi_get_channel(&actual, &second);
+    if (actual != target_channel) {
+        LOG_ERROR("DISCOVERY",
+                  "Channel verify failed: requested=%d actual=%d",
+                  target_channel, actual);
         metrics_.channel_mismatches++;
         return false;
     }
-    
-    LOG_INFO("DISCOVERY", "  ✓ Channel locked and verified: %d", actual_ch);
     return true;
 }
 
-bool DiscoveryTask::validate_state() {
+// ============================================================================
+// validate_state — steady-state health check (call only when CONNECTED)
+// ============================================================================
+bool DiscoveryTask::validate_state() const {
     bool valid = true;
-    
+
     // Check WiFi channel matches locked channel
     uint8_t current_ch = 0;
     wifi_second_chan_t second;
     esp_wifi_get_channel(&current_ch, &second);
-    
-    // g_lock_channel: ISR-written locked channel — validate WiFi is still on it.
     if (current_ch != g_lock_channel) {
-        LOG_ERROR("DISCOVERY", "State validation failed: channel mismatch (%d != %d)", 
+        LOG_ERROR("DISCOVERY",
+                  "Channel mismatch: WiFi=%d locked=%d",
                   current_ch, g_lock_channel);
-        metrics_.channel_mismatches++;
         valid = false;
     }
-    
-    // Check broadcast peer exists and has correct channel
+
+    // Check broadcast peer exists with correct channel
     const uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
     if (esp_now_is_peer_exist(broadcast_mac)) {
-        esp_now_peer_info_t peer;
+        esp_now_peer_info_t peer{};
         if (esp_now_get_peer(broadcast_mac, &peer) == ESP_OK) {
             if (peer.channel != g_lock_channel && peer.channel != 0) {
-                LOG_ERROR("DISCOVERY", "Broadcast peer has wrong channel: %d (expected %d)", 
+                LOG_ERROR("DISCOVERY",
+                          "Broadcast peer channel mismatch: peer=%d locked=%d",
                           peer.channel, g_lock_channel);
                 valid = false;
             }
         }
     } else {
-        LOG_WARN("DISCOVERY", "Broadcast peer does not exist during validation");
+        LOG_WARN("DISCOVERY", "Broadcast peer not present during validation");
         valid = false;
     }
-    
+
     return valid;
 }
 
-void DiscoveryTask::audit_peer_state() {
-    const uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-    
-    LOG_INFO("PEER_AUDIT", "═══ ESP-NOW Peer State Audit ═══");
-    
-    // Current WiFi channel
+// ============================================================================
+// audit_peer_state — diagnostic dump
+// ============================================================================
+void DiscoveryTask::audit_peer_state() const {
     uint8_t current_ch = 0;
     wifi_second_chan_t second;
     esp_wifi_get_channel(&current_ch, &second);
-    LOG_INFO("PEER_AUDIT", "WiFi Channel: %d (Locked: %d)", current_ch, g_lock_channel);
-    
-    // Check broadcast peer
-    if (esp_now_is_peer_exist(broadcast_mac)) {
-        esp_now_peer_info_t peer;
-        esp_err_t result = esp_now_get_peer(broadcast_mac, &peer);
-        
-        if (result == ESP_OK) {
-            LOG_INFO("PEER_AUDIT", "Broadcast Peer:");
-            LOG_INFO("PEER_AUDIT", "  Channel: %d %s", peer.channel,
-                     (peer.channel != 0 && peer.channel != g_lock_channel) ? "✗ MISMATCH" : "✓");
-            LOG_INFO("PEER_AUDIT", "  Encrypt: %d %s", peer.encrypt, peer.encrypt ? "✗ UNEXPECTED" : "✓");
-            LOG_INFO("PEER_AUDIT", "  Interface: %d %s", peer.ifidx, 
-                     peer.ifidx == WIFI_IF_STA ? "✓" : "✗ WRONG");
-        } else {
-            LOG_ERROR("PEER_AUDIT", "Broadcast Peer: Failed to get info (%s)", esp_err_to_name(result));
-        }
-    } else {
-        LOG_WARN("PEER_AUDIT", "Broadcast Peer: NOT PRESENT");
-    }
-    
-    // Check receiver peer (if connected)
-    if (EspNowConnectionManager::instance().is_connected()) {
-        const uint8_t* peer_mac = EspNowConnectionManager::instance().get_peer_mac();
-        if (esp_now_is_peer_exist(peer_mac)) {
-            esp_now_peer_info_t peer;
-            esp_err_t result = esp_now_get_peer(peer_mac, &peer);
-            
-            if (result == ESP_OK) {
-                LOG_INFO("PEER_AUDIT", "Receiver Peer (%02X:%02X:%02X:%02X:%02X:%02X):",
-                         peer_mac[0], peer_mac[1], peer_mac[2],
-                         peer_mac[3], peer_mac[4], peer_mac[5]);
-                LOG_INFO("PEER_AUDIT", "  Channel: %d %s", peer.channel,
-                         (peer.channel != 0 && peer.channel != g_lock_channel) ? "✗ MISMATCH" : "✓");
-                LOG_INFO("PEER_AUDIT", "  Encrypt: %d", peer.encrypt);
-            } else {
-                LOG_ERROR("PEER_AUDIT", "Receiver Peer: Failed to get info (%s)", esp_err_to_name(result));
-            }
-        } else {
-            LOG_WARN("PEER_AUDIT", "Receiver Peer: NOT PRESENT");
-        }
-    } else {
-        LOG_INFO("PEER_AUDIT", "Receiver: Not yet connected");
-    }
-    
-    LOG_INFO("PEER_AUDIT", "═══ Audit Complete ═══");
-}
 
-void DiscoveryTask::update_recovery() {
-    uint32_t time_in_state = millis() - state_entry_time_;
-    const uint32_t now = millis();
-    
-    switch (recovery_state_) {
-        case RecoveryState::RESTART_FAILED:
-            if (restart_requested_ && !restart_in_progress_ &&
-                (int32_t)(now - restart_next_retry_ms_) >= 0) {
-                LOG_INFO("RECOVERY", "Retrying scheduled restart attempt");
-                (void)attempt_restart_once();
-            }
-            break;
-            
-        case RecoveryState::PERSISTENT_FAILURE:
-            LOG_ERROR("RECOVERY", "Persistent failure state - requires manual intervention");
-            // In production, could trigger system reset after timeout
-            if (time_in_state > TimingConfig::RECOVERY_TIMEOUT_MS) {  // 60 seconds
-                LOG_ERROR("RECOVERY", "Triggering system restart due to persistent failure");
-                esp_restart();
-            }
-            break;
-            
-        default:
-            if (restart_requested_ && !restart_in_progress_ &&
-                (int32_t)(now - restart_next_retry_ms_) >= 0) {
-                (void)attempt_restart_once();
-            }
-            break;
-    }
-}
+    LOG_INFO("PEER_AUDIT", "═══ ESP-NOW Peer Audit ═══");
+    LOG_INFO("PEER_AUDIT", "WiFi ch=%d locked=%d", current_ch, g_lock_channel);
 
-void DiscoveryTask::transition_to(RecoveryState new_state) {
-    if (recovery_state_ != new_state) {
-        LOG_INFO("RECOVERY", "State transition: %s → %s", 
-                 state_to_string(recovery_state_), state_to_string(new_state));
-        recovery_state_ = new_state;
-        state_entry_time_ = millis();
-    }
-}
-
-const char* DiscoveryTask::state_to_string(RecoveryState state) {
-    switch (state) {
-        case RecoveryState::NORMAL: return "NORMAL";
-        case RecoveryState::CHANNEL_MISMATCH_DETECTED: return "CHANNEL_MISMATCH";
-        case RecoveryState::RESTART_IN_PROGRESS: return "RESTARTING";
-        case RecoveryState::RESTART_FAILED: return "FAILED";
-        case RecoveryState::PERSISTENT_FAILURE: return "PERSISTENT_FAILURE";
-        default: return "UNKNOWN";
-    }
-}
-
-void DiscoveryMetrics::log_summary() const {
-    LOG_INFO("DISCOVERY", "═══ Discovery Task Statistics ═══");
-    LOG_INFO("DISCOVERY", "Total Restarts: %d", total_restarts);
-    LOG_INFO("DISCOVERY", "  Successful: %d", successful_restarts);
-    LOG_INFO("DISCOVERY", "  Failed: %d", failed_restarts);
-    LOG_INFO("DISCOVERY", "Channel Mismatches: %d", channel_mismatches);
-    LOG_INFO("DISCOVERY", "Peer Cleanups: %d", peer_cleanup_count);
-    LOG_INFO("DISCOVERY", "Longest Downtime: %d ms", longest_downtime_ms);
-    
-    // Calculate reliability
-    float success_rate = total_restarts > 0 
-        ? (float)successful_restarts / total_restarts * 100.0f 
-        : 100.0f;
-    LOG_INFO("DISCOVERY", "Restart Success Rate: %.1f%%", success_rate);
-    LOG_INFO("DISCOVERY", "═══════════════════════════════");
-}
-
-// ============================================================================
-// ACTIVE CHANNEL HOPPING IMPLEMENTATION (Section 11: Transmitter-Active)
-// ============================================================================
-
-void DiscoveryTask::start_active_channel_hopping() {
-    if (active_hopping_running_ && task_handle_ != nullptr) {
-        LOG_WARN("DISCOVERY", "Active channel hopping already running - duplicate start ignored");
-        return;
-    }
-
-    LOG_INFO("DISCOVERY", "Starting ACTIVE channel hopping (Section 11 - transmitter-active mode)");
-    LOG_INFO("DISCOVERY", "Transmitter will broadcast PROBE on each channel (1s/channel, 13s max)");
-    
-    // Create continuous hopping task
-    xTaskCreatePinnedToCore(
-        active_channel_hopping_task,
-        "active_hop",
-        task_config::STACK_SIZE_ANNOUNCEMENT,
-        this,
-        task_config::PRIORITY_LOW,  // Low priority (Priority 2) - doesn't block control code
-        &task_handle_,
-        1  // Core 1 - isolated from Battery Emulator (Core 0)
-    );
-    
-    if (task_handle_ == nullptr) {
-        LOG_ERROR("DISCOVERY", "Failed to create active channel hopping task!");
-        active_hopping_running_ = false;
-    } else {
-        active_hopping_running_ = true;
-        LOG_INFO("DISCOVERY", "Active hopping task started on Core 1 (Priority %d)", task_config::PRIORITY_LOW);
-    }
-}
-
-void DiscoveryTask::send_probe_on_channel(uint8_t channel) {
     const uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-    
-    // CRITICAL FIX: Delete old broadcast peer before adding new one
-    // This prevents "peer already exists" errors when hopping channels
     if (esp_now_is_peer_exist(broadcast_mac)) {
-        esp_err_t del_result = esp_now_del_peer(broadcast_mac);
-        if (del_result != ESP_OK) {
-            LOG_WARN("DISCOVERY", "Failed to remove old broadcast peer: %s", esp_err_to_name(del_result));
+        esp_now_peer_info_t p{};
+        if (esp_now_get_peer(broadcast_mac, &p) == ESP_OK) {
+            LOG_INFO("PEER_AUDIT",
+                     "Broadcast: ch=%d encrypt=%d if=%d %s",
+                     p.channel, p.encrypt, p.ifidx,
+                     (p.channel != 0 && p.channel != g_lock_channel) ? "✗ CHAN MISMATCH" : "✓");
         }
-    }
-    
-    // Add broadcast peer with explicit channel (0 = use current WiFi channel)
-    esp_now_peer_info_t broadcast_peer = {};
-    memcpy(broadcast_peer.peer_addr, broadcast_mac, 6);
-    broadcast_peer.channel = 0;  // Use current WiFi channel
-    broadcast_peer.encrypt = false;
-    broadcast_peer.ifidx = WIFI_IF_STA;
-    
-    esp_err_t result = esp_now_add_peer(&broadcast_peer);
-    if (result != ESP_OK && result != ESP_ERR_ESPNOW_EXIST) {
-        LOG_ERROR("DISCOVERY", "Failed to add broadcast peer on channel %d: %s", 
-                  channel, esp_err_to_name(result));
-        return;
-    }
-    
-    // Send PROBE broadcast
-    probe_t probe;
-    probe.type = msg_probe;
-    probe.seq = millis();  // Use timestamp as sequence number
-    
-    result = esp_now_send(broadcast_mac, (const uint8_t*)&probe, sizeof(probe));
-    if (result == ESP_OK) {
-        LOG_DEBUG("DISCOVERY", "PROBE sent on channel %d (seq: %u)", channel, probe.seq);
     } else {
-        LOG_ERROR("DISCOVERY", "Failed to send PROBE on channel %d: %s", 
-                  channel, esp_err_to_name(result));
+        LOG_WARN("PEER_AUDIT", "Broadcast peer: NOT PRESENT");
     }
+    LOG_INFO("PEER_AUDIT", "═══════════════════════");
 }
 
-bool DiscoveryTask::active_channel_hop_scan(uint8_t* discovered_channel) {
-    LOG_INFO("DISCOVERY", "═══ ACTIVE CHANNEL HOP SCAN (Broadcasting PROBE) ═══");
-    
-    // Start from last known successful channel whenever possible
-    uint8_t saved_ch = TxStateMachine::instance().last_known_channel();
-    if (saved_ch < kDiscoveryChannels[0] ||
-        saved_ch > kDiscoveryChannels[kDiscoveryChannelCount - 1]) {
-        // Fallback to persisted channel from channel manager/NVS
-        saved_ch = ChannelManager::instance().get_channel();
+// ============================================================================
+// DiscoveryMetrics::log_summary
+// ============================================================================
+void DiscoveryMetrics::log_summary() const {
+    LOG_INFO("DISCOVERY", "═══ Discovery Metrics ═══");
+    LOG_INFO("DISCOVERY", "Total scans    : %lu", static_cast<unsigned long>(total_scans));
+    LOG_INFO("DISCOVERY", "  Successful   : %lu", static_cast<unsigned long>(successful_scans));
+    LOG_INFO("DISCOVERY", "  Failed       : %lu", static_cast<unsigned long>(failed_scans));
+    LOG_INFO("DISCOVERY", "Ch mismatches  : %lu", static_cast<unsigned long>(channel_mismatches));
+    LOG_INFO("DISCOVERY", "Last success   : ch=%lu at t=%lu ms",
+             static_cast<unsigned long>(last_success_channel),
+             static_cast<unsigned long>(last_success_timestamp));
+    LOG_INFO("DISCOVERY", "Longest scan   : %lu ms", static_cast<unsigned long>(longest_scan_ms));
+    if (total_scans > 0) {
+        const float rate = 100.0f *
+            static_cast<float>(successful_scans) / static_cast<float>(total_scans);
+        LOG_INFO("DISCOVERY", "Success rate   : %.1f%%", rate);
     }
-    
-    // Determine starting index: if we have a saved channel, start from there
-    uint8_t start_index = 0;
-    if (saved_ch >= kDiscoveryChannels[0] &&
-        saved_ch <= kDiscoveryChannels[kDiscoveryChannelCount - 1]) {
-        start_index = saved_ch - 1;  // Convert channel number to array index
-        LOG_INFO("DISCOVERY", "Starting scan from saved channel %d (quick reconnect)", saved_ch);
-    } else {
-        LOG_INFO("DISCOVERY", "No saved channel, starting from channel 1");
-    }
-    
-    // Transmit duration per channel (ms)
-    // Section 11: 1s per channel (vs 6s in Section 10 passive)
-    // Total scan time: 13s max (vs 78s in Section 10)
-    const uint32_t TRANSMIT_DURATION_MS = TimingConfig::TRANSMIT_DURATION_PER_CHANNEL_MS;
-    const uint32_t PROBE_INTERVAL_MS = TimingConfig::PROBE_INTERVAL_MS;
-    
-    // ack_received / ack_channel are task-local: they are set after dequeuing from
-    // espnow_discovery_queue (not written by the ISR directly). All ISR concurrency
-    // is handled by the FreeRTOS queue. `volatile` is not needed here; these are
-    // ordinary locals whose lifetime is entirely within this task's stack frame.
-    bool ack_received = false;
-    uint8_t ack_channel = 0;
-    uint8_t ack_mac[6] = {0};
-    
-    // Scan channels starting from start_index, wrapping around to scan all channels
-    for (uint8_t offset = 0; offset < kDiscoveryChannelCount; offset++) {
-        uint8_t i = (start_index + offset) % kDiscoveryChannelCount;  // Circular scan
-        uint8_t ch = kDiscoveryChannels[i];
-        
-        LOG_INFO("DISCOVERY", "Broadcasting PROBE on channel %d for %dms...", ch, TRANSMIT_DURATION_MS);
-        
-        // Switch to channel
-        if (!set_channel(ch)) {
-            LOG_ERROR("DISCOVERY", "Failed to set channel %d, skipping", ch);
-            continue;
-        }
-        
-        // Verify channel was set
-        uint8_t actual_ch = 0;
-        wifi_second_chan_t second;
-        esp_wifi_get_channel(&actual_ch, &second);
-        if (actual_ch != ch) {
-            LOG_ERROR("DISCOVERY", "Channel mismatch: requested=%d, actual=%d", ch, actual_ch);
-            metrics_.channel_mismatches++;
-            continue;
-        }
-        
-        // Transmit PROBE broadcasts on this channel
-        // Using separate discovery queue so RX task doesn't consume our ACK messages
-        ack_received = false;
-        uint32_t start_time = millis();
-        uint32_t last_probe_time = 0;
-        
-        // Flush any stale messages from discovery queue
-        EspnowQueueManager::instance().flush_discovery_queue();
-        
-        while (millis() - start_time < TRANSMIT_DURATION_MS) {
-            // Send PROBE broadcast at intervals
-            if (millis() - last_probe_time >= PROBE_INTERVAL_MS) {
-                send_probe_on_channel(actual_ch);
-                last_probe_time = millis();
-            }
-            
-            // Check discovery queue for ACK response
-            // This queue is separate from the main RX queue, so RX task won't consume it
-            espnow_queue_msg_t msg;
-            if (EspnowQueueManager::instance().receive_from_discovery_queue(msg, kDiscoveryLoopPollMs)) {
-                // Check if this is an ACK message
-                if (msg.len >= (int)sizeof(ack_t)) {
-                    const ack_t* a = reinterpret_cast<const ack_t*>(msg.data);
-                    if (a->type == msg_ack) {
-                        ack_received = true;
-                        // CRITICAL: Use channel from ACK message, not transmitter's current channel
-                        // The ACK contains the receiver's actual WiFi channel
-                        ack_channel = a->channel;
-                        memcpy(ack_mac, msg.mac, 6);
-
-                        // Notify TX handler (posts PEER_FOUND event)
-                        TransmitterConnectionHandler::instance().on_ack_received(ack_mac, ack_channel);
-                        
-                        LOG_INFO("DISCOVERY", "✓ ACK received from %02X:%02X:%02X:%02X:%02X:%02X",
-                                 msg.mac[0], msg.mac[1], msg.mac[2], 
-                                 msg.mac[3], msg.mac[4], msg.mac[5]);
-                        LOG_INFO("DISCOVERY", "  Channel in ACK: %d (receiver's WiFi channel)", ack_channel);
-                        LOG_INFO("DISCOVERY", "  Sequence: %u (via discovery queue)", a->seq);
-                        break;  // Exit transmit loop for this channel
-                    }
-                }
-            }
-            
-            // Brief yield to prevent watchdog and allow ACKs to be received
-            vTaskDelay(pdMS_TO_TICKS(kDiscoveryLoopPollMs));
-        }
-        
-        if (ack_received) {
-            // Found receiver! Register peer
-            LOG_INFO("DISCOVERY", "✓ Receiver found on channel %d", ack_channel);
-            
-            // CRITICAL: Change WiFi channel BEFORE adding peer
-            // Otherwise peer channel won't match home channel and sends will fail
-            esp_wifi_set_channel(ack_channel, WIFI_SECOND_CHAN_NONE);
-            LOG_DEBUG("DISCOVERY", "WiFi channel set to %d", ack_channel);
-            delay(kPostChannelSettleDelayMs);
-            
-            // Register peer with explicit channel (now matching our WiFi channel)
-            if (!EspnowPeerManager::add_peer(ack_mac, ack_channel)) {
-                LOG_ERROR("DISCOVERY", "Failed to add receiver as peer");
-                continue;  // Try next channel
-            }
-            
-            LOG_INFO("DISCOVERY", "✓ Receiver registered as peer");
-            TransmitterConnectionHandler::instance().on_peer_registered(ack_mac);
-            delay(TimingConfig::PEER_REGISTRATION_DELAY_MS);
-            
-            // CRITICAL: Allow peer registration to stabilize before attempting sends
-            // ESP-NOW peer table needs time to propagate through WiFi driver
-            delay(TimingConfig::CHANNEL_SWITCHING_DELAY_MS);
-            LOG_DEBUG("DISCOVERY", "Peer registration stabilized");
-            
-            *discovered_channel = ack_channel;
-            return true;  // Success!
-        }
-        
-        LOG_DEBUG("DISCOVERY", "Channel %d: No ACK received", ch);
-    }
-    
-    LOG_WARN("DISCOVERY", "✗ Full scan complete - receiver not found");
-    return false;
-}
-
-void DiscoveryTask::active_channel_hopping_task(void* parameter) {
-    DiscoveryTask* self = static_cast<DiscoveryTask*>(parameter);
-    const uint32_t full_scan_duration_ms =
-        static_cast<uint32_t>(kDiscoveryChannelCount) *
-        TimingConfig::TRANSMIT_DURATION_PER_CHANNEL_MS;
-    
-    uint8_t discovered_channel = 0;
-    uint32_t scan_attempt = 0;
-    bool discovery_complete = false;
-    
-    LOG_INFO("DISCOVERY", "═══ ACTIVE CHANNEL HOPPING STARTED ═══");
-    LOG_INFO("DISCOVERY", "Transmitter broadcasts PROBE until receiver ACKs");
-    LOG_INFO("DISCOVERY", "Each full scan takes ~%lu seconds",
-             static_cast<unsigned long>(full_scan_duration_ms / kMsPerSecond));
-    
-    while (!discovery_complete) {
-        scan_attempt++;
-        LOG_INFO("DISCOVERY", "═══ Active Hopping Scan Attempt #%d ═══", scan_attempt);
-        
-        if (self->active_channel_hop_scan(&discovered_channel)) {
-            // Receiver found!
-            LOG_INFO("DISCOVERY", "✓ Receiver discovered on channel %d", discovered_channel);
-            
-            // Lock to discovered channel
-            g_lock_channel = discovered_channel;
-            self->force_and_verify_channel(discovered_channel);
-            
-            // Flush cached data (will use EnhancedCache in future)
-            if (!DataCache::instance().is_empty()) {
-                LOG_INFO("DISCOVERY", "Flushing %d cached messages...", DataCache::instance().size());
-                size_t flushed = DataCache::instance().flush();
-                LOG_INFO("DISCOVERY", "✓ %d messages flushed to receiver", flushed);
-            }
-            
-            // Notify message handler
-            LOG_INFO("DISCOVERY", "✓ ESP-NOW connection established");
-            
-            // Send initial version beacon with current config versions
-            // This allows receiver to request any config sections it doesn't have cached
-            if (VersionBeaconManager::instance().send_version_beacon(true)) {
-                LOG_INFO("DISCOVERY", "✓ Initial version beacon sent to receiver");
-            } else {
-                LOG_WARN("DISCOVERY", "Initial version beacon send failed (will retry via periodic beacons)");
-            }
-            
-            discovery_complete = true;  // Mark complete
-            break;  // Exit scan loop
-        }
-        
-        // No receiver found this cycle - wait before retrying
-        LOG_INFO("DISCOVERY", "Waiting %lums before next scan cycle...",
-                 static_cast<unsigned long>(TimingConfig::DISCOVERY_RETRY_INTERVAL_MS));
-        vTaskDelay(pdMS_TO_TICKS(TimingConfig::DISCOVERY_RETRY_INTERVAL_MS));
-    }
-    
-    LOG_INFO("DISCOVERY", "✓ Active channel hopping complete - receiver connected");
-    LOG_INFO("DISCOVERY", "Total scan attempts: %d", scan_attempt);
-    const uint32_t total_discovery_ms = scan_attempt * full_scan_duration_ms;
-    LOG_INFO("DISCOVERY", "Discovery time: ~%lu seconds",
-             static_cast<unsigned long>(total_discovery_ms / kMsPerSecond));
-
-    // Task can exit - connection is now established. Clear handles/flags so future
-    // reconnection attempts can start a fresh task without duplication.
-    self->active_hopping_running_ = false;
-    self->task_handle_ = nullptr;
-    vTaskDelete(nullptr);
+    LOG_INFO("DISCOVERY", "════════════════════════");
 }

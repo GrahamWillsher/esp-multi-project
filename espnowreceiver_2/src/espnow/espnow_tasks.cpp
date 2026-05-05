@@ -27,6 +27,7 @@
 #include <esp32common/config/timing_config.h>
 #include <runtime_common_utils/device_temperature.h>
 #include <firmware_version.h>
+#include <rx_route_registry.h>
 
 extern void notify_sse_data_updated();
 
@@ -35,9 +36,8 @@ static uint32_t g_rx_message_seq = 0;
 static bool g_received_data_initialized = false;
 static uint8_t g_last_received_soc = 0;
 static int32_t g_last_received_power = 0;
-static uint32_t g_last_probe_ack_ms = 0;
-static uint32_t g_last_probe_ack_seq = 0;
-static uint8_t g_last_probe_ack_mac[6] = {0};
+static constexpr uint32_t kPowerSaveReassertMs = 60000;
+static RxProbeAckThrottleState g_probe_ack_throttle_state{};
 
 void store_transmitter_mac(const uint8_t* mac) {
     if (!mac) {
@@ -199,43 +199,11 @@ void setup_message_routes() {
     ack_config.on_connection = nullptr;
     
     // Register standard message handlers
-    router.register_route(msg_probe, 
-        [](const espnow_queue_msg_t* msg, void* ctx) {
-            const auto state = EspNowConnectionManager::instance().get_state();
-            bool send_probe_ack = true;
-
-            if (msg && msg->len >= static_cast<int>(sizeof(probe_t))) {
-                const auto* probe = reinterpret_cast<const probe_t*>(msg->data);
-                const uint32_t now = millis();
-
-                const bool same_peer =
-                    (memcmp(g_last_probe_ack_mac, msg->mac, sizeof(g_last_probe_ack_mac)) == 0);
-                const bool same_seq = same_peer && (probe->seq == g_last_probe_ack_seq);
-                const uint32_t min_interval_ms =
-                    (state == EspNowConnectionState::CONNECTED) ? 120U : 80U;
-
-                if (same_seq && ((now - g_last_probe_ack_ms) < min_interval_ms)) {
-                    send_probe_ack = false;
-                }
-
-                if (send_probe_ack) {
-                    g_last_probe_ack_ms = now;
-                    g_last_probe_ack_seq = probe->seq;
-                    memcpy(g_last_probe_ack_mac, msg->mac, sizeof(g_last_probe_ack_mac));
-                }
-            }
-
-            probe_config.send_ack_response = send_probe_ack;
-            EspnowStandardHandlers::handle_probe(msg, &probe_config);
-        }, 
-        0xFF, nullptr);
+    register_standard_probe_ack_routes(router, probe_config, ack_config, g_probe_ack_throttle_state);
     
-    router.register_route(msg_ack,
-        [](const espnow_queue_msg_t* msg, void* ctx) {
-            EspnowStandardHandlers::handle_ack(msg, &ack_config);
-        },
-        0xFF, nullptr);
-    
+    // Phase 2: bidirectional connection confirmation handshake
+    register_standard_connect_confirm_route(router);
+
     // Register custom DATA handler
     router.register_route(msg_data,
         [](const espnow_queue_msg_t* msg, void* ctx) {
@@ -319,15 +287,8 @@ void setup_message_routes() {
         0xFF, nullptr);
     
     // Register heartbeat handler
-    router.register_route(msg_heartbeat,
-        [](const espnow_queue_msg_t* msg, void* ctx) {
-            if (msg->len >= (int)sizeof(heartbeat_t)) {
-                const heartbeat_t* hb = reinterpret_cast<const heartbeat_t*>(msg->data);
-                RxHeartbeatManager::instance().on_heartbeat(hb, msg->mac);
-            }
-        },
-        0xFF, nullptr);
-    
+    register_standard_heartbeat_route(router);
+
     // =========================================================================
     // PHASE 1: Register Battery Emulator data message handlers
     // =========================================================================
@@ -371,26 +332,30 @@ void setup_message_routes() {
         0xFF, nullptr);
 
     // Dynamic type catalog responses from transmitter
-    router.register_route(msg_battery_types_fragment,
-        [](const espnow_queue_msg_t* msg, void* ctx) {
-            const auto* fragment = reinterpret_cast<const type_catalog_fragment_t*>(msg->data);
-            TypeCatalogCache::handle_battery_fragment(fragment, static_cast<size_t>(msg->len));
-        },
-        0xFF, nullptr);
+    register_standard_type_catalog_fragment_routes(
+        router,
+        [](const espnow_queue_msg_t* msg, uint8_t fragment_type, const char* /*label*/) {
+            if (msg == nullptr || msg->len < static_cast<int>(sizeof(type_catalog_fragment_t))) {
+                LOG_WARN(kLogTag, "Invalid type catalog fragment size: %d", msg ? msg->len : -1);
+                return;
+            }
 
-    router.register_route(msg_inverter_types_fragment,
-        [](const espnow_queue_msg_t* msg, void* ctx) {
             const auto* fragment = reinterpret_cast<const type_catalog_fragment_t*>(msg->data);
-            TypeCatalogCache::handle_inverter_fragment(fragment, static_cast<size_t>(msg->len));
-        },
-        0xFF, nullptr);
-
-    router.register_route(msg_inverter_interfaces_fragment,
-        [](const espnow_queue_msg_t* msg, void* ctx) {
-            const auto* fragment = reinterpret_cast<const type_catalog_fragment_t*>(msg->data);
-            TypeCatalogCache::handle_inverter_interface_fragment(fragment, static_cast<size_t>(msg->len));
-        },
-        0xFF, nullptr);
+            switch (fragment_type) {
+                case msg_battery_types_fragment:
+                    TypeCatalogCache::handle_battery_fragment(fragment, static_cast<size_t>(msg->len));
+                    break;
+                case msg_inverter_types_fragment:
+                    TypeCatalogCache::handle_inverter_fragment(fragment, static_cast<size_t>(msg->len));
+                    break;
+                case msg_inverter_interfaces_fragment:
+                    TypeCatalogCache::handle_inverter_interface_fragment(fragment, static_cast<size_t>(msg->len));
+                    break;
+                default:
+                    LOG_WARN(kLogTag, "Unexpected type catalog fragment type=%u", static_cast<unsigned>(fragment_type));
+                    break;
+            }
+        });
 
     router.register_route(msg_type_catalog_versions,
         [](const espnow_queue_msg_t* msg, void* ctx) {
@@ -448,23 +413,24 @@ void setup_message_routes() {
     // =========================================================================
     
     // Register packet handlers with subtypes
-    router.register_route(msg_packet,
-        [](const espnow_queue_msg_t* msg, void* ctx) {
-            handle_packet_events(msg);
-        },
-        subtype_events, nullptr);
-    
-    router.register_route(msg_packet,
-        [](const espnow_queue_msg_t* msg, void* ctx) {
-            handle_packet_logs(msg);
-        },
-        subtype_logs, nullptr);
-    
-    router.register_route(msg_packet,
-        [](const espnow_queue_msg_t* msg, void* ctx) {
-            handle_packet_cell_info(msg);
-        },
-        subtype_cell_info, nullptr);
+    register_standard_packet_subtype_routes(
+        router,
+        [](const espnow_queue_msg_t* msg, uint8_t packet_subtype, const char* /*label*/) {
+            switch (packet_subtype) {
+                case subtype_events:
+                    handle_packet_events(msg);
+                    break;
+                case subtype_logs:
+                    handle_packet_logs(msg);
+                    break;
+                case subtype_cell_info:
+                    handle_packet_cell_info(msg);
+                    break;
+                default:
+                    handle_packet_unknown(msg, packet_subtype);
+                    break;
+            }
+        });
     
     // V2: Legacy version message handlers removed (msg_version_announce, msg_version_request, msg_version_response)
     // Only metadata-based version exchange used in v2
@@ -709,24 +675,37 @@ void task_espnow_worker(void *parameter) {
     uint32_t last_stats_log_ms = millis();
     uint32_t last_callbacks = 0;
     uint32_t last_drops = 0;
+    uint32_t last_ps_reassert_ms = millis();
     
     // NOTE: Connection timeout is now handled by RxHeartbeatManager::tick() (90s timeout)
     // This ensures consistency and avoids duplicate timeout checks
     
     for (;;) {
+        const uint32_t loop_now_ms = millis();
+        if ((loop_now_ms - last_ps_reassert_ms) >= kPowerSaveReassertMs) {
+            last_ps_reassert_ms = loop_now_ms;
+            const esp_err_t ps_err = esp_wifi_set_ps(WIFI_PS_NONE);
+            if (ps_err != ESP_OK) {
+                LOG_WARN(kLogTag, "Periodic esp_wifi_set_ps(WIFI_PS_NONE) failed: %s", esp_err_to_name(ps_err));
+            }
+        }
+
         // Check for messages with short timeout to allow periodic connection check
         if (xQueueReceive(ESPNow::queue, &queue_msg, pdMS_TO_TICKS(TimingConfig::RX_ESPNOW_QUEUE_RECEIVE_TIMEOUT_MS)) == pdTRUE) {
             if (queue_msg.len < 1) continue;
 
             const uint8_t msg_type = queue_msg.data[0];
-            connection_handler.on_link_activity(queue_msg.mac);
+            const bool is_discovery_msg = is_discovery_message_type(msg_type);
+
+            // Discovery traffic (PROBE/ACK) must not feed generic link activity.
+            // Keep receiver semantics aligned with LCD runtime behavior.
+            if (!is_discovery_msg) {
+                connection_handler.on_link_activity(queue_msg.mac);
+            }
             state_machine.on_message_processing(msg_type, ++g_rx_message_seq);
             
             // Update connection watchdog on any received message
             transmitter_state.last_rx_time_ms = millis();
-
-            // Centralized connection timeout ownership: any ESP-NOW traffic indicates liveness.
-            connection_manager.on_heartbeat_received();
 
             // Keep dashboard connection status fresh on any ESP-NOW traffic
             if (TransmitterManager::isMACKnown()) {
@@ -736,21 +715,27 @@ void task_espnow_worker(void *parameter) {
                 );
             }
 
-            // Ensure sender is registered as a peer using common utility
-            // Only trigger peer_registered events when in CONNECTING state to avoid spam
-            auto current_state = connection_manager.get_state();
-            bool is_connecting = (current_state == EspNowConnectionState::CONNECTING);
-            
-            if (!EspnowPeerManager::is_peer_registered(queue_msg.mac)) {
-                if (EspnowPeerManager::add_peer(queue_msg.mac, 0)) {
-                    if (is_connecting) {
+            // Ensure sender is registered as a peer using common utility.
+            // IMPORTANT: do not promote CONNECTING->CONNECTED on discovery traffic
+            // (PROBE/ACK) alone.  That can create an RX-only "false connected"
+            // state if ACK send fails (e.g. ESP_ERR_ESPNOW_NO_MEM), while TX is
+            // still scanning.  Only payload/keepalive traffic should advance peer
+            // registration state.
+            if (!is_discovery_msg) {
+                auto current_state = connection_manager.get_state();
+                bool is_connecting = (current_state == EspNowConnectionState::CONNECTING);
+
+                if (!EspnowPeerManager::is_peer_registered(queue_msg.mac)) {
+                    if (EspnowPeerManager::add_peer(queue_msg.mac, 0)) {
+                        if (is_connecting) {
+                            connection_handler.on_peer_registered(queue_msg.mac);
+                        }
+                    }
+                } else {
+                    // Peer already exists (e.g., transmitter reboot). Ensure state advances.
+                    if (is_connecting && !connection_manager.is_connected()) {
                         connection_handler.on_peer_registered(queue_msg.mac);
                     }
-                }
-            } else {
-                // Peer already exists (e.g., transmitter reboot). Ensure state advances.
-                if (is_connecting && !connection_manager.is_connected()) {
-                    connection_handler.on_peer_registered(queue_msg.mac);
                 }
             }
 
@@ -762,16 +747,19 @@ void task_espnow_worker(void *parameter) {
                 // See rx_connection_handler.cpp state callback for implementation.
             }
 
-            // Post DATA_RECEIVED event for actual data messages only
-            // Exclude periodic keep-alive/status messages (heartbeat, version beacon)
-            // These are tracked separately and don't represent "new data" for connection purposes
+            // Post DATA_RECEIVED only for payload-bearing traffic.
+            // Discovery traffic (PROBE/ACK) must NOT refresh activity freshness,
+            // otherwise MQTT coexistence gate stays open while TX is scanning and
+            // ACK frames can starve with ESP_ERR_ESPNOW_NO_MEM.
             if (connection_manager.is_connected()) {
-                bool is_keepalive_msg = (msg_type == msg_heartbeat || 
-                                         msg_type == msg_heartbeat_ack ||
-                                         msg_type == msg_version_beacon ||
-                                         msg_type == msg_time_transitions_snapshot);
-                
-                if (!is_keepalive_msg) {
+                const bool is_keepalive_msg = is_connection_keepalive_message_type(msg_type);
+
+                // Keepalive/status frames still indicate liveness for timeout policy.
+                if (is_keepalive_msg) {
+                    connection_manager.on_heartbeat_received();
+                }
+
+                if (is_payload_activity_message_type(msg_type)) {
                     connection_handler.on_data_received(queue_msg.mac);
                 }
             }

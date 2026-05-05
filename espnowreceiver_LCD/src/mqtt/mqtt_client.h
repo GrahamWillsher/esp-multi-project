@@ -130,7 +130,9 @@ private:
     static uint16_t broker_port_;
     static bool enabled_;
     static unsigned long last_connect_attempt_;
-    static const unsigned long RECONNECT_INTERVAL_MS = 5000;
+    static unsigned long reconnect_interval_ms_;
+    static const unsigned long RECONNECT_INTERVAL_MIN_MS = 5000;
+    static const unsigned long RECONNECT_INTERVAL_MAX_MS = 60000;
     
     // Cell data subscription management (for SSE clients)
     static int cell_data_subscribers_;           // Count of active SSE clients

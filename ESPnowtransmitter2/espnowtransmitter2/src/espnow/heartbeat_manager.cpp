@@ -7,10 +7,10 @@
 #include <esp32common/espnow/connection_manager.h>
 #include <esp32common/espnow/connection_event.h>
 #include <esp32common/espnow/packet_utils.h>
+#include <esp32common/espnow/tx_scheduler.h>
 #include <runtime_common_utils/device_temperature.h>
 #include "../config/logging_config.h"
 #include "../network/time_manager.h"
-#include "../network/ethernet_manager.h"
 #include "../../lib/ethernet_utilities/ethernet_utilities.h"
 
 void HeartbeatManager::init() {
@@ -33,13 +33,9 @@ void HeartbeatManager::init() {
 
 void HeartbeatManager::tick() {
     if (!m_initialized) return;
-    
-    // ✅ NEW: Check Ethernet first - must have cable + IP
-    if (!EthernetManager::instance().is_fully_ready()) {
-        return;  // Cable not present or IP not assigned
-    }
-    
-    // ✅ EXISTING: Check ESP-NOW connection
+
+    // Keepalive is gated only by ESP-NOW link state.
+    // Ethernet availability must not suppress heartbeat traffic.
     if (EspNowConnectionManager::instance().get_state() != EspNowConnectionState::CONNECTED) {
         return;  // No receiver connection
     }
@@ -122,12 +118,13 @@ void HeartbeatManager::send_temperature_report(const uint8_t* peer_mac) {
     report.valid = reading.valid ? 1 : 0;
     report.uptime_ms = millis();
 
-    // Best-effort telemetry: intentionally bypass TxSendGuard recovery/backoff
-    // so this optional message can never influence core connection behavior.
-    const esp_err_t result = esp_now_send(
+    // Best-effort telemetry via shared scheduler owner.
+    // Use monitoring context so control traffic remains prioritized.
+    const esp_err_t result = EspnowTxScheduler::send(
         peer_mac,
-        reinterpret_cast<const uint8_t*>(&report),
-        sizeof(report)
+        &report,
+        sizeof(report),
+        "TEMP_REPORT"
     );
 
     if (result == ESP_OK) {

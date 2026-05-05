@@ -20,7 +20,6 @@ namespace ESPNowRuntime::Detail {
 extern std::atomic<bool> g_radio_initialized;
 extern std::atomic<bool> g_state_initialized;
 extern std::atomic<bool> g_callbacks_registered;
-extern std::atomic<bool> g_discovery_started;
 extern bool g_logged_probe;
 extern bool g_logged_data;
 extern bool g_logged_heartbeat;
@@ -124,7 +123,6 @@ void handle_type_catalog_fragment_message(const espnow_queue_msg_t* msg, const c
 void handle_packet_subtype_message(const espnow_queue_msg_t* msg, const char* label);
 void handle_data_message(const espnow_queue_msg_t* msg);
 void handle_battery_status_message(const espnow_queue_msg_t* msg);
-void handle_heartbeat_message(const espnow_queue_msg_t* msg);
 void handle_heartbeat_ack_message(const espnow_queue_msg_t* msg);
 void on_data_recv(const uint8_t* mac, const uint8_t* data, int len);
 void on_data_sent(const uint8_t* mac, esp_now_send_status_t status);

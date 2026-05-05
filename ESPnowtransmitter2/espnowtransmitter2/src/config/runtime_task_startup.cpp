@@ -59,9 +59,6 @@ void start_runtime_tasks() {
     DataSender::instance().start();
 #endif
 
-    // Start discovery task (periodic announcements until receiver connects)
-    DiscoveryTask::instance().start();
-
     // Start MQTT task (lowest priority — background telemetry)
     start_mqtt_task_if_enabled();
 }

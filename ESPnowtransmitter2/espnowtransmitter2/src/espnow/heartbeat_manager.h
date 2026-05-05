@@ -10,10 +10,9 @@
  * Heartbeat Manager - Transmitter Side
  * 
  * Responsibilities:
- * - Send heartbeat every 10s when CONNECTED
+ * - Send heartbeat at configured cadence when CONNECTED
  * - Track sequence numbers
  * - Monitor ACKs from receiver
- * - Detect connection loss (3 consecutive unacked heartbeats)
  */
 class HeartbeatManager {
 public:
@@ -46,8 +45,6 @@ private:
     
     void send_heartbeat();
     void send_temperature_report(const uint8_t* peer_mac);
-    
-    static constexpr uint32_t MAX_UNACKED_HEARTBEATS = 3;     // Trigger CONNECTION_LOST after 3
     
     uint32_t m_heartbeat_seq = 0;        // Monotonic sequence counter
     uint32_t m_last_ack_seq = 0;         // Last acknowledged sequence

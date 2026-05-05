@@ -19,7 +19,6 @@
 #include <WiFi.h>           // Direct use: WiFi.mode/disconnect/config/macAddress
 #include <ETH.h>
 #include <espnow_transmitter.h>
-#include <espnow_send_utils.h>
 #include <firmware_version.h>  // DEVICE_NAME, PROTOCOL_VERSION, FW_VERSION_*
 #include <firmware_metadata.h>
 #include <runtime_common_utils/ota_boot_guard.h>
@@ -59,6 +58,7 @@
 #include "espnow/transmission_task.h"        // Section 11: Background transmission
 #include "espnow/heartbeat_manager.h"        // Heartbeat with sequence tracking and ACK
 #include "espnow/tx_connection_handler.h"
+#include "espnow/tx_reconnect_manager.h"
 #include "espnow/tx_state_machine.h"
 #include <channel_manager.h>                 // Centralized channel management
 #include <esp32common/espnow/connection_manager.h>
@@ -285,7 +285,7 @@ static void bootstrap_connectivity() {
     LOG_INFO("ESPNOW", "Initializing ESP-NOW...");
     if (!EspnowQueueManager::instance().init(
             task_config::ESPNOW_MESSAGE_QUEUE_SIZE,  // Message queue: 10
-            20,                                       // Discovery queue: 20
+            48,                                       // Discovery queue headroom for PROBE/ACK during scan
             30                                        // RX queue: 30
         )) {
         LOG_ERROR("ESPNOW", "Failed to initialize queue manager!");
@@ -329,6 +329,9 @@ static void bootstrap_espnow() {
 
     // Initialize transmitter connection handler (registers state callbacks)
     TransmitterConnectionHandler::instance().init();
+    // Initialize reconnect manager AFTER connection handler so callbacks are already
+    // registered before the first CONNECT event can arrive.
+    TxReconnectManager::instance().init();
     // Initialize transmitter runtime state machine
     TxStateMachine::instance().init();
     // Message routes are registered in EspnowMessageHandler singleton construction;
@@ -561,23 +564,16 @@ void loop() {
     }
 #endif
     
-    // Periodic state validation (every 30 seconds) - Phase 2
+    // Periodic state validation (every 30 seconds)
+    // TxReconnectManager owns reconnect orchestration — validate_state() is
+    // now a read-only consistency check; if it detects corruption it logs a
+    // warning and lets the heartbeat/reconnect manager recover naturally.
     if (now - last_state_validation > TimingConfig::STATE_VALIDATION_INTERVAL_MS) {
         if (!DiscoveryTask::instance().validate_state()) {
-            LOG_WARN("MAIN", "State validation failed - triggering self-healing restart");
-            DiscoveryTask::instance().restart();
+            LOG_WARN("MAIN", "State validation detected inconsistency -- reconnect manager will recover");
         }
         last_state_validation = now;
     }
-    
-    // Recovery state machine update - Phase 2
-    DiscoveryTask::instance().update_recovery();
-
-    // Progress deferred/backoff-aware discovery starts while CONNECTING
-    TransmitterConnectionHandler::instance().tick();
-    
-    // Handle deferred logging from timer callbacks
-    EspnowSendUtils::handle_deferred_logging();
     
     // Version beacon periodic update (every 30s heartbeat) - Phase 4
     VersionBeaconManager::instance().update();

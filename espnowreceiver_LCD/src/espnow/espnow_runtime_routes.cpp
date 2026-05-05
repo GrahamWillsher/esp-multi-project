@@ -5,6 +5,7 @@
 #include <espnow_peer_manager.h>
 #include <esp32common/espnow/connection_manager.h>
 #include <esp32common/espnow/message_router.h>
+#include <rx_route_registry.h>
 
 #include "espnow/battery_handlers.h"
 #include "espnow/espnow_settings_sync.h"
@@ -12,6 +13,10 @@
 #include "espnow/rx_state_machine.h"
 
 namespace ESPNowRuntime::Detail {
+
+namespace {
+RxProbeAckThrottleState g_probe_ack_throttle_state{};
+}
 
 void setup_message_routes() {
     auto& router = EspnowMessageRouter::instance();
@@ -42,44 +47,10 @@ void setup_message_routes() {
     g_ack_config.set_wifi_channel = false;
     g_ack_config.on_connection = nullptr;
 
-    router.register_route(msg_probe,
-        [](const espnow_queue_msg_t* msg, void* /*ctx*/) {
-            const auto state = EspNowConnectionManager::instance().get_state();
-            bool send_probe_ack = true;
+    register_standard_probe_ack_routes(router, g_probe_config, g_ack_config, g_probe_ack_throttle_state);
 
-            const auto* probe = decode_struct_message<probe_t>(msg, "PROBE", msg_probe);
-            if (probe) {
-                const uint32_t now = millis();
-
-                const bool same_peer =
-                    (memcmp(g_last_probe_ack_mac, msg->mac, sizeof(g_last_probe_ack_mac)) == 0);
-                const bool same_seq = same_peer && (probe->seq == g_last_probe_ack_seq);
-                const uint32_t min_interval_ms =
-                    (state == EspNowConnectionState::CONNECTED) ? 120U : 80U;
-
-                if (same_seq && ((now - g_last_probe_ack_ms) < min_interval_ms)) {
-                    send_probe_ack = false;
-                }
-
-                if (send_probe_ack) {
-                    g_last_probe_ack_ms = now;
-                    g_last_probe_ack_seq = probe->seq;
-                    memcpy(g_last_probe_ack_mac, msg->mac, sizeof(g_last_probe_ack_mac));
-                }
-            }
-
-            g_probe_config.send_ack_response = send_probe_ack;
-            EspnowStandardHandlers::handle_probe(msg, &g_probe_config);
-        },
-        0xFF,
-        nullptr);
-
-    router.register_route(msg_ack,
-        [](const espnow_queue_msg_t* msg, void* /*ctx*/) {
-            EspnowStandardHandlers::handle_ack(msg, &g_ack_config);
-        },
-        0xFF,
-        nullptr);
+    // Phase 2: bidirectional connection confirmation handshake
+    register_standard_connect_confirm_route(router);
 
     router.register_route(msg_data,
         [](const espnow_queue_msg_t* msg, void* /*ctx*/) {
@@ -221,12 +192,13 @@ void setup_message_routes() {
         0xFF,
         nullptr);
 
-    router.register_route(msg_heartbeat,
-        [](const espnow_queue_msg_t* msg, void* /*ctx*/) {
-            handle_heartbeat_message(msg);
-        },
-        0xFF,
-        nullptr);
+    register_standard_heartbeat_route(router, [](const uint8_t* mac) {
+        mark_link_alive(mac);
+        if (!g_logged_heartbeat) {
+            LOG_INFO("ESPNOW", "Heartbeat stream active");
+            g_logged_heartbeat = true;
+        }
+    });
 
     router.register_route(msg_heartbeat_ack,
         [](const espnow_queue_msg_t* msg, void* /*ctx*/) {
@@ -274,26 +246,11 @@ void setup_message_routes() {
         0xFF,
         nullptr);
 
-    router.register_route(msg_battery_types_fragment,
-        [](const espnow_queue_msg_t* msg, void* /*ctx*/) {
-            handle_type_catalog_fragment_message(msg, "BATTERY_TYPES_FRAGMENT");
-        },
-        0xFF,
-        nullptr);
-
-    router.register_route(msg_inverter_types_fragment,
-        [](const espnow_queue_msg_t* msg, void* /*ctx*/) {
-            handle_type_catalog_fragment_message(msg, "INVERTER_TYPES_FRAGMENT");
-        },
-        0xFF,
-        nullptr);
-
-    router.register_route(msg_inverter_interfaces_fragment,
-        [](const espnow_queue_msg_t* msg, void* /*ctx*/) {
-            handle_type_catalog_fragment_message(msg, "INVERTER_INTERFACES_FRAGMENT");
-        },
-        0xFF,
-        nullptr);
+    register_standard_type_catalog_fragment_routes(
+        router,
+        [](const espnow_queue_msg_t* msg, uint8_t /*fragment_type*/, const char* label) {
+            handle_type_catalog_fragment_message(msg, label);
+        });
 
     router.register_route(msg_type_catalog_versions,
         [](const espnow_queue_msg_t* msg, void* /*ctx*/) {
@@ -302,26 +259,11 @@ void setup_message_routes() {
         0xFF,
         nullptr);
 
-    router.register_route(msg_packet,
-        [](const espnow_queue_msg_t* msg, void* /*ctx*/) {
-            handle_packet_subtype_message(msg, "PACKET_EVENTS");
-        },
-        subtype_events,
-        nullptr);
-
-    router.register_route(msg_packet,
-        [](const espnow_queue_msg_t* msg, void* /*ctx*/) {
-            handle_packet_subtype_message(msg, "PACKET_LOGS");
-        },
-        subtype_logs,
-        nullptr);
-
-    router.register_route(msg_packet,
-        [](const espnow_queue_msg_t* msg, void* /*ctx*/) {
-            handle_packet_subtype_message(msg, "PACKET_CELL_INFO");
-        },
-        subtype_cell_info,
-        nullptr);
+    register_standard_packet_subtype_routes(
+        router,
+        [](const espnow_queue_msg_t* msg, uint8_t /*packet_subtype*/, const char* label) {
+            handle_packet_subtype_message(msg, label);
+        });
 
     LOG_INFO("ESPNOW", "Registered %u ESP-NOW routes", static_cast<unsigned>(router.route_count()));
 }

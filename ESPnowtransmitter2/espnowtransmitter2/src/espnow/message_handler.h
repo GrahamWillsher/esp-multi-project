@@ -60,6 +60,12 @@ private:
      * @brief Setup message routes in the router
      */
     void setup_message_routes();
+
+    /**
+     * @brief Register the msg_connect_confirm_ack route (Phase 2 handshake).
+     *        Call once during init, after setup_message_routes().
+     */
+    void register_connect_confirm_ack_route();
     
     /**
      * @brief RX task implementation

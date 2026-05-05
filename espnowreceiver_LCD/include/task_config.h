@@ -56,5 +56,9 @@ namespace TaskConfig {
     // Core 0 is reserved for the WiFi/BLE stack.
     // All application worker tasks run on Core 1.
     constexpr uint8_t WORKER_CORE = 1;
-
+    // MQTT task is pinned to Core 0 (WiFi/lwIP core) so that TCP socket
+    // operations execute within the same CPU context as the WiFi driver.
+    // This eliminates inter-core IPC overhead and reduces TX buffer contention
+    // with concurrent ESP-NOW frame sends (RC-4 coexistence fix).
+    constexpr uint8_t MQTT_CORE = 0;
 }  // namespace TaskConfig

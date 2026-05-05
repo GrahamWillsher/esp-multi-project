@@ -50,7 +50,7 @@ bool validate_save_receiver_network(const JsonDocument& doc, const char** out_er
 
     const bool use_static_ip = doc["use_static_ip"].as<bool>();
     if (use_static_ip) {
-        static const char* kStaticRequired[] = {"ip", "gateway", "subnet"};
+        static const char* kStaticRequired[] = {"static_ip", "gateway", "subnet"};
         if (!require_keys(doc, kStaticRequired, sizeof(kStaticRequired) / sizeof(kStaticRequired[0]), out_error_message)) {
             return false;
         }

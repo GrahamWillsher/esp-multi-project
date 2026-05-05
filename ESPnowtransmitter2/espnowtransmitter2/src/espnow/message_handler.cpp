@@ -37,6 +37,7 @@ EspnowMessageHandler& EspnowMessageHandler::instance() {
 EspnowMessageHandler::EspnowMessageHandler() {
     TxStateMachine::instance().init();
     setup_message_routes();
+    register_connect_confirm_ack_route();
 }
 
 void EspnowMessageHandler::start_rx_task(QueueHandle_t queue) {

@@ -43,13 +43,14 @@ namespace {
         }
     }
 
-    int find_event_index_by_type(const char* type) {
+    int find_event_index_by_key(uint64_t timestamp_ms, const char* type) {
         if (type == nullptr || type[0] == '\0') {
             return -1;
         }
 
         for (size_t i = 0; i < event_logs.size(); ++i) {
-            if (strncmp(event_logs[i].type, type, sizeof(event_logs[i].type)) == 0) {
+            if (event_logs[i].timestamp_ms == timestamp_ms &&
+                strncmp(event_logs[i].type, type, sizeof(event_logs[i].type)) == 0) {
                 return static_cast<int>(i);
             }
         }
@@ -206,7 +207,9 @@ void store_event_logs(const JsonObject& logs) {
         strncpy(entry.message, msg, sizeof(entry.message) - 1);
         entry.message[sizeof(entry.message) - 1] = '\0';
 
-        int existing_idx = find_event_index_by_type(entry.type);
+        int existing_idx = (entry.timestamp_ms != 0)
+            ? find_event_index_by_key(entry.timestamp_ms, entry.type)
+            : -1;  // zero timestamp: treat as new, do not deduplicate
         if (existing_idx >= 0) {
             event_logs[existing_idx] = entry;
             new_count++;

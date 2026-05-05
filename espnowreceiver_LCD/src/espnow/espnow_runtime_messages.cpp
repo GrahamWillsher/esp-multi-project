@@ -3,6 +3,7 @@
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp32common/espnow/packet_utils.h>
+#include <esp32common/espnow/tx_scheduler.h>
 
 #include "espnow/battery_data_store.h"
 #include "espnow/battery_handlers.h"
@@ -19,7 +20,6 @@ namespace ESPNowRuntime::Detail {
 std::atomic<bool> g_radio_initialized{false};
 std::atomic<bool> g_state_initialized{false};
 std::atomic<bool> g_callbacks_registered{false};
-std::atomic<bool> g_discovery_started{false};
 bool g_logged_probe = false;
 bool g_logged_data = false;
 bool g_logged_heartbeat = false;
@@ -328,21 +328,6 @@ void handle_battery_status_message(const espnow_queue_msg_t* msg) {
     }
 }
 
-void handle_heartbeat_message(const espnow_queue_msg_t* msg) {
-    const auto* hb = decode_struct_message<heartbeat_t>(msg, "HEARTBEAT", msg_heartbeat);
-    if (!hb) {
-        return;
-    }
-
-    RxHeartbeatManager::instance().on_heartbeat(hb, msg->mac);
-    mark_link_alive(msg->mac);
-
-    if (!g_logged_heartbeat) {
-        LOG_INFO("ESPNOW", "Heartbeat stream active");
-        g_logged_heartbeat = true;
-    }
-}
-
 void handle_heartbeat_ack_message(const espnow_queue_msg_t* msg) {
     const auto* ack = decode_crc32_message<heartbeat_ack_t>(msg, "HEARTBEAT_ACK", msg_heartbeat_ack);
     if (!ack) {
@@ -391,6 +376,7 @@ void on_data_recv(const uint8_t* mac, const uint8_t* data, int len) {
 }
 
 void on_data_sent(const uint8_t* mac, esp_now_send_status_t status) {
+    EspnowTxScheduler::on_send_complete(mac, status == ESP_NOW_SEND_SUCCESS);
     if (status != ESP_NOW_SEND_SUCCESS && mac) {
         LOG_WARN("ESPNOW", "Send failed to %02X:%02X:%02X:%02X:%02X:%02X",
                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);

@@ -1,6 +1,8 @@
 #include "transmitter_settings_cache.h"
 
 #include <Preferences.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 namespace {
     constexpr const char* kKeyBatteryKnown = "batt_known";
@@ -91,7 +93,28 @@ namespace {
     };
 
     SettingsCache settings_cache;
-}
+
+    SemaphoreHandle_t cache_mutex = nullptr;
+
+    void ensure_mutex() {
+        if (cache_mutex == nullptr) {
+            cache_mutex = xSemaphoreCreateMutex();
+        }
+    }
+
+    struct ScopedMutex {
+        explicit ScopedMutex(SemaphoreHandle_t m) : m_(m), locked_(false) {
+            if (m_ != nullptr) {
+                locked_ = (xSemaphoreTake(m_, pdMS_TO_TICKS(100)) == pdTRUE);
+            }
+        }
+        ~ScopedMutex() { if (locked_) xSemaphoreGive(m_); }
+        bool locked() const { return locked_; }
+    private:
+        SemaphoreHandle_t m_;
+        bool locked_;
+    };
+} // namespace
 
 namespace TransmitterSettingsCache {
 
@@ -142,85 +165,123 @@ void save_to_prefs(void* prefs_ptr) {
 }
 
 void store_battery_settings(const BatterySettings& settings) {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
     settings_cache.battery_settings = settings;
     settings_cache.battery_settings_known = true;
 }
 
 BatterySettings get_battery_settings() {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
     return settings_cache.battery_settings;
 }
 
 bool has_battery_settings() {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
     return settings_cache.battery_settings_known;
 }
 
 void store_battery_emulator_settings(const BatteryEmulatorSettings& settings) {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
     settings_cache.battery_emulator_settings = settings;
     settings_cache.battery_emulator_settings_known = true;
 }
 
 BatteryEmulatorSettings get_battery_emulator_settings() {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
     return settings_cache.battery_emulator_settings;
 }
 
 bool has_battery_emulator_settings() {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
     return settings_cache.battery_emulator_settings_known;
 }
 
 void store_power_settings(const PowerSettings& settings) {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
     settings_cache.power_settings = settings;
     settings_cache.power_settings_known = true;
 }
 
 PowerSettings get_power_settings() {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
     return settings_cache.power_settings;
 }
 
 bool has_power_settings() {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
     return settings_cache.power_settings_known;
 }
 
 void store_inverter_settings(const InverterSettings& settings) {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
     settings_cache.inverter_settings = settings;
     settings_cache.inverter_settings_known = true;
 }
 
 InverterSettings get_inverter_settings() {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
     return settings_cache.inverter_settings;
 }
 
 bool has_inverter_settings() {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
     return settings_cache.inverter_settings_known;
 }
 
 void store_can_settings(const CanSettings& settings) {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
     settings_cache.can_settings = settings;
     settings_cache.can_settings_known = true;
 }
 
 CanSettings get_can_settings() {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
     return settings_cache.can_settings;
 }
 
 bool has_can_settings() {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
     return settings_cache.can_settings_known;
 }
 
 void store_contactor_settings(const ContactorSettings& settings) {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
     settings_cache.contactor_settings = settings;
     settings_cache.contactor_settings_known = true;
 }
 
 ContactorSettings get_contactor_settings() {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
     return settings_cache.contactor_settings;
 }
 
 bool has_contactor_settings() {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
     return settings_cache.contactor_settings_known;
 }
 
 void update_battery_cell_count(uint16_t cell_count) {
     if (cell_count > 0 && cell_count <= 255) {
+        ensure_mutex();
+        ScopedMutex lock(cache_mutex);
         settings_cache.battery_settings.cell_count = static_cast<uint8_t>(cell_count);
     }
 }

@@ -18,29 +18,6 @@
 class EspnowSendUtils {
 public:
     /**
-     * @brief Send ESP-NOW message with automatic retry and backoff
-     * 
-     * Tracks consecutive failures and pauses sending after max_failures
-     * to prevent log spam. Automatically resumes after backoff period.
-     * 
-     * @param mac Destination MAC address
-     * @param data Message data to send
-     * @param len Message length in bytes
-     * @param msg_name Human-readable message name for logging
-     * @param max_failures Maximum consecutive failures before backoff (default: 10)
-     * @param backoff_ms Backoff duration in milliseconds (default: 10000)
-     * @return true if sent successfully, false on failure
-     */
-    static bool send_with_retry(
-        const uint8_t* mac,
-        const void* data,
-        size_t len,
-        const char* msg_name,
-        uint8_t max_failures = 10,
-        uint32_t backoff_ms = 10000
-    );
-    
-    /**
      * @brief Reset failure counter (call after manual reconnection)
      */
     static void reset_failure_counter();

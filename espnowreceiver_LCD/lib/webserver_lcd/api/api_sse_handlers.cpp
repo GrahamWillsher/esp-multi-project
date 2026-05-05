@@ -8,12 +8,14 @@
 #include "../logging.h"
 #include "../../src/mqtt/mqtt_client.h"
 #include "../../src/espnow/espnow_send.h"
+#include "../../src/espnow/rx_connection_handler.h"
 #include "../page_definitions.h"
 #include "../../src/memory/memory_sampler.h"
 
 #include <Arduino.h>
 #include <esp_now.h>
 #include <esp32common/espnow/common.h>
+#include <esp32common/espnow/tx_scheduler.h>
 
 namespace {
 constexpr uint32_t kSseSessionMaxDurationMs = 300000; // 5 minutes
@@ -23,21 +25,23 @@ constexpr size_t kMonitorEventBufferBytes = 512;
 constexpr size_t kSseEventReserveOverheadBytes = 12;
 
 struct SseMetricsInternal {
-    volatile uint32_t cell_connects = 0;
-    volatile uint32_t cell_disconnects = 0;
-    volatile uint32_t cell_send_failures = 0;
-    volatile uint32_t cell_ping_failures = 0;
-    volatile uint32_t cell_active_clients = 0;
-    volatile uint32_t cell_last_session_ms = 0;
-    volatile uint32_t cell_max_session_ms = 0;
+    // All fields accessed exclusively under g_sse_metrics_mux (portENTER_CRITICAL).
+    // The spinlock provides the required memory barrier — volatile is not needed.
+    uint32_t cell_connects = 0;
+    uint32_t cell_disconnects = 0;
+    uint32_t cell_send_failures = 0;
+    uint32_t cell_ping_failures = 0;
+    uint32_t cell_active_clients = 0;
+    uint32_t cell_last_session_ms = 0;
+    uint32_t cell_max_session_ms = 0;
 
-    volatile uint32_t monitor_connects = 0;
-    volatile uint32_t monitor_disconnects = 0;
-    volatile uint32_t monitor_send_failures = 0;
-    volatile uint32_t monitor_ping_failures = 0;
-    volatile uint32_t monitor_active_clients = 0;
-    volatile uint32_t monitor_last_session_ms = 0;
-    volatile uint32_t monitor_max_session_ms = 0;
+    uint32_t monitor_connects = 0;
+    uint32_t monitor_disconnects = 0;
+    uint32_t monitor_send_failures = 0;
+    uint32_t monitor_ping_failures = 0;
+    uint32_t monitor_active_clients = 0;
+    uint32_t monitor_last_session_ms = 0;
+    uint32_t monitor_max_session_ms = 0;
 };
 
 SseMetricsInternal g_sse_metrics;
@@ -186,12 +190,15 @@ esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
 
     msg_subtype data_subtype = get_subtype_for_uri("/transmitter/monitor2");
 
-    if (TransmitterManager::isMACKnown()) {
+    if (TransmitterManager::isMACKnown() &&
+        !ReceiverConnectionHandler::instance().quiet_mode_active()) {
         request_data_t req_msg = { msg_request_data, data_subtype };
-        esp_err_t result = esp_now_send(TransmitterManager::getMAC(), (const uint8_t*)&req_msg, sizeof(req_msg));
+        esp_err_t result = EspnowTxScheduler::send(TransmitterManager::getMAC(), &req_msg, sizeof(req_msg), "SSE_REQ_DATA");
         if (result == ESP_OK) {
             LOG_DEBUG("SSE", "Sent REQUEST_DATA (subtype=%d) to transmitter", data_subtype);
         }
+    } else if (ReceiverConnectionHandler::instance().quiet_mode_active()) {
+        LOG_WARN("SSE", "Skipped REQUEST_DATA during reconnect quiet mode");
     }
 
     uint8_t last_soc = 255;
@@ -254,10 +261,13 @@ esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
         }
     }
 
-    if (TransmitterManager::isMACKnown()) {
+    if (TransmitterManager::isMACKnown() &&
+        !ReceiverConnectionHandler::instance().quiet_mode_active()) {
         abort_data_t abort_msg = { msg_abort_data, data_subtype };
-        esp_now_send(TransmitterManager::getMAC(), (const uint8_t*)&abort_msg, sizeof(abort_msg));
+        (void)EspnowTxScheduler::send(TransmitterManager::getMAC(), &abort_msg, sizeof(abort_msg), "SSE_ABORT_DATA");
         LOG_DEBUG("SSE", "Sent ABORT_DATA (subtype=%d) to transmitter", data_subtype);
+    } else if (ReceiverConnectionHandler::instance().quiet_mode_active()) {
+        LOG_WARN("SSE", "Skipped ABORT_DATA during reconnect quiet mode");
     }
 
     HttpSseUtils::end_sse(req);

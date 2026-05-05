@@ -117,7 +117,6 @@ public:
      * @param len Data length
      * @return true if sent successfully or queued
      */
-    bool safe_send(const uint8_t* mac, const uint8_t* data, size_t len);
     
     /**
      * @brief Register event callback

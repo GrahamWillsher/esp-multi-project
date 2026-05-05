@@ -28,6 +28,12 @@ bool set_channel(uint8_t ch);
 void on_espnow_recv(const uint8_t *mac_addr, const uint8_t *data, int len);
 void on_data_sent(const uint8_t *mac_addr, esp_now_send_status_t status);
 
+// Discovery queue instrumentation (ISR enqueue path)
+uint32_t get_discovery_queue_enqueue_attempts();
+uint32_t get_discovery_queue_enqueue_drops();
+uint32_t get_discovery_queue_enqueue_recovered();
+void reset_discovery_queue_enqueue_stats();
+
 // Health check for graceful retry
 bool is_espnow_healthy();
 

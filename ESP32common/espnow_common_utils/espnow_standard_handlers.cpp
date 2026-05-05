@@ -15,6 +15,11 @@
 
 namespace EspnowStandardHandlers {
 
+namespace {
+AckSendStats g_ack_send_stats{};
+portMUX_TYPE g_ack_send_stats_mux = portMUX_INITIALIZER_UNLOCKED;
+}
+
 void handle_probe(const espnow_queue_msg_t* msg, void* context) {
     if (!msg || msg->len < (int)sizeof(probe_t)) return;
     
@@ -26,12 +31,31 @@ void handle_probe(const espnow_queue_msg_t* msg, void* context) {
              msg->mac[0], msg->mac[1], msg->mac[2], msg->mac[3], msg->mac[4], msg->mac[5]);
     
     LOG_DEBUG("PROBE", "Received announcement (seq=%u) from %s", p->seq, mac_str);
-    
-    // Add peer if not already registered (use current WiFi channel explicitly)
-    if (!EspnowPeerManager::is_peer_registered(msg->mac)) {
-        uint8_t current_channel = WiFi.channel();
-        EspnowPeerManager::add_peer(msg->mac, current_channel);
-        LOG_DEBUG("PROBE", "Registered peer %s on channel %d", mac_str, current_channel);
+
+    // Always register (or re-register) the sender with channel=0.
+    //
+    // WHY channel=0 is mandatory here:
+    //   channel=0 tells ESP-NOW to transmit on whatever WiFi channel the radio
+    //   is currently on, rather than on the peer's stored channel field.  Using
+    //   a specific non-zero channel causes esp_now_send() to silently queue the
+    //   frame for a channel the radio may not be on (e.g. receiver STA is locked
+    //   to the AP's channel 11 but the stale peer entry says channel 6).  The
+    //   frame then sits in the ESP-NOW TX buffer with no path to transmit, the
+    //   send callback never fires, the buffer slot is permanently consumed, and
+    //   after a few probes all slots are exhausted -> every subsequent
+    //   esp_now_send() returns ESP_ERR_ESPNOW_NO_MEM indefinitely.
+    //
+    // WHY we re-register on every probe:
+    //   A stale non-zero channel registration persists across reconnect cycles
+    //   because add_peer() is a no-op when the peer already exists.  Explicitly
+    //   removing and re-adding forces a clean channel=0 entry each time.
+    if (EspnowPeerManager::is_peer_registered(msg->mac)) {
+        EspnowPeerManager::remove_peer(msg->mac);
+    }
+    if (!EspnowPeerManager::add_peer(msg->mac, 0)) {
+        LOG_WARN("PROBE", "Failed to register peer %s (channel=0)", mac_str);
+    } else {
+        LOG_DEBUG("PROBE", "Registered peer %s (channel=0)", mac_str);
     }
     
     // Connection callback semantics are edge-triggered only.
@@ -52,14 +76,15 @@ void handle_probe(const espnow_queue_msg_t* msg, void* context) {
         memcpy(config->peer_mac_storage, msg->mac, 6);
     }
     
-    // Send ACK response if configured
-    if (config && config->send_ack_response) {
-        send_ack_response(msg->mac, p->seq, WiFi.channel());
-    }
-    
     // Call probe received callback (fires every time, regardless of connection state)
     if (config && config->on_probe_received) {
         config->on_probe_received(msg->mac, p->seq);
+    }
+
+    // Send ACK response if configured. This runs after on_probe_received so
+    // receiver quiet mode can disable competing senders before the ACK path.
+    if (config && config->send_ack_response) {
+        send_ack_response(msg->mac, p->seq, WiFi.channel());
     }
     
     // Call connection callback only on explicit false->true transition.
@@ -164,73 +189,58 @@ void handle_data(const espnow_queue_msg_t* msg, void* context) {
 bool send_ack_response(const uint8_t* peer_mac, uint32_t seq, uint8_t channel) {
     ack_t ack { msg_ack, seq, channel };
 
-    if (EspnowTxScheduler::is_ready()) {
-        const esp_err_t queued = EspnowTxScheduler::send(peer_mac, &ack, sizeof(ack), "ACK");
-        if (queued == ESP_OK) {
-            LOG_DEBUG("ACK", "Queued response (seq=%u, channel=%d)", seq, channel);
-            return true;
-        }
-        LOG_WARN("ACK", "Queue send failed: %s", esp_err_to_name(queued));
+    uint32_t token_held_ms = 0;
+    if (!EspnowTxScheduler::try_acquire_ack_token(peer_mac, &token_held_ms)) {
+        LOG_DEBUG("ACK", "Suppressed duplicate discovery ACK (seq=%u, held=%lu ms)",
+                  seq,
+                  static_cast<unsigned long>(token_held_ms));
         return false;
     }
 
-    esp_err_t result = ESP_FAIL;
-    constexpr uint8_t kMaxNoMemRetries = 5;
-    constexpr uint32_t kRetryBaseDelayMs = 4;
+    // Route discovery ACKs through the shared scheduler so one sender owns
+    // esp_now_send() during reconnect and control traffic can preempt stale work.
+    portENTER_CRITICAL(&g_ack_send_stats_mux);
+    g_ack_send_stats.direct_attempts++;
+    portEXIT_CRITICAL(&g_ack_send_stats_mux);
 
-    for (uint8_t attempt = 0; attempt <= kMaxNoMemRetries; ++attempt) {
-        result = esp_now_send(peer_mac,
-                              reinterpret_cast<const uint8_t*>(&ack),
-                              sizeof(ack));
-
-        if (result == ESP_OK) {
-            break;
-        }
-
-        if (result != ESP_ERR_ESPNOW_NO_MEM || attempt == kMaxNoMemRetries) {
-            break;
-        }
-
-        // Transient ESP-NOW TX queue pressure: cooperative linear backoff.
-        // Mirrors the more resilient heartbeat ACK behavior without blocking for long.
-        delay(kRetryBaseDelayMs * (attempt + 1U));
-    }
-    
-    if (result == ESP_OK) {
-        LOG_DEBUG("ACK", "Sent response (seq=%u, channel=%d)", seq, channel);
+    const esp_err_t queued_result = EspnowTxScheduler::send(peer_mac,
+                                                            &ack,
+                                                            sizeof(ack),
+                                                            "DISCOVERY_ACK");
+    if (queued_result == ESP_OK) {
+        portENTER_CRITICAL(&g_ack_send_stats_mux);
+        g_ack_send_stats.direct_success++;
+        portEXIT_CRITICAL(&g_ack_send_stats_mux);
+        LOG_DEBUG("ACK", "Queued response (seq=%u, channel=%d)", seq, channel);
         return true;
-    } else {
-        LOG_WARN("ACK", "Send failed: %s", esp_err_to_name(result));
-        return false;
     }
+
+    EspnowTxScheduler::release_ack_token(peer_mac, "enqueue_failed");
+
+    portENTER_CRITICAL(&g_ack_send_stats_mux);
+    if (queued_result == ESP_ERR_ESPNOW_NO_MEM) {
+        g_ack_send_stats.direct_no_mem_failures++;
+    } else {
+        g_ack_send_stats.direct_other_failures++;
+    }
+    portEXIT_CRITICAL(&g_ack_send_stats_mux);
+
+    LOG_WARN("ACK", "Scheduler enqueue failed (seq=%u channel=%d): %s",
+             seq, channel, esp_err_to_name(queued_result));
+    return false;
 }
 
-bool send_probe_announcement(uint32_t seq) {
-    probe_t probe { msg_probe, seq };
-    const uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+bool read_ack_send_stats(AckSendStats& out_stats) {
+    portENTER_CRITICAL(&g_ack_send_stats_mux);
+    out_stats = g_ack_send_stats;
+    portEXIT_CRITICAL(&g_ack_send_stats_mux);
+    return true;
+}
 
-    if (EspnowTxScheduler::is_ready()) {
-        const esp_err_t queued = EspnowTxScheduler::send(broadcast_mac, &probe, sizeof(probe), "PROBE");
-        if (queued == ESP_OK) {
-            LOG_DEBUG("PROBE", "Queued announcement (seq=%u) on channel %d", seq, WiFi.channel());
-            return true;
-        }
-        LOG_WARN("PROBE", "Queue send failed: %s", esp_err_to_name(queued));
-        return false;
-    }
-    
-    esp_err_t result = esp_now_send(broadcast_mac,
-                                    reinterpret_cast<const uint8_t*>(&probe),
-                                    sizeof(probe));
-    
-    if (result == ESP_OK) {
-        LOG_DEBUG("PROBE", "Sent announcement (seq=%u) on channel %d", 
-                     seq, WiFi.channel());
-        return true;
-    } else {
-        LOG_WARN("PROBE", "Send failed: %s", esp_err_to_name(result));
-        return false;
-    }
+void reset_ack_send_stats() {
+    portENTER_CRITICAL(&g_ack_send_stats_mux);
+    g_ack_send_stats = {};
+    portEXIT_CRITICAL(&g_ack_send_stats_mux);
 }
 
 } // namespace EspnowStandardHandlers

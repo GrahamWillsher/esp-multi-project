@@ -93,6 +93,8 @@ const char* get_event_logs_page_script() {
 const CLEAR_COUNTDOWN_SECONDS = 5;
 const SNAPSHOT_WAIT_TIMEOUT_MS = 5000;
 const SNAPSHOT_WAIT_POLL_MS = 200;
+const SNAPSHOT_RETRY_ATTEMPTS = 5;
+const SNAPSHOT_RETRY_DELAY_MS = 1000;
 
 let snapshotSubscriptionClosed = false;
 let clearCountdownTimer = null;
@@ -340,9 +342,12 @@ async function loadEvents() {
         } else if (eventCount === 0) {
             status.textContent = formatCountLabel(0, 'event', 'events');
         }
+
+        return eventCount;
     } catch (e) {
         status.textContent = 'Failed to load events';
         status.className = 'event-meta event-error';
+        return -1;
     }
 }
 
@@ -453,9 +458,23 @@ window.addEventListener('load', () => {
             status.className = 'event-meta';
         }
 
-        await loadEvents();
-        // Snapshot page behavior: unsubscribe after completion/fallback fetch.
-        closeSnapshotSubscription();
+        let eventCount = await loadEvents();
+
+        // If snapshot metadata has not completed yet and we have no rows, allow a few
+        // short follow-up fetches while keeping subscription active.
+        if (!completed && eventCount === 0) {
+            for (let attempt = 0; attempt < SNAPSHOT_RETRY_ATTEMPTS; attempt++) {
+                await sleep(SNAPSHOT_RETRY_DELAY_MS);
+                const retryCompleted = await waitForSnapshotCompletion();
+                eventCount = await loadEvents();
+                if (retryCompleted || eventCount > 0) {
+                    break;
+                }
+            }
+        }
+
+        // Keep subscription active for the lifetime of the /events page.
+        // Unsubscribe only on unload/navigation.
     })();
 });
 

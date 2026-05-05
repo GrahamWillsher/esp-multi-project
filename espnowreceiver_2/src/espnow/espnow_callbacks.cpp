@@ -2,9 +2,11 @@
 #include "../common.h"
 #include <esp_now.h>
 #include <esp32common/espnow/common.h>
+#include <esp32common/espnow/tx_scheduler.h>
 #include "../../lib/webserver/utils/transmitter_manager.h"
 
 void on_espnow_sent(const uint8_t *mac, esp_now_send_status_t status) {
+    EspnowTxScheduler::on_send_complete(mac, status == ESP_NOW_SEND_SUCCESS);
     TransmitterManager::updateSendStatus(status == ESP_NOW_SEND_SUCCESS);
     if (status != ESP_NOW_SEND_SUCCESS) {
         LOG_WARN("ESP-NOW", "Send failed to %02X:%02X:%02X:%02X:%02X:%02X",

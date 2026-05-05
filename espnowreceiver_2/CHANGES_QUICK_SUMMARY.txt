@@ -195,3 +195,32 @@ Based on official LilyGo T-Display-S3 reference code:
 ---
 
 **Status:** Ready for build and test ✅
+
+---
+
+# 2026-04-21 — Full codebase review + concurrency hardening (both codebases)
+
+## Summary
+
+Full review of espnowreceiver_LCD and espnowreceiver_2 conducted and documented in
+`esp32common/docs/systemworks/ESPNOWRECEIVER_LCD_FULL_CODEBASE_REVIEW_2026_04_21.md`.
+All phases of the resulting implementation plan completed in the same session.
+
+## Changes made
+
+### espnowreceiver_LCD
+- `src/runtime/runtime_task_startup.cpp` — rewrote to use `TaskDescriptor` + `create_task_or_fail()` array-loop pattern (mirrors _2); added `MemorySampler::task_memory_sampler` task; added log markers around `prepare_runtime()`
+- `lib/webserver_lcd/api/api_schema_contract.cpp` — fixed field name `"ip"` → `"static_ip"` in `validate_save_receiver_network()` (was mismatched with handler and JS page)
+- `lib/webserver_lcd/utils/transmitter_event_log_cache.cpp` — replaced `find_event_index_by_type()` with `find_event_index_by_key()` composite-key lookup; added zero-timestamp guard
+- `src/mqtt/mqtt_task.cpp` — replaced `static bool initialized` one-shot flag with server IP+port fingerprint so broker reconfiguration applies without reboot
+- `lib/webserver_lcd/utils/transmitter_identity.cpp` — added `ScopedMutex` + FreeRTOS semaphore to protect MAC cache writes
+- `lib/webserver_lcd/utils/transmitter_settings_cache.cpp` — added `ScopedMutex` to all store/get/has functions
+- `lib/webserver_lcd/utils/transmitter_network.cpp` — added `ScopedMutex` to all write/scalar-getter functions; added `getBytes` return-value validation in `load_from_prefs()`
+- `lib/webserver_lcd/utils/transmitter_mqtt_specs.cpp` — added `mqtt_cache_mutex` + `ensure_mqtt_mutex()` to protect the previously unguarded `mqtt_cache`
+- `lib/webserver_lcd/api/api_sse_handlers.cpp` — removed redundant `volatile` qualifiers from `SseMetricsInternal` (spinlock provides the barrier)
+
+### espnowreceiver_2
+- All of the above transmitter cache, MQTT task, and event log fixes applied identically
+- `lib/webserver/api/api_sse_handlers.cpp` — removed redundant `volatile` from `SseMetricsInternal`
+
+**Status:** All phases complete ✅

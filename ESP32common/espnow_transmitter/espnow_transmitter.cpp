@@ -1,6 +1,5 @@
 #include "espnow_transmitter.h"
 #include "../logging_utilities/mqtt_logger.h"
-#include "../espnow_common_utils/espnow_send_utils.h"
 #include "../espnow_common_utils/espnow_packet_utils.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -14,6 +13,10 @@ volatile bool g_ack_received = false;
 volatile uint32_t g_ack_seq = 0;
 volatile uint8_t g_lock_channel = 0;
 espnow_payload_t tx_data;
+
+static volatile uint32_t g_discovery_enqueue_attempts = 0;
+static volatile uint32_t g_discovery_enqueue_drops = 0;
+static volatile uint32_t g_discovery_enqueue_recovered = 0;
 // espnow_rx_queue is defined by project runtime context (project-specific)
 
 uint8_t requester_mac[6] = {0};  // Track who requested data
@@ -23,14 +26,15 @@ bool set_channel(uint8_t ch) {
 }
 
 void on_espnow_recv(const uint8_t *mac_addr, const uint8_t *data, int len) {
-    if (!data || len < 1) return;
+    if (!mac_addr || !data || len < 1) return;
     if (espnow_rx_queue != NULL) {
         espnow_queue_msg_t msg;
-        memcpy(msg.data, data, min(len, 250));
+        const int copied_len = min(len, static_cast<int>(sizeof(msg.data)));
+        memcpy(msg.data, data, copied_len);
         memcpy(msg.mac, mac_addr, 6);
-        msg.len = len;
+        msg.len = copied_len;
         msg.timestamp = millis();
-        xQueueSend(espnow_rx_queue, &msg, 0);
+        (void)xQueueSend(espnow_rx_queue, &msg, 0);
         
         // CRITICAL: Also send PROBE and ACK messages to discovery queue
         // This allows active hopping task to receive ACKs independently of RX task
@@ -40,10 +44,54 @@ void on_espnow_recv(const uint8_t *mac_addr, const uint8_t *data, int len) {
             uint8_t msg_type = data[0];
             if (msg_type == msg_probe || msg_type == msg_ack) {
                 // Send to discovery queue as well (don't block if full)
-                xQueueSend(espnow_discovery_queue, &msg, 0);
+                ++g_discovery_enqueue_attempts;
+                if (xQueueSend(espnow_discovery_queue, &msg, 0) != pdTRUE) {
+                    ++g_discovery_enqueue_drops;
+
+                    // Deterministic recovery for reconnect-critical ACK ingress:
+                    // if queue is full, drop one oldest entry then retry once.
+                    if (msg_type == msg_ack) {
+                        espnow_queue_msg_t dropped{};
+                        if (xQueueReceive(espnow_discovery_queue, &dropped, 0) == pdTRUE) {
+                            if (xQueueSend(espnow_discovery_queue, &msg, 0) == pdTRUE) {
+                                ++g_discovery_enqueue_recovered;
+                            }
+                        }
+                    }
+
+                    static uint32_t last_drop_log_ms = 0;
+                    const uint32_t now = millis();
+                    if ((now - last_drop_log_ms) > 2000U) {
+                        last_drop_log_ms = now;
+                        MQTT_LOG_WARNING("ESPNOW_TX",
+                                         "Discovery queue full (type=%u attempts=%lu drops=%lu recovered=%lu)",
+                                         static_cast<unsigned>(msg_type),
+                                         static_cast<unsigned long>(g_discovery_enqueue_attempts),
+                                         static_cast<unsigned long>(g_discovery_enqueue_drops),
+                                         static_cast<unsigned long>(g_discovery_enqueue_recovered));
+                    }
+                }
             }
         }
     }
+}
+
+uint32_t get_discovery_queue_enqueue_attempts() {
+    return g_discovery_enqueue_attempts;
+}
+
+uint32_t get_discovery_queue_enqueue_drops() {
+    return g_discovery_enqueue_drops;
+}
+
+uint32_t get_discovery_queue_enqueue_recovered() {
+    return g_discovery_enqueue_recovered;
+}
+
+void reset_discovery_queue_enqueue_stats() {
+    g_discovery_enqueue_attempts = 0;
+    g_discovery_enqueue_drops = 0;
+    g_discovery_enqueue_recovered = 0;
 }
 
 // Retry tracking for graceful failure handling
@@ -73,9 +121,6 @@ void on_data_sent(const uint8_t *mac_addr, esp_now_send_status_t status) {
         if (consecutive_failures > 0) {
             MQTT_LOG_INFO("ESPNOW_TX", "Connection recovered after %u failures", consecutive_failures);
             consecutive_failures = 0;
-            
-            // CRITICAL: Also reset the EspnowSendUtils failure counter to unpause sending
-            EspnowSendUtils::reset_failure_counter();
         }
     } else {
         uint32_t now = millis();

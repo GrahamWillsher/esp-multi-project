@@ -40,6 +40,7 @@ uint8_t MqttClient::broker_ip_[4] = {0, 0, 0, 0};
 uint16_t MqttClient::broker_port_ = 1883;
 bool MqttClient::enabled_ = false;
 unsigned long MqttClient::last_connect_attempt_ = 0;
+unsigned long MqttClient::reconnect_interval_ms_ = MqttClient::RECONNECT_INTERVAL_MIN_MS;
 
 // Cell data subscription state management
 int MqttClient::cell_data_subscribers_ = 0;
@@ -96,7 +97,7 @@ bool MqttClient::connect() {
     
     // Throttle connection attempts
     unsigned long now = millis();
-    if (now - last_connect_attempt_ < RECONNECT_INTERVAL_MS) {
+    if (now - last_connect_attempt_ < reconnect_interval_ms_) {
         return false;
     }
     last_connect_attempt_ = now;
@@ -112,10 +113,16 @@ bool MqttClient::connect() {
     
     if (connected) {
         LOG_INFO("MQTT", "Connected successfully");
+        reconnect_interval_ms_ = RECONNECT_INTERVAL_MIN_MS;
         subscribeToTopics();
         return true;
     } else {
         LOG_ERROR("MQTT", "Connection failed, state=%d", mqtt_client_.state());
+        const unsigned long next_backoff = reconnect_interval_ms_ * 2UL;
+        reconnect_interval_ms_ = (next_backoff > RECONNECT_INTERVAL_MAX_MS)
+                                     ? RECONNECT_INTERVAL_MAX_MS
+                                     : next_backoff;
+        LOG_WARN("MQTT", "Next reconnect attempt in %lu ms", reconnect_interval_ms_);
         return false;
     }
 }
@@ -150,6 +157,7 @@ void MqttClient::setEnabled(bool enabled) {
     
     if (enabled_) {
         LOG_INFO("MQTT", "Enabled");
+        reconnect_interval_ms_ = RECONNECT_INTERVAL_MIN_MS;
         connect();
     } else {
         LOG_INFO("MQTT", "Disabled");

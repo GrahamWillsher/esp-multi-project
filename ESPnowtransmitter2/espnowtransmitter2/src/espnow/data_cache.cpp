@@ -1,6 +1,7 @@
 #include "data_cache.h"
 #include "../config/logging_config.h"
 #include <esp32common/espnow/connection_manager.h>
+#include <esp32common/espnow/tx_scheduler.h>
 #include <esp_now.h>
 
 DataCache::DataCache() {
@@ -82,10 +83,11 @@ size_t DataCache::flush() {
     const uint8_t* peer_mac = EspNowConnectionManager::instance().get_peer_mac();
     
     for (const auto& data : cache_) {
-        // Send via ESP-NOW
-        esp_err_t result = esp_now_send(peer_mac, 
-                                       (const uint8_t*)&data, 
-                                       sizeof(espnow_payload_t));
+        // Send via shared scheduler owner
+        esp_err_t result = EspnowTxScheduler::send(peer_mac,
+                               &data,
+                               sizeof(espnow_payload_t),
+                               "DATA_CACHE_FLUSH");
         
         if (result == ESP_OK) {
             sent_count++;

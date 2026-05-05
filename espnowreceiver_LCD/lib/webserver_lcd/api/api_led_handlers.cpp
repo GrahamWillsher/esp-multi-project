@@ -3,8 +3,8 @@
 #include "api_response_utils.h"
 #include "../utils/transmitter_manager.h"
 
-#include <esp_now.h>
 #include <esp32common/espnow/common.h>
+#include <esp32common/espnow/tx_scheduler.h>
 
 namespace ESPNow {
 extern uint8_t current_led_color;
@@ -65,10 +65,11 @@ esp_err_t api_resync_led_state_handler(httpd_req_t *req) {
     request.section = config_section_battery;
     request.requested_version = 0;
 
-    const esp_err_t result = esp_now_send(
+    const esp_err_t result = EspnowTxScheduler::send(
         TransmitterManager::getMAC(),
         reinterpret_cast<const uint8_t*>(&request),
-        sizeof(request)
+        sizeof(request),
+        "LED_RESYNC_CONFIG_SECTION_REQ"
     );
 
     if (result == ESP_OK) {

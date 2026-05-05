@@ -1,128 +1,103 @@
 #pragma once
+
+/**
+ * @file discovery_task.h
+ * @brief Pure ESP-NOW channel-scan utility.
+ *
+ * RESPONSIBILITIES (post-refactor)
+ * ─────────────────────────────────
+ *  • run_hop_scan()   — synchronous channel-hop scan called by the hop-worker
+ *                       task.  No FreeRTOS task is created here.
+ *  • validate_state() — steady-state channel/peer health check (CONNECTED only).
+ *  • audit_peer_state() — diagnostic dump of all registered peers.
+ *
+ * WHAT IS NO LONGER HERE
+ * ───────────────────────
+ *  • active_hopping_running_ flag (was a cross-core cache-coherence hazard)
+ *  • start/stop_active_channel_hopping() (task lifecycle owned by TxReconnectManager)
+ *  • restart() / update_recovery() / RecoveryState machinery
+ *  • All deferred-registration and backoff logic
+ *
+ * All reconnect orchestration now lives in TxReconnectManager.
+ */
+
+#include <cstdint>
 #include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
 
-/**
- * @brief Recovery state for discovery task
- */
-enum class RecoveryState {
-    NORMAL,
-    CHANNEL_MISMATCH_DETECTED,
-    RESTART_IN_PROGRESS,
-    RESTART_FAILED,
-    PERSISTENT_FAILURE
-};
-
-/**
- * @brief Metrics for monitoring discovery task health
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// Metrics (informational only — no operational decisions made from these)
+// ─────────────────────────────────────────────────────────────────────────────
 struct DiscoveryMetrics {
-    uint32_t total_restarts = 0;
-    uint32_t successful_restarts = 0;
-    uint32_t failed_restarts = 0;
-    uint32_t channel_mismatches = 0;
-    uint32_t peer_cleanup_count = 0;
-    uint32_t last_restart_timestamp = 0;
-    uint32_t longest_downtime_ms = 0;
-    
+    uint32_t total_scans             {0};
+    uint32_t successful_scans        {0};
+    uint32_t failed_scans            {0};
+    uint32_t channel_mismatches      {0};
+    uint32_t last_success_channel    {0};
+    uint32_t last_success_timestamp  {0};
+    uint32_t longest_scan_ms         {0};
+
     void log_summary() const;
 };
 
-/**
- * @brief Manages periodic ESP-NOW announcement broadcasts for discovery
- * 
- * Singleton wrapper around common EspnowDiscovery component.
- * Provides project-specific interface while using shared implementation.
- * Industrial-grade with multi-layer reliability features.
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// DiscoveryTask
+// ─────────────────────────────────────────────────────────────────────────────
 class DiscoveryTask {
 public:
     static DiscoveryTask& instance();
-    
+
     /**
-     * @brief Start the periodic announcement task (LEGACY - basic announcement)
+     * @brief Run a full two-phase channel-hop scan (blocking).
+     *
+     * Called from the hop-worker task on Core 1.
+     * Phase 1: fast sweep of all 13 channels starting from start_channel_hint.
+     * Phase 2: weighted dwell on last-known +/- 1 channel.
+     *
+     * Sets the WiFi channel to the found channel before returning.
+     * Does NOT add the ESP-NOW peer -- that is done by TxReconnectManager.
+     *
+     * @param start_channel_hint  First channel to try (0 = start from ch 1).
+     * @param out_channel         [out] Channel on which ACK was received.
+     * @param out_mac             [out] Sender MAC (6 bytes).
+     * @return true if receiver was found; false if full scan yielded no ACK.
      */
-    void start();
-    
+    bool run_hop_scan(uint8_t  start_channel_hint,
+                      uint8_t* out_channel,
+                      uint8_t* out_mac);
+
     /**
-     * @brief Start active channel hopping (Section 11 - transmitter-active architecture)
-     * Transmitter broadcasts PROBE channel-by-channel until receiver ACKs
+     * @brief Check steady-state channel/peer consistency.
+     *        Only call when CONNECTED and no scan is in progress.
+     * @return true if state is healthy.
      */
-    void start_active_channel_hopping();
-    
+    bool validate_state() const;
+
     /**
-     * @brief Restart the discovery task (industrial-grade with full cleanup)
+     * @brief Log all registered ESP-NOW peers and current WiFi channel.
      */
-    void restart();
-    
-    /**
-     * @brief Validate current ESP-NOW state
-     * @return true if state is valid, false if corruption detected
-     */
-    bool validate_state();
-    
-    /**
-     * @brief Audit all ESP-NOW peer configurations
-     */
-    void audit_peer_state();
-    
-    /**
-     * @brief Get metrics summary
-     */
+    void audit_peer_state() const;
+
+    /** @brief Access accumulated scan metrics. */
     const DiscoveryMetrics& get_metrics() const { return metrics_; }
-    
-    /**
-     * @brief Get the task handle
-     * @return Task handle (NULL if not running)
-     */
-    TaskHandle_t get_task_handle() const { return task_handle_; }
-    
-    /**
-     * @brief Update recovery state machine
-     */
-    void update_recovery();
-    
-private:
-    DiscoveryTask() = default;
-    ~DiscoveryTask() = default;
-    
-    // Prevent copying
+
+    // Non-copyable singleton
     DiscoveryTask(const DiscoveryTask&) = delete;
     DiscoveryTask& operator=(const DiscoveryTask&) = delete;
-    
-    // Helper methods
-    bool attempt_restart_once();
-    void restart_cleanup_peers();
-    bool restart_lock_channel();
-    void restart_relaunch_discovery();
-    void restart_wait_for_stabilization() const;
-    bool restart_verify_channel(uint8_t& verify_channel) const;
-    bool handle_restart_failure(const char* max_failure_log,
-                                const char* retry_log,
-                                const char* failure_state_reason);
-    void schedule_restart_retry(uint32_t delay_ms);
-    void clear_restart_request();
-    void cleanup_all_peers();
-    bool force_and_verify_channel(uint8_t target_channel);
-    void transition_to(RecoveryState new_state);
-    const char* state_to_string(RecoveryState state);
-    
-    // Active channel hopping (transmitter-active architecture)
-    bool active_channel_hop_scan(uint8_t* discovered_channel);
-    static void active_channel_hopping_task(void* parameter);
-    void send_probe_on_channel(uint8_t channel);
-    
-    // State
-    TaskHandle_t task_handle_{nullptr};
-    RecoveryState recovery_state_{RecoveryState::NORMAL};
-    uint32_t state_entry_time_{0};
-    uint8_t restart_failure_count_{0};
-    bool restart_requested_{false};
-    bool restart_in_progress_{false};
-    bool active_hopping_running_{false};
-    uint32_t restart_next_retry_ms_{0};
-    uint32_t restart_window_start_ms_{0};
+
+private:
+    DiscoveryTask() = default;
+
+    // -- Internal helpers --------------------------------------------------
+    bool   active_channel_hop_scan_impl(uint8_t  start_channel_hint,
+                                        uint8_t* out_channel,
+                                        uint8_t* out_mac);
+    bool   scan_channel_for_ack(uint8_t ch,
+                                uint32_t dwell_ms,
+                                const char* phase_label,
+                                uint8_t* out_mac);
+    void   send_probe_on_channel(uint8_t channel);
+    bool   force_and_verify_channel(uint8_t target_channel);
+
+    // -- Instance state (metrics only -- never shared across tasks) --------
     DiscoveryMetrics metrics_;
-    
-    static const uint8_t MAX_RESTART_FAILURES = 3;
 };

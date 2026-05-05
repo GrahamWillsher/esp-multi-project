@@ -124,8 +124,43 @@ enum msg_type : uint8_t {
     msg_type_catalog_versions,         // Current battery/inverter catalog versions
 
     // LED state synchronization (receiver request, transmitter response)
-    msg_led_state_request              // Request current LED color/effect snapshot
+    msg_led_state_request,             // Request current LED color/effect snapshot
+
+    // =========================================================================
+    // CONNECTION CONFIRMATION HANDSHAKE (Phase 2 architecture — 2026-05-02)
+    // =========================================================================
+    // TX sends connect_confirm after receiving the first PROBE ACK from a scan.
+    // RX replies with connect_confirm_ack.  TX only transitions to CONNECTED on
+    // receipt of a matching ack (matching session_id).  Devices running older
+    // firmware ignore unknown message types and degrade to the old behaviour.
+    msg_connect_confirm,               // TX → RX: confirm bidirectional link (unicast)
+    msg_connect_confirm_ack            // RX → TX: acknowledge confirm receipt (unicast)
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Protocol version — bump when the on-wire handshake format changes.
+// Devices log a WARNING on version mismatch but continue to operate.
+// ─────────────────────────────────────────────────────────────────────────────
+constexpr uint8_t ESPNOW_PROTOCOL_VERSION                  = 2;
+constexpr uint8_t CONNECT_CONFIRM_STATUS_OK                = 0;
+constexpr uint8_t CONNECT_CONFIRM_STATUS_VERSION_MISMATCH  = 1;
+
+// Connection confirmation handshake messages
+typedef struct __attribute__((packed)) {
+    uint8_t  type;               // msg_connect_confirm
+    uint8_t  protocol_version;   // ESPNOW_PROTOCOL_VERSION
+    uint16_t session_id;         // Monotonically increasing per TX boot; wraps OK
+    uint8_t  channel;            // WiFi channel TX believes the link is on (informational)
+    uint8_t  reserved[3];
+} espnow_connect_confirm_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t  type;               // msg_connect_confirm_ack
+    uint8_t  protocol_version;   // ESPNOW_PROTOCOL_VERSION
+    uint16_t session_id;         // Echo of TX session_id for matching
+    uint8_t  rx_status;          // CONNECT_CONFIRM_STATUS_OK or _VERSION_MISMATCH
+    uint8_t  reserved[3];
+} espnow_connect_confirm_ack_t;
 
 // ESP-NOW packet subtypes (for fragmented messages)
 enum msg_subtype : uint8_t {

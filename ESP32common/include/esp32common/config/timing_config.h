@@ -124,8 +124,8 @@ constexpr DiscoveryTiming DISCOVERY{
     150,
     100,
     300,
-    100,
-    1000,
+    200,
+    2000,   // transmit_duration_per_channel_ms (2 s dwell — covers MQTT buffer contention)
     500,
     100,
     5000,
@@ -136,7 +136,7 @@ constexpr HeartbeatTiming HEARTBEAT{
     10000,
     30000,
     35000,
-    30000,
+    45000,   // espnow_connecting_timeout_ms — full scan (~26 s) + 2 confirm retries (4 s) + margin
     1000,
 };
 

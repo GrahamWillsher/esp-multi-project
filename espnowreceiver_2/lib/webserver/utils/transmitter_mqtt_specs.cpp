@@ -64,11 +64,18 @@ struct SpecCache {
 MqttCache mqtt_cache;
 
 SemaphoreHandle_t spec_cache_mutex = nullptr;
+SemaphoreHandle_t mqtt_cache_mutex = nullptr;
 SpecCache spec_cache;
 
 void ensure_spec_mutex() {
     if (spec_cache_mutex == nullptr) {
         spec_cache_mutex = xSemaphoreCreateMutex();
+    }
+}
+
+void ensure_mqtt_mutex() {
+    if (mqtt_cache_mutex == nullptr) {
+        mqtt_cache_mutex = xSemaphoreCreateMutex();
     }
 }
 
@@ -144,6 +151,13 @@ void store_mqtt_config(bool enabled,
     // update_runtime_connection() from version-beacon handling.
     (void)connected;
 
+    ensure_mqtt_mutex();
+    ScopedMutex guard(mqtt_cache_mutex);
+    if (!guard.locked()) {
+        LOG_WARN("MQTT_CACHE", "Failed to lock mqtt cache mutex");
+        return;
+    }
+
     mqtt_cache.mqtt_enabled = enabled;
 
     if (server != nullptr) {
@@ -185,7 +199,9 @@ void store_mqtt_config(bool enabled,
 }
 
 bool is_enabled() {
-    return mqtt_cache.mqtt_enabled;
+    ensure_mqtt_mutex();
+    ScopedMutex guard(mqtt_cache_mutex);
+    return guard.locked() ? mqtt_cache.mqtt_enabled : false;
 }
 
 const uint8_t* get_server() {
@@ -209,30 +225,41 @@ const char* get_client_id() {
 }
 
 bool is_connected() {
-    return mqtt_cache.mqtt_connected;
+    ensure_mqtt_mutex();
+    ScopedMutex guard(mqtt_cache_mutex);
+    return guard.locked() ? mqtt_cache.mqtt_connected : false;
 }
 
 bool is_config_known() {
-    return mqtt_cache.mqtt_config_known;
+    ensure_mqtt_mutex();
+    ScopedMutex guard(mqtt_cache_mutex);
+    return guard.locked() ? mqtt_cache.mqtt_config_known : false;
 }
 
 uint32_t get_config_version() {
-    return mqtt_cache.mqtt_config_version;
+    ensure_mqtt_mutex();
+    ScopedMutex guard(mqtt_cache_mutex);
+    return guard.locked() ? mqtt_cache.mqtt_config_version : 0;
 }
 
 String get_server_string() {
-    if (!mqtt_cache.mqtt_config_known) {
+    ensure_mqtt_mutex();
+    ScopedMutex guard(mqtt_cache_mutex);
+    if (!guard.locked() || !mqtt_cache.mqtt_config_known) {
         return "0.0.0.0";
     }
-
     char buffer[16];
     snprintf(buffer, sizeof(buffer), "%d.%d.%d.%d",
-             mqtt_cache.mqtt_server[0], mqtt_cache.mqtt_server[1], mqtt_cache.mqtt_server[2], mqtt_cache.mqtt_server[3]);
+             mqtt_cache.mqtt_server[0], mqtt_cache.mqtt_server[1],
+             mqtt_cache.mqtt_server[2], mqtt_cache.mqtt_server[3]);
     return String(buffer);
 }
 
 bool update_runtime_connection(bool mqtt_connected) {
-    bool changed = (mqtt_cache.mqtt_connected != mqtt_connected);
+    ensure_mqtt_mutex();
+    ScopedMutex guard(mqtt_cache_mutex);
+    if (!guard.locked()) return false;
+    const bool changed = (mqtt_cache.mqtt_connected != mqtt_connected);
     mqtt_cache.mqtt_connected = mqtt_connected;
     return changed;
 }

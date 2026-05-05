@@ -13,6 +13,13 @@
 #include <functional>
 
 namespace EspnowStandardHandlers {
+
+    struct AckSendStats {
+        uint32_t direct_attempts = 0;
+        uint32_t direct_success = 0;
+        uint32_t direct_no_mem_failures = 0;
+        uint32_t direct_other_failures = 0;
+    };
     
     /**
      * @brief Callback for connection state changes
@@ -98,12 +105,7 @@ namespace EspnowStandardHandlers {
      * @return true if send successful
      */
     bool send_ack_response(const uint8_t* peer_mac, uint32_t seq, uint8_t channel);
-    
-    /**
-     * @brief Helper: Send PROBE announcement
-     * @param seq Sequence number for this probe
-     * @return true if send successful
-     */
-    bool send_probe_announcement(uint32_t seq);
+    bool read_ack_send_stats(AckSendStats& out_stats);
+    void reset_ack_send_stats();
     
 } // namespace EspnowStandardHandlers

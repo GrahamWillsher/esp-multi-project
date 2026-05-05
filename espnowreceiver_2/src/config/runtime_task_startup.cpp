@@ -61,9 +61,9 @@ void create_runtime_primitives() {
 
     EspnowTxScheduler::InitOptions tx_options{};
     tx_options.queue_depth = 24;
-    tx_options.no_mem_retry_attempts = 6;
-    tx_options.retry_base_delay_ms = 4;
-    tx_options.inter_frame_delay_ms = 2;
+    tx_options.no_mem_retry_attempts = 6;   // avoid prolonged retry storms under sustained NO_MEM
+    tx_options.retry_base_delay_ms = 8;     // longer backoff gives WiFi driver buffer pool time to recover
+    tx_options.inter_frame_delay_ms = 8;    // wider spacing reduces immediate descriptor re-contention
     tx_options.task_priority = TaskConfig::ESPNOW_TX_PRIORITY;
     tx_options.task_stack = TaskConfig::ESPNOW_TX_STACK;
     tx_options.task_core = TaskConfig::WORKER_CORE;

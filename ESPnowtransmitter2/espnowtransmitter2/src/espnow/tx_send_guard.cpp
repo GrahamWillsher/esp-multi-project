@@ -141,7 +141,10 @@ esp_err_t send_to_receiver_guarded(const uint8_t* mac, const uint8_t* data, size
                       tag ? tag : "send", home, peer, g_lock_channel);
         }
 
-        trigger_recovery_once(mac, "preflight mismatch");
+        const auto state = EspNowConnectionManager::instance().get_state();
+        if (state == EspNowConnectionState::CONNECTED) {
+            trigger_recovery_once(mac, "preflight mismatch");
+        }
         return ESP_ERR_INVALID_STATE;
     }
 

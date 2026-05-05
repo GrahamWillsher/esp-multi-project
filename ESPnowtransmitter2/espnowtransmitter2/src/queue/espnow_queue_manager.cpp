@@ -1,6 +1,7 @@
 #include "espnow_queue_manager.h"
 #include "../config/logging_config.h"
 #include <Arduino.h>
+#include <espnow_transmitter.h>
 
 EspnowQueueManager& EspnowQueueManager::instance() {
     static EspnowQueueManager instance;
@@ -328,6 +329,19 @@ void EspnowQueueManager::print_diagnostics() const {
     LOG_INFO("QUEUE_MGR", "  Peak Depth: %d | Overflows: %u",
              discovery_stats_.peak_depth,
              discovery_stats_.overflow_events);
+
+    // Discovery ingress (RX callback mirror) health - sourced from shared transmitter callback counters
+    const uint32_t ingress_attempts = get_discovery_queue_enqueue_attempts();
+    const uint32_t ingress_drops = get_discovery_queue_enqueue_drops();
+    const uint32_t ingress_recovered = get_discovery_queue_enqueue_recovered();
+    const float drop_pct = (ingress_attempts == 0)
+        ? 0.0f
+        : (100.0f * static_cast<float>(ingress_drops) / static_cast<float>(ingress_attempts));
+    LOG_INFO("QUEUE_MGR", "  Ingress mirror: attempts=%lu drops=%lu recovered=%lu drop_rate=%.2f%%",
+             static_cast<unsigned long>(ingress_attempts),
+             static_cast<unsigned long>(ingress_drops),
+             static_cast<unsigned long>(ingress_recovered),
+             static_cast<double>(drop_pct));
     
     // RX queue
     LOG_INFO("QUEUE_MGR", "RX Queue:");

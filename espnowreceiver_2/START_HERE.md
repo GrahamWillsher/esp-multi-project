@@ -1,63 +1,66 @@
 # Display Architecture Redesign - Start Here! 🎯
 
-Welcome to the display system refactoring project. This guide will help you navigate all the work that's been done and get you started implementing.
+# espnowreceiver_2 — Start Here
+
+ESP-NOW battery telemetry receiver for **LilyGo T-Display-S3** (ESP32-S3, 16 MB flash, 8 MB PSRAM).
+
+This project is the **production-ready** receiver. For the 7-inch Waveshare display variant, see `espnowreceiver_LCD`.
 
 ---
 
-## 🧭 Project-Level Architecture (Current Baseline)
+## Essential reading order
 
-Before diving into display-specific implementation, see the receiver-wide architecture reference:
-
-- [PROJECT_ARCHITECTURE_MASTER.md](PROJECT_ARCHITECTURE_MASTER.md)
+1. **`PROJECT_ARCHITECTURE_MASTER.md`** — canonical task map, data flow, and module ownership
+2. **`CHANGES_QUICK_SUMMARY.txt`** — chronological changelog (read from bottom up for recent changes)
+3. **`ARCHITECTURE_REDESIGN.md`** — historical context on the display path refactor (now stable; read for background only)
 
 ---
 
-## 📚 READ THESE FILES IN THIS ORDER
+## What this firmware does
 
-### 1. **SESSION_SUMMARY.md** ⭐ (YOU ARE HERE)
-**What**: Quick overview of everything accomplished
-**Read**: 5 minutes
-**Next**: Choose your path below
+- Receives battery telemetry from an ESP-NOW transmitter (ESPnowtransmitter2)
+- Renders SOC%, power, and link state on the T-Display-S3 screen
+- Hosts a web dashboard for configuration and live monitoring via SSE
+- Forwards MQTT topics to a broker when configured
+- Supports OTA firmware updates over WiFi
 
-### 2. **DISPLAY_QUICK_REFERENCE.md** ⭐⭐ (ESSENTIAL)
-**What**: Fast answers, checklists, code snippets
-**Read**: 10-15 minutes  
-**When**: Before you start coding
-**Key sections**:
-- Quick Facts (facts table)
-- Implementation Checklist (12-item checklist)
-- Code Snippets (copy-paste ready)
-- Common Errors (solutions)
-- File Locations (where everything is)
+---
 
-### 3. **TFT_IMPLEMENTATION_GUIDE.md** ⭐⭐⭐ (MAIN WORK)
-**What**: Step-by-step implementation instructions with code examples
-**Read**: 30-45 minutes
-**When**: When you're ready to code
-**Key sections**:
-- Steps 1-9 with code examples
-- Verification procedures
-- Compilation checklist
-- Testing checklist
+## Build and flash
 
-### 4. **DISPLAY_ARCHITECTURE_SUMMARY.md** (REFERENCE)
-**What**: Complete project overview and timeline
-**Read**: 15-20 minutes
-**When**: When you want context and big picture
-**Key sections**:
-- What's been completed
-- What remains
-- Architecture benefits
-- Success criteria
+```bash
+# Build
+pio run -j 2
 
-### 5. **DISPLAY_ARCHITECTURE_PROGRESS.md** (DETAILED REFERENCE)
-**What**: Detailed status, design decisions, testing plan
-**Read**: 20-30 minutes
-**When**: When you need detailed information
-**Key sections**:
-- Completed tasks
-- Remaining work (prioritized)
-- Key design decisions
+# Flash firmware
+pio run --target upload --environment lilygo_t_display_s3
+
+# Flash LittleFS (first flash or after erase)
+pio run --target uploadfs --environment lilygo_t_display_s3
+```
+
+---
+
+## Key architecture constraints
+
+- **Dual-core:** ESP-NOW worker on APP_CPU; HTTP/SSE on PRO_CPU via AsyncWebServer
+- **Display mutex:** All LVGL/TFT access must be guarded — see `RTOS::lvgl_mutex`
+- **Transmitter caches** (`lib/webserver/utils/transmitter_*.cpp`) — all protected by `ScopedMutex` as of 2026-04-21
+- **MQTT task** — broker reconfiguration takes effect without reboot (config fingerprint, not one-shot flag)
+- **OTA:** Dual-partition table (`partitions_16mb_ota.csv`); both slots must be valid before enabling rollback
+
+---
+
+## Project status
+
+| Area | Status |
+|---|---|
+| ESP-NOW receive + telemetry decode | ✅ Production |
+| Web dashboard + SSE | ✅ Production |
+| MQTT client | ✅ Production |
+| OTA | ✅ Production |
+| Display render (TFT/LVGL) | ✅ Production |
+| Concurrency hardening | ✅ Complete 2026-04-21 |
 - Testing checklist
 
 ### 6. **DISPLAY_DOCS_INDEX.md** (OPTIONAL - REFERENCE)

@@ -17,16 +17,21 @@
 #include "display/display_update_queue.h"
 
 #include "espnow/espnow_callbacks.h"
+#include "espnow/espnow_send.h"
 #include "espnow/espnow_tasks.h"
 #include "espnow/rx_connection_handler.h"
 #include "espnow/rx_heartbeat_manager.h"
 #include "espnow/rx_state_machine.h"
+#include "espnow/type_catalog_cache.h"
 #include "mqtt/mqtt_client.h"
 #include "mqtt/mqtt_task.h"
 #include "hal/hardware_config.h"
+#include <esp32common/espnow/common.h>
 #include <esp32common/espnow/connection_manager.h>
 #include <esp32common/espnow/connection_event_processor.h>
+#include <esp32common/espnow/tx_scheduler.h>
 #include <channel_manager.h>
+#include <espnow_peer_manager.h>
 #include <esp32common/config/timing_config.h>
 #include "config/wifi_setup.h"
 #include "config/littlefs_init.h"
@@ -39,6 +44,8 @@
 #include <firmware_metadata.h>  // Embed firmware metadata in binary
 #include <runtime_common_utils/ota_boot_guard.h>
 #include <runtime_common_utils/setup_health_gate.h>
+
+extern void notify_sse_data_updated();
 
 // ═══════════════════════════════════════════════════════════════════════
 // Globals
@@ -178,6 +185,138 @@ static void task_led_renderer(void* parameter) {
         // Keep task responsive and low-contention
         smart_delay(20);
     }
+}
+
+static esp_err_t send_config_section_request(const uint8_t* mac,
+                                             config_section_t section,
+                                             uint32_t requested_version = 0) {
+    config_section_request_t request{};
+    request.type = msg_config_section_request;
+    request.section = section;
+    request.requested_version = requested_version;
+    return EspnowTxScheduler::send(mac, &request, sizeof(request), "CONFIG_SECTION_REQ");
+}
+
+static bool send_receiver2_initialization_burst(void* /*context*/, const uint8_t* transmitter_mac) {
+    request_data_t request{msg_request_data, subtype_power_profile};
+    esp_err_t result = EspnowTxScheduler::send(transmitter_mac, &request, sizeof(request), "REQUEST_DATA");
+    if (result == ESP_OK) {
+        LOG_INFO("CONN_HANDLER", "[INIT] Sent power profile request");
+    } else {
+        LOG_WARN("CONN_HANDLER", "[INIT] Failed power profile request: %s", esp_err_to_name(result));
+    }
+
+    version_announce_t announce{};
+    announce.type = msg_version_announce;
+    announce.firmware_version = FW_VERSION_NUMBER;
+    announce.protocol_version = PROTOCOL_VERSION;
+    strncpy(announce.device_type, DEVICE_NAME, sizeof(announce.device_type) - 1);
+    strncpy(announce.build_date, __DATE__, sizeof(announce.build_date) - 1);
+    strncpy(announce.build_time, __TIME__, sizeof(announce.build_time) - 1);
+
+    result = EspnowTxScheduler::send(transmitter_mac, &announce, sizeof(announce), "VERSION_ANNOUNCE");
+    if (result == ESP_OK) {
+        LOG_INFO("CONN_HANDLER", "[INIT] Sent version info: %d.%d.%d",
+                 FW_VERSION_MAJOR, FW_VERSION_MINOR, FW_VERSION_PATCH);
+    } else {
+        LOG_WARN("CONN_HANDLER", "[INIT] Failed version announce: %s", esp_err_to_name(result));
+    }
+
+    LOG_INFO("CONN_HANDLER", "[INIT] Paced init started - high-priority requests sent, config/LED/catalogs deferred to tick()");
+    return true;
+}
+
+static void on_receiver2_connected(void* /*context*/) {
+    RxStateMachine::instance().on_connection_established();
+    RxHeartbeatManager::instance().on_connection_established();
+}
+
+static void on_receiver2_connection_lost(void* /*context*/) {
+    RxStateMachine::instance().on_connection_lost();
+}
+
+static void on_receiver2_config_update_sent(void* /*context*/) {
+    RxStateMachine::instance().on_config_update_sent();
+}
+
+static void disconnect_receiver2_mqtt(void* /*context*/) {
+    MqttClient::disconnect();
+}
+
+static void on_receiver2_tx_reboot(void* /*context*/) {
+    ReceiverConnectionHandler::instance().on_transmitter_reboot_detected();
+}
+
+static void on_receiver2_heartbeat_payload(void* /*context*/, const heartbeat_t* hb, const uint8_t* /*mac*/) {
+    TransmitterManager::updateTimeData(hb->uptime_ms, hb->unix_time, hb->utc_offset_min, hb->time_source);
+    TransmitterManager::updateHeartbeatFlags(hb->flags);
+    notify_sse_data_updated();
+}
+
+static void on_receiver2_heartbeat_ack_enqueue_failure(void* /*context*/, esp_err_t err) {
+    if (err == ESP_ERR_ESPNOW_NO_MEM) {
+        ReceiverConnectionHandler::instance().on_ack_send_pressure("heartbeat ACK enqueue no-mem");
+    }
+}
+
+static uint8_t receiver2_connection_state(void* /*context*/) {
+    return static_cast<uint8_t>(RxStateMachine::instance().connection_state());
+}
+
+static uint32_t receiver2_link_activity_ms(void* /*context*/) {
+    return ReceiverConnectionHandler::instance().get_last_rx_time_ms();
+}
+
+static bool receiver2_has_recent_power_data(void* /*context*/,
+                                            const ReceiverConnectionHandler& /*handler*/,
+                                            uint32_t now_ms,
+                                            uint32_t freshness_ms) {
+    const auto rx_state = RxStateMachine::instance().connection_state();
+    const auto rx_stats = RxStateMachine::instance().stats();
+    const bool recent_power_data =
+        (rx_stats.last_message_ms > 0) &&
+        ((now_ms - rx_stats.last_message_ms) <= freshness_ms);
+    return (rx_state == EspNowDeviceState::ACTIVE) && recent_power_data;
+}
+
+static void run_receiver2_project_tick(void* /*context*/, ReceiverConnectionHandler& handler, uint32_t now) {
+    auto& led_sync = handler.led_sync_policy();
+    if (led_sync.is_pending()) {
+        if (led_sync.tick(now) && send_led_state_request()) {
+            led_sync.mark_sent(now);
+        }
+        if (!led_sync.is_pending() && led_sync.attempt_count() >= RxLedSyncPolicy::MAX_ATTEMPTS) {
+            LOG_WARN("CONN_HANDLER", "[LED_SYNC] No LED response after %u attempt(s)",
+                     static_cast<unsigned>(led_sync.attempt_count()));
+        }
+    }
+
+    auto& catalog_retry = handler.catalog_retry_policy();
+    if (!catalog_retry.is_due(now, handler.connected_at_ms())) {
+        return;
+    }
+
+    catalog_retry.tick_item("catalog versions",
+        !catalog_retry.versions_received(),
+        &send_type_catalog_versions_request,
+        catalog_retry.versions_retry_count, now);
+
+    catalog_retry.tick_item("battery catalog",
+        TypeCatalogCache::battery_refresh_required() || !TypeCatalogCache::has_battery_entries(),
+        &send_battery_types_request,
+        catalog_retry.battery_retry_count, now);
+
+    catalog_retry.tick_item("inverter catalog",
+        TypeCatalogCache::inverter_refresh_required() || !TypeCatalogCache::has_inverter_entries(),
+        &send_inverter_types_request,
+        catalog_retry.inverter_retry_count, now);
+
+    catalog_retry.tick_item("inverter interfaces",
+        !TypeCatalogCache::has_inverter_interface_entries(),
+        &send_inverter_interfaces_request,
+        catalog_retry.interface_retry_count, now);
+
+    catalog_retry.mark_ticked(now);
 }
 
 static void run_pre_littlefs_debug_and_halt() {
@@ -361,6 +500,34 @@ static void bootstrap_espnow_state() {
     EspNowConnectionManager::instance().set_connecting_timeout_ms(TimingConfig::ESPNOW_CONNECTING_TIMEOUT_MS);
 
     create_connection_event_processor(3, 0);
+
+    ReceiverConnectionHandlerConfig handler_config{};
+    handler_config.request_retry_interval_ms = 2000;
+
+    ReceiverConnectionHandlerHooks handler_hooks{};
+    handler_hooks.on_connected = &on_receiver2_connected;
+    handler_hooks.on_connection_lost = &on_receiver2_connection_lost;
+    handler_hooks.disconnect_mqtt = &disconnect_receiver2_mqtt;
+    handler_hooks.on_config_update_sent = &on_receiver2_config_update_sent;
+    handler_hooks.send_initialization_burst = &send_receiver2_initialization_burst;
+    handler_hooks.has_recent_power_data = &receiver2_has_recent_power_data;
+    handler_hooks.run_project_specific_tick = &run_receiver2_project_tick;
+
+    ReceiverConnectionHandler::instance().configure(handler_config);
+    ReceiverConnectionHandler::instance().configure_hooks(handler_hooks);
+
+    RxHeartbeatManagerConfig heartbeat_config{};
+    heartbeat_config.use_link_activity_as_keepalive = true;
+
+    RxHeartbeatManagerHooks heartbeat_hooks{};
+    heartbeat_hooks.on_transmitter_reboot_detected = &on_receiver2_tx_reboot;
+    heartbeat_hooks.on_heartbeat_payload = &on_receiver2_heartbeat_payload;
+    heartbeat_hooks.on_heartbeat_ack_enqueue_failure = &on_receiver2_heartbeat_ack_enqueue_failure;
+    heartbeat_hooks.get_connection_state = &receiver2_connection_state;
+    heartbeat_hooks.get_link_activity_time_ms = &receiver2_link_activity_ms;
+
+    RxHeartbeatManager::instance().configure(heartbeat_config);
+    RxHeartbeatManager::instance().configure_hooks(heartbeat_hooks);
     ReceiverConnectionHandler::instance().init();
 
     RxHeartbeatManager::instance().init();
@@ -371,6 +538,15 @@ static void bootstrap_espnow_state() {
     esp_now_register_recv_cb(on_data_recv);
     esp_now_register_send_cb(on_espnow_sent);
     LOG_DEBUG("MAIN", "ESP-NOW callbacks registered");
+
+    // Register broadcast peer so the receiver can receive TX's broadcast PROBE
+    // frames during channel-hop scanning.  No data is ever sent by the receiver
+    // as a broadcast — this is receive-side registration only.
+    if (!EspnowPeerManager::add_broadcast_peer()) {
+        LOG_WARN("MAIN", "Failed to register broadcast peer — TX probe reception may fail");
+    } else {
+        LOG_INFO("MAIN", "Broadcast peer registered (RX-side, receive-only)");
+    }
 
     transition_to_state(SystemState::WAITING_FOR_TRANSMITTER);
 }

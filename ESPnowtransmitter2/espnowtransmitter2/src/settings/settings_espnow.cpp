@@ -12,6 +12,7 @@
 #include <esp_now.h>
 #include <esp32common/espnow/connection_manager.h>
 #include <esp32common/espnow/packet_utils.h>
+#include <esp32common/espnow/tx_scheduler.h>
 #include <cstring>
 
 void SettingsManager::handle_settings_update(const espnow_queue_msg_t& msg) {
@@ -137,7 +138,7 @@ void SettingsManager::send_settings_ack(const uint8_t* mac,
     ack.checksum = EspnowPacketUtils::calculate_message_crc32_zeroed(&ack);
 
     const esp_err_t result =
-        esp_now_send(mac, (const uint8_t*)&ack, sizeof(ack));
+        EspnowTxScheduler::send(mac, &ack, sizeof(ack), "SETTINGS_ACK");
 
     if (result == ESP_OK) {
         LOG_INFO("SETTINGS", "ACK sent: success=%d, version=%u",
@@ -162,8 +163,9 @@ void SettingsManager::send_settings_changed_notification(uint8_t category,
     const uint8_t* peer_mac =
         EspNowConnectionManager::instance().get_peer_mac();
     const esp_err_t result =
-        esp_now_send(peer_mac, (const uint8_t*)&notification,
-                     sizeof(notification));
+        EspnowTxScheduler::send(peer_mac, &notification,
+                                sizeof(notification),
+                                "SETTINGS_CHANGED");
 
     if (result == ESP_OK) {
         LOG_INFO("SETTINGS",

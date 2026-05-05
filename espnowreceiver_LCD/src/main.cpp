@@ -6,7 +6,6 @@
 #include <runtime_common_utils/ota_boot_guard.h>
 #include <runtime_common_utils/setup_health_gate.h>
 #include <esp32common/espnow/connection_manager.h>
-#include <espnow_discovery.h>
 
 #include "common_lcd.h"
 #include "config/wifi_setup.h"
@@ -15,6 +14,7 @@
 #include "../../lib/webserver_lcd/utils/transmitter_manager.h"
 #include "hal/lgfx_waveshare_7.h"
 #include "logging_config.h"
+#include "task_config.h"
 #include <receiver_config_manager.h>
 #include "runtime/display_update_queue.h"
 #include "runtime/nvs_bootstrap.h"
@@ -26,7 +26,9 @@
 namespace {
 lgfx_custom::LGFX_Waveshare7* display = nullptr;
 
-uint32_t last_log_ms = 0;
+constexpr uint32_t kWebserverStartupTaskStack = 8192;
+constexpr UBaseType_t kWebserverStartupTaskPriority = 1;
+
 bool g_espnow_transport_enabled = false;
 
 UI::Runtime::Backend::PowerBarRendererMode to_ui_power_bar_mode(ReceiverNetworkConfig::PowerBarRendererMode mode) {
@@ -117,10 +119,25 @@ void bootstrap_filesystem() {
 }
 
 void webserver_startup_task(void* /*arg*/) {
-    // Delay slightly to ensure all runtime systems are fully up.
+    // Delay slightly to ensure WiFi bootstrap has started.
     vTaskDelay(pdMS_TO_TICKS(500));
-    WebserverLcd::init();
-    log_line("boot: webserver task done");
+
+    // Robust startup: do not permanently give up if WiFi is not yet ready
+    // during early boot. Retry until httpd is running.
+    constexpr uint32_t kRetryDelayMs = 1000;
+    uint32_t attempts = 0;
+    while (server == nullptr) {
+        ++attempts;
+        LOG_INFO("MAIN", "boot: webserver init attempt %lu", static_cast<unsigned long>(attempts));
+        WebserverLcd::init();
+        if (server != nullptr) {
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(kRetryDelayMs));
+    }
+
+    LOG_INFO("MAIN", "boot: webserver task done (attempts=%lu)",
+             static_cast<unsigned long>(attempts));
     vTaskDelete(nullptr);  // self-delete
 }
 
@@ -132,8 +149,20 @@ void bootstrap_services() {
     TransmitterManager::init();  // Creates NVS debounce timer before ESP-NOW handlers run.
 
     // Start webserver in a background task to avoid blocking setup().
-    xTaskCreate(webserver_startup_task, "ws_init", 4096, nullptr, 1, nullptr);
-    log_line("boot: webserver startup task queued");
+    const BaseType_t rc = xTaskCreate(
+        webserver_startup_task,
+        "ws_init",
+        kWebserverStartupTaskStack,
+        nullptr,
+        kWebserverStartupTaskPriority,
+        nullptr);
+
+    if (rc != pdPASS) {
+        handle_error(ErrorSeverity::FATAL, "WEBSERVER", "failed to create webserver startup task");
+    }
+
+    LOG_INFO("MAIN", "boot: webserver startup task queued (stack=%lu)",
+             static_cast<unsigned long>(kWebserverStartupTaskStack));
 }
 
 void bootstrap_espnow_radio() {
@@ -223,31 +252,6 @@ void loop() {
         LOG_INFO("MAIN", "STA recovery succeeded; rebooting to initialize full runtime stack in STA mode");
         smart_delay(250);
         ESP.restart();
-    }
-
-    if (now - last_log_ms >= 1000) {
-        const char* espnow_status = "disabled";
-        const char* conn_state = "n/a";
-        const char* discovery_state = "n/a";
-        int channel = static_cast<int>(WiFi.channel());
-        const unsigned long rx_cb = static_cast<unsigned long>(ESPNow::rx_callback_count.load());
-        if (g_espnow_transport_enabled) {
-            espnow_status = ESPNowRuntime::is_connected() ? "connected" : "waiting";
-            conn_state = espnow_state_to_string(EspNowConnectionManager::instance().get_state());
-            if (!EspnowDiscovery::instance().is_running()) {
-                discovery_state = "stopped";
-            } else {
-                discovery_state = EspnowDiscovery::instance().is_suspended() ? "suspended" : "running";
-            }
-        }
-        LOG_INFO("MAIN", "alive: ms=%lu espnow=%s conn=%s discovery=%s ch=%d rxcb=%lu",
-                 static_cast<unsigned long>(now),
-                 espnow_status,
-                 conn_state,
-                 discovery_state,
-                 channel,
-                 rx_cb);
-        last_log_ms = now;
     }
 
     smart_delay(10);

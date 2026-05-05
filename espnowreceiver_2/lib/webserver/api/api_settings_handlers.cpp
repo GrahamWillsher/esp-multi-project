@@ -4,25 +4,30 @@
 #include "api_response_utils.h"
 #include "../utils/transmitter_manager.h"
 #include "../logging.h"
+#include "../../../src/espnow/rx_connection_handler.h"
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <esp_now.h>
 #include <esp32common/espnow/common.h>
 #include <esp32common/espnow/packet_utils.h>
+#include <esp32common/espnow/tx_scheduler.h>
 #include <cstring>
 
 esp_err_t api_get_battery_settings_handler(httpd_req_t *req) {
     bool requested = false;
-    if (TransmitterManager::isMACKnown()) {
+    if (TransmitterManager::isMACKnown() &&
+        !ReceiverConnectionHandler::instance().quiet_mode_active()) {
         request_data_t req_msg = { msg_request_data, subtype_battery_config };
-        esp_err_t result = esp_now_send(TransmitterManager::getMAC(), (const uint8_t*)&req_msg, sizeof(req_msg));
+        esp_err_t result = EspnowTxScheduler::send(TransmitterManager::getMAC(), &req_msg, sizeof(req_msg), "API_REQ_BATT_SETTINGS");
         if (result == ESP_OK) {
             requested = true;
             LOG_DEBUG("API", "Requested battery settings from transmitter");
         } else {
             LOG_WARN("API", "Failed to request battery settings: %s", esp_err_to_name(result));
         }
+    } else if (ReceiverConnectionHandler::instance().quiet_mode_active()) {
+        LOG_WARN("API", "Skipped battery settings request during reconnect quiet mode");
     }
 
     const bool known = TransmitterManager::hasBatterySettings();
@@ -133,9 +138,14 @@ esp_err_t api_save_setting_handler(httpd_req_t *req) {
         return ApiResponseUtils::send_error_message(req, "Transmitter not connected");
     }
 
+    if (ReceiverConnectionHandler::instance().quiet_mode_active()) {
+        LOG_WARN("API", "Blocked settings update during reconnect quiet mode");
+        return ApiResponseUtils::send_error_message(req, "ESP-NOW reconnect quiet mode active - try again shortly");
+    }
+
     LOG_INFO("API", "Sending to transmitter MAC: %s", TransmitterManager::getMACString().c_str());
 
-    esp_err_t result = esp_now_send(TransmitterManager::getMAC(), (const uint8_t*)&msg, sizeof(msg));
+    esp_err_t result = EspnowTxScheduler::send(TransmitterManager::getMAC(), &msg, sizeof(msg), "API_SETTING_UPDATE");
     if (result == ESP_OK) {
         LOG_INFO("API", "✓ ESP-NOW send SUCCESS (category=%d, field=%d)", category, field);
         if (category == SETTINGS_BATTERY) {

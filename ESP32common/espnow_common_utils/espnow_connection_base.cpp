@@ -62,66 +62,6 @@ void EspNowConnectionBase::unlock_state() {
 }
 
 // ============================================================================
-// SAFE SEND OPERATION
-// ============================================================================
-
-bool EspNowConnectionBase::safe_send(const uint8_t* mac, const uint8_t* data, size_t len) {
-    // Check if ready to send
-    if (!is_ready_to_send()) {
-        if (EspNowTiming::DEBUG_SEND_OPERATIONS) {
-            LOG_WARN(log_tag_, "Not ready to send - state: %s", get_state_string());
-        }
-        
-        // Queue message for later
-        return queue_message(mac, data, len);
-    }
-    
-    // Validate parameters
-    if (mac == nullptr || data == nullptr || len == 0 || len > EspNowTiming::MAX_ESPNOW_PAYLOAD) {
-        LOG_ERROR(log_tag_, "Invalid send parameters");
-        record_send_failure();
-        return false;
-    }
-    
-    // Attempt send with retry
-    uint32_t attempt = 0;
-    esp_err_t result = ESP_FAIL;
-    
-    while (attempt < EspNowTiming::MAX_SEND_RETRIES) {
-        result = esp_now_send(mac, data, len);
-        
-        if (result == ESP_OK) {
-            record_send_success();
-            if (EspNowTiming::DEBUG_SEND_OPERATIONS) {
-                LOG_DEBUG(log_tag_, "Send successful (attempt %u)", attempt + 1);
-            }
-            trigger_event(EspNowConnectionEvent::SEND_SUCCESS, nullptr);
-            return true;
-        }
-        
-        // Send failed - retry with backoff
-        attempt++;
-        if (attempt < EspNowTiming::MAX_SEND_RETRIES) {
-            uint32_t delay = EspNowTiming::calculate_backoff_delay(attempt);
-            if (EspNowTiming::DEBUG_SEND_OPERATIONS) {
-                LOG_WARN(log_tag_, "Send failed (attempt %u), retrying in %u ms...", 
-                         attempt, delay);
-            }
-            vTaskDelay(pdMS_TO_TICKS(delay));
-        }
-    }
-    
-    // All retries exhausted
-    LOG_ERROR(log_tag_, "Send failed after %u attempts: %s", 
-              EspNowTiming::MAX_SEND_RETRIES, esp_err_to_name(result));
-    record_send_failure();
-    trigger_event(EspNowConnectionEvent::SEND_FAILED, nullptr);
-    
-    // Queue message for retry later
-    return queue_message(mac, data, len);
-}
-
-// ============================================================================
 // METRICS & STATISTICS
 // ============================================================================
 

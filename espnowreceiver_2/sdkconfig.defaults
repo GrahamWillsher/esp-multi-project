@@ -1,1 +1,6 @@
 CONFIG_ESP_WIFI_ESPNOW_MAX_PENDING_LEN=20
+# Increase shared WiFi driver TX buffer pool to give headroom for concurrent
+# ESP-NOW action frames and MQTT TCP packets without pool exhaustion.
+# 64 gives enough for: MQTT TCP window (8-12 bufs) + ESP-NOW pending queue (20)
+# + headroom, while staying within ESP32-S3 WiFi driver limits.
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=64

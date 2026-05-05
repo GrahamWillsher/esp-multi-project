@@ -5,6 +5,7 @@
 #include "../logging.h"
 #include "../../src/memory/memory_sampler.h"
 #include "../../../src/espnow/espnow_send.h"
+#include "../../../src/espnow/rx_connection_handler.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -14,6 +15,7 @@
 #include <Update.h>
 #include <esp_now.h>
 #include <esp32common/espnow/common.h>
+#include <esp32common/espnow/tx_scheduler.h>
 #include <firmware_version.h>
 #include <firmware_compatibility_policy.h>
 #include <mbedtls/sha256.h>
@@ -498,12 +500,17 @@ OtaResponseResult await_and_parse_ota_response(WiFiClient& tx_client) {
 }
 
 esp_err_t api_reboot_handler(httpd_req_t *req) {
+    if (ReceiverConnectionHandler::instance().quiet_mode_active()) {
+        LOG_WARN("REBOOT", "Blocked reboot command during reconnect quiet mode");
+        return ApiResponseUtils::send_error_message(req, "ESP-NOW reconnect quiet mode active - reboot command blocked");
+    }
+
     const uint8_t* target_mac = TransmitterManager::getMAC();
     const char* mac_source = "TransmitterManager";
 
     if (target_mac != nullptr) {
         reboot_t reboot_msg = { msg_reboot };
-        esp_err_t result = esp_now_send(target_mac, (const uint8_t*)&reboot_msg, sizeof(reboot_msg));
+        esp_err_t result = EspnowTxScheduler::send(target_mac, &reboot_msg, sizeof(reboot_msg), "API_REBOOT");
         if (result == ESP_OK) {
             LOG_INFO("REBOOT", "Sent command to transmitter via %s", mac_source);
             return ApiResponseUtils::send_jsonf(req,
@@ -764,10 +771,13 @@ esp_err_t api_ota_upload_handler(httpd_req_t *req) {
 
     const size_t firmware_size = remaining;
 
-    if (TransmitterManager::isMACKnown()) {
+    if (TransmitterManager::isMACKnown() &&
+        !ReceiverConnectionHandler::instance().quiet_mode_active()) {
         ota_start_t ota_msg = { msg_ota_start, (uint32_t)firmware_size };
-        esp_now_send(TransmitterManager::getMAC(), (const uint8_t*)&ota_msg, sizeof(ota_msg));
+        (void)EspnowTxScheduler::send(TransmitterManager::getMAC(), &ota_msg, sizeof(ota_msg), "API_OTA_START");
         vTaskDelay(pdMS_TO_TICKS(OTA_START_CONTROL_SETTLE_DELAY_MS));
+    } else if (ReceiverConnectionHandler::instance().quiet_mode_active()) {
+        LOG_WARN("OTA", "Skipped OTA_START ESP-NOW control during reconnect quiet mode");
     }
 
     // Fetch OTA session challenge from transmitter so auth headers can be sent with the upload.

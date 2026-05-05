@@ -2,6 +2,8 @@
 
 #include <Preferences.h>
 #include <string.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 #include "../logging.h"
 #include "transmitter_nvs_persistence.h"
@@ -44,6 +46,27 @@ void persist_if_requested(bool persist) {
         TransmitterNvsPersistence::notifyAndPersist();
     }
 }
+
+SemaphoreHandle_t cache_mutex = nullptr;
+
+void ensure_mutex() {
+    if (cache_mutex == nullptr) {
+        cache_mutex = xSemaphoreCreateMutex();
+    }
+}
+
+struct ScopedMutex {
+    explicit ScopedMutex(SemaphoreHandle_t m) : m_(m), locked_(false) {
+        if (m_ != nullptr) {
+            locked_ = (xSemaphoreTake(m_, pdMS_TO_TICKS(100)) == pdTRUE);
+        }
+    }
+    ~ScopedMutex() { if (locked_) xSemaphoreGive(m_); }
+    bool locked() const { return locked_; }
+private:
+    SemaphoreHandle_t m_;
+    bool locked_;
+};
 } // namespace
 
 namespace TransmitterNetwork {
@@ -54,14 +77,23 @@ void load_from_prefs(void* prefs_ptr) {
     }
 
     Preferences& prefs = *static_cast<Preferences*>(prefs_ptr);
-    prefs.getBytes(kKeyNetCurrIp, network_cache.current_ip, sizeof(network_cache.current_ip));
-    prefs.getBytes(kKeyNetCurrGw, network_cache.current_gateway, sizeof(network_cache.current_gateway));
-    prefs.getBytes(kKeyNetCurrSn, network_cache.current_subnet, sizeof(network_cache.current_subnet));
-    prefs.getBytes(kKeyNetStatIp, network_cache.static_ip, sizeof(network_cache.static_ip));
-    prefs.getBytes(kKeyNetStatGw, network_cache.static_gateway, sizeof(network_cache.static_gateway));
-    prefs.getBytes(kKeyNetStatSn, network_cache.static_subnet, sizeof(network_cache.static_subnet));
-    prefs.getBytes(kKeyNetDns1, network_cache.static_dns_primary, sizeof(network_cache.static_dns_primary));
-    prefs.getBytes(kKeyNetDns2, network_cache.static_dns_secondary, sizeof(network_cache.static_dns_secondary));
+    auto load_bytes = [&](const char* key, uint8_t* buf, size_t expected) {
+        const size_t n = prefs.getBytes(key, buf, expected);
+        if (n != expected) {
+            LOG_WARN("NET_CACHE", "NVS key '%s' returned %u bytes (expected %u) — using zeros",
+                     key, (unsigned)n, (unsigned)expected);
+            memset(buf, 0, expected);
+        }
+    };
+
+    load_bytes(kKeyNetCurrIp, network_cache.current_ip, sizeof(network_cache.current_ip));
+    load_bytes(kKeyNetCurrGw, network_cache.current_gateway, sizeof(network_cache.current_gateway));
+    load_bytes(kKeyNetCurrSn, network_cache.current_subnet, sizeof(network_cache.current_subnet));
+    load_bytes(kKeyNetStatIp, network_cache.static_ip, sizeof(network_cache.static_ip));
+    load_bytes(kKeyNetStatGw, network_cache.static_gateway, sizeof(network_cache.static_gateway));
+    load_bytes(kKeyNetStatSn, network_cache.static_subnet, sizeof(network_cache.static_subnet));
+    load_bytes(kKeyNetDns1, network_cache.static_dns_primary, sizeof(network_cache.static_dns_primary));
+    load_bytes(kKeyNetDns2, network_cache.static_dns_secondary, sizeof(network_cache.static_dns_secondary));
     network_cache.is_static_ip = prefs.getBool(kKeyNetIsStatic, false);
     network_cache.network_config_version = prefs.getUInt(kKeyNetVersion, 0);
     network_cache.ip_known = prefs.getBool(kKeyNetKnown, false);
@@ -97,11 +129,15 @@ bool store_ip_data(const uint8_t* transmitter_ip,
     }
 
     if (is_zero_ip(transmitter_ip)) {
+        ensure_mutex();
+        ScopedMutex lock(cache_mutex);
         network_cache.ip_known = false;
-            LOG_WARN("NET_CACHE", "Received empty IP data - transmitter Ethernet not connected yet");
+        LOG_WARN("NET_CACHE", "Received empty IP data - transmitter Ethernet not connected yet");
         return false;
     }
 
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
     memcpy(network_cache.current_ip, transmitter_ip, 4);
     memcpy(network_cache.current_gateway, transmitter_gateway, 4);
     memcpy(network_cache.current_subnet, transmitter_subnet, 4);
@@ -142,11 +178,15 @@ bool store_network_config(const uint8_t* curr_ip,
     }
 
     if (is_zero_ip(curr_ip)) {
+        ensure_mutex();
+        ScopedMutex lock(cache_mutex);
         network_cache.ip_known = false;
-            LOG_WARN("NET_CACHE", "Received empty current IP - transmitter Ethernet not connected yet");
+        LOG_WARN("NET_CACHE", "Received empty current IP - transmitter Ethernet not connected yet");
         return false;
     }
 
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
     memcpy(network_cache.current_ip, curr_ip, 4);
     memcpy(network_cache.current_gateway, curr_gateway, 4);
     memcpy(network_cache.current_subnet, curr_subnet, 4);
@@ -211,21 +251,29 @@ const uint8_t* get_static_dns_secondary() {
 }
 
 bool is_ip_known() {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
     return network_cache.ip_known;
 }
 
 bool is_static_ip() {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
     return network_cache.is_static_ip;
 }
 
 uint32_t get_network_config_version() {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
     return network_cache.network_config_version;
 }
 
 void update_network_mode(bool is_static, uint32_t version) {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
     network_cache.is_static_ip = is_static;
     network_cache.network_config_version = version;
-        LOG_INFO("NET_CACHE", "Network mode updated: %s (version %u)", is_static ? "Static" : "DHCP", version);
+    LOG_INFO("NET_CACHE", "Network mode updated: %s (version %u)", is_static ? "Static" : "DHCP", version);
 }
 
 bool format_ip(const uint8_t* ip, char* out, size_t out_len) {

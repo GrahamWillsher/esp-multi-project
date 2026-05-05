@@ -9,6 +9,7 @@
 #include <esp_now.h>
 #include <esp32common/espnow/common.h>
 #include <logging_config.h>
+#include <esp32common/espnow/tx_scheduler.h>
 
 EspnowDiscovery& EspnowDiscovery::instance() {
     static EspnowDiscovery instance;
@@ -132,9 +133,12 @@ void EspnowDiscovery::task_impl(void* parameter) {
         // Send announcement PROBE
         probe_t announce = { msg_probe, (uint32_t)esp_random() };
         const uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-        esp_err_t result = esp_now_send(broadcast_mac, 
-                                       (const uint8_t*)&announce, 
-                                       sizeof(announce));
+            esp_err_t result;
+            if (EspnowTxScheduler::is_ready()) {
+                result = EspnowTxScheduler::send(broadcast_mac, &announce, sizeof(announce), "DISCOVERY_PROBE");
+            } else {
+                result = esp_now_send(broadcast_mac, (const uint8_t*)&announce, sizeof(announce));
+            }
         
         if (result == ESP_OK) {
             announce_count++;

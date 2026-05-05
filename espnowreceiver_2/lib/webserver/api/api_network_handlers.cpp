@@ -5,6 +5,7 @@
 #include "../utils/transmitter_manager.h"
 #include "../logging.h"
 #include "../../receiver_config/receiver_config_manager.h"
+#include "../../../src/espnow/rx_connection_handler.h"
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -12,6 +13,7 @@
 #include <esp_now.h>
 #include <esp32common/espnow/common.h>
 #include <esp32common/espnow/packet_utils.h>
+#include <esp32common/espnow/tx_scheduler.h>
 #include <cstring>
 
 esp_err_t api_get_receiver_network_handler(httpd_req_t *req) {
@@ -231,6 +233,11 @@ esp_err_t api_save_network_config_handler(httpd_req_t *req) {
         return ApiResponseUtils::send_transmitter_mac_unknown(req);
     }
 
+    if (ReceiverConnectionHandler::instance().quiet_mode_active()) {
+        LOG_WARN("API", "Blocked network config update during reconnect quiet mode");
+        return ApiResponseUtils::send_error_message(req, "ESP-NOW reconnect quiet mode active - try again shortly");
+    }
+
     network_config_update_t msg;
     memset(&msg, 0, sizeof(msg));
     msg.type = msg_network_config_update;
@@ -261,7 +268,7 @@ esp_err_t api_save_network_config_handler(httpd_req_t *req) {
     msg.config_version = 0;
     msg.checksum = EspnowPacketUtils::calculate_message_crc32_zeroed(&msg);
 
-    esp_err_t result = esp_now_send(TransmitterManager::getMAC(), (const uint8_t*)&msg, sizeof(msg));
+    esp_err_t result = EspnowTxScheduler::send(TransmitterManager::getMAC(), &msg, sizeof(msg), "API_NET_CFG_UPDATE");
     if (result == ESP_OK) {
         LOG_INFO("API", "✓ Network config sent to transmitter");
     } else {
@@ -313,6 +320,11 @@ esp_err_t api_save_mqtt_config_handler(httpd_req_t *req) {
         return ApiResponseUtils::send_transmitter_mac_unknown(req);
     }
 
+    if (ReceiverConnectionHandler::instance().quiet_mode_active()) {
+        LOG_WARN("API", "Blocked MQTT config update during reconnect quiet mode");
+        return ApiResponseUtils::send_error_message(req, "ESP-NOW reconnect quiet mode active - try again shortly");
+    }
+
     mqtt_config_update_t msg;
     memset(&msg, 0, sizeof(msg));
     msg.type = msg_mqtt_config_update;
@@ -346,7 +358,7 @@ esp_err_t api_save_mqtt_config_handler(httpd_req_t *req) {
              msg.server[0], msg.server[1], msg.server[2], msg.server[3],
              msg.port);
 
-    esp_err_t result = esp_now_send(TransmitterManager::getMAC(), (const uint8_t*)&msg, sizeof(msg));
+    esp_err_t result = EspnowTxScheduler::send(TransmitterManager::getMAC(), &msg, sizeof(msg), "API_MQTT_CFG_UPDATE");
     if (result == ESP_OK) {
         LOG_INFO("API", "✓ MQTT config sent to transmitter");
     } else {

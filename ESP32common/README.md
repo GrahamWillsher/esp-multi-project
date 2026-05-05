@@ -21,6 +21,13 @@ Use these canonical includes for cross-project stability:
 - `#include <esp32common/espnow/timing_config.h>`
 - `#include <esp32common/espnow/heartbeat_monitor.h>`
 - `#include <esp32common/espnow/reconnection_backoff.h>`
+- `#include <esp32common/espnow/rx_runtime.h>`
+- `#include <esp32common/espnow/rx_runtime_routes.h>`
+- `#include <esp32common/espnow/rx_runtime_messages.h>`
+- `#include <esp32common/espnow/rx_connection_handler.h>`
+- `#include <esp32common/espnow/rx_heartbeat_manager.h>`
+- `#include <esp32common/espnow/rx_state_machine.h>`
+- `#include <esp32common/espnow/rx_runtime_hooks.h>`
 - `#include <esp32common/config/timing_config.h>`
 - `#include <esp32common/logging/logging_config.h>`
 - `#include <esp32common/interfaces/iconnection_manager.h>`

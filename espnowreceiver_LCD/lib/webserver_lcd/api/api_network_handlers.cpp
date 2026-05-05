@@ -6,6 +6,7 @@
 #include "../utils/transmitter_manager.h"
 #include "../logging.h"
 #include "../../receiver_config/receiver_config_manager.h"
+#include "../../../src/espnow/rx_connection_handler.h"
 #include "common_lcd.h"
 
 #include <Arduino.h>
@@ -14,6 +15,7 @@
 #include <esp_now.h>
 #include <esp32common/espnow/common.h>
 #include <esp32common/espnow/packet_utils.h>
+#include <esp32common/espnow/tx_scheduler.h>
 #include <cstring>
 
 namespace UI::Runtime::Backend {
@@ -281,6 +283,11 @@ esp_err_t api_save_network_config_handler(httpd_req_t *req) {
         return ApiResponseUtils::send_transmitter_mac_unknown(req);
     }
 
+    if (ReceiverConnectionHandler::instance().quiet_mode_active()) {
+        LOG_WARN("API", "Blocked network config update during reconnect quiet mode");
+        return ApiResponseUtils::send_error_message(req, "ESP-NOW reconnect quiet mode active - try again shortly");
+    }
+
     network_config_update_t msg;
     memset(&msg, 0, sizeof(msg));
     msg.type = msg_network_config_update;
@@ -311,7 +318,7 @@ esp_err_t api_save_network_config_handler(httpd_req_t *req) {
     msg.config_version = 0;
     msg.checksum = EspnowPacketUtils::calculate_message_crc32_zeroed(&msg);
 
-    esp_err_t result = esp_now_send(TransmitterManager::getMAC(), (const uint8_t*)&msg, sizeof(msg));
+    esp_err_t result = EspnowTxScheduler::send(TransmitterManager::getMAC(), &msg, sizeof(msg), "API_NET_CFG_UPDATE");
     if (result == ESP_OK) {
         LOG_INFO("API", "✓ Network config sent to transmitter");
     } else {
@@ -325,22 +332,26 @@ esp_err_t api_get_mqtt_config_handler(httpd_req_t *req) {
         LOG_INFO("API", "MQTT config not cached");
 
         // Opportunistic self-heal: ask transmitter for current MQTT section.
-        if (TransmitterManager::isMACKnown()) {
+        if (TransmitterManager::isMACKnown() &&
+            !ReceiverConnectionHandler::instance().quiet_mode_active()) {
             config_section_request_t request{};
             request.type = msg_config_section_request;
             request.section = config_section_mqtt;
             request.requested_version = 0;
 
             const esp_err_t send_result =
-                esp_now_send(TransmitterManager::getMAC(),
-                             reinterpret_cast<const uint8_t*>(&request),
-                             sizeof(request));
+                EspnowTxScheduler::send(TransmitterManager::getMAC(),
+                                        &request,
+                                        sizeof(request),
+                                        "API_REQ_MQTT_CFG_SECTION");
 
             if (send_result == ESP_OK) {
                 LOG_INFO("API", "Requested MQTT config section from transmitter (cache miss)");
             } else {
                 LOG_WARN("API", "Failed to request MQTT config section: %s", esp_err_to_name(send_result));
             }
+        } else if (ReceiverConnectionHandler::instance().quiet_mode_active()) {
+            LOG_WARN("API", "Skipped MQTT config section request during reconnect quiet mode");
         }
 
         return ApiResponseUtils::send_error_message(req, "MQTT config not cached yet - refresh in a moment");
@@ -386,6 +397,11 @@ esp_err_t api_save_mqtt_config_handler(httpd_req_t *req) {
         return ApiResponseUtils::send_transmitter_mac_unknown(req);
     }
 
+    if (ReceiverConnectionHandler::instance().quiet_mode_active()) {
+        LOG_WARN("API", "Blocked MQTT config update during reconnect quiet mode");
+        return ApiResponseUtils::send_error_message(req, "ESP-NOW reconnect quiet mode active - try again shortly");
+    }
+
     mqtt_config_update_t msg;
     memset(&msg, 0, sizeof(msg));
     msg.type = msg_mqtt_config_update;
@@ -419,7 +435,7 @@ esp_err_t api_save_mqtt_config_handler(httpd_req_t *req) {
              msg.server[0], msg.server[1], msg.server[2], msg.server[3],
              msg.port);
 
-    esp_err_t result = esp_now_send(TransmitterManager::getMAC(), (const uint8_t*)&msg, sizeof(msg));
+    esp_err_t result = EspnowTxScheduler::send(TransmitterManager::getMAC(), &msg, sizeof(msg), "API_MQTT_CFG_UPDATE");
     if (result == ESP_OK) {
         LOG_INFO("API", "✓ MQTT config sent to transmitter");
     } else {

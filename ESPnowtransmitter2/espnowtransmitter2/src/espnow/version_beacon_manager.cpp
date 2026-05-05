@@ -15,7 +15,6 @@
 #include <firmware_metadata.h>
 #include <esp32common/espnow/packet_utils.h>
 #include <log_routed.h>
-#include <cstddef>
 
 VersionBeaconManager& VersionBeaconManager::instance() {
     static VersionBeaconManager instance;
@@ -321,12 +320,7 @@ void VersionBeaconManager::send_config_section(config_section_t section, const u
             settings_msg.chemistry = SettingsManager::instance().get_battery_chemistry();
             settings_msg.led_mode = SettingsManager::instance().get_battery_led_mode();
 
-            uint16_t sum = 0;
-            const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&settings_msg);
-            for (size_t i = 0; i < offsetof(battery_settings_full_msg_t, checksum); i++) {
-                sum += bytes[i];
-            }
-            settings_msg.checksum = sum;
+            settings_msg.checksum = EspnowPacketUtils::calculate_message_crc32_zeroed(&settings_msg);
 
             esp_err_t send_result = TxSendGuard::send_to_receiver_guarded(
                 receiver_mac,

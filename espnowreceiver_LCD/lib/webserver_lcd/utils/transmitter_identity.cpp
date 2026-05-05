@@ -1,6 +1,8 @@
 #include "transmitter_identity.h"
 
 #include <string.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include "../logging.h"
 #include "sse_notifier.h"
 #include "transmitter_peer_registry.h"
@@ -8,6 +10,27 @@
 namespace {
     uint8_t registered_mac[6] = {0};
     bool registered_mac_known = false;
+
+    SemaphoreHandle_t cache_mutex = nullptr;
+
+    void ensure_mutex() {
+        if (cache_mutex == nullptr) {
+            cache_mutex = xSemaphoreCreateMutex();
+        }
+    }
+
+    struct ScopedMutex {
+        explicit ScopedMutex(SemaphoreHandle_t m) : m_(m), locked_(false) {
+            if (m_ != nullptr) {
+                locked_ = (xSemaphoreTake(m_, pdMS_TO_TICKS(100)) == pdTRUE);
+            }
+        }
+        ~ScopedMutex() { if (locked_) xSemaphoreGive(m_); }
+        bool locked() const { return locked_; }
+    private:
+        SemaphoreHandle_t m_;
+        bool locked_;
+    };
 }
 
 namespace ESPNow {
@@ -23,24 +46,32 @@ void register_mac(const uint8_t* transmitter_mac) {
         return;
     }
 
+    // Only log and notify when the MAC actually changes to avoid per-probe log spam.
+    const bool mac_changed = !registered_mac_known ||
+                             (memcmp(registered_mac, transmitter_mac, 6) != 0);
+
     cache_mac(transmitter_mac);
 
-    const uint8_t* cached = get_registered_mac();
-    char mac_str[kMacStringLength] = {0};
-    if (!format_mac(cached, mac_str, sizeof(mac_str))) {
-        strncpy(mac_str, "Unknown", sizeof(mac_str) - 1);
-        mac_str[sizeof(mac_str) - 1] = '\0';
-    }
-    LOG_INFO("TX_MGR", "MAC registered: %s", mac_str);
+    if (mac_changed) {
+        const uint8_t* cached = get_registered_mac();
+        char mac_str[kMacStringLength] = {0};
+        if (!format_mac(cached, mac_str, sizeof(mac_str))) {
+            strncpy(mac_str, "Unknown", sizeof(mac_str) - 1);
+            mac_str[sizeof(mac_str) - 1] = '\0';
+        }
+        LOG_INFO("TX_MGR", "MAC registered: %s", mac_str);
 
-    SSENotifier::notifyDataUpdated();
-    (void)TransmitterPeerRegistry::ensure_peer_registered(cached);
+        SSENotifier::notifyDataUpdated();
+        (void)TransmitterPeerRegistry::ensure_peer_registered(cached);
+    }
 }
 
 // ===== Cache Management =====
 
 void cache_mac(const uint8_t* mac) {
     if (mac == nullptr) return;
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
     memcpy(registered_mac, mac, sizeof(registered_mac));
     registered_mac_known = true;
 }
@@ -50,6 +81,8 @@ const uint8_t* get_registered_mac() {
 }
 
 bool has_registered_mac() {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
     return registered_mac_known;
 }
 

@@ -3,6 +3,7 @@
 #include "component_catalog_handlers.h"
 
 #include "discovery_task.h"
+#include "tx_reconnect_manager.h"
 #include "version_beacon_manager.h"
 #include "tx_send_guard.h"
 #include "../battery_emulator/devboard/utils/led_handler.h"
@@ -10,6 +11,7 @@
 #include "../settings/settings_manager.h"
 #include "../config/logging_config.h"
 
+#include <esp32common/espnow/connection_manager.h>
 #include <esp32common/espnow/message_router.h>
 #include <esp32common/espnow/standard_handlers.h>
 #include <espnow_transmitter.h>
@@ -101,6 +103,14 @@ bool send_event_log_summary_to_receiver(const uint8_t* receiver_mac,
         return false;
     }
 
+    // Non-critical telemetry should never perturb reconnect state.
+    // If we are not connected (or channel coherence is not established), skip
+    // summary send instead of feeding the guarded sender and triggering recovery.
+    if (!EspNowConnectionManager::instance().is_connected() ||
+        !TxSendGuard::is_peer_channel_coherent(receiver_mac)) {
+        return false;
+    }
+
     const event_log_summary_t summary = summary_override ? *summary_override : build_event_log_summary();
 
     esp_err_t result = TxSendGuard::send_to_receiver_guarded(
@@ -155,6 +165,10 @@ void send_event_logs_clear_ack_to_receiver(const uint8_t* receiver_mac,
 }  // namespace
 
 void EspnowMessageHandler::maybe_push_event_log_summary() {
+    if (!EspNowConnectionManager::instance().is_connected()) {
+        return;
+    }
+
     bool receiver_known = false;
     for (int i = 0; i < 6; ++i) {
         if (receiver_mac_[i] != 0) {
@@ -164,6 +178,10 @@ void EspnowMessageHandler::maybe_push_event_log_summary() {
     }
 
     if (!receiver_known) {
+        return;
+    }
+
+    if (!TxSendGuard::is_peer_channel_coherent(receiver_mac_)) {
         return;
     }
 
@@ -455,3 +473,36 @@ void EspnowMessageHandler::setup_message_routes() {
 
     LOG_DEBUG("MSG_HANDLER", "Registered %d message routes", router.route_count());
 }
+
+// ── register_connect_confirm_ack_route (Phase 2 handshake — 2026-05-02) ─────
+// Called once from EspnowMessageHandler constructor (after setup_message_routes).
+static bool s_confirm_ack_route_registered = false;
+
+    void EspnowMessageHandler::register_connect_confirm_ack_route() {
+        if (s_confirm_ack_route_registered) return;
+        s_confirm_ack_route_registered = true;
+
+        auto& router = EspnowMessageRouter::instance();
+        router.register_route(
+            msg_connect_confirm_ack,
+            [](const espnow_queue_msg_t* msg, void* /*ctx*/) {
+                if (!msg || msg->len < static_cast<int>(sizeof(espnow_connect_confirm_ack_t))) {
+                    return;
+                }
+                const auto* ack =
+                    reinterpret_cast<const espnow_connect_confirm_ack_t*>(msg->data);
+                if (ack->rx_status != CONNECT_CONFIRM_STATUS_OK) {
+                    LOG_WARN("RECONNECT",
+                             "connect_confirm_ack: RX status=%u (version mismatch?)",
+                             static_cast<unsigned>(ack->rx_status));
+                }
+                LOG_INFO("RECONNECT",
+                         "connect_confirm_ack received (session=%u  rx_status=%u)",
+                         static_cast<unsigned>(ack->session_id),
+                         static_cast<unsigned>(ack->rx_status));
+                TxReconnectManager::instance().on_confirm_ack_received(ack->session_id);
+            },
+            0xFF,
+            nullptr);
+    }
+// Note: tx_reconnect_manager.h already included transitively via tx_connection_handler.h

@@ -1,19 +1,22 @@
 # espnowreceiver_LCD
 
-Waveshare ESP32-S3-Touch-LCD-7 display project — **Arduino + LovyanGFX + LVGL 8.4.0**.
+ESP-NOW battery telemetry receiver with Waveshare 7-inch LVGL display.
 
-## Scope
+**Hardware:** Waveshare ESP32-S3-Touch-LCD-7 (16 MB flash, 8 MB PSRAM)  
+**Framework:** Arduino + LVGL 8.4.0 (LVGL-only render path, no TFT_eSPI)  
+**Connectivity:** WiFi (station + AP fallback), ESP-NOW peer, MQTT client, OTA
 
-- LVGL 8.4.0 rendering pipeline (active and default)
-- Simulated LED indicator (continuous / flash / heartbeat) — LVGL `lv_obj` circle
-- SOC large numeric display — LVGL label with colour gradient
-- Bidirectional power bar — LVGL objects with animation
-- Medium power text — LVGL label
-- No webserver / MQTT / ESP-NOW / receiver stack (see port analysis doc)
+---
 
-### Touch screen
+## What it does
 
-The board includes a **GT911 capacitive touch controller** (GPIO4=TP_IRQ, GPIO8/9=I2C, CH422G EXIO1=TP_RST). Touch is **not yet implemented** but is available for future use via the LVGL pointer input device driver (`lv_indev_drv_t`). See `docs/systemworks/ESPNOWRECEIVER_LCD_PORT_ANALYSIS_2026_04_14.md` section 3.6.
+- Receives battery telemetry from an ESP-NOW transmitter (ESPnowtransmitter2)
+- Displays SOC%, bidirectional power bar, and link state on a 7-inch LVGL UI
+- Hosts a web dashboard (webserver_lcd) for configuration and live monitoring
+- Forwards MQTT topics to a broker when configured
+- Supports OTA firmware updates over WiFi
+
+---
 
 ## Build
 
@@ -21,32 +24,39 @@ The board includes a **GT911 capacitive touch controller** (GPIO4=TP_IRQ, GPIO8/
 pio run -j 2
 ```
 
-## Flashing
-
-Firmware upload:
+## Flash
 
 ```bash
+# Firmware
 pio run --target upload --environment waveshare_esp32s3_lcd7_lvgl
-```
 
-LittleFS asset upload (required for splash image):
-
-```bash
+# LittleFS (required after first flash or full erase)
 pio run --target uploadfs --environment waveshare_esp32s3_lcd7_lvgl
 ```
 
-If you run a full flash erase, you must upload both firmware and LittleFS again.
+> After a full flash erase, upload firmware **and** LittleFS.
+
+---
+
+## Key architecture constraints
+
+- **GPIO conflict:** Ethernet (W5500) and CAN share SPI bus pins — only one active at compile time. See `CAN_ETHERNET_GPIO_CONFLICT_ANALYSIS.md` in ESPnowtransmitter2 if porting.
+- **Touch:** GT911 controller present (GPIO4=IRQ, GPIO8/9=I2C, CH422G EXIO1=RST) but not yet wired to LVGL input device driver. Available for future implementation.
+- **LVGL mutex:** All UI access must be guarded by `xSemaphoreTake(RTOS::lvgl_mutex, ...)`.
+- **Dual-core layout:** ESP-NOW worker and MQTT task on APP_CPU (core 1); LVGL render task pinned to the same core to avoid GL race.
+
+---
 
 ## Phase status
 
-- Phase 1: ✅ scaffold + RGB panel baseline bring-up
-- Phase 2: ✅ primitive rendering
-- Phase 3: ✅ widgets
-- Phase 4: ✅ autonomous demo model
-- Phase 5: ✅ LVGL migration — LVGL-only path active, legacy non-LVGL code removed
-- Phase 6: ⏳ receiver stack port (ESP-NOW, WiFi, MQTT, OTA — see port analysis doc)
+| Phase | Item | Status |
+|---|---|---|
+| 1–5 | Scaffold → LVGL render pipeline | ✅ Complete |
+| 6 | Receiver stack port (ESP-NOW, WiFi, MQTT, OTA) | ✅ Complete |
+| 7 | Codebase review + concurrency hardening | ✅ Complete 2026-04-21 |
 
-## Important
+---
 
-`src/hal/lgfx_waveshare_7.h` uses a phased baseline RGB/CH422G mapping.
-Verify all pins/timings against the official Waveshare 7-inch schematic before production flashing.
+## Docs
+
+- `docs/systemworks/ESPNOWRECEIVER_LCD_FULL_CODEBASE_REVIEW_2026_04_21.md` — full review and implementation log
