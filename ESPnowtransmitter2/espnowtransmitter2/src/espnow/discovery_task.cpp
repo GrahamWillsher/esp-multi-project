@@ -14,9 +14,11 @@
 #include "../config/task_config.h"
 #include "../config/logging_config.h"
 #include <esp32common/config/timing_config.h>
+#include <esp32common/espnow/tx_scheduler.h>
 #include "../queue/espnow_queue_manager.h"
 #include <Arduino.h>
-#include <espnow_transmitter.h>   // set_channel(), g_lock_channel
+#include <espnow_transmitter.h>   // set_channel()
+#include <esp32common/espnow/channel_authority.h>
 #include <espnow_peer_manager.h>
 #include <esp_wifi.h>
 #include <WiFi.h>
@@ -54,12 +56,38 @@ bool DiscoveryTask::run_hop_scan(uint8_t  start_channel_hint,
                                   uint8_t* out_channel,
                                   uint8_t* out_mac) {
     const uint32_t scan_start_ms = millis();
+    const uint32_t scan_probe_attempts_before = metrics_.probe_send_attempts;
+    const uint32_t scan_probe_success_before = metrics_.probe_send_success;
+    const uint32_t scan_probe_no_mem_before = metrics_.probe_send_no_mem_fail;
+    const uint32_t scan_probe_other_fail_before = metrics_.probe_send_other_fail;
+    const uint32_t scan_ack_received_before = metrics_.ack_frames_received;
     metrics_.total_scans++;
 
     const bool found = active_channel_hop_scan_impl(
         start_channel_hint, out_channel, out_mac);
 
     const uint32_t duration_ms = millis() - scan_start_ms;
+    const uint32_t scan_probe_attempts =
+        metrics_.probe_send_attempts - scan_probe_attempts_before;
+    const uint32_t scan_probe_success =
+        metrics_.probe_send_success - scan_probe_success_before;
+    const uint32_t scan_probe_no_mem =
+        metrics_.probe_send_no_mem_fail - scan_probe_no_mem_before;
+    const uint32_t scan_probe_other_fail =
+        metrics_.probe_send_other_fail - scan_probe_other_fail_before;
+    const uint32_t scan_ack_received =
+        metrics_.ack_frames_received - scan_ack_received_before;
+
+    const uint32_t probes_per_second =
+        (duration_ms > 0)
+            ? static_cast<uint32_t>((static_cast<uint64_t>(scan_probe_success) * kMsPerSecond) / duration_ms)
+            : 0;
+
+    const uint32_t ack_per_100_probe =
+        (scan_probe_success > 0)
+            ? static_cast<uint32_t>((static_cast<uint64_t>(scan_ack_received) * 100U) / scan_probe_success)
+            : 0;
+
     if (duration_ms > metrics_.longest_scan_ms) {
         metrics_.longest_scan_ms = duration_ms;
     }
@@ -69,16 +97,28 @@ bool DiscoveryTask::run_hop_scan(uint8_t  start_channel_hint,
         metrics_.last_success_channel   = *out_channel;
         metrics_.last_success_timestamp = millis();
         LOG_INFO("DISCOVERY",
-                 "Scan succeeded: ch=%d, duration=%lu ms (total=%lu/%lu success/fail)",
+                 "Scan succeeded: ch=%d, duration=%lu ms, probes_ok=%lu, probes_no_mem=%lu, probes_other_fail=%lu, ack=%lu, probe_rate=%lu/s, ack_per_100_probe=%lu (total=%lu/%lu success/fail)",
                  *out_channel,
                  static_cast<unsigned long>(duration_ms),
+                 static_cast<unsigned long>(scan_probe_success),
+                 static_cast<unsigned long>(scan_probe_no_mem),
+                 static_cast<unsigned long>(scan_probe_other_fail),
+                 static_cast<unsigned long>(scan_ack_received),
+                 static_cast<unsigned long>(probes_per_second),
+                 static_cast<unsigned long>(ack_per_100_probe),
                  static_cast<unsigned long>(metrics_.successful_scans),
                  static_cast<unsigned long>(metrics_.failed_scans));
     } else {
         metrics_.failed_scans++;
         LOG_WARN("DISCOVERY",
-                 "Scan failed: duration=%lu ms (total=%lu/%lu success/fail)",
+                 "Scan failed: duration=%lu ms, probes_ok=%lu, probes_no_mem=%lu, probes_other_fail=%lu, ack=%lu, probe_rate=%lu/s, ack_per_100_probe=%lu (total=%lu/%lu success/fail)",
                  static_cast<unsigned long>(duration_ms),
+                 static_cast<unsigned long>(scan_probe_success),
+                 static_cast<unsigned long>(scan_probe_no_mem),
+                 static_cast<unsigned long>(scan_probe_other_fail),
+                 static_cast<unsigned long>(scan_ack_received),
+                 static_cast<unsigned long>(probes_per_second),
+                 static_cast<unsigned long>(ack_per_100_probe),
                  static_cast<unsigned long>(metrics_.successful_scans),
                  static_cast<unsigned long>(metrics_.failed_scans));
     }
@@ -122,9 +162,21 @@ bool DiscoveryTask::active_channel_hop_scan_impl(uint8_t  start_channel_hint,
     for (uint8_t offset = 0; offset < kDiscoveryChannelCount && !ack_received; ++offset) {
         const uint8_t i  = (start_index + offset) % kDiscoveryChannelCount;
         const uint8_t ch = kDiscoveryChannels[i];
-        if (scan_channel_for_ack(ch, BASE_DWELL_MS, "phase1-fast", ack_mac)) {
+        uint8_t reported_ch = 0;
+        if (scan_channel_for_ack(ch, BASE_DWELL_MS, "phase1-fast", ack_mac, &reported_ch)) {
             ack_received = true;
-            ack_channel  = ch;
+            // Use the channel the receiver reported in its ACK payload (WiFi.channel()
+            // on the receiver) as the authoritative connection channel.  This is the
+            // receiver's real STA home channel, which may differ from the scan channel
+            // (e.g. receiver briefly hopped to ch=7 to receive the probe but its STA
+            // WiFi is locked to ch=6 by its router).
+            ack_channel = (reported_ch >= 1 && reported_ch <= 13) ? reported_ch : ch;
+            if (reported_ch != ch) {
+                LOG_WARN("DISCOVERY",
+                         "[phase1-fast] ACK reported ch=%d (scan was on ch=%d) — "
+                         "using receiver home ch=%d",
+                         reported_ch, ch, ack_channel);
+            }
         }
     }
 
@@ -146,9 +198,16 @@ bool DiscoveryTask::active_channel_hop_scan_impl(uint8_t  start_channel_hint,
             const uint32_t dwell =
                 (idx == 0) ? WEIGHTED_CENTER_DWELL_MS : WEIGHTED_NEIGHBOR_DWELL_MS;
 
-            if (scan_channel_for_ack(candidates[idx], dwell, "phase2-weighted", ack_mac)) {
+            uint8_t reported_ch2 = 0;
+            if (scan_channel_for_ack(candidates[idx], dwell, "phase2-weighted", ack_mac, &reported_ch2)) {
                 ack_received = true;
-                ack_channel  = candidates[idx];
+                ack_channel = (reported_ch2 >= 1 && reported_ch2 <= 13) ? reported_ch2 : candidates[idx];
+                if (reported_ch2 != candidates[idx]) {
+                    LOG_WARN("DISCOVERY",
+                             "[phase2-weighted] ACK reported ch=%d (scan was on ch=%d) — "
+                             "using receiver home ch=%d",
+                             reported_ch2, candidates[idx], ack_channel);
+                }
             }
         }
     }
@@ -176,7 +235,8 @@ bool DiscoveryTask::active_channel_hop_scan_impl(uint8_t  start_channel_hint,
 bool DiscoveryTask::scan_channel_for_ack(uint8_t     ch,
                                           uint32_t    dwell_ms,
                                           const char* phase_label,
-                                          uint8_t*    out_mac) {
+                                          uint8_t*    out_mac,
+                                          uint8_t*    out_ack_channel) {
     LOG_INFO("DISCOVERY",
              "[%s] ch=%d dwell=%lu ms",
              phase_label, ch, static_cast<unsigned long>(dwell_ms));
@@ -219,6 +279,7 @@ bool DiscoveryTask::scan_channel_for_ack(uint8_t     ch,
 
                 if (msg_type == msg_ack &&
                     msg.len >= static_cast<int>(sizeof(ack_t))) {
+                    metrics_.ack_frames_received++;
                     const ack_t* a = reinterpret_cast<const ack_t*>(msg.data);
                     LOG_INFO("DISCOVERY",
                              "[%s] ✓ ACK from %02X:%02X:%02X:%02X:%02X:%02X "
@@ -228,6 +289,11 @@ bool DiscoveryTask::scan_channel_for_ack(uint8_t     ch,
                              msg.mac[3], msg.mac[4], msg.mac[5],
                              a->channel, a->seq);
                     if (out_mac) memcpy(out_mac, msg.mac, 6);
+                    // Return the receiver's reported home channel (WiFi.channel() on
+                    // the receiver).  This is the channel we must use for all
+                    // subsequent sends — it may differ from the scan channel if the
+                    // receiver was briefly hopping when it received our probe.
+                    if (out_ack_channel) *out_ack_channel = a->channel;
                     return true;
                 }
             }
@@ -244,6 +310,8 @@ bool DiscoveryTask::scan_channel_for_ack(uint8_t     ch,
 // send_probe_on_channel
 // ============================================================================
 void DiscoveryTask::send_probe_on_channel(uint8_t channel) {
+    metrics_.probe_send_attempts++;
+
     const uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
     // Refresh broadcast peer to current channel (channel=0 → use WiFi channel)
@@ -266,9 +334,22 @@ void DiscoveryTask::send_probe_on_channel(uint8_t channel) {
     probe_t probe{};
     probe.type = msg_probe;
     probe.seq  = millis();
-    const esp_err_t rc = esp_now_send(broadcast_mac,
-                                      reinterpret_cast<const uint8_t*>(&probe),
-                                      sizeof(probe));
+    const esp_err_t rc = EspnowTxScheduler::send(
+        broadcast_mac,
+        &probe,
+        sizeof(probe),
+        "DISCOVERY_PROBE_HOP");
+    if (rc == ESP_OK) {
+        metrics_.probe_send_success++;
+        return;
+    }
+
+    if (rc == ESP_ERR_ESPNOW_NO_MEM) {
+        metrics_.probe_send_no_mem_fail++;
+    } else {
+        metrics_.probe_send_other_fail++;
+    }
+
     if (rc != ESP_OK) {
         LOG_DEBUG("DISCOVERY", "PROBE send on ch=%d: %s", channel, esp_err_to_name(rc));
     }
@@ -307,10 +388,11 @@ bool DiscoveryTask::validate_state() const {
     uint8_t current_ch = 0;
     wifi_second_chan_t second;
     esp_wifi_get_channel(&current_ch, &second);
-    if (current_ch != g_lock_channel) {
+    const uint8_t locked_ch = esp32common::espnow::ChannelAuthority::instance().operating_channel();
+    if (current_ch != locked_ch) {
         LOG_ERROR("DISCOVERY",
                   "Channel mismatch: WiFi=%d locked=%d",
-                  current_ch, g_lock_channel);
+                  current_ch, locked_ch);
         valid = false;
     }
 
@@ -319,10 +401,10 @@ bool DiscoveryTask::validate_state() const {
     if (esp_now_is_peer_exist(broadcast_mac)) {
         esp_now_peer_info_t peer{};
         if (esp_now_get_peer(broadcast_mac, &peer) == ESP_OK) {
-            if (peer.channel != g_lock_channel && peer.channel != 0) {
+            if (peer.channel != locked_ch && peer.channel != 0) {
                 LOG_ERROR("DISCOVERY",
                           "Broadcast peer channel mismatch: peer=%d locked=%d",
-                          peer.channel, g_lock_channel);
+                          peer.channel, locked_ch);
                 valid = false;
             }
         }
@@ -343,7 +425,8 @@ void DiscoveryTask::audit_peer_state() const {
     esp_wifi_get_channel(&current_ch, &second);
 
     LOG_INFO("PEER_AUDIT", "═══ ESP-NOW Peer Audit ═══");
-    LOG_INFO("PEER_AUDIT", "WiFi ch=%d locked=%d", current_ch, g_lock_channel);
+    const uint8_t locked_ch = esp32common::espnow::ChannelAuthority::instance().operating_channel();
+    LOG_INFO("PEER_AUDIT", "WiFi ch=%d locked=%d", current_ch, locked_ch);
 
     const uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
     if (esp_now_is_peer_exist(broadcast_mac)) {
@@ -352,7 +435,7 @@ void DiscoveryTask::audit_peer_state() const {
             LOG_INFO("PEER_AUDIT",
                      "Broadcast: ch=%d encrypt=%d if=%d %s",
                      p.channel, p.encrypt, p.ifidx,
-                     (p.channel != 0 && p.channel != g_lock_channel) ? "✗ CHAN MISMATCH" : "✓");
+                     (p.channel != 0 && p.channel != locked_ch) ? "✗ CHAN MISMATCH" : "✓");
         }
     } else {
         LOG_WARN("PEER_AUDIT", "Broadcast peer: NOT PRESENT");
@@ -369,6 +452,12 @@ void DiscoveryMetrics::log_summary() const {
     LOG_INFO("DISCOVERY", "  Successful   : %lu", static_cast<unsigned long>(successful_scans));
     LOG_INFO("DISCOVERY", "  Failed       : %lu", static_cast<unsigned long>(failed_scans));
     LOG_INFO("DISCOVERY", "Ch mismatches  : %lu", static_cast<unsigned long>(channel_mismatches));
+    LOG_INFO("DISCOVERY", "Probe sends    : attempts=%lu ok=%lu no_mem=%lu other_fail=%lu",
+             static_cast<unsigned long>(probe_send_attempts),
+             static_cast<unsigned long>(probe_send_success),
+             static_cast<unsigned long>(probe_send_no_mem_fail),
+             static_cast<unsigned long>(probe_send_other_fail));
+    LOG_INFO("DISCOVERY", "ACK frames rx  : %lu", static_cast<unsigned long>(ack_frames_received));
     LOG_INFO("DISCOVERY", "Last success   : ch=%lu at t=%lu ms",
              static_cast<unsigned long>(last_success_channel),
              static_cast<unsigned long>(last_success_timestamp));
@@ -377,6 +466,16 @@ void DiscoveryMetrics::log_summary() const {
         const float rate = 100.0f *
             static_cast<float>(successful_scans) / static_cast<float>(total_scans);
         LOG_INFO("DISCOVERY", "Success rate   : %.1f%%", rate);
+    }
+    if (probe_send_attempts > 0) {
+        const float no_mem_rate = 100.0f *
+            static_cast<float>(probe_send_no_mem_fail) / static_cast<float>(probe_send_attempts);
+        LOG_INFO("DISCOVERY", "Probe NO_MEM   : %.1f%%", no_mem_rate);
+    }
+    if (probe_send_success > 0) {
+        const float ack_per_probe = 100.0f *
+            static_cast<float>(ack_frames_received) / static_cast<float>(probe_send_success);
+        LOG_INFO("DISCOVERY", "ACK/probe(ok)  : %.1f%%", ack_per_probe);
     }
     LOG_INFO("DISCOVERY", "════════════════════════");
 }

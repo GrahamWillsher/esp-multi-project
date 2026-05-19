@@ -141,7 +141,7 @@ enum msg_type : uint8_t {
 // Protocol version — bump when the on-wire handshake format changes.
 // Devices log a WARNING on version mismatch but continue to operate.
 // ─────────────────────────────────────────────────────────────────────────────
-constexpr uint8_t ESPNOW_PROTOCOL_VERSION                  = 2;
+constexpr uint8_t ESPNOW_PROTOCOL_VERSION                  = 3;
 constexpr uint8_t CONNECT_CONFIRM_STATUS_OK                = 0;
 constexpr uint8_t CONNECT_CONFIRM_STATUS_VERSION_MISMATCH  = 1;
 
@@ -151,7 +151,8 @@ typedef struct __attribute__((packed)) {
     uint8_t  protocol_version;   // ESPNOW_PROTOCOL_VERSION
     uint16_t session_id;         // Monotonically increasing per TX boot; wraps OK
     uint8_t  channel;            // WiFi channel TX believes the link is on (informational)
-    uint8_t  reserved[3];
+    uint16_t session_boot_nonce; // Random per-TX boot; combined with session_id for epoch gate
+    uint8_t  reserved;
 } espnow_connect_confirm_t;
 
 typedef struct __attribute__((packed)) {
@@ -159,7 +160,8 @@ typedef struct __attribute__((packed)) {
     uint8_t  protocol_version;   // ESPNOW_PROTOCOL_VERSION
     uint16_t session_id;         // Echo of TX session_id for matching
     uint8_t  rx_status;          // CONNECT_CONFIRM_STATUS_OK or _VERSION_MISMATCH
-    uint8_t  reserved[3];
+    uint16_t session_boot_nonce; // Echo of TX session_boot_nonce for full session-token match
+    uint8_t  reserved;
 } espnow_connect_confirm_ack_t;
 
 // ESP-NOW packet subtypes (for fragmented messages)

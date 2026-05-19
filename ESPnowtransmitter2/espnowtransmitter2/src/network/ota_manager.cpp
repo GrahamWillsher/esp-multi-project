@@ -1,5 +1,6 @@
 #include "ota_manager.h"
 #include "ota_manager_internal.h"
+#include "ethernet_manager.h"
 #include "../config/logging_config.h"
 #include "../config/network_config.h"
 #include <webserver_common_utils/ota_auth_utils.h>
@@ -305,7 +306,7 @@ void OtaManager::init_http_server() {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
     config.ctrl_port = 32768;
-    config.max_uri_handlers = 12;
+    config.max_uri_handlers = 16;
     config.max_resp_headers = 8;
     // OTA + JSON logging paths can be stack-heavy on the HTTP worker task.
     // Raise stack to avoid stack canary trips during OTA uploads.
@@ -315,6 +316,20 @@ void OtaManager::init_http_server() {
     
     // Start HTTP server
     if (httpd_start(&http_server_, &config) == ESP_OK) {
+        int registered_count = 0;
+        constexpr int kExpectedRouteCount = 13;
+
+        auto register_route = [this, &registered_count](const httpd_uri_t& uri) {
+            const esp_err_t rc = httpd_register_uri_handler(http_server_, &uri);
+            if (rc == ESP_OK) {
+                ++registered_count;
+            } else {
+                LOG_ERROR("HTTP_SERVER", "Route register failed: %s (%d)",
+                          uri.uri,
+                          static_cast<int>(rc));
+            }
+        };
+
         // Register OTA upload handler
         httpd_uri_t ota_upload_uri = {
             .uri = "/ota_upload",
@@ -322,7 +337,7 @@ void OtaManager::init_http_server() {
             .handler = ota_upload_handler,
             .user_ctx = NULL
         };
-        httpd_register_uri_handler(http_server_, &ota_upload_uri);
+        register_route(ota_upload_uri);
 
         // Register OTA arm handler (creates short-lived signed session)
         httpd_uri_t ota_arm_uri = {
@@ -331,7 +346,7 @@ void OtaManager::init_http_server() {
             .handler = ota_arm_handler,
             .user_ctx = NULL
         };
-        httpd_register_uri_handler(http_server_, &ota_arm_uri);
+        register_route(ota_arm_uri);
 
         // Register OTA status handler
         httpd_uri_t ota_status_uri = {
@@ -340,7 +355,7 @@ void OtaManager::init_http_server() {
             .handler = ota_status_handler,
             .user_ctx = NULL
         };
-        httpd_register_uri_handler(http_server_, &ota_status_uri);
+        register_route(ota_status_uri);
         
         // Register firmware info handler
         httpd_uri_t firmware_info_uri = {
@@ -349,7 +364,7 @@ void OtaManager::init_http_server() {
             .handler = firmware_info_handler,
             .user_ctx = NULL
         };
-        httpd_register_uri_handler(http_server_, &firmware_info_uri);
+        register_route(firmware_info_uri);
         
         // Register event logs handler
         httpd_uri_t event_logs_uri = {
@@ -358,7 +373,7 @@ void OtaManager::init_http_server() {
             .handler = event_logs_handler,
             .user_ctx = NULL
         };
-        httpd_register_uri_handler(http_server_, &event_logs_uri);
+        register_route(event_logs_uri);
 
         httpd_uri_t clear_event_logs_uri = {
             .uri = "/api/clear_event_logs",
@@ -366,7 +381,7 @@ void OtaManager::init_http_server() {
             .handler = clear_event_logs_handler,
             .user_ctx = NULL
         };
-        httpd_register_uri_handler(http_server_, &clear_event_logs_uri);
+        register_route(clear_event_logs_uri);
         
         // Register root handler
         httpd_uri_t root_uri = {
@@ -375,7 +390,7 @@ void OtaManager::init_http_server() {
             .handler = root_handler,
             .user_ctx = NULL
         };
-        httpd_register_uri_handler(http_server_, &root_uri);
+        register_route(root_uri);
 
         // Register consolidated runtime health endpoint
         httpd_uri_t health_uri = {
@@ -384,7 +399,15 @@ void OtaManager::init_http_server() {
             .handler = health_handler,
             .user_ctx = NULL
         };
-        httpd_register_uri_handler(http_server_, &health_uri);
+        register_route(health_uri);
+
+        httpd_uri_t routes_uri = {
+            .uri = "/api/routes",
+            .method = HTTP_GET,
+            .handler = routes_handler,
+            .user_ctx = NULL
+        };
+        register_route(routes_uri);
         
         // Register test data configuration GET handler
         httpd_uri_t test_data_config_get_uri = {
@@ -393,7 +416,7 @@ void OtaManager::init_http_server() {
             .handler = test_data_config_get_handler,
             .user_ctx = NULL
         };
-        httpd_register_uri_handler(http_server_, &test_data_config_get_uri);
+        register_route(test_data_config_get_uri);
         
         // Register test data configuration POST handler
         httpd_uri_t test_data_config_post_uri = {
@@ -402,7 +425,7 @@ void OtaManager::init_http_server() {
             .handler = test_data_config_post_handler,
             .user_ctx = NULL
         };
-        httpd_register_uri_handler(http_server_, &test_data_config_post_uri);
+        register_route(test_data_config_post_uri);
         
         // Register test data apply handler
         httpd_uri_t test_data_apply_uri = {
@@ -411,7 +434,7 @@ void OtaManager::init_http_server() {
             .handler = test_data_apply_handler,
             .user_ctx = NULL
         };
-        httpd_register_uri_handler(http_server_, &test_data_apply_uri);
+        register_route(test_data_apply_uri);
         
         // Register test data reset handler
         httpd_uri_t test_data_reset_uri = {
@@ -420,9 +443,20 @@ void OtaManager::init_http_server() {
             .handler = test_data_reset_handler,
             .user_ctx = NULL
         };
-        httpd_register_uri_handler(http_server_, &test_data_reset_uri);
-        
+        register_route(test_data_reset_uri);
+
+        if (registered_count < kExpectedRouteCount) {
+            LOG_WARN("HTTP_SERVER", "Routes registered: %d/%d (increase max_uri_handlers if needed)",
+                     registered_count,
+                     kExpectedRouteCount);
+        } else {
+            LOG_INFO("HTTP_SERVER", "Routes registered: %d/%d", registered_count, kExpectedRouteCount);
+        }
+
+        const IPAddress eth_ip = EthernetManager::instance().get_local_ip();
         LOG_INFO("HTTP_SERVER", "HTTP server started on port 80");
+        LOG_INFO("HTTP_SERVER", "Visible at: http://%s/", eth_ip.toString().c_str());
+        LOG_INFO("HTTP_SERVER", "Diagnostics: http://%s/api/health and /api/routes", eth_ip.toString().c_str());
     } else {
         LOG_ERROR("HTTP_SERVER", "Failed to start HTTP server");
     }

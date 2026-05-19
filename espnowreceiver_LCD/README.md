@@ -57,6 +57,24 @@ pio run --target uploadfs --environment waveshare_esp32s3_lcd7_lvgl
 
 ---
 
+## Webserver heap-fix (2026-Q2)
+
+Root cause: HTTP page renders collapsed internal heap to ~5.5 KB during `common_styles` / `common_script_helpers` stages, starving ESP-NOW ACK processing and causing link drops.
+
+### Changes applied
+
+| Phase | File(s) | Change |
+|---|---|---|
+| 0 | `webserver.cpp` | httpd conservative coexistence profile: `task_priority`→+2, `max_open_sockets`→6, `send_wait_timeout`→15 s |
+| 1 | `ota_page_content.h/cpp`, `ota_page.cpp` | Static `const char kContent[]` literal; no runtime String build |
+| 1 | `settings_page.cpp` | `kSettingsContent[]`, `kSettingsScript[]` flash literals; `g_settings_content` String removed |
+| 1 | `transmitter_hub_page_content.h/cpp`, `transmitter_hub_page.cpp` | `emit_` function with `_SEND_LIT`/`_SEND_STR` macros; `HubRequestData` struct replaces 6 String globals |
+| 1 | `dashboard_page_content.h/cpp`, `dashboard_page.cpp` | `emit_dashboard_page_content()` with 4 RX char-buffer args; TX values baked as `---` (JS updates via `/api/dashboard_data`) |
+| 2 | `page_generator.cpp`, `page_generator.h`, `page_registration_factory.cpp` | `COMMON_SCRIPT_HELPERS` moved to `/static/helpers.js` endpoint with `Cache-Control: max-age=86400`; eliminates ~12 KB inline send per request |
+| 3 | `page_generator.cpp` | Preflight heap check (20 KB free + 8 KB largest block) before any render; returns `503` immediately if heap unsafe |
+| 4 | `page_generator.cpp` | `webserver_on_request_start/end` accounting on all return paths in `send_rendered_page_streaming` |
+
+
 ## Docs
 
 - `docs/systemworks/ESPNOWRECEIVER_LCD_FULL_CODEBASE_REVIEW_2026_04_21.md` — full review and implementation log

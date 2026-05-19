@@ -4,10 +4,10 @@ const char* get_cellmonitor_page_script() {
     return R"rawliteral(
         let selectedCellIdx = -1;
         let selectedBarIdx = -1;
-        let eventSource = null;
-        let reconnectTimer = null;
-        let reconnectDelayMs = 1000;
-        const reconnectDelayMaxMs = 30000;
+        let pollTimer = null;
+        const CELL_POLL_BASE_MS = 5000;
+        const CELL_POLL_MAX_MS = 30000;
+        let cellPollDelayMs = CELL_POLL_BASE_MS;
 
         function renderCells(cells, balancing, minV, maxV) {
             const grid = document.getElementById('cellGrid');
@@ -169,63 +169,82 @@ const char* get_cellmonitor_page_script() {
             });
         }
 
-        function connectSSE() {
-            if (eventSource) {
-                eventSource.close();
-            }
-            if (reconnectTimer) {
-                clearTimeout(reconnectTimer);
-                reconnectTimer = null;
-            }
-            
-            eventSource = new EventSource('/api/cell_stream');
-            
-            eventSource.onmessage = function(event) {
-                try {
-                    const data = JSON.parse(event.data);
-                    
-                    if (data.success) {
-                        const modeEl = document.getElementById('cellMode');
-                        const statusEl = document.getElementById('cellStatus');
-                        
-                        modeEl.textContent = data.mode || 'live';
-                        modeEl.style.color = '#4CAF50';
-                        statusEl.innerHTML = `Cells: ${data.cells.length} | Min Voltage: <span style="color:#4CAF50;">${data.cell_min_voltage_mV} mV</span> | Max Voltage: <span style="color:#FF6B6B;">${data.cell_max_voltage_mV} mV</span>`;
-                        statusEl.style.color = '#ddd';
-                        reconnectDelayMs = 1000;
-                        
-                        renderCells(data.cells, data.balancing, data.cell_min_voltage_mV, data.cell_max_voltage_mV);
-                    } else {
-                        const modeEl = document.getElementById('cellMode');
-                        const statusEl = document.getElementById('cellStatus');
-                        
-                        modeEl.textContent = data.mode || 'unavailable';
-                        modeEl.style.color = '#FFD700';
-                        statusEl.textContent = data.message || 'Waiting for data from transmitter...';
-                        statusEl.style.color = '#FFD700';
-                    }
-                } catch (e) {
-                    console.error('Failed to parse SSE data:', e);
-                }
-            };
-            
-            eventSource.onerror = function(event) {
-                console.error('SSE connection error:', event);
-                document.getElementById('cellStatus').textContent = 'Connection lost - reconnecting...';
-                const waitMs = reconnectDelayMs;
-                reconnectTimer = setTimeout(connectSSE, waitMs);
-                reconnectDelayMs = Math.min(Math.floor(reconnectDelayMs * 1.5), reconnectDelayMaxMs);
-            };
+        function jitterDelay(ms) {
+            const jitter = 0.10;
+            const delta = Math.floor(ms * jitter);
+            const min = Math.max(1000, ms - delta);
+            const max = ms + delta;
+            return Math.floor(Math.random() * (max - min + 1)) + min;
         }
-        
-        connectSSE();
-        
-        window.addEventListener('beforeunload', function() {
-            if (eventSource) {
-                eventSource.close();
+
+        function retryAfterToMs(response) {
+            const retryAfter = response.headers.get('Retry-After');
+            const retrySeconds = Number(retryAfter);
+            if (!Number.isFinite(retrySeconds) || retrySeconds <= 0) {
+                return null;
             }
-            if (reconnectTimer) {
-                clearTimeout(reconnectTimer);
+            return Math.max(CELL_POLL_BASE_MS, Math.floor(retrySeconds * 1000));
+        }
+
+        function scheduleNextPoll(delayMs) {
+            if (pollTimer) {
+                clearTimeout(pollTimer);
+            }
+            pollTimer = setTimeout(pollCellData, jitterDelay(delayMs));
+        }
+
+        async function pollCellData() {
+            const modeEl = document.getElementById('cellMode');
+            const statusEl = document.getElementById('cellStatus');
+
+            try {
+                const response = await fetch('/api/cell_data', { cache: 'no-store' });
+
+                if (!response.ok) {
+                    const retryAfterMs = retryAfterToMs(response);
+                    if (retryAfterMs !== null) {
+                        cellPollDelayMs = Math.max(CELL_POLL_BASE_MS, retryAfterMs);
+                    } else {
+                        cellPollDelayMs = Math.min(cellPollDelayMs * 2, CELL_POLL_MAX_MS);
+                    }
+
+                    statusEl.textContent = `Cell data unavailable (${response.status}) - retrying...`;
+                    statusEl.style.color = '#FFD700';
+                    scheduleNextPoll(cellPollDelayMs);
+                    return;
+                }
+
+                const data = await response.json();
+                if (data.success) {
+                    modeEl.textContent = data.mode || 'live';
+                    modeEl.style.color = '#4CAF50';
+                    statusEl.innerHTML = `Cells: ${data.cells.length} | Min Voltage: <span style="color:#4CAF50;">${data.cell_min_voltage_mV} mV</span> | Max Voltage: <span style="color:#FF6B6B;">${data.cell_max_voltage_mV} mV</span>`;
+                    statusEl.style.color = '#ddd';
+                    renderCells(data.cells, data.balancing, data.cell_min_voltage_mV, data.cell_max_voltage_mV);
+                } else {
+                    modeEl.textContent = data.mode || 'unavailable';
+                    modeEl.style.color = '#FFD700';
+                    statusEl.textContent = data.message || 'Waiting for data from transmitter...';
+                    statusEl.style.color = '#FFD700';
+                }
+
+                // Successful HTTP response resets polling delay to the design cadence.
+                cellPollDelayMs = CELL_POLL_BASE_MS;
+                scheduleNextPoll(cellPollDelayMs);
+            } catch (error) {
+                console.error('Cell polling error:', error);
+                cellPollDelayMs = Math.min(cellPollDelayMs * 2, CELL_POLL_MAX_MS);
+                statusEl.textContent = 'Connection lost - retrying...';
+                statusEl.style.color = '#FFD700';
+                scheduleNextPoll(cellPollDelayMs);
+            }
+        }
+
+        pollCellData();
+
+        window.addEventListener('beforeunload', function() {
+            if (pollTimer) {
+                clearTimeout(pollTimer);
             }
         });
     )rawliteral";

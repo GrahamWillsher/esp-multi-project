@@ -226,66 +226,6 @@ void setup_message_routes() {
         },
         0xFF, nullptr);
 
-    // Register event log summary handler (transmitter -> receiver)
-    router.register_route(msg_event_log_summary,
-        [](const espnow_queue_msg_t* msg, void* ctx) {
-            if (msg->len < (int)sizeof(event_log_summary_t)) {
-                LOG_WARN(kLogTag, "EVENT_LOG_SUMMARY too short: %d bytes", msg->len);
-                return;
-            }
-
-            const auto* summary = reinterpret_cast<const event_log_summary_t*>(msg->data);
-            TransmitterManager::storeEventLogSummary(*summary);
-            notify_sse_data_updated();
-
-            LOG_INFO(kLogTag,
-                     "EVENT_LOG_SUMMARY seq=%lu total=%lu error=%lu new=%lu new_error=%lu",
-                     static_cast<unsigned long>(summary->seq),
-                     static_cast<unsigned long>(summary->total_historical),
-                     static_cast<unsigned long>(summary->error_historical),
-                     static_cast<unsigned long>(summary->new_since_last_report_total),
-                     static_cast<unsigned long>(summary->new_since_last_report_error));
-        },
-        0xFF, nullptr);
-
-    router.register_route(msg_event_logs_clear_ack,
-        [](const espnow_queue_msg_t* msg, void* ctx) {
-            if (msg->len < (int)sizeof(event_logs_clear_ack_t)) {
-                LOG_WARN(kLogTag, "EVENT_LOGS_CLEAR_ACK too short: %d bytes", msg->len);
-                return;
-            }
-
-            const auto* ack = reinterpret_cast<const event_logs_clear_ack_t*>(msg->data);
-            TransmitterManager::storeEventLogClearAck(*ack);
-            notify_sse_data_updated();
-
-            LOG_INFO(kLogTag, "EVENT_LOGS_CLEAR_ACK status=%u summary_seq=%lu",
-                     static_cast<unsigned>(ack->status),
-                     static_cast<unsigned long>(ack->summary_seq));
-        },
-        0xFF, nullptr);
-
-    router.register_route(msg_temperature_report,
-        [](const espnow_queue_msg_t* msg, void* ctx) {
-            if (msg->len < (int)sizeof(temperature_report_t)) {
-                LOG_WARN(kLogTag, "TEMPERATURE_REPORT too short: %d bytes", msg->len);
-                return;
-            }
-
-            const auto* report = reinterpret_cast<const temperature_report_t*>(msg->data);
-            TransmitterManager::storeTemperatureReport(*report);
-            notify_sse_data_updated();
-
-            if (report->valid) {
-                LOG_DEBUG(kLogTag, "TEMPERATURE_REPORT seq=%lu value=%.2fC",
-                          static_cast<unsigned long>(report->seq),
-                          DeviceTemperature::to_celsius(report->temperature_centi_c));
-            } else {
-                LOG_WARN(kLogTag, "TEMPERATURE_REPORT seq=%lu invalid", static_cast<unsigned long>(report->seq));
-            }
-        },
-        0xFF, nullptr);
-    
     // Register heartbeat handler
     register_standard_heartbeat_route(router);
 
@@ -722,20 +662,8 @@ void task_espnow_worker(void *parameter) {
             // still scanning.  Only payload/keepalive traffic should advance peer
             // registration state.
             if (!is_discovery_msg) {
-                auto current_state = connection_manager.get_state();
-                bool is_connecting = (current_state == EspNowConnectionState::CONNECTING);
-
                 if (!EspnowPeerManager::is_peer_registered(queue_msg.mac)) {
-                    if (EspnowPeerManager::add_peer(queue_msg.mac, 0)) {
-                        if (is_connecting) {
-                            connection_handler.on_peer_registered(queue_msg.mac);
-                        }
-                    }
-                } else {
-                    // Peer already exists (e.g., transmitter reboot). Ensure state advances.
-                    if (is_connecting && !connection_manager.is_connected()) {
-                        connection_handler.on_peer_registered(queue_msg.mac);
-                    }
+                    (void)EspnowPeerManager::add_peer(queue_msg.mac, 0);
                 }
             }
 

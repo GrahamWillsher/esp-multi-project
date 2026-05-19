@@ -24,6 +24,10 @@ void set_led_state(uint8_t color, uint8_t effect) {
     Backend::set_led_state(color, effect);
 }
 
+void set_network_status(const char* status_text, bool wifi_ok) {
+    Backend::set_network_status(status_text, wifi_ok);
+}
+
 void set_link_connected(bool connected) {
     Backend::set_link_connected(connected);
 }

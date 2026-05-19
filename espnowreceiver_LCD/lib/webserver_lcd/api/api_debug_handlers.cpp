@@ -1,12 +1,19 @@
 #include "api_debug_handlers.h"
 
-#include "../../src/espnow/espnow_send.h"
+#include "../../src/mqtt/mqtt_command_client.h"
+#include "../../src/mqtt/mqtt_client.h"
+#include "../../src/mqtt/control_state_compat.h"
 #include "api_response_utils.h"
 #include "../utils/transmitter_manager.h"
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <cstdio>
+#include <esp32common/mqtt/mqtt_feature_flags.h>
+
+namespace {
+constexpr const char* MQTT_TOPIC_RX_CMD_CONTROL_DEBUG_LEVEL = "batt-emu/mqtt-v1/rx/cmd/control/debug_level";
+}
 
 esp_err_t api_get_debug_level_handler(httpd_req_t *req) {
     uint8_t level = get_last_debug_level();
@@ -31,16 +38,29 @@ esp_err_t api_set_debug_level_handler(httpd_req_t *req) {
                 return ApiResponseUtils::send_error_message(req, "Invalid debug level (must be 0-7)");
             }
 
-            if (send_debug_level_control(level)) {
-                const char* level_names[] = {"EMERG", "ALERT", "CRIT", "ERROR", "WARNING", "NOTICE", "INFO", "DEBUG"};
-                return ApiResponseUtils::send_jsonf(req,
-                                                    "{\"success\":true,\"message\":\"Debug level set to %d (%s)\",\"level\":%d}",
-                                                    level,
-                                                    level_names[level],
-                                                    level);
-            } else {
-                return ApiResponseUtils::send_error_message(req, "Failed to send debug control (transmitter not connected?)");
+#if MQTT_FEATURE_COMMANDS
+            if (MqttClient::isEnabled() && MqttClient::isConnected()) {
+                MqttAckTracker::AckResult ack_result;
+                const bool command_sent = MqttCommandClient::sendDebugLevel(level, 1500, &ack_result);
+                if (command_sent && !ack_result.success) {
+                    return ApiResponseUtils::send_error_message(req,
+                                                                ack_result.message[0] != '\0'
+                                                                    ? ack_result.message
+                                                                    : "Debug level rejected by transmitter");
+                }
+                if (command_sent) {
+                    set_last_debug_level(level);
+                    const char* level_names[] = {"EMERG", "ALERT", "CRIT", "ERROR", "WARNING", "NOTICE", "INFO", "DEBUG"};
+                    return ApiResponseUtils::send_jsonf(req,
+                                                        "{\"success\":true,\"message\":\"Debug level command sent: %d (%s)\",\"level\":%d}",
+                                                        level,
+                                                        level_names[level],
+                                                        level);
+                }
             }
+#endif
+
+            return ApiResponseUtils::send_error_message(req, "MQTT command channel unavailable");
         }
     }
 

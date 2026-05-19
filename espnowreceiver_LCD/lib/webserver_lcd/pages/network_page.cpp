@@ -1,6 +1,9 @@
 #include "network_page.h"
 
+#include "../logging.h"
+
 #include <Arduino.h>
+#include <esp_err.h>
 #include <WiFi.h>
 
 namespace NetworkPage {
@@ -175,9 +178,29 @@ load();
 // ─────────────────────────────────────────────────────────────────────────────
 
 esp_err_t handle_get(httpd_req_t* req) {
+  const uint32_t started_ms = millis();
+  LOG_INFO("HTTP_PAGE", "GET /config start sta=%s mode=%d ch=%d",
+       (WiFi.status() == WL_CONNECTED) ? "up" : "down",
+       static_cast<int>(WiFi.getMode()),
+       static_cast<int>(WiFi.channel()));
+
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
     httpd_resp_set_type(req, "text/html");
-    return httpd_resp_send(req, kPageHtml, HTTPD_RESP_USE_STRLEN);
+  const esp_err_t rc = httpd_resp_send(req, kPageHtml, HTTPD_RESP_USE_STRLEN);
+
+  if (rc != ESP_OK) {
+    LOG_ERROR("HTTP_PAGE", "GET /config fail rc=%d (%s) dur=%lu ms",
+          static_cast<int>(rc),
+          esp_err_to_name(rc),
+          static_cast<unsigned long>(millis() - started_ms));
+  } else {
+    LOG_INFO("HTTP_PAGE", "GET /config done rc=%d dur=%lu ms bytes=%lu",
+         static_cast<int>(rc),
+         static_cast<unsigned long>(millis() - started_ms),
+         static_cast<unsigned long>(strlen(kPageHtml)));
+  }
+
+  return rc;
 }
 
 esp_err_t handle_root(httpd_req_t* req) {

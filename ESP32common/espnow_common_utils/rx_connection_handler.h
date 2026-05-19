@@ -20,6 +20,18 @@ struct ReceiverConnectionHandlerHooks {
                                   const ReceiverConnectionHandler& handler,
                                   uint32_t now_ms,
                                   uint32_t freshness_ms) = nullptr;
+    /**
+     * @brief Called before emergency radio teardown in L1/L2 recovery.
+     *        Projects can clear one-shot runtime radio-initialized flags here
+     *        so subsequent init paths are allowed to run.
+     */
+    void (*on_radio_deinit)(void* context) = nullptr;
+    /**
+     * @brief Called after successful L2 esp_wifi_start()+esp_now_init().
+     *        Projects should re-issue WiFi.begin(ssid, password) here so STA
+     *        re-association starts immediately after WiFi driver restart.
+     */
+    void (*on_l2_wifi_restarted)(void* context) = nullptr;
     void (*run_project_specific_tick)(void* context,
                                       ReceiverConnectionHandler& handler,
                                       uint32_t now_ms) = nullptr;
@@ -54,6 +66,10 @@ public:
 
     void on_probe_received(const uint8_t* transmitter_mac);
     void on_peer_registered(const uint8_t* transmitter_mac);
+    void on_connect_confirm_received(const uint8_t* transmitter_mac,
+                                     uint16_t session_id,
+                                     uint16_t session_boot_nonce,
+                                     uint8_t protocol_version);
     void on_data_received(const uint8_t* transmitter_mac);
     void on_link_activity(const uint8_t* transmitter_mac);
     void on_connection_lost();
@@ -62,6 +78,7 @@ public:
     void on_power_data_received();
     void on_transmitter_reboot_detected();
     void on_ack_send_pressure(const char* reason);
+    void on_heartbeat_fresh();
     void on_type_catalog_versions_received();
     void on_led_state_received();
     void on_config_update_sent();
@@ -76,7 +93,14 @@ public:
     bool power_data_confirmed() const { return power_data_confirmed_; }
     void set_power_data_confirmed(bool value) { power_data_confirmed_ = value; }
 
-    bool quiet_mode_active() const { return !EspNowConnectionManager::instance().is_connected(); }
+    /**
+     * @brief Returns true when radio pressure is CONSTRAINED or CRITICAL.
+     *
+     * Delegates to get_radio_pressure_state() so all HTTP handler call sites
+     * automatically gain live coexistence-awareness from the RxRadioArbiterFsm
+     * and EspnowTxScheduler metrics without needing individual handler changes.
+     */
+    bool quiet_mode_active() const;
     uint32_t power_data_freshness_ms() const { return config_.power_data_freshness_ms; }
     uint32_t config_retry_interval_ms() const { return config_.config_retry_interval_ms; }
 
@@ -89,6 +113,7 @@ private:
 
     void send_initialization_requests(const uint8_t* transmitter_mac);
     void flush_deferred_peer_registered();
+    void try_send_pending_connect_confirm_ack(uint32_t now_ms, const char* trigger);
     void begin_reconnect_diagnostics(uint32_t now_ms);
     void end_reconnect_diagnostics(uint32_t now_ms, const char* outcome);
 
@@ -99,6 +124,13 @@ private:
     uint32_t last_rx_time_ms_ = 0;
     uint8_t pending_peer_cleanup_mac_[6] = {0};
     bool pending_peer_cleanup_ = false;
+    uint8_t pending_connect_confirm_ack_mac_[6] = {0};
+    uint16_t pending_connect_confirm_ack_session_id_ = 0;
+    uint16_t pending_connect_confirm_ack_session_boot_nonce_ = 0;
+    uint8_t pending_connect_confirm_ack_rx_status_ = 0;
+    uint32_t pending_connect_confirm_ack_due_ms_ = 0;
+    uint8_t pending_connect_confirm_ack_retry_count_ = 0;
+    bool pending_connect_confirm_ack_ = false;
 
     bool first_data_received_ = false;
     bool init_pending_ = false;
@@ -132,8 +164,5 @@ private:
     RxLedSyncPolicy led_sync_;
     RxCatalogRetryPolicy catalog_retry_;
 
-    // NO_MEM recovery level counters (reset on CONNECTED)
-    uint8_t  no_mem_l1_count_        = 0;
-    uint8_t  no_mem_l2_count_        = 0;
-    uint32_t no_mem_last_reinit_ms_  = 0;
+    bool fsm_waiting_first_heartbeat_after_recovery_ = false;
 };

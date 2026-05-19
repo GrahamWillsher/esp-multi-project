@@ -8,7 +8,6 @@
 #include "api_network.h"
 #include "api_network_handlers.h"
 #include "api_settings_handlers.h"
-#include "api_sse_handlers.h"
 #include "api_telemetry_handlers.h"
 #include "api_type_selection_handlers.h"
 #include "api_middleware.h"
@@ -24,12 +23,11 @@ static const ApiMiddleware::RouteContext kCoreApiHandlers[] = {
     {.uri = "/api/dashboard_data", .method = HTTP_GET, .handler = api_dashboard_data_handler, .policy = ApiMiddleware::RoutePolicy::ReadOnly},
     {.uri = "/api/monitor", .method = HTTP_GET, .handler = api_monitor_handler, .policy = ApiMiddleware::RoutePolicy::ReadOnly},
     {.uri = "/api/cell_data", .method = HTTP_GET, .handler = api_cell_data_handler, .policy = ApiMiddleware::RoutePolicy::ReadOnly},
+    {.uri = "/api/cell_data_page", .method = HTTP_GET, .handler = api_cell_data_page_handler, .policy = ApiMiddleware::RoutePolicy::ReadOnly},
     {.uri = "/api/transmitter_health", .method = HTTP_GET, .handler = api_transmitter_health_handler, .policy = ApiMiddleware::RoutePolicy::ReadOnly},
     {.uri = "/api/version", .method = HTTP_GET, .handler = api_version_handler, .policy = ApiMiddleware::RoutePolicy::ReadOnly},
     {.uri = "/api/firmware_info", .method = HTTP_GET, .handler = api_firmware_info_handler, .policy = ApiMiddleware::RoutePolicy::ReadOnly},
     {.uri = "/api/transmitter_metadata", .method = HTTP_GET, .handler = api_transmitter_metadata_handler, .policy = ApiMiddleware::RoutePolicy::ReadOnly},
-    {.uri = "/api/monitor_sse", .method = HTTP_GET, .handler = api_monitor_sse_handler, .policy = ApiMiddleware::RoutePolicy::ReadOnly},
-    {.uri = "/api/cell_stream", .method = HTTP_GET, .handler = api_cell_data_sse_handler, .policy = ApiMiddleware::RoutePolicy::ReadOnly},
     {.uri = "/api/reboot", .method = HTTP_GET, .handler = api_reboot_handler, .policy = ApiMiddleware::RoutePolicy::MutatingNoBody},
     {.uri = "/api/transmitter_ota_status", .method = HTTP_GET, .handler = api_transmitter_ota_status_handler, .policy = ApiMiddleware::RoutePolicy::ReadOnly},
     {.uri = "/api/debugLevel", .method = HTTP_GET, .handler = api_get_debug_level_handler, .policy = ApiMiddleware::RoutePolicy::ReadOnly},
@@ -46,6 +44,7 @@ static const ApiMiddleware::RouteContext kCoreApiHandlers[] = {
     {.uri = "/api/battery_specs", .method = HTTP_GET, .handler = api_battery_specs_handler, .policy = ApiMiddleware::RoutePolicy::ReadOnly},
     {.uri = "/api/inverter_specs", .method = HTTP_GET, .handler = api_inverter_specs_handler, .policy = ApiMiddleware::RoutePolicy::ReadOnly},
     {.uri = "/api/get_event_logs", .method = HTTP_GET, .handler = api_get_event_logs_handler, .policy = ApiMiddleware::RoutePolicy::ReadOnly},
+    {.uri = "/api/event_logs_page", .method = HTTP_GET, .handler = api_event_logs_page_handler, .policy = ApiMiddleware::RoutePolicy::ReadOnly},
     {.uri = "/api/get_event_log_summary", .method = HTTP_GET, .handler = api_get_event_log_summary_handler, .policy = ApiMiddleware::RoutePolicy::ReadOnly},
     {.uri = "/api/clear_event_logs", .method = HTTP_POST, .handler = api_clear_event_logs_handler, .policy = ApiMiddleware::RoutePolicy::MutatingNoBody},
     {.uri = "/api/event_logs/subscribe", .method = HTTP_POST, .handler = api_event_logs_subscribe_handler, .policy = ApiMiddleware::RoutePolicy::MutatingNoBody},
@@ -54,6 +53,7 @@ static const ApiMiddleware::RouteContext kCoreApiHandlers[] = {
     {.uri = "/api/get_test_data_mode", .method = HTTP_GET, .handler = api_get_test_data_mode_handler, .policy = ApiMiddleware::RoutePolicy::ReadOnly},
     {.uri = "/api/set_test_data_mode", .method = HTTP_POST, .handler = api_set_test_data_mode_handler, .policy = ApiMiddleware::RoutePolicy::MutatingJson},
     {.uri = "/api/system_metrics", .method = HTTP_GET, .handler = api_system_metrics_handler, .policy = ApiMiddleware::RoutePolicy::ReadOnly},
+    {.uri = "/api/http_pressure_stats", .method = HTTP_GET, .handler = api_http_pressure_stats_handler, .policy = ApiMiddleware::RoutePolicy::ReadOnly},
     {.uri = "/api/get_led_runtime_status", .method = HTTP_GET, .handler = api_get_led_runtime_status_handler, .policy = ApiMiddleware::RoutePolicy::ReadOnly},
     {.uri = "/api/resync_led_state", .method = HTTP_POST, .handler = api_resync_led_state_handler, .policy = ApiMiddleware::RoutePolicy::MutatingNoBody},
     {.uri = "/api/ota_upload", .method = HTTP_POST, .handler = api_ota_upload_handler, .policy = ApiMiddleware::RoutePolicy::MutatingNoBody},

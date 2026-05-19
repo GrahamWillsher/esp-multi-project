@@ -3,82 +3,68 @@
 #include "dashboard_page_script.h"
 #include "../common/page_generator.h"
 #include "../utils/transmitter_manager.h"
-#include "../../receiver_config/receiver_config_manager.h"
-#include <Arduino.h>
+#include "../logging.h"
 #include <WiFi.h>
 #include <firmware_metadata.h>
+#include <firmware_version.h>
 
-/**
- * @brief Handler for the dashboard landing page
- * 
- * Shows two device cards (Transmitter + Receiver) with status indicators
- * and system tools (Debug, OTA) at the bottom.
- */
-static esp_err_t dashboard_handler(httpd_req_t *req) {
-    // Get transmitter Ethernet status for dashboard indicator
-    bool tx_connected = TransmitterManager::isEthernetConnected();
-    String tx_status = "Disconnected";
-    String tx_status_color = "#ff6b35"; // Red
-    String tx_ip = TransmitterManager::getIPString();
-    String tx_ip_mode = "";  // (D) or (S)
-    String tx_version = "Unknown";
-    String tx_device_name = "Unknown Device";  // Default matches receiver fallback
-
-    if (tx_ip == "0.0.0.0") {
-        tx_ip = "Not available";
-    } else if (tx_ip != "Unknown") {
-        tx_ip_mode = TransmitterManager::isStaticIP() ? " (S)" : " (D)";
-    }
-    
-    if (tx_connected) {
-        tx_status = "Connected";
-        tx_status_color = "#4CAF50"; // Green
+// Content generator: collects 4 RX-side values into small stack buffers,
+// then streams the full page body from flash via emit_dashboard_page_content.
+// TX values are baked as "---" in the static HTML; JS updates them from
+// /api/dashboard_data without any per-request heap allocation here.
+static esp_err_t dashboard_content_generator(httpd_req_t* req) {
+    // ── RX device name ────────────────────────────────────────────────────
+    char rx_device_name[64] = "Unknown Device";
+    if (FirmwareMetadata::isValid(FirmwareMetadata::metadata) &&
+        FirmwareMetadata::metadata.env_name[0] != '\0') {
+        strlcpy(rx_device_name, FirmwareMetadata::metadata.env_name, sizeof(rx_device_name));
     }
 
-    if (TransmitterManager::hasMetadata()) {
-        uint8_t major, minor, patch;
-        TransmitterManager::getMetadataVersion(major, minor, patch);
-        char version_str[16];
-        snprintf(version_str, sizeof(version_str), "%d.%d.%d", major, minor, patch);
-        tx_version = String(version_str);
+    // ── RX IP ─────────────────────────────────────────────────────────────
+    char rx_ip[48] = "";
+    {
+        String s = WiFi.localIP().toString();
+        if (s.isEmpty()) {
+            s = "0.0.0.0";
+        }
+        strlcpy(rx_ip, s.c_str(), sizeof(rx_ip));
+    }
 
-        const char* env = TransmitterManager::getMetadataEnv();
-        if (env && strlen(env) > 0) {
-            tx_device_name = String(env);
+    // ── RX firmware version ───────────────────────────────────────────────
+    char rx_version[24] = "Unknown";
+    if (FirmwareMetadata::isValid(FirmwareMetadata::metadata)) {
+        snprintf(rx_version, sizeof(rx_version), "%u.%u.%u",
+                 static_cast<unsigned>(FirmwareMetadata::metadata.version_major),
+                 static_cast<unsigned>(FirmwareMetadata::metadata.version_minor),
+                 static_cast<unsigned>(FirmwareMetadata::metadata.version_patch));
+    } else {
+        strlcpy(rx_version, FW_VERSION_STRING, sizeof(rx_version));
+    }
+
+    // ── RX MAC ────────────────────────────────────────────────────────────
+    char rx_mac[24] = "Unknown";
+    {
+        String s = WiFi.macAddress();
+        if (!s.isEmpty()) {
+            strlcpy(rx_mac, s.c_str(), sizeof(rx_mac));
         }
     }
-    
-    // Receiver status (always online)
-    String rx_version = "Unknown";
-    String rx_ip = WiFi.localIP().toString();
-    String rx_ip_mode = ReceiverNetworkConfig::useStaticIP() ? " (S)" : " (D)";
-    
-    // Get receiver device name from metadata
-    String rx_device_name = "Unknown Device";
-    if (FirmwareMetadata::isValid(FirmwareMetadata::metadata)) {
-        rx_device_name = String(FirmwareMetadata::metadata.env_name);
-        char rx_version_str[16];
-        snprintf(rx_version_str, sizeof(rx_version_str), "%d.%d.%d",
-                 FirmwareMetadata::metadata.version_major,
-                 FirmwareMetadata::metadata.version_minor,
-                 FirmwareMetadata::metadata.version_patch);
-        rx_version = String(rx_version_str);
-    }
-    String content = get_dashboard_page_content(tx_status,
-                                                tx_status_color,
-                                                tx_ip,
-                                                tx_ip_mode,
-                                                tx_version,
-                                                tx_device_name,
-                                                TransmitterManager::getMACString(),
-                                                rx_ip,
-                                                rx_ip_mode,
-                                                rx_version,
-                                                rx_device_name,
-                                                WiFi.macAddress());
-    const char* script = get_dashboard_page_script();
 
-    return send_rendered_page(req, "Dashboard", content, PageRenderOptions("", script));
+    return emit_dashboard_page_content(req, rx_device_name, rx_ip, rx_version, rx_mac);
+}
+
+esp_err_t dashboard_handler(httpd_req_t* req) {
+    ESP_LOGV(TAG, "dashboard_handler: Rendering dashboard page");
+
+    const char* title = "Dashboard";
+    PageRenderOptions options("", get_dashboard_page_script());
+
+    esp_err_t ret = send_rendered_page_streaming(req, title, dashboard_content_generator, options);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "dashboard_handler: Failed to render page, err=%d", ret);
+    }
+
+    return ret;
 }
 
 esp_err_t register_dashboard_page(httpd_handle_t server) {

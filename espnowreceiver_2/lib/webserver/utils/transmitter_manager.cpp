@@ -373,14 +373,19 @@ void TransmitterManager::getEventLogsSnapshot(std::vector<EventLogEntry>& out_lo
     TransmitterEventLogCache::get_event_logs_snapshot(out_logs, out_last_update_ms);
 }
 
-void TransmitterManager::storeEventLogSummary(const event_log_summary_t& summary) {
+void TransmitterManager::storeEventLogSummary(uint32_t seq,
+                                             uint32_t total_historical,
+                                             uint32_t error_historical,
+                                             uint32_t new_since_last_report_total,
+                                             uint32_t new_since_last_report_error,
+                                             uint32_t uptime_ms) {
     g_event_log_summary.known = true;
-    g_event_log_summary.seq = summary.seq;
-    g_event_log_summary.total_historical = summary.total_historical;
-    g_event_log_summary.error_historical = summary.error_historical;
-    g_event_log_summary.new_since_last_report_total = summary.new_since_last_report_total;
-    g_event_log_summary.new_since_last_report_error = summary.new_since_last_report_error;
-    g_event_log_summary.uptime_ms = summary.uptime_ms;
+    g_event_log_summary.seq = seq;
+    g_event_log_summary.total_historical = total_historical;
+    g_event_log_summary.error_historical = error_historical;
+    g_event_log_summary.new_since_last_report_total = new_since_last_report_total;
+    g_event_log_summary.new_since_last_report_error = new_since_last_report_error;
+    g_event_log_summary.uptime_ms = uptime_ms;
     g_event_log_summary.last_update_ms = millis();
 
     LOG_DEBUG("TX_MGR", "Stored event summary seq=%lu total=%lu error=%lu new=%lu new_error=%lu",
@@ -395,11 +400,13 @@ TransmitterManager::EventLogSummary TransmitterManager::getEventLogSummary() {
     return g_event_log_summary;
 }
 
-void TransmitterManager::storeEventLogClearAck(const event_logs_clear_ack_t& ack) {
+void TransmitterManager::storeEventLogClearAck(uint8_t status,
+                                              uint32_t summary_seq,
+                                              uint32_t uptime_ms) {
     g_event_log_clear_ack.known = true;
-    g_event_log_clear_ack.status = ack.status;
-    g_event_log_clear_ack.summary_seq = ack.summary_seq;
-    g_event_log_clear_ack.uptime_ms = ack.uptime_ms;
+    g_event_log_clear_ack.status = status;
+    g_event_log_clear_ack.summary_seq = summary_seq;
+    g_event_log_clear_ack.uptime_ms = uptime_ms;
     g_event_log_clear_ack.last_update_ms = millis();
 
     LOG_INFO("TX_MGR", "Stored event clear ack status=%u summary_seq=%lu",
@@ -411,12 +418,15 @@ TransmitterManager::EventLogClearAck TransmitterManager::getEventLogClearAck() {
     return g_event_log_clear_ack;
 }
 
-void TransmitterManager::storeTemperatureReport(const temperature_report_t& report) {
+void TransmitterManager::storeTemperatureReport(bool valid,
+                                               uint32_t seq,
+                                               int16_t temperature_centi_c,
+                                               uint32_t uptime_ms) {
     g_temperature_report.known = true;
-    g_temperature_report.valid = report.valid != 0;
-    g_temperature_report.seq = report.seq;
-    g_temperature_report.temperature_centi_c = report.temperature_centi_c;
-    g_temperature_report.uptime_ms = report.uptime_ms;
+    g_temperature_report.valid = valid;
+    g_temperature_report.seq = seq;
+    g_temperature_report.temperature_centi_c = temperature_centi_c;
+    g_temperature_report.uptime_ms = uptime_ms;
     g_temperature_report.last_update_ms = millis();
 
     if (g_temperature_report.valid) {

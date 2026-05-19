@@ -7,7 +7,6 @@
 #include <esp32common/espnow/connection_manager.h>
 #include <esp32common/espnow/connection_event.h>
 #include <esp32common/espnow/packet_utils.h>
-#include <esp32common/espnow/tx_scheduler.h>
 #include <runtime_common_utils/device_temperature.h>
 #include "../config/logging_config.h"
 #include "../network/time_manager.h"
@@ -47,6 +46,28 @@ void HeartbeatManager::tick() {
         send_heartbeat();
         m_last_send_time = now;
     }
+}
+
+bool HeartbeatManager::has_stable_heartbeat() const {
+    if (!m_initialized) {
+        return false;
+    }
+
+    const auto state = TxStateMachine::instance().state();
+    if (state != EspNowDeviceState::CONNECTED && state != EspNowDeviceState::ACTIVE) {
+        return false;
+    }
+
+    return m_last_ack_seq > 0 && !TxStateMachine::instance().heartbeat_timed_out(
+        TimingConfig::HEARTBEAT_TIMEOUT_MS);
+}
+
+bool HeartbeatManager::can_send_opportunistic_telemetry() const {
+    if (!has_stable_heartbeat()) {
+        return false;
+    }
+
+    return get_unacked_count() <= 1;
 }
 
 void HeartbeatManager::send_heartbeat() {
@@ -97,7 +118,11 @@ void HeartbeatManager::send_heartbeat() {
         LOG_DEBUG("HEARTBEAT", "Sent heartbeat seq=%u, uptime=%llu ms to %02X:%02X:%02X:%02X:%02X:%02X", 
                   hb.seq, (unsigned long long)hb.uptime_ms,
                   peer_mac[0], peer_mac[1], peer_mac[2], peer_mac[3], peer_mac[4], peer_mac[5]);
-        send_temperature_report(peer_mac);
+        if (can_send_opportunistic_telemetry()) {
+            send_temperature_report(peer_mac);
+        } else {
+            LOG_DEBUG("TEMP", "Deferred TX temperature report until heartbeat path is stable");
+        }
     } else {
         LOG_ERROR("HEARTBEAT", "Failed to send heartbeat seq=%u: %s", hb.seq, esp_err_to_name(result));
     }
@@ -118,13 +143,11 @@ void HeartbeatManager::send_temperature_report(const uint8_t* peer_mac) {
     report.valid = reading.valid ? 1 : 0;
     report.uptime_ms = millis();
 
-    // Best-effort telemetry via shared scheduler owner.
-    // Use monitoring context so control traffic remains prioritized.
-    const esp_err_t result = EspnowTxScheduler::send(
+    const esp_err_t result = TxSendGuard::send_to_receiver_guarded(
         peer_mac,
-        &report,
+        reinterpret_cast<const uint8_t*>(&report),
         sizeof(report),
-        "TEMP_REPORT"
+        "temperature_report"
     );
 
     if (result == ESP_OK) {
@@ -134,6 +157,9 @@ void HeartbeatManager::send_temperature_report(const uint8_t* peer_mac) {
         } else {
             LOG_WARN("TEMP", "Sent TX temperature seq=%u with invalid reading", report.seq);
         }
+    } else if (result == ESP_ERR_INVALID_STATE || result == ESP_ERR_TIMEOUT) {
+        LOG_DEBUG("TEMP", "Skipped TX temperature seq=%u (best-effort deferred: %s)",
+                  report.seq, esp_err_to_name(result));
     } else {
         LOG_DEBUG("TEMP", "Skipped TX temperature seq=%u (best-effort send failed: %s)",
                   report.seq, esp_err_to_name(result));

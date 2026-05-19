@@ -1,7 +1,7 @@
 #include "network_config_page_script.h"
 
-String get_network_config_page_script() {
-    return R"rawliteral(
+const char* get_network_config_page_script() {
+    static const char kNetworkConfigPageScript[] = R"rawliteral(
         let initialNetworkConfig = {};
         
         // All fields to track for changes
@@ -314,4 +314,6 @@ String get_network_config_page_script() {
         // Load configuration on page load
         loadConfig();
     )rawliteral";
+
+    return kNetworkConfigPageScript;
 }

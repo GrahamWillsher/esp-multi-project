@@ -62,6 +62,8 @@ public:
 
 private:
     VersionBeaconManager() = default;
+
+    bool can_send_beacon_now() const;
     
     // Send specific config section in response to request
     void send_config_section(config_section_t section, const uint8_t* receiver_mac);
@@ -82,6 +84,7 @@ private:
     
     // Timing
     uint32_t last_beacon_ms_{0};
+    bool pending_beacon_{false};
     static constexpr uint32_t PERIODIC_INTERVAL_MS = 30000;  // 30 seconds
     static constexpr uint32_t MIN_BEACON_INTERVAL_MS = 1000; // Rate limit (1s minimum)
 

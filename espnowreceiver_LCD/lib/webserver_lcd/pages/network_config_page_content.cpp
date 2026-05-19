@@ -1,12 +1,13 @@
 #include "network_config_page_content.h"
 #include "../common/nav_buttons.h"
+#include "../common/page_generator.h"
 
-String get_network_config_page_content(bool isAPMode) {
-    String content;
+esp_err_t emit_network_config_page_content(httpd_req_t* req, bool isAPMode) {
+    if (req == nullptr) {
+        return ESP_ERR_INVALID_ARG;
+    }
 
-    if (isAPMode) {
-        // Minimal AP mode setup page - NO navigation, NO extras
-        content = R"rawliteral(
+    static const char kApPrefix[] = R"rawliteral(
     <div style='max-width: 600px; margin: 50px auto; padding: 20px;'>
         <h1 style='text-align: center; color: #4CAF50; margin-bottom: 10px;'>📶 ESP32 Receiver Setup</h1>
         <p style='text-align: center; color: #888; margin-bottom: 30px;'>Configure WiFi and Network Settings</p>
@@ -17,20 +18,13 @@ String get_network_config_page_content(bool isAPMode) {
             The device will reboot after saving.
         </div>
 )rawliteral";
-    } else {
-        // Normal mode with full navigation
-        content = R"rawliteral(
+
+    static const char kNormalPrefix[] = R"rawliteral(
     <h1>Receiver Network Configuration</h1>
     <h2>WiFi & IP Settings</h2>
     )rawliteral";
 
-        // Add navigation buttons from central registry
-        content += "    " + generate_nav_buttons("/receiver/network");
-
-        content += "\n    ";
-    }
-
-    content += R"rawliteral(
+    static const char kBodySuffix[] = R"rawliteral(
     
     <!-- WiFi Credentials Section -->
     <div class='info-box'>
@@ -195,5 +189,19 @@ String get_network_config_page_content(bool isAPMode) {
     </div>
 )rawliteral";
 
-    return content;
+    if (isAPMode) {
+        if (send_page_content_chunk(req, "network_config_ap_prefix", kApPrefix, sizeof(kApPrefix) - 1) != ESP_OK) {
+            return ESP_FAIL;
+        }
+    } else {
+        if (send_page_content_chunk(req, "network_config_prefix", kNormalPrefix, sizeof(kNormalPrefix) - 1) != ESP_OK) {
+            return ESP_FAIL;
+        }
+        const String nav = String("    ") + generate_nav_buttons("/receiver/network") + "\n    ";
+        if (send_page_content_chunk(req, "network_config_nav", nav.c_str(), nav.length()) != ESP_OK) {
+            return ESP_FAIL;
+        }
+    }
+
+    return send_page_content_chunk(req, "network_config_body", kBodySuffix, sizeof(kBodySuffix) - 1);
 }

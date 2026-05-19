@@ -14,6 +14,7 @@ struct InitOptions {
     uint32_t retry_base_delay_ms = 4;
     uint32_t inter_frame_delay_ms = 2;
     uint32_t queue_send_timeout_ms = 2;
+    uint32_t idle_block_timeout_ms = 20;
     UBaseType_t task_priority = 1;
     uint32_t task_stack = 4096;
     BaseType_t task_core = 1;

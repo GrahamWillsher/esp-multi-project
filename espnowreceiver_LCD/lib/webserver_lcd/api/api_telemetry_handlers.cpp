@@ -4,6 +4,7 @@
 #include "webserver_metrics.h"
 #include "../webserver.h"
 #include "api_field_builders.h"
+#include "api_middleware.h"
 
 #include "../utils/transmitter_event_log_cache.h"
 #include "../utils/transmitter_manager.h"
@@ -24,7 +25,7 @@
 #include <esp32common/config/event_log_config.h>
 #include <runtime_common_utils/device_temperature.h>
 #include <freertos/queue.h>
-#include "../../src/espnow/espnow_send.h"
+#include "../../src/mqtt/control_state_compat.h"
 #include "../../src/mqtt/mqtt_client.h"
 #include <esp_heap_caps.h>
 #include "../../src/memory/memory_sampler.h"
@@ -39,6 +40,97 @@ extern volatile uint32_t rx_queue_high_watermark;
 }
 
 using namespace WebserverMetrics;
+
+namespace {
+constexpr uint32_t kSnapshotBudgetSteadyMs = 50;
+constexpr uint32_t kSnapshotBudgetDegradedMs = 200;
+
+struct SnapshotBudgetStats {
+    uint32_t monitor_last_ms = 0;
+    uint32_t monitor_max_ms = 0;
+    uint32_t monitor_over_steady_total = 0;
+    uint32_t monitor_over_degraded_total = 0;
+    uint32_t cell_last_ms = 0;
+    uint32_t cell_max_ms = 0;
+    uint32_t cell_over_steady_total = 0;
+    uint32_t cell_over_degraded_total = 0;
+};
+
+SnapshotBudgetStats g_snapshot_budget_stats{};
+
+int parse_int_query_param(httpd_req_t* req, const char* key, int default_value) {
+    if (!req || !key) {
+        return default_value;
+    }
+
+    char query[256] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
+        return default_value;
+    }
+
+    char value[24] = {0};
+    if (httpd_query_key_value(query, key, value, sizeof(value)) != ESP_OK) {
+        return default_value;
+    }
+
+    return atoi(value);
+}
+
+constexpr size_t kChunkTargetBytes = 768;
+
+esp_err_t send_json_chunked(httpd_req_t* req, const String& json) {
+    if (!req) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+    size_t offset = 0;
+    while (offset < json.length()) {
+        const size_t remaining = json.length() - offset;
+        const size_t part = (remaining > kChunkTargetBytes) ? kChunkTargetBytes : remaining;
+        const esp_err_t rc = httpd_resp_send_chunk(req, json.c_str() + offset, part);
+        if (rc != ESP_OK) {
+            return rc;
+        }
+        offset += part;
+    }
+
+    return httpd_resp_send_chunk(req, nullptr, 0);
+}
+
+void record_snapshot_latency(bool cell_handler, uint32_t elapsed_ms) {
+    if (cell_handler) {
+        g_snapshot_budget_stats.cell_last_ms = elapsed_ms;
+        if (elapsed_ms > g_snapshot_budget_stats.cell_max_ms) {
+            g_snapshot_budget_stats.cell_max_ms = elapsed_ms;
+        }
+        if (elapsed_ms > kSnapshotBudgetSteadyMs) {
+            g_snapshot_budget_stats.cell_over_steady_total++;
+        }
+        if (elapsed_ms > kSnapshotBudgetDegradedMs) {
+            g_snapshot_budget_stats.cell_over_degraded_total++;
+            LOG_WARN("API", "/api/cell_data latency budget exceeded: %lu ms",
+                     static_cast<unsigned long>(elapsed_ms));
+        }
+        return;
+    }
+
+    g_snapshot_budget_stats.monitor_last_ms = elapsed_ms;
+    if (elapsed_ms > g_snapshot_budget_stats.monitor_max_ms) {
+        g_snapshot_budget_stats.monitor_max_ms = elapsed_ms;
+    }
+    if (elapsed_ms > kSnapshotBudgetSteadyMs) {
+        g_snapshot_budget_stats.monitor_over_steady_total++;
+    }
+    if (elapsed_ms > kSnapshotBudgetDegradedMs) {
+        g_snapshot_budget_stats.monitor_over_degraded_total++;
+        LOG_WARN("API", "/api/monitor latency budget exceeded: %lu ms",
+                 static_cast<unsigned long>(elapsed_ms));
+    }
+}
+} // namespace
 
 esp_err_t api_data_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_DATA);
@@ -62,21 +154,62 @@ esp_err_t api_get_receiver_info_handler(httpd_req_t *req) {
 
 esp_err_t api_monitor_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_MONITOR);
-    StaticJsonDocument<192> doc;
+    const uint32_t started_ms = millis();
+    StaticJsonDocument<768> doc;
     const uint8_t test_mode = get_last_test_data_mode();
     const bool simulated = (test_mode > 0);
     const char* mode = simulated ? "simulated" : "live";
     uint8_t soc = 0;
     int32_t power = 0;
     uint32_t voltage_mv = 0;
+    uint8_t contactor_state = 0;
+    uint8_t error_flags = 0;
+    uint8_t warning_flags = 0;
+    uint32_t sys_uptime_seconds = 0;
+    float charger_hv_voltage_V = 0.0f;
+    float charger_hv_current_A = 0.0f;
+    float charger_lv_voltage_V = 0.0f;
+    float charger_lv_current_A = 0.0f;
+    uint16_t charger_ac_voltage_V = 0;
+    float charger_ac_current_A = 0.0f;
+    uint16_t charger_power_W = 0;
+    uint8_t charger_status = 0;
+    uint16_t inverter_ac_voltage_V = 0;
+    uint16_t inverter_ac_frequency_dHz = 0;
+    int16_t inverter_ac_current_dA = 0;
+    int32_t inverter_power_W = 0;
+    uint8_t inverter_status = 0;
 
     if (simulated) {
         const uint32_t t = millis() / 1000;
         soc = static_cast<uint8_t>(55 + (t % 35));  // 55..89
         power = 900 + static_cast<int32_t>((t % 12) * 85); // 900..1835
         voltage_mv = 50000 + (soc * 20); // simple correlated demo voltage
+        charger_hv_voltage_V = static_cast<float>(voltage_mv) / 1000.0f;
+        charger_hv_current_A = 4.0f;
+        charger_lv_voltage_V = 13.6f;
+        charger_lv_current_A = 6.0f;
+        charger_ac_voltage_V = 230;
+        charger_ac_current_A = 3.5f;
+        charger_power_W = 920;
+        charger_status = 1;
+        inverter_ac_voltage_V = 230;
+        inverter_ac_frequency_dHz = 500;
+        inverter_ac_current_dA = 45;
+        inverter_power_W = power;
+        inverter_status = 1;
     } else {
         TelemetrySnapshotUtils::fill_snapshot_telemetry(soc, power, voltage_mv);
+        TelemetrySnapshotUtils::fill_system_status(
+            contactor_state, error_flags, warning_flags, sys_uptime_seconds);
+        TelemetrySnapshotUtils::fill_charger_status(
+            charger_hv_voltage_V, charger_hv_current_A,
+            charger_lv_voltage_V, charger_lv_current_A,
+            charger_ac_voltage_V, charger_ac_current_A,
+            charger_power_W, charger_status);
+        TelemetrySnapshotUtils::fill_inverter_status(
+            inverter_ac_voltage_V, inverter_ac_frequency_dHz,
+            inverter_ac_current_dA, inverter_power_W, inverter_status);
     }
 
     doc["mode"] = mode;
@@ -84,28 +217,108 @@ esp_err_t api_monitor_handler(httpd_req_t *req) {
     doc["power"] = power;
     doc["voltage_mv"] = voltage_mv;
     doc["voltage_v"] = static_cast<float>(voltage_mv) / 1000.0f;
+    doc["contactor_state"] = contactor_state;
+    doc["error_flags"] = error_flags;
+    doc["warning_flags"] = warning_flags;
+    doc["tx_uptime_s"] = sys_uptime_seconds;
+
+    JsonObject charger = doc.createNestedObject("charger");
+    charger["hv_voltage_v"] = charger_hv_voltage_V;
+    charger["hv_current_a"] = charger_hv_current_A;
+    charger["lv_voltage_v"] = charger_lv_voltage_V;
+    charger["lv_current_a"] = charger_lv_current_A;
+    charger["ac_voltage_v"] = charger_ac_voltage_V;
+    charger["ac_current_a"] = charger_ac_current_A;
+    charger["power_w"] = charger_power_W;
+    charger["status"] = charger_status;
+
+    JsonObject inverter = doc.createNestedObject("inverter");
+    inverter["ac_voltage_v"] = inverter_ac_voltage_V;
+    inverter["ac_frequency_hz"] = static_cast<float>(inverter_ac_frequency_dHz) / 10.0f;
+    inverter["ac_current_a"] = static_cast<float>(inverter_ac_current_dA) / 10.0f;
+    inverter["power_w"] = inverter_power_W;
+    inverter["status"] = inverter_status;
 
     String json;
-    json.reserve(128);
+    json.reserve(384);
     serializeJson(doc, json);
-    return HttpJsonUtils::send_json(req, json.c_str());
+    const esp_err_t rc = HttpJsonUtils::send_json(req, json.c_str());
+    record_snapshot_latency(false, millis() - started_ms);
+    return rc;
 }
 
 esp_err_t api_cell_data_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_CELL_DATA);
+    const uint32_t started_ms = millis();
+    esp_err_t rc = ESP_FAIL;
     CellDataCache::CellDataSnapshot snapshot;
     if (CellDataCache::get_cell_data_snapshot(snapshot) && snapshot.known) {
         String json = TelemetrySnapshotUtils::serialize_cell_data(snapshot);
-        return HttpJsonUtils::send_json(req, json.c_str());
+        rc = send_json_chunked(req, json);
+    } else {
+        const char* json = "{\"success\":false,\"mode\":\"unavailable\",\"message\":\"No cell data received from transmitter\"}";
+        rc = HttpJsonUtils::send_json(req, json);
     }
 
-    const char* json = "{\"success\":false,\"mode\":\"unavailable\",\"message\":\"No cell data received from transmitter\"}";
-    return HttpJsonUtils::send_json(req, json);
+    record_snapshot_latency(true, millis() - started_ms);
+    return rc;
+}
+
+esp_err_t api_cell_data_page_handler(httpd_req_t *req) {
+    HttpHandlerTimer handler_timer(HM_CELL_DATA);
+
+    int offset = parse_int_query_param(req, "offset", 0);
+    int limit = parse_int_query_param(req, "limit", 24);
+    if (offset < 0) offset = 0;
+    if (limit < 1) limit = 1;
+    if (limit > 32) limit = 32;
+
+    CellDataCache::CellDataSnapshot snapshot;
+    if (!CellDataCache::get_cell_data_snapshot(snapshot) || !snapshot.known) {
+        return HttpJsonUtils::send_json(req,
+                                        "{\"success\":false,\"mode\":\"unavailable\",\"message\":\"No cell data received from transmitter\"}");
+    }
+
+    const int total_cells = static_cast<int>(snapshot.cell_count);
+    if (offset > total_cells) {
+        offset = total_cells;
+    }
+
+    const int end_index = std::min(total_cells, offset + limit);
+
+    DynamicJsonDocument doc(3072);
+    doc["success"] = true;
+    doc["source"] = "mqtt";
+    doc["offset"] = offset;
+    doc["limit"] = limit;
+    doc["returned"] = end_index - offset;
+    doc["total"] = total_cells;
+    doc["number_of_cells"] = snapshot.cell_count;
+    doc["min_voltage_mV"] = snapshot.min_voltage_mV;
+    doc["max_voltage_mV"] = snapshot.max_voltage_mV;
+    doc["balancing_active"] = snapshot.balancing_active;
+    doc["data_source"] = snapshot.data_source;
+
+    JsonArray cells = doc.createNestedArray("cells");
+    for (int index = offset; index < end_index; ++index) {
+        JsonObject cell = cells.createNestedObject();
+        cell["index"] = index;
+        cell["voltage_mV"] = snapshot.voltages_mV[static_cast<size_t>(index)];
+        const bool balancing = snapshot.balancing_status[static_cast<size_t>(index)] ? true : false;
+        cell["balancing"] = balancing;
+    }
+
+    String json;
+    serializeJson(doc, json);
+    return HttpJsonUtils::send_json(req, json.c_str());
 }
 
 esp_err_t api_dashboard_data_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_DASHBOARD_DATA);
-    StaticJsonDocument<384> doc;
+    // Size increased to accommodate merged transmitter_health fields (uptime_ms,
+    // unix_time, utc_offset_min, time_source, geolocation_valid, mqtt_connected).
+    // /api/transmitter_health is no longer polled separately by the dashboard.
+    StaticJsonDocument<768> doc;
 
     const DeviceTemperature::Reading receiver_temperature = DeviceTemperature::get_latest();
     const auto transmitter_temperature = TransmitterManager::getTemperatureReport();
@@ -116,7 +329,16 @@ esp_err_t api_dashboard_data_handler(httpd_req_t *req) {
     transmitter["ip"] = TransmitterManager::getIPString();
     transmitter["is_static"] = TransmitterManager::isStaticIP();
     transmitter["mac"] = TransmitterManager::getMACString();
-    
+
+    // Health fields merged from /api/transmitter_health to eliminate the second
+    // periodic request per dashboard poll cycle (2 requests/cycle -> 1 request/cycle).
+    transmitter["uptime_ms"]         = TransmitterManager::getUptimeMs();
+    transmitter["unix_time"]         = TransmitterManager::getUnixTime();
+    transmitter["utc_offset_min"]    = TransmitterManager::getUtcOffsetMin();
+    transmitter["time_source"]       = TransmitterManager::getTimeSource();
+    transmitter["geolocation_valid"] = TransmitterManager::isGeolocationValid();
+    transmitter["mqtt_connected"]    = TransmitterManager::isMqttConnected();
+
     String tx_firmware = "Unknown";
     if (TransmitterManager::hasMetadata()) {
         uint8_t major, minor, patch;
@@ -334,17 +556,9 @@ esp_err_t api_inverter_specs_handler(httpd_req_t *req) {
 
 esp_err_t api_get_event_logs_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_GET_EVENT_LOGS);
-    char query[256] = {0};
-    int limit = 50;
-
-    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
-        char param[32];
-        if (httpd_query_key_value(query, "limit", param, sizeof(param)) == ESP_OK) {
-            limit = atoi(param);
-            if (limit < 1) limit = 1;
-            if (limit > 500) limit = 500;
-        }
-    }
+    int limit = parse_int_query_param(req, "limit", 20);
+    if (limit < 1) limit = 1;
+    if (limit > 50) limit = 50;
 
     std::vector<TransmitterManager::EventLogEntry> logs;
     uint32_t last_update_ms = 0;
@@ -374,18 +588,66 @@ esp_err_t api_get_event_logs_handler(httpd_req_t *req) {
 
     String json;
     serializeJson(doc, json);
-    return HttpJsonUtils::send_json(req, json.c_str());
+    return send_json_chunked(req, json);
+}
+
+esp_err_t api_event_logs_page_handler(httpd_req_t *req) {
+    HttpHandlerTimer handler_timer(HM_GET_EVENT_LOGS);
+
+    int offset = parse_int_query_param(req, "offset", 0);
+    int limit = parse_int_query_param(req, "limit", 20);
+    if (offset < 0) offset = 0;
+    if (limit < 1) limit = 1;
+    if (limit > 50) limit = 50;
+
+    std::vector<TransmitterManager::EventLogEntry> logs;
+    uint32_t last_update_ms = 0;
+    TransmitterManager::getEventLogsSnapshot(logs, &last_update_ms);
+
+    const int total = static_cast<int>(logs.size());
+    if (offset > total) {
+        offset = total;
+    }
+    const int end_index = std::min(total, offset + limit);
+
+    DynamicJsonDocument doc(4096);
+    doc["success"] = true;
+    doc["source"] = "mqtt";
+    doc["offset"] = offset;
+    doc["limit"] = limit;
+    doc["returned"] = end_index - offset;
+    doc["total"] = total;
+    doc["last_update_ms"] = last_update_ms;
+
+    JsonArray events = doc.createNestedArray("events");
+    for (int index = offset; index < end_index; index++) {
+        const auto& entry = logs[static_cast<size_t>(index)];
+        JsonObject evt = events.createNestedObject();
+        evt["timestamp_ms"] = entry.timestamp_ms;
+        evt["event_unix_ms"] = entry.event_unix_ms;
+        evt["event_utc_offset_min"] = entry.event_utc_offset_min;
+        evt["level"] = entry.level;
+        evt["data"] = entry.data;
+        evt["count"] = entry.count;
+        evt["is_new"] = entry.is_new;
+        evt["type"] = entry.type;
+        evt["message"] = entry.message;
+    }
+
+    String json;
+    serializeJson(doc, json);
+    return send_json_chunked(req, json);
 }
 
 esp_err_t api_get_event_log_summary_handler(httpd_req_t *req) {
-    // Transmitter-driven model: return cached summary pushed over ESP-NOW.
+    // Transmitter-driven model: return cached summary pushed over MQTT.
     // Do not request on every HTTP poll from dashboard.
 
     const auto summary = TransmitterManager::getEventLogSummary();
 
     DynamicJsonDocument doc(256);
     doc["success"] = summary.known;
-    doc["source"] = "espnow";
+    doc["source"] = "mqtt";
     doc["seq"] = summary.seq;
     doc["total_historical"] = summary.total_historical;
     doc["error_historical"] = summary.error_historical;
@@ -422,7 +684,7 @@ esp_err_t api_clear_event_logs_handler(httpd_req_t *req) {
             const auto ack_now = TransmitterManager::getEventLogClearAck();
             if (ack_now.known &&
                 ack_now.last_update_ms > ack_before.last_update_ms &&
-                ack_now.status == EVENT_LOGS_CLEAR_ACK_SUCCESS) {
+                ack_now.status == TransmitterManager::kEventLogsClearAckSuccess) {
                 transmitter_clear_confirmed = true;
                 break;
             }
@@ -569,14 +831,63 @@ esp_err_t api_system_metrics_handler(httpd_req_t *req) {
     webserver["init_attempts"] = webserver_metrics.init_attempts;
     webserver["init_successes"] = webserver_metrics.init_successes;
     webserver["init_failures"] = webserver_metrics.init_failures;
+    webserver["request_total"] = webserver_metrics.request_total;
+    webserver["request_failures"] = webserver_metrics.request_failures;
+    webserver["last_request_complete_ms"] = webserver_metrics.last_request_complete_ms;
+    webserver["last_request_duration_ms"] = webserver_metrics.last_request_duration_ms;
+    webserver["max_request_duration_ms"] = webserver_metrics.max_request_duration_ms;
+    webserver["active_requests"] = webserver_metrics.active_requests;
+    webserver["recycle_count"] = webserver_metrics.recycle_count;
 
     JsonObject transmitter = doc.createNestedObject("transmitter");
     transmitter["connected"] = TransmitterManager::isTransmitterConnected();
     transmitter["ip_known"] = TransmitterManager::isIPKnown();
     transmitter["metadata"] = TransmitterManager::hasMetadata();
 
+    const ApiMiddleware::PressureGateStats pressure_stats = ApiMiddleware::get_pressure_gate_stats();
+    JsonObject http_pressure = doc.createNestedObject("http_pressure_gate");
+    http_pressure["read_throttled_total"] = pressure_stats.read_throttled_total;
+    http_pressure["read_throttled_constrained"] = pressure_stats.read_throttled_constrained;
+    http_pressure["read_throttled_critical"] = pressure_stats.read_throttled_critical;
+    http_pressure["mutation_blocked_critical"] = pressure_stats.mutation_blocked_critical;
+
     String json;
     json.reserve(1024);
+    serializeJson(doc, json);
+    return HttpJsonUtils::send_json(req, json.c_str());
+}
+
+esp_err_t api_http_pressure_stats_handler(httpd_req_t *req) {
+    HttpHandlerTimer handler_timer(HM_SYSTEM_METRICS);
+
+    DynamicJsonDocument doc(384);
+    const ApiMiddleware::PressureGateStats stats = ApiMiddleware::get_pressure_gate_stats();
+
+    doc["success"] = true;
+    doc["uptime_s"] = millis() / 1000;
+    doc["read_throttled_total"] = stats.read_throttled_total;
+    doc["read_throttled_constrained"] = stats.read_throttled_constrained;
+    doc["read_throttled_critical"] = stats.read_throttled_critical;
+    doc["mutation_blocked_critical"] = stats.mutation_blocked_critical;
+
+    JsonObject budget = doc.createNestedObject("snapshot_latency_budget_ms");
+    budget["steady"] = kSnapshotBudgetSteadyMs;
+    budget["degraded"] = kSnapshotBudgetDegradedMs;
+
+    JsonObject monitor = doc.createNestedObject("monitor");
+    monitor["last_ms"] = g_snapshot_budget_stats.monitor_last_ms;
+    monitor["max_ms"] = g_snapshot_budget_stats.monitor_max_ms;
+    monitor["over_steady_total"] = g_snapshot_budget_stats.monitor_over_steady_total;
+    monitor["over_degraded_total"] = g_snapshot_budget_stats.monitor_over_degraded_total;
+
+    JsonObject cell = doc.createNestedObject("cell_data");
+    cell["last_ms"] = g_snapshot_budget_stats.cell_last_ms;
+    cell["max_ms"] = g_snapshot_budget_stats.cell_max_ms;
+    cell["over_steady_total"] = g_snapshot_budget_stats.cell_over_steady_total;
+    cell["over_degraded_total"] = g_snapshot_budget_stats.cell_over_degraded_total;
+
+    String json;
+    json.reserve(256);
     serializeJson(doc, json);
     return HttpJsonUtils::send_json(req, json.c_str());
 }

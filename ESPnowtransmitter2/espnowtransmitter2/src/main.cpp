@@ -1,24 +1,22 @@
 /**
- * ESP-NOW Transmitter - Modular Architecture
- * 
+ * Transmitter - Modular Architecture (MQTT transport mode)
+ *
  * Hardware: Olimex ESP32-POE-ISO (WROVER)
  * Features:
- *  - ESP-NOW transmitter (periodic data + discovery)
  *  - Ethernet connectivity (W5500)
- *  - MQTT telemetry publishing
+ *  - MQTT telemetry publishing / command routing
  *  - HTTP OTA firmware updates
  *  - NTP time synchronization
- * 
+ *
  * Architecture:
  *  - Singleton managers for all services
- *  - 4 FreeRTOS tasks: RX, data sender, discovery, MQTT
+ *  - Runtime MQTT task + service-lifecycle supervisors
  *  - Clean configuration separation
  */
 
 #include <Arduino.h>
 #include <WiFi.h>           // Direct use: WiFi.mode/disconnect/config/macAddress
 #include <ETH.h>
-#include <espnow_transmitter.h>
 #include <firmware_version.h>  // DEVICE_NAME, PROTOCOL_VERSION, FW_VERSION_*
 #include <firmware_metadata.h>
 #include <runtime_common_utils/ota_boot_guard.h>
@@ -35,8 +33,6 @@
 // Network managers
 #include "network/ethernet_manager.h"  // Provides ETH.h transitively
 
-// Queue management
-#include "queue/espnow_queue_manager.h"
 #include <runtime_common_utils/bootstrap_phase_runner.h>
 #include "runtime/runtime_context.h"
 #include "network/mqtt_manager.h"
@@ -48,21 +44,6 @@
 
 // Battery Emulator HAL (single fixed TransmitterHal for Olimex ESP32-POE2)
 #include "battery_emulator/devboard/hal/hal.h"
-
-// ESP-NOW handlers
-#include "espnow/message_handler.h"
-#include "espnow/discovery_task.h"
-#include "espnow/data_sender.h"
-#include "espnow/version_beacon_manager.h"
-#include "espnow/enhanced_cache.h"          // Section 11: Dual storage cache
-#include "espnow/transmission_task.h"        // Section 11: Background transmission
-#include "espnow/heartbeat_manager.h"        // Heartbeat with sequence tracking and ACK
-#include "espnow/tx_connection_handler.h"
-#include "espnow/tx_reconnect_manager.h"
-#include "espnow/tx_state_machine.h"
-#include <channel_manager.h>                 // Centralized channel management
-#include <esp32common/espnow/connection_manager.h>
-#include <esp32common/espnow/connection_event_processor.h>
 
 // Settings manager
 #include "settings/settings_manager.h"
@@ -101,17 +82,10 @@ static void log_timing_policy() {
              static_cast<unsigned long>(TimingConfig::STARTUP.wifi_radio_stabilization_ms),
              static_cast<unsigned long>(TimingConfig::STARTUP.post_init_delay_ms),
              static_cast<unsigned long>(TimingConfig::STARTUP.component_init_delay_ms));
-    LOG_INFO("TIMING", "Discovery: retry=%lu deferred=%lu announce=%lu probe=%lu tx_per_channel=%lu",
-             static_cast<unsigned long>(TimingConfig::DISCOVERY.retry_interval_ms),
-             static_cast<unsigned long>(TimingConfig::DISCOVERY.deferred_poll_ms),
-             static_cast<unsigned long>(TimingConfig::DISCOVERY.announcement_interval_ms),
-             static_cast<unsigned long>(TimingConfig::DISCOVERY.probe_interval_ms),
-             static_cast<unsigned long>(TimingConfig::DISCOVERY.transmit_duration_per_channel_ms));
-    LOG_INFO("TIMING", "Heartbeat: interval=%lu timeout=%lu tx_timeout=%lu connect=%lu",
+    LOG_INFO("TIMING", "Link: heartbeat_interval=%lu heartbeat_timeout=%lu tx_timeout=%lu",
              static_cast<unsigned long>(TimingConfig::HEARTBEAT.interval_ms),
              static_cast<unsigned long>(TimingConfig::HEARTBEAT.timeout_ms),
-             static_cast<unsigned long>(TimingConfig::HEARTBEAT.tx_timeout_ms),
-             static_cast<unsigned long>(TimingConfig::HEARTBEAT.espnow_connecting_timeout_ms));
+             static_cast<unsigned long>(TimingConfig::HEARTBEAT.tx_timeout_ms));
     LOG_INFO("TIMING", "Ethernet: init=%lu phy_reset=%lu ip_wait=%lu recovery=%lu",
              static_cast<unsigned long>(TimingConfig::ETHERNET.init_delay_ms),
              static_cast<unsigned long>(TimingConfig::ETHERNET.phy_reset_delay_ms),
@@ -135,7 +109,7 @@ static void log_timing_policy() {
 static void bootstrap_hardware() {
     Serial.begin(hardware::SERIAL_BAUD_RATE);
     vTaskDelay(pdMS_TO_TICKS(TimingConfig::STARTUP.serial_init_delay_ms));
-    LOG_INFO("MAIN", "\n=== ESP-NOW Transmitter (Modular) ===");
+    LOG_INFO("MAIN", "\n=== MQTT Transport Transmitter (Modular) ===");
 
     // Initialize hardware abstraction layer (fixed TransmitterHal for Olimex ESP32-POE2)
     init_hal();
@@ -158,18 +132,18 @@ static void bootstrap_hardware() {
 }
 
 // --- Phase 2: Persistence / Config ------------------------------------------
-// Load NVS-backed system settings; configure WiFi radio for ESP-NOW use.
-// WiFi MUST be configured BEFORE Ethernet (radio stabilisation requirement).
+// Load NVS-backed system settings and keep WiFi STA radio in a neutral state.
+// Ethernet remains the primary network path.
 static void bootstrap_persistence() {
     LOG_INFO("SETTINGS", "Initializing system settings...");
     if (!SystemSettings::instance().init()) {
         LOG_ERROR("SETTINGS", "System settings initialization failed");
     }
 
-    // Initialize WiFi for ESP-NOW (BEFORE Ethernet to avoid disruption).
-    // STA mode with no IP/gateway — Ethernet is the default route for all
+    // Initialize WiFi radio before Ethernet.
+    // STA mode with no IP/gateway — Ethernet remains the default route for all
     // network traffic (MQTT, NTP, OTA, HTTP).
-    LOG_INFO("WIFI", "Initializing WiFi for ESP-NOW...");
+    LOG_INFO("WIFI", "Initializing WiFi STA radio...");
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();
     // CRITICAL: Explicitly clear WiFi IP to force routing via Ethernet
@@ -266,9 +240,8 @@ static void bootstrap_battery() {
 
 // --- Phase 4: Connectivity primitives ---------------------------------------
 // Bring up Ethernet with its service-lifecycle callbacks (H2), then
-// initialise the ESP-NOW radio and queue layer.
-// Service start/stop is deferred entirely to the callback bodies — no inline
-// is_connected() gate here (see H2 implementation notes).
+// initialize network connectivity for MQTT services.
+// Service start/stop is deferred entirely to callback owners.
 static void bootstrap_connectivity() {
     // Initialize Ethernet (AFTER WiFi radio is stable — see Phase 2)
     LOG_INFO("ETHERNET", "Initializing Ethernet...");
@@ -281,118 +254,10 @@ static void bootstrap_connectivity() {
     // state immediately if the link is already up.
     ServiceSupervisor::instance().attach_to_ethernet();
 
-    // Initialize ESP-NOW queue layer (must precede init_espnow)
-    LOG_INFO("ESPNOW", "Initializing ESP-NOW...");
-    if (!EspnowQueueManager::instance().init(
-            task_config::ESPNOW_MESSAGE_QUEUE_SIZE,  // Message queue: 10
-            48,                                       // Discovery queue headroom for PROBE/ACK during scan
-            30                                        // RX queue: 30
-        )) {
-        LOG_ERROR("ESPNOW", "Failed to initialize queue manager!");
-        return;
-    }
-
-    // Bind queue handles into runtime context (also synchronizes ISR-required globals).
-    RuntimeContext::instance().bind_espnow_queues(
-        EspnowQueueManager::instance().get_message_queue(),
-        EspnowQueueManager::instance().get_discovery_queue(),
-        EspnowQueueManager::instance().get_rx_queue()
-    );
-
-    init_espnow(RuntimeContext::instance().espnow_message_queue());
-    LOG_DEBUG("ESPNOW", "ESP-NOW initialized successfully");
+    LOG_INFO("NETWORK", "MQTT transport mode active (no ESP-NOW bootstrap)");
 }
 
-// --- Phase 5: ESP-NOW state machines & discovery ----------------------------
-// Wire up every ESP-NOW state-machine layer in strict dependency order:
-//   RX task → ChannelManager → ConnectionManager →
-//   TransmitterConnectionHandler → TxStateMachine → MessageHandler →
-//   ConnectionEventProcessor → SettingsManager → MqttConfigManager
-// Finishes with NVS cache restore and active channel-hopping start.
-static void bootstrap_espnow() {
-    // MUST start BEFORE passive scanning — processes PROBE messages from receiver
-    EspnowMessageHandler::instance().start_rx_task(RuntimeContext::instance().espnow_message_queue());
-    vTaskDelay(pdMS_TO_TICKS(TimingConfig::COMPONENT_INIT_DELAY_MS));
-
-    LOG_INFO("CHANNEL", "Initializing channel manager...");
-    if (!ChannelManager::instance().init()) {
-        LOG_ERROR("CHANNEL", "Failed to initialize channel manager!");
-    }
-
-    // Must be after FreeRTOS scheduler has started (first task above ensures this)
-    LOG_INFO("STATE", "Initializing common connection manager...");
-    if (!EspNowConnectionManager::instance().init()) {
-        LOG_ERROR("STATE", "Failed to initialize common connection manager!");
-    }
-    EspNowConnectionManager::instance().set_auto_reconnect(true);
-    EspNowConnectionManager::instance().set_connecting_timeout_ms(TimingConfig::ESPNOW_CONNECTING_TIMEOUT_MS);
-
-    // Initialize transmitter connection handler (registers state callbacks)
-    TransmitterConnectionHandler::instance().init();
-    // Initialize reconnect manager AFTER connection handler so callbacks are already
-    // registered before the first CONNECT event can arrive.
-    TxReconnectManager::instance().init();
-    // Initialize transmitter runtime state machine
-    TxStateMachine::instance().init();
-    // Message routes are registered in EspnowMessageHandler singleton construction;
-    // connection/device state transitions are owned solely by TransmitterConnectionHandler.
-
-    create_connection_event_processor(3, 0);
-
-    // Initialize settings manager (loads from NVS or uses defaults)
-    LOG_INFO("SETTINGS", "Initializing settings manager...");
-    if (!SettingsManager::instance().init()) {
-        LOG_ERROR("SETTINGS", "Failed to initialize settings manager");
-    }
-
-    // Initialize MQTT config manager (populates version beacon config data)
-    LOG_INFO("MQTT", "Initializing MQTT config manager...");
-    if (!MqttConfigManager::loadConfig()) {
-        // No config in NVS — seed from hardcoded defaults in network_config.h
-        LOG_INFO("MQTT", "No MQTT config in NVS, using hardcoded defaults");
-        IPAddress mqtt_server;
-        mqtt_server.fromString(config::get_mqtt_config().server);
-        MqttConfigManager::saveConfig(
-            config::features::MQTT_ENABLED,
-            mqtt_server,
-            config::get_mqtt_config().port,
-            config::get_mqtt_config().username,
-            config::get_mqtt_config().password,
-            config::get_mqtt_config().client_id
-        );
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // SECTION 11: TRANSMITTER-ACTIVE ARCHITECTURE
-    // ═══════════════════════════════════════════════════════════════════════
-    // Transmitter actively broadcasts PROBE channel-by-channel (1s/channel,
-    // 13s max — 6× faster than the Section 10 receiver-master approach).
-    // Enhanced cache with dual storage (transient + state); background
-    // transmission task (non-blocking, Priority 2, Core 1).  Works regardless
-    // of boot order; auto-recovers from router channel changes.
-    // ═══════════════════════════════════════════════════════════════════════
-    LOG_INFO("DISCOVERY", "╔═══════════════════════════════════════════════════════════════╗");
-    LOG_INFO("DISCOVERY", "║  SECTION 11: Transmitter-Active Channel Hopping              ║");
-    LOG_INFO("DISCOVERY", "╚═══════════════════════════════════════════════════════════════╝");
-
-    // Restore state configurations from NVS (TX-only persistence)
-    LOG_INFO("CACHE", "Restoring state from NVS (TX-only persistence)...");
-    EnhancedCache::instance().restore_all_from_nvs();
-
-    LOG_INFO("DISCOVERY", "Starting active channel hopping (1s/channel, 13s max)");
-    LOG_INFO("DISCOVERY", "This is NON-BLOCKING - Ethernet and MQTT work independently");
-    LOG_INFO("DISCOVERY", "Battery data cached until ESP-NOW connection established");
-
-    // Start active hopping in background (non-blocking):
-    // scans channels 1-13, broadcasts PROBE 1s per channel.
-    // When receiver ACKs: locks channel, flushes cache, continues normally.
-    TransmitterConnectionHandler::instance().start_discovery();
-
-    LOG_INFO("DISCOVERY", "Active hopping started - continuing with network initialization...");
-    LOG_INFO("DISCOVERY", "(ESP-NOW connection will be established asynchronously)");
-}
-
-// --- Phase 6: Data layer preparation ----------------------------------------
+// --- Phase 5: Data layer preparation ----------------------------------------
 // Populate StaticData battery/inverter specs from system settings, then
 // synchronise datalayer cell count for test data consumers.
 //
@@ -445,17 +310,14 @@ static void bootstrap_data_layer() {
 #endif
 }
 
-// --- Phase 7: FreeRTOS task launch ------------------------------------------
+// --- Phase 6: FreeRTOS task launch ------------------------------------------
 // Start all long-running background tasks.
-// Order: TransmissionTask first (lowest layer), then DataSender (feeds it),
-// then DiscoveryTask and MQTT task.  Once this phase returns all data-flow
-// pipelines are active.
+// MQTT task remains active for telemetry/command routing.
 static void bootstrap_tasks() {
-    // (RX task was already started in bootstrap_espnow — it must precede discovery)
     RuntimeTaskStartup::start_runtime_tasks();
 }
 
-// --- Phase 8: Post-start network services -----------------------------------
+// --- Phase 7: Post-start network services -----------------------------------
 // Start time/view services that are independent of direct Ethernet callback
 // ownership (NTP utilities are now owned by ServiceSupervisor lifecycle).
 static void bootstrap_network_services() {
@@ -464,9 +326,6 @@ static void bootstrap_network_services() {
     LOG_INFO("TIME", "Initializing TimeManager for time sync...");
     TimeManager::instance().init("pool.ntp.org");
     LOG_INFO("TIME", "TimeManager initialized");
-
-    VersionBeaconManager::instance().init();
-    LOG_INFO("VERSION", "Version beacon manager initialized (30s heartbeat)");
 }
 
 // =============================================================================
@@ -479,7 +338,6 @@ void setup() {
         {"persistence", bootstrap_persistence},
         {"battery", bootstrap_battery},
         {"connectivity", bootstrap_connectivity},
-        {"espnow", bootstrap_espnow},
         {"data_layer", bootstrap_data_layer},
         {"tasks", bootstrap_tasks},
         {"network_services", bootstrap_network_services},
@@ -494,7 +352,6 @@ void setup() {
         const SetupHealthGate::Check checks[] = {
             {"heap_ok", ESP.getFreeHeap() > 32768},
             {"ethernet_not_fatal", EthernetManager::instance().get_state() != EthernetConnectionState::ERROR_STATE},
-            {"espnow_queue_ready", RuntimeContext::instance().espnow_message_queue() != nullptr},
         };
 
         const SetupHealthGate::Outcome outcome = SetupHealthGate::apply(
@@ -509,7 +366,7 @@ void setup() {
         }
     }
 
-    LOG_INFO("MAIN", "Setup complete! All 8 bootstrap phases done.");
+    LOG_INFO("MAIN", "Setup complete! All 7 bootstrap phases done.");
     LOG_INFO("MAIN", "=================================");
 }
 
@@ -547,7 +404,6 @@ void loop() {
     
     static uint32_t last_state_validation = 0;
     static uint32_t last_metrics_report = 0;
-    static uint32_t last_peer_audit = 0;
 #if CONFIG_CAN_ENABLED
     static uint32_t last_can_stats = 0;
     
@@ -564,36 +420,14 @@ void loop() {
     }
 #endif
     
-    // Periodic state validation (every 30 seconds)
-    // TxReconnectManager owns reconnect orchestration — validate_state() is
-    // now a read-only consistency check; if it detects corruption it logs a
-    // warning and lets the heartbeat/reconnect manager recover naturally.
+    // Periodic runtime marker retained for future MQTT-side validation hooks.
     if (now - last_state_validation > TimingConfig::STATE_VALIDATION_INTERVAL_MS) {
-        if (!DiscoveryTask::instance().validate_state()) {
-            LOG_WARN("MAIN", "State validation detected inconsistency -- reconnect manager will recover");
-        }
         last_state_validation = now;
     }
-    
-    // Version beacon periodic update (every 30s heartbeat) - Phase 4
-    VersionBeaconManager::instance().update();
-    
-    // Heartbeat periodic update (every 10s) - Section 11
-    HeartbeatManager::instance().tick();
-    
-    // Metrics reporting (every 5 minutes) - Phase 3
+
     if (now - last_metrics_report > TimingConfig::METRICS_REPORT_INTERVAL_MS) {
-        DiscoveryTask::instance().get_metrics().log_summary();
         last_metrics_report = now;
     }
-    
-    // Peer state audit (every 2 minutes, if debug enabled) - Phase 2
-    #if LOG_LEVEL >= LOG_LEVEL_DEBUG
-    if (now - last_peer_audit > TimingConfig::PEER_AUDIT_INTERVAL_MS) {
-        DiscoveryTask::instance().audit_peer_state();
-        last_peer_audit = now;
-    }
-    #endif
     
     vTaskDelay(pdMS_TO_TICKS(TimingConfig::MAIN_LOOP_DELAY_MS));
 }

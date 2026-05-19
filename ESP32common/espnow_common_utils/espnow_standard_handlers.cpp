@@ -18,6 +18,8 @@ namespace EspnowStandardHandlers {
 namespace {
 AckSendStats g_ack_send_stats{};
 portMUX_TYPE g_ack_send_stats_mux = portMUX_INITIALIZER_UNLOCKED;
+constexpr uint8_t kAckSendMaxRetries = 3;
+constexpr uint32_t kAckSendRetryDelayMs = 20;
 }
 
 void handle_probe(const espnow_queue_msg_t* msg, void* context) {
@@ -84,7 +86,13 @@ void handle_probe(const espnow_queue_msg_t* msg, void* context) {
     // Send ACK response if configured. This runs after on_probe_received so
     // receiver quiet mode can disable competing senders before the ACK path.
     if (config && config->send_ack_response) {
-        send_ack_response(msg->mac, p->seq, WiFi.channel());
+        const esp_err_t ack_result = send_ack_response(msg->mac, p->seq, WiFi.channel());
+        if (config->on_ack_send_result) {
+            config->on_ack_send_result(msg->mac,
+                                       p->seq,
+                                       ack_result == ESP_OK,
+                                       ack_result);
+        }
     }
     
     // Call connection callback only on explicit false->true transition.
@@ -116,12 +124,14 @@ void handle_ack(const espnow_queue_msg_t* msg, void* context) {
         LOG_DEBUG("ACK", "Sequence validated!");
     }
     
-    // Update channel lock if provided
-    if (config && config->lock_channel) {
+    // Update channel authority if provided.
+    if (config && config->on_channel_reported) {
+        config->on_channel_reported(a->channel, config->set_wifi_channel);
+        LOG_DEBUG("ACK", "Channel authority updated to %d", a->channel);
+    } else if (config && config->lock_channel) {
         *config->lock_channel = a->channel;
-        LOG_DEBUG("ACK", "Channel locked to %d", a->channel);
-        
-        // Actually set the WiFi channel if configured
+        LOG_DEBUG("ACK", "Legacy channel lock updated to %d", a->channel);
+
         if (config->set_wifi_channel) {
             LOG_DEBUG("ACK", "Attempting to set WiFi channel to %d...", a->channel);
             esp_err_t result = esp_wifi_set_channel(a->channel, WIFI_SECOND_CHAN_NONE);
@@ -134,7 +144,7 @@ void handle_ack(const espnow_queue_msg_t* msg, void* context) {
             LOG_DEBUG("ACK", "set_wifi_channel is false, not changing channel");
         }
     } else {
-        LOG_DEBUG("ACK", "No lock_channel configured");
+        LOG_DEBUG("ACK", "No channel authority configured");
     }
     
     // Set ACK received flag if provided (for discovery hopping)
@@ -186,7 +196,7 @@ void handle_data(const espnow_queue_msg_t* msg, void* context) {
     }
 }
 
-bool send_ack_response(const uint8_t* peer_mac, uint32_t seq, uint8_t channel) {
+esp_err_t send_ack_response(const uint8_t* peer_mac, uint32_t seq, uint8_t channel) {
     ack_t ack { msg_ack, seq, channel };
 
     uint32_t token_held_ms = 0;
@@ -194,7 +204,7 @@ bool send_ack_response(const uint8_t* peer_mac, uint32_t seq, uint8_t channel) {
         LOG_DEBUG("ACK", "Suppressed duplicate discovery ACK (seq=%u, held=%lu ms)",
                   seq,
                   static_cast<unsigned long>(token_held_ms));
-        return false;
+           return ESP_ERR_INVALID_STATE;
     }
 
     // Route discovery ACKs through the shared scheduler so one sender owns
@@ -203,16 +213,30 @@ bool send_ack_response(const uint8_t* peer_mac, uint32_t seq, uint8_t channel) {
     g_ack_send_stats.direct_attempts++;
     portEXIT_CRITICAL(&g_ack_send_stats_mux);
 
-    const esp_err_t queued_result = EspnowTxScheduler::send(peer_mac,
-                                                            &ack,
-                                                            sizeof(ack),
-                                                            "DISCOVERY_ACK");
-    if (queued_result == ESP_OK) {
-        portENTER_CRITICAL(&g_ack_send_stats_mux);
-        g_ack_send_stats.direct_success++;
-        portEXIT_CRITICAL(&g_ack_send_stats_mux);
-        LOG_DEBUG("ACK", "Queued response (seq=%u, channel=%d)", seq, channel);
-        return true;
+    esp_err_t queued_result = ESP_FAIL;
+    for (uint8_t attempt = 0; attempt < kAckSendMaxRetries; ++attempt) {
+        queued_result = EspnowTxScheduler::send(peer_mac,
+                                                &ack,
+                                                sizeof(ack),
+                                                "DISCOVERY_ACK");
+        if (queued_result == ESP_OK) {
+            portENTER_CRITICAL(&g_ack_send_stats_mux);
+            g_ack_send_stats.direct_success++;
+            portEXIT_CRITICAL(&g_ack_send_stats_mux);
+            LOG_DEBUG("ACK", "Queued response (seq=%u, channel=%d)", seq, channel);
+            return ESP_OK;
+        }
+
+        if (queued_result != ESP_ERR_ESPNOW_NO_MEM || (attempt + 1U) >= kAckSendMaxRetries) {
+            break;
+        }
+
+        LOG_WARN("ACK", "ACK enqueue NO_MEM (seq=%u channel=%d, retry=%u/%u)",
+                 seq,
+                 channel,
+                 static_cast<unsigned>(attempt + 1U),
+                 static_cast<unsigned>(kAckSendMaxRetries));
+        vTaskDelay(pdMS_TO_TICKS(kAckSendRetryDelayMs));
     }
 
     EspnowTxScheduler::release_ack_token(peer_mac, "enqueue_failed");
@@ -227,7 +251,7 @@ bool send_ack_response(const uint8_t* peer_mac, uint32_t seq, uint8_t channel) {
 
     LOG_WARN("ACK", "Scheduler enqueue failed (seq=%u channel=%d): %s",
              seq, channel, esp_err_to_name(queued_result));
-    return false;
+    return queued_result;
 }
 
 bool read_ack_send_stats(AckSendStats& out_stats) {

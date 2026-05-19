@@ -8,10 +8,13 @@
 #include "../datalayer/datalayer.h"  // Phase 4a: Real battery data
 #include "../battery_emulator/test_data_generator.h"  // Test data for development
 #include "../test_data/test_data_config.h"  // Phase 2: Runtime test data configuration
-#include "../network/transmission_selector.h"  // Phase 2: Smart transmission routing
 #include <Arduino.h>
 #include <espnow_transmitter.h>
 #include <esp32common/espnow/packet_utils.h>
+
+namespace {
+constexpr BaseType_t DATA_SENDER_CORE = 1;
+}
 
 DataSender& DataSender::instance() {
     static DataSender instance;
@@ -19,15 +22,20 @@ DataSender& DataSender::instance() {
 }
 
 void DataSender::start() {
-    xTaskCreate(
+    const BaseType_t task_result = xTaskCreatePinnedToCore(
         task_impl,
         "task_data",
         task_config::STACK_SIZE_DATA_SENDER,
-        NULL,
+        nullptr,
         task_config::PRIORITY_NORMAL,
-        NULL
+        nullptr,
+        DATA_SENDER_CORE
     );
-    LOG_DEBUG("DATA_SENDER", "Data transmission task started");
+    if (task_result != pdPASS) {
+        LOG_ERROR("DATA_SENDER", "Failed to start data sender task on Core %d", DATA_SENDER_CORE);
+        return;
+    }
+    LOG_DEBUG("DATA_SENDER", "Data transmission task started (Core %d)", DATA_SENDER_CORE);
 }
 
 void DataSender::task_impl(void* parameter) {
@@ -70,8 +78,9 @@ void DataSender::task_impl(void* parameter) {
  * Phase 1: Determines data source (live vs test) based on test mode flag
  * Phase 4a: Uses real datalayer from CAN bus when in live mode
  * 
- * Section 11 Architecture: ALWAYS cache-first (non-blocking)
- * - Data flows through EnhancedCache regardless of connection state
+ * Architecture: cache-first, connection-gated
+ * - Data is written to EnhancedCache only when is_transmission_active() is true
+ *   (state ACTIVE: receiver has sent REQUEST_DATA)
  * - Background transmission task handles sending from cache
  * - Non-blocking: < 100µs cache write (doesn't block Battery Emulator)
  * 
@@ -103,14 +112,6 @@ void DataSender::send_battery_data() {
     if (cache.add_transient(tx_data)) {
         LOG_TRACE("DATA_SENDER", "Data cached (SOC:%d%%, Power:%dW)", 
                  tx_data.soc, tx_data.power);
-        
-        // Phase 2: Record route selection for dynamic data (selector is advisory/planning)
-        char timestamp_str[32];
-        snprintf(timestamp_str, sizeof(timestamp_str), "%lu", millis());
-        auto result = TransmissionSelector::transmit_dynamic_data(tx_data.soc, tx_data.power, timestamp_str);
-        if (result.espnow_sent) {
-            LOG_TRACE("DATA_SENDER", "Dynamic data route selected: %s", result.method);
-        }
     } else {
         // Cache write failed (mutex timeout or overflow)
         // Data dropped - doesn't block control code

@@ -143,6 +143,49 @@ esp_err_t OtaManager::health_handler(httpd_req_t *req) {
                : ESP_FAIL;
 }
 
+esp_err_t OtaManager::routes_handler(httpd_req_t *req) {
+    if (reject_unexpected_request_body(req, "/api/routes") != ESP_OK) {
+        return ESP_FAIL;
+    }
+
+    static constexpr const char* kRoutes[] = {
+        "GET /",
+        "GET /api/health",
+        "GET /api/routes",
+        "POST /ota_upload",
+        "POST /api/ota_arm",
+        "GET /api/ota_status",
+        "GET /api/firmware_info",
+        "GET /api/get_event_logs",
+        "POST /api/clear_event_logs",
+        "GET /api/test_data_config",
+        "POST /api/test_data_config",
+        "POST /api/test_data_apply",
+        "POST /api/test_data_reset"
+    };
+
+    StaticJsonDocument<768> doc;
+    doc["success"] = true;
+    JsonArray routes = doc.createNestedArray("routes");
+    for (const char* route : kRoutes) {
+        routes.add(route);
+    }
+    doc["route_count"] = routes.size();
+
+    char json[768];
+    const size_t json_len = serializeJson(doc, json, sizeof(json));
+    if (json_len == 0 || json_len >= sizeof(json)) {
+        return send_json_error(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                               "Route JSON formatting error");
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return (send_response_checked(req, json, static_cast<ssize_t>(json_len), "routes_handler") == ESP_OK)
+               ? ESP_OK
+               : ESP_FAIL;
+}
+
 esp_err_t OtaManager::event_logs_handler(httpd_req_t *req) {
     if (reject_unexpected_request_body(req, "/api/get_event_logs") != ESP_OK) {
         return ESP_FAIL;

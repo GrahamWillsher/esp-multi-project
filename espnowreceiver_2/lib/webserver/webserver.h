@@ -47,23 +47,5 @@ void get_webserver_runtime_metrics(WebserverRuntimeMetrics& out_metrics);
  */
 void notify_sse_data_updated();
 
-/**
- * @brief Register the transmitter MAC address for control messages
- * Call this when first data is received from transmitter
- * Uses TransmitterManager utility class
- * @param mac Pointer to 6-byte MAC address
- * @return void
- */
-void register_transmitter_mac(const uint8_t* mac);
-
-/**
- * @brief Store transmitter IP address data received via ESP-NOW
- * Uses TransmitterManager utility class
- * @param ip Pointer to 4-byte IP address
- * @param gateway Pointer to 4-byte gateway address
- * @param subnet Pointer to 4-byte subnet mask
- * @return void
- */
-void store_transmitter_ip_data(const uint8_t* ip, const uint8_t* gateway, const uint8_t* subnet);
 
 #endif

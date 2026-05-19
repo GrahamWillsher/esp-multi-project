@@ -1,8 +1,9 @@
 #include "reboot_page.h"
 #include "../common/page_generator.h"
 
-esp_err_t reboot_handler(httpd_req_t *req) {
-    String content = R"rawliteral(
+namespace {
+esp_err_t reboot_content_generator(httpd_req_t* req) {
+    static const char kRebootContent[] = R"rawliteral(
     <h1>ESP-NOW Receiver</h1>
     <h2>Reboot Transmitter</h2>
     <div style='margin-bottom: 20px;'>
@@ -10,10 +11,7 @@ esp_err_t reboot_handler(httpd_req_t *req) {
             ← Dashboard
         </a>
     </div>
-    )rawliteral";
-    
-    content += R"rawliteral(
-    
+
     <div class='info-box' style='text-align: center;'>
         <h3>Reboot Control</h3>
         <button id='confirmBtn' class='button' style='background-color: #ff6b35; font-size: 18px; padding: 15px 30px;'>
@@ -21,8 +19,12 @@ esp_err_t reboot_handler(httpd_req_t *req) {
         </button>
     </div>
 )rawliteral";
+    return send_page_content_chunk(req, "reboot_content", kRebootContent, sizeof(kRebootContent) - 1);
+}
+}
 
-    String script = R"rawliteral(
+esp_err_t reboot_handler(httpd_req_t *req) {
+    static const char kRebootScript[] = R"rawliteral(
         window.onload = function() {
             console.log('Reboot page loaded');
             const confirmBtn = document.getElementById('confirmBtn');
@@ -71,7 +73,10 @@ esp_err_t reboot_handler(httpd_req_t *req) {
         };
     )rawliteral";
 
-    return send_rendered_page(req, "ESP-NOW Receiver - Reboot Transmitter", content, PageRenderOptions("", script));
+    return send_rendered_page_streaming(req,
+                                        "ESP-NOW Receiver - Reboot Transmitter",
+                                        reboot_content_generator,
+                                        PageRenderOptions("", kRebootScript));
 }
 
 esp_err_t register_reboot_page(httpd_handle_t server) {

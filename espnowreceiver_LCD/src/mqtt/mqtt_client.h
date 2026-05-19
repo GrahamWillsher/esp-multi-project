@@ -56,6 +56,15 @@ public:
      * @return true if connected
      */
     static bool isConnected();
+
+    /**
+     * @brief Publish raw JSON payload to MQTT topic
+     * @param topic MQTT topic
+     * @param payload Null-terminated JSON payload
+     * @param retained Retained flag (default false)
+     * @return true when publish succeeded
+     */
+    static bool publishJson(const char* topic, const char* payload, bool retained = false);
     
     /**
      * @brief Process incoming MQTT messages (call in loop)
@@ -199,6 +208,31 @@ private:
      */
     static void handleCellData(const char* json_payload, size_t length);
 
+    /**
+     * @brief Handle incoming live battery telemetry message
+     */
+    static void handleBatteryLive(const char* json_payload, size_t length);
+
+    /**
+     * @brief Handle incoming live LED runtime state message
+     */
+    static void handleRuntimeLed(const char* json_payload, size_t length);
+
+    /**
+     * @brief Handle incoming live system runtime state message
+     */
+    static void handleRuntimeSystem(const char* json_payload, size_t length);
+
+    /**
+     * @brief Handle incoming live charger runtime state message
+     */
+    static void handleRuntimeCharger(const char* json_payload, size_t length);
+
+    /**
+     * @brief Handle incoming live inverter runtime state message
+     */
+    static void handleRuntimeInverter(const char* json_payload, size_t length);
+
 public:
     /**
      * @brief Increment event log subscriber count (called when /events page opened)
@@ -225,6 +259,61 @@ private:
      * @brief Handle incoming event_logs message
      */
     static void handleEventLogs(const char* json_payload, size_t length);
+
+    /**
+     * @brief Handle batt-emu/mqtt-v1/tx/state/summary/event_logs message
+     */
+    static void handleEventLogSummary(const char* json_payload, size_t length);
+
+    /**
+     * @brief Handle batt-emu/mqtt-v1/tx/ack/event_logs_clear message
+     */
+    static void handleEventLogsClearAck(const char* json_payload, size_t length);
+
+    /**
+     * @brief Handle batt-emu/mqtt-v1/tx/state/static/network retained message
+     */
+    static void handleStaticNetwork(const char* json_payload, size_t length);
+
+    /**
+     * @brief Handle batt-emu/mqtt-v1/tx/state/static/mqtt retained message
+     */
+    static void handleStaticMqtt(const char* json_payload, size_t length);
+
+    /**
+     * @brief Handle batt-emu/mqtt-v1/tx/state/static/power retained message
+     */
+    static void handleStaticPower(const char* json_payload, size_t length);
+
+    /**
+     * @brief Handle batt-emu/mqtt-v1/tx/state/static/led retained message
+     */
+    static void handleStaticLed(const char* json_payload, size_t length);
+
+    /**
+     * @brief Handle batt-emu/mqtt-v1/tx/meta/version retained message
+     */
+    static void handleMetaVersion(const char* json_payload, size_t length);
+
+    /**
+     * @brief Handle batt-emu/mqtt-v1/tx/meta/schema_versions retained message
+     */
+    static void handleMetaSchemaVersions(const char* json_payload, size_t length);
+
+    /**
+     * @brief Handle batt-emu/mqtt-v1/tx/meta/runtime retained message
+     */
+    static void handleMetaRuntime(const char* json_payload, size_t length);
+
+    /**
+     * @brief Publish receiver identity/version metadata on connect
+     */
+    static void publishReceiverMetaVersion();
+
+    /**
+     * @brief Publish receiver online/offline presence marker
+     */
+    static void publishReceiverPresence(bool online);
 };
 
 #endif // MQTT_CLIENT_H

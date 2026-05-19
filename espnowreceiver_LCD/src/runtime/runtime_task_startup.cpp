@@ -3,16 +3,18 @@
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <esp_system.h>
+#include <esp_heap_caps.h>
 #include <esp32common/config/timing_config.h>
-#include <esp32common/espnow/tx_scheduler.h>
+#include <WiFi.h>
+#include <runtime_common_utils/device_temperature.h>
 
 #include "common_lcd.h"
-#include "espnow/espnow_runtime.h"
-#include "espnow/rx_state_machine.h"
-#include <esp32common/espnow/common.h>
+#include "config/wifi_setup.h"
 #include "helpers.h"
 #include "logging_config.h"
 #include "memory/memory_sampler.h"
+#include "mqtt/mqtt_client.h"
 #include "mqtt/mqtt_task.h"
 #include "runtime/display_update_queue.h"
 #include "task_config.h"
@@ -21,6 +23,13 @@
 namespace {
 
 constexpr uint32_t kLvglTaskPeriodMs = 33;
+constexpr uint32_t kNetworkUiRefreshMs = 1000;
+constexpr uint32_t kTemperatureSampleIntervalMs = 5000;
+constexpr uint32_t kMqttLauncherRetryMs = 2000;
+constexpr uint32_t kMqttLauncherLogEveryAttempts = 5;
+
+TaskHandle_t g_mqtt_task_handle = nullptr;
+bool g_mqtt_task_started = false;
 
 // ── Uniform task creation helper (mirrors espnowreceiver_2 pattern) ─────────
 struct TaskDescriptor {
@@ -51,6 +60,8 @@ void create_task_or_fail(const TaskDescriptor& task) {
 // ── LVGL render task ─────────────────────────────────────────────────────────
 void task_lvgl(void* /*param*/) {
     DisplayUpdateQueue::snapshot_t snapshot{};
+    uint32_t last_network_ui_ms = 0;
+    uint32_t last_temperature_sample_ms = 0;
 
     for (;;) {
         bool has_snapshot = false;
@@ -58,16 +69,85 @@ void task_lvgl(void* /*param*/) {
             has_snapshot = true;
         }
 
+        const uint32_t now_ms = millis();
+        if (last_temperature_sample_ms == 0 ||
+            (now_ms - last_temperature_sample_ms) >= kTemperatureSampleIntervalMs) {
+            DeviceTemperature::tick(kTemperatureSampleIntervalMs);
+            last_temperature_sample_ms = now_ms;
+        }
+
         if (xSemaphoreTake(RTOS::lvgl_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
             if (has_snapshot) {
                 UI::Runtime::set_state(snapshot.soc_percent, snapshot.power_w);
             }
-            UI::Runtime::set_link_connected(ESPNowRuntime::is_connected());
-            UI::Runtime::tick(millis());
+
+            if (last_network_ui_ms == 0 || (now_ms - last_network_ui_ms) >= kNetworkUiRefreshMs) {
+                last_network_ui_ms = now_ms;
+
+                char net_buf[80] = {};
+                const bool ap_mode = WiFiSetup::is_ap_mode();
+                const bool sta_mode = WiFiSetup::is_sta_connected();
+                if (ap_mode && sta_mode) {
+                    snprintf(net_buf, sizeof(net_buf),
+                             "WiFi APSTA A:%s S:%s",
+                             WiFi.softAPIP().toString().c_str(),
+                             WiFi.localIP().toString().c_str());
+                } else if (ap_mode) {
+                    snprintf(net_buf, sizeof(net_buf), "WiFi AP %s", WiFi.softAPIP().toString().c_str());
+                } else if (sta_mode) {
+                    snprintf(net_buf, sizeof(net_buf), "WiFi STA %s", WiFi.localIP().toString().c_str());
+                } else {
+                    snprintf(net_buf, sizeof(net_buf), "WiFi disconnected");
+                }
+
+                UI::Runtime::set_network_status(net_buf, sta_mode || ap_mode);
+            }
+
+            UI::Runtime::set_link_connected(MqttClient::isConnected());
+            UI::Runtime::tick(now_ms);
             xSemaphoreGive(RTOS::lvgl_mutex);
         }
 
         smart_delay(kLvglTaskPeriodMs);
+    }
+}
+
+void task_mqtt_launcher(void* /*param*/) {
+    uint32_t attempts = 0;
+    for (;;) {
+        ++attempts;
+
+        const BaseType_t result = xTaskCreatePinnedToCore(
+            task_mqtt_client,
+            "MqttClient",
+            TaskConfig::MQTT_CLIENT_STACK,
+            nullptr,
+            TaskConfig::MQTT_CLIENT_PRIORITY,
+            &g_mqtt_task_handle,
+            TaskConfig::MQTT_CORE);
+
+        if (result == pdPASS) {
+            g_mqtt_task_started = true;
+            LOG_INFO("RTOS", "MqttClient task started (attempt=%lu stack=%lu free_heap=%u min_free_heap=%u)",
+                     static_cast<unsigned long>(attempts),
+                     static_cast<unsigned long>(TaskConfig::MQTT_CLIENT_STACK),
+                     static_cast<unsigned>(ESP.getFreeHeap()),
+                     static_cast<unsigned>(esp_get_minimum_free_heap_size()));
+            vTaskDelete(nullptr);
+            return;
+        }
+
+        if ((attempts % kMqttLauncherLogEveryAttempts) == 1) {
+            const size_t largest_8bit_block = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+            LOG_WARN("RTOS", "MqttClient task create failed (attempt=%lu free_heap=%u min_free_heap=%u largest_8bit=%u), retry in %lu ms",
+                     static_cast<unsigned long>(attempts),
+                     static_cast<unsigned>(ESP.getFreeHeap()),
+                     static_cast<unsigned>(esp_get_minimum_free_heap_size()),
+                     static_cast<unsigned>(largest_8bit_block),
+                     static_cast<unsigned long>(kMqttLauncherRetryMs));
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(kMqttLauncherRetryMs));
     }
 }
 
@@ -79,33 +159,6 @@ bool create_runtime_primitives() {
     RTOS::lvgl_mutex = xSemaphoreCreateMutex();
     if (RTOS::lvgl_mutex == nullptr) {
         handle_error(ErrorSeverity::FATAL, "RTOS", "Failed to create LVGL mutex");
-        return false;
-    }
-
-    // CRITICAL: message routes must be registered before the ESP-NOW worker
-    // task starts — prevents PROBE messages arriving before handlers exist.
-    LOG_DEBUG("RTOS", "Setting up ESP-NOW runtime and message routes...");
-    if (!ESPNowRuntime::prepare_runtime()) {
-        handle_error(ErrorSeverity::FATAL, "RTOS", "Failed to prepare ESP-NOW runtime");
-        return false;
-    }
-    LOG_DEBUG("RTOS", "ESP-NOW runtime ready");
-
-    // TX scheduler — provisioned for MQTT + ESP-NOW coexistence.
-    // queue_depth=16 gives CONTROL queue depth ~4 (30% of 16), sufficient to
-    // buffer ACK frames during a 150 ms MQTT TCP burst window.
-    // no_mem_retry_attempts=6 mirrors the espnowreceiver_2 baseline.
-    EspnowTxScheduler::InitOptions tx_options{};
-    tx_options.queue_depth = 16;
-    tx_options.no_mem_retry_attempts = 6;   // avoid prolonged retry storms under sustained NO_MEM
-    tx_options.retry_base_delay_ms = 8;     // longer backoff gives WiFi driver buffer pool time to recover
-    tx_options.inter_frame_delay_ms = 8;    // wider spacing reduces immediate descriptor re-contention
-    tx_options.task_priority = TaskConfig::ESPNOW_TX_PRIORITY;
-    tx_options.task_stack = TaskConfig::ESPNOW_TX_STACK;
-    tx_options.task_core = TaskConfig::WORKER_CORE;
-    tx_options.task_name = "EspnowTx";
-    if (!EspnowTxScheduler::init(tx_options)) {
-        handle_error(ErrorSeverity::FATAL, "RTOS", "Failed to initialize ESP-NOW TX scheduler");
         return false;
     }
 
@@ -122,8 +175,6 @@ bool start_runtime_tasks() {
     LOG_DEBUG("RTOS", "Creating FreeRTOS tasks...");
 
     const TaskDescriptor tasks[] = {
-        // ESP-NOW worker — highest priority; processes inbound message queue
-        { ESPNowRuntime::task_worker,         "task_espnow", TaskConfig::ESPNOW_WORKER_STACK,   TaskConfig::ESPNOW_WORKER_PRIORITY,   &RTOS::espnow_worker_task },
         // LVGL render task — dequeues snapshots, pumps lv_timer_handler()
         { task_lvgl,                          "task_lvgl",   TaskConfig::DISPLAY_RENDERER_STACK, TaskConfig::DISPLAY_RENDERER_PRIORITY, &RTOS::lvgl_task          },
     };
@@ -132,22 +183,24 @@ bool start_runtime_tasks() {
         create_task_or_fail(task);
     }
 
-    // MQTT client — pinned to Core 0 (WiFi/lwIP core) to keep TCP socket
-    // operations in the same CPU context as the WiFi driver, eliminating
-    // inter-core IPC overhead and reducing TX buffer contention with ESP-NOW.
-    // The task itself gates on RxStateMachine::CONNECTED before doing any
-    // broker work, so it does not generate radio traffic during reconnect.
+    // MQTT launcher task — avoids boot-fatal if heap is briefly too low
+    // while webserver/FS startup allocations are still settling.
+    // It retries MqttClient creation until successful, then self-deletes.
     {
         const BaseType_t result = xTaskCreatePinnedToCore(
-            task_mqtt_client,
-            "MqttClient",
-            TaskConfig::MQTT_CLIENT_STACK,
+            task_mqtt_launcher,
+            "MqttLaunch",
+            3072,
             nullptr,
             TaskConfig::MQTT_CLIENT_PRIORITY,
             nullptr,
-            TaskConfig::MQTT_CORE);
+            TaskConfig::WORKER_CORE);
+
         if (result != pdPASS) {
-            handle_error(ErrorSeverity::FATAL, "RTOS", "Failed to create task: MqttClient");
+            LOG_ERROR("RTOS", "Failed to create MQTT launcher task (free_heap=%u min_free_heap=%u)",
+                      static_cast<unsigned>(ESP.getFreeHeap()),
+                      static_cast<unsigned>(esp_get_minimum_free_heap_size()));
+            // Non-fatal: receiver can still function for local UI/web paths.
         }
     }
 

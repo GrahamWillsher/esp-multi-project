@@ -367,8 +367,18 @@ void TransmitterManager::getEventLogsSnapshot(std::vector<EventLogEntry>& out_lo
     TransmitterEventLogCache::get_event_logs_snapshot(out_logs, out_last_update_ms);
 }
 
-void TransmitterManager::storeEventLogSummary(const event_log_summary_t& summary) {
-    TransmitterState::store_event_log_summary(summary);
+void TransmitterManager::storeEventLogSummary(uint32_t seq,
+                                             uint32_t total_historical,
+                                             uint32_t error_historical,
+                                             uint32_t new_since_last_report_total,
+                                             uint32_t new_since_last_report_error,
+                                             uint32_t uptime_ms) {
+    TransmitterState::store_event_log_summary(seq,
+                                              total_historical,
+                                              error_historical,
+                                              new_since_last_report_total,
+                                              new_since_last_report_error,
+                                              uptime_ms);
 }
 
 TransmitterManager::EventLogSummary TransmitterManager::getEventLogSummary() {
@@ -386,8 +396,10 @@ TransmitterManager::EventLogSummary TransmitterManager::getEventLogSummary() {
     return summary;
 }
 
-void TransmitterManager::storeEventLogClearAck(const event_logs_clear_ack_t& ack) {
-    TransmitterState::store_event_log_clear_ack(ack);
+void TransmitterManager::storeEventLogClearAck(uint8_t status,
+                                              uint32_t summary_seq,
+                                              uint32_t uptime_ms) {
+    TransmitterState::store_event_log_clear_ack(status, summary_seq, uptime_ms);
 }
 
 TransmitterManager::EventLogClearAck TransmitterManager::getEventLogClearAck() {
@@ -402,8 +414,11 @@ TransmitterManager::EventLogClearAck TransmitterManager::getEventLogClearAck() {
     return ack;
 }
 
-void TransmitterManager::storeTemperatureReport(const temperature_report_t& report) {
-    TransmitterState::store_temperature_report(report);
+void TransmitterManager::storeTemperatureReport(bool valid,
+                                               uint32_t seq,
+                                               int16_t temperature_centi_c,
+                                               uint32_t uptime_ms) {
+    TransmitterState::store_temperature_report(valid, seq, temperature_centi_c, uptime_ms);
 }
 
 TransmitterManager::TemperatureReport TransmitterManager::getTemperatureReport() {

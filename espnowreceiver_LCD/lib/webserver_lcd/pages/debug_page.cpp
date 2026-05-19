@@ -5,10 +5,15 @@
 
 // Debug page handler
 static esp_err_t debug_page_handler(httpd_req_t *req) {
+    auto content_generator = [](httpd_req_t* request) -> esp_err_t {
+        const char* content = get_debug_page_content();
+        return send_page_content_chunk(request, "debug_content", content, strlen(content));
+    };
 
-    return send_rendered_page(req, "Debug Logging Control",
-                              get_debug_page_content(),
-                              PageRenderOptions(get_debug_page_styles(), get_debug_page_script()));
+    return send_rendered_page_streaming(req,
+                                        "Debug Logging Control",
+                                        content_generator,
+                                        PageRenderOptions(get_debug_page_styles(), get_debug_page_script()));
 }
 
 // Register debug page

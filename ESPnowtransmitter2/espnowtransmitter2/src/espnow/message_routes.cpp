@@ -3,6 +3,7 @@
 #include "component_catalog_handlers.h"
 
 #include "discovery_task.h"
+#include "heartbeat_manager.h"
 #include "tx_reconnect_manager.h"
 #include "version_beacon_manager.h"
 #include "tx_send_guard.h"
@@ -11,6 +12,7 @@
 #include "../settings/settings_manager.h"
 #include "../config/logging_config.h"
 
+#include <esp32common/espnow/channel_authority.h>
 #include <esp32common/espnow/connection_manager.h>
 #include <esp32common/espnow/message_router.h>
 #include <esp32common/espnow/standard_handlers.h>
@@ -111,6 +113,10 @@ bool send_event_log_summary_to_receiver(const uint8_t* receiver_mac,
         return false;
     }
 
+    if (!HeartbeatManager::instance().has_stable_heartbeat()) {
+        return false;
+    }
+
     const event_log_summary_t summary = summary_override ? *summary_override : build_event_log_summary();
 
     esp_err_t result = TxSendGuard::send_to_receiver_guarded(
@@ -169,6 +175,10 @@ void EspnowMessageHandler::maybe_push_event_log_summary() {
         return;
     }
 
+    if (!HeartbeatManager::instance().has_stable_heartbeat()) {
+        return;
+    }
+
     bool receiver_known = false;
     for (int i = 0; i < 6; ++i) {
         if (receiver_mac_[i] != 0) {
@@ -223,7 +233,13 @@ void EspnowMessageHandler::setup_message_routes() {
     ack_config_.peer_mac_storage = receiver_mac_;
     ack_config_.connection_flag = nullptr;
     ack_config_.expected_seq = &g_ack_seq;
-    ack_config_.lock_channel = &g_lock_channel;
+    ack_config_.lock_channel = nullptr;
+    ack_config_.on_channel_reported = [](uint8_t channel, bool set_wifi_channel) {
+        esp32common::espnow::ChannelAuthority::instance().on_ack_channel_reported(
+            channel,
+            set_wifi_channel,
+            "TX_ACK");
+    };
     ack_config_.ack_received_flag = &g_ack_received;  // For channel hopping discovery
     ack_config_.set_wifi_channel = false;              // Don't change channel in handler - let discovery complete first
     ack_config_.on_connection = [](const uint8_t* mac, bool connected) {
@@ -496,11 +512,23 @@ static bool s_confirm_ack_route_registered = false;
                              "connect_confirm_ack: RX status=%u (version mismatch?)",
                              static_cast<unsigned>(ack->rx_status));
                 }
+                if (ack->protocol_version != ESPNOW_PROTOCOL_VERSION) {
+                    LOG_WARN("RECONNECT",
+                             "connect_confirm_ack protocol mismatch: got=%u expected=%u",
+                             static_cast<unsigned>(ack->protocol_version),
+                             static_cast<unsigned>(ESPNOW_PROTOCOL_VERSION));
+                    return;
+                }
                 LOG_INFO("RECONNECT",
-                         "connect_confirm_ack received (session=%u  rx_status=%u)",
+                         "connect_confirm_ack received (session=%u  boot_nonce=%u  rx_status=%u)",
                          static_cast<unsigned>(ack->session_id),
+                         static_cast<unsigned>(ack->session_boot_nonce),
                          static_cast<unsigned>(ack->rx_status));
-                TxReconnectManager::instance().on_confirm_ack_received(ack->session_id);
+                TxReconnectManager::instance().on_confirm_ack_received(
+                    msg->mac,
+                    ack->session_id,
+                    ack->session_boot_nonce,
+                    ack->rx_status);
             },
             0xFF,
             nullptr);

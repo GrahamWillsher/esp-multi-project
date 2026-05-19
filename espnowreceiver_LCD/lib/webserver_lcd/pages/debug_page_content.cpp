@@ -1,8 +1,8 @@
 #include "debug_page_content.h"
-#include <Arduino.h>
 
-String get_debug_page_content() {
-    String content = R"rawliteral(
+const char* get_debug_page_content() {
+        static const char kDebugPageContent[] =
+R"rawliteral(
 <h1>Debug Configuration</h1>
 <div style='margin-bottom: 20px;'>
         <a href='/' style='display: inline-block; padding: 10px 16px; background: #4CAF50; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;'>
@@ -34,9 +34,8 @@ String get_debug_page_content() {
         <button onclick='setDebugLevel()' class='button'>Set Transmitter Debug Level</button>
         <div id='debug-status'></div>
 </div>
-)rawliteral";
-
-            content += R"rawliteral(
+)rawliteral"
+R"rawliteral(
         <div class='debug-control' id='mem-health-card'>
                 <h3>🧠 Memory Health</h3>
                                          <p>Heap health is sampled every 30 seconds, or every 1 second during active API/SSE activity.
@@ -65,7 +64,7 @@ String get_debug_page_content() {
 
                 <button onclick='loadMemoryHealth()' class='button' style='margin-top:12px;'>↻ Refresh</button>
         </div>
-        )rawliteral";
+                )rawliteral";
 
-            return content;
+        return kDebugPageContent;
 }

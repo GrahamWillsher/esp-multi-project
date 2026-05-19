@@ -30,22 +30,32 @@ struct PageRenderOptions {
 		  include_common_script_helpers(include_helpers) {}
 };
 
-// Generate standard HTML page with common template using typed options.
-String renderPage(const String& title, const String& content, const PageRenderOptions& options = PageRenderOptions());
+// Streaming render: callback-based content generation
+// Handler provides a callback that emits page content incrementally without building it all in a String.
+// Callback receives an httpd_req_t and should return ESP_OK on success, ESP_FAIL/ESP_ERR_NO_MEM on error or abort.
+typedef esp_err_t (*page_content_generator_t)(httpd_req_t* req);
 
-// Render and send a standard HTML page with consistent content-type handling.
-esp_err_t send_rendered_page(httpd_req_t* req,
-							 const String& title,
-							 const String& content,
-							 const PageRenderOptions& options = PageRenderOptions(),
-							 const char* content_type = "text/html");
+// Sends page body content through the same guarded/adaptive chunk pipeline used
+// by send_rendered_page_streaming().
+//
+// Use this inside page content generators instead of calling
+// httpd_resp_send_chunk() directly so pressure checks, adaptive chunk sizing,
+// and request accounting stay consistent.
+esp_err_t send_page_content_chunk(httpd_req_t* req,
+								  const char* stage,
+								  const char* data,
+								  size_t len);
 
-// Non-allocating overload: accepts static const char* title and content directly,
-// avoiding any Arduino String heap allocation for fully-static page bodies.
-esp_err_t send_rendered_page(httpd_req_t* req,
-							 const char* title,
-							 const char* content,
-							 const PageRenderOptions& options = PageRenderOptions(),
-							 const char* content_type = "text/html");
+// Render and send a page with streaming content generation
+// The callback is invoked to emit the page body after the HTML head is sent.
+// This path avoids building the full page body in a temporary String.
+esp_err_t send_rendered_page_streaming(httpd_req_t* req,
+										const char* title,
+										page_content_generator_t content_generator,
+										const PageRenderOptions& options = PageRenderOptions(),
+										const char* content_type = "text/html");
+
+// Phase 2: Register /static/helpers.js endpoint (cacheable, served from flash)
+esp_err_t register_static_helpers_js(httpd_handle_t server);
 
 #endif

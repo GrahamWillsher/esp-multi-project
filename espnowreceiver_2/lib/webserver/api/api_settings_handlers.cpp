@@ -2,33 +2,42 @@
 
 #include "api_request_utils.h"
 #include "api_response_utils.h"
+#include "../../src/mqtt/mqtt_client.h"
 #include "../utils/transmitter_manager.h"
 #include "../logging.h"
-#include "../../../src/espnow/rx_connection_handler.h"
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
-#include <esp_now.h>
+#include <esp32common/config/timing_config.h>
 #include <esp32common/espnow/common.h>
-#include <esp32common/espnow/packet_utils.h>
-#include <esp32common/espnow/tx_scheduler.h>
+#include <esp32common/mqtt/mqtt_feature_flags.h>
 #include <cstring>
+
+namespace {
+constexpr const char* MQTT_TOPIC_RX_CMD_SETTINGS_UPDATE = "batt-emu/mqtt-v1/rx/cmd/settings/update";
+constexpr const char* MQTT_TOPIC_TX_ACK_SETTINGS_UPDATE = "batt-emu/mqtt-v1/tx/ack/settings/update";
+}
 
 esp_err_t api_get_battery_settings_handler(httpd_req_t *req) {
     bool requested = false;
-    if (TransmitterManager::isMACKnown() &&
-        !ReceiverConnectionHandler::instance().quiet_mode_active()) {
-        request_data_t req_msg = { msg_request_data, subtype_battery_config };
-        esp_err_t result = EspnowTxScheduler::send(TransmitterManager::getMAC(), &req_msg, sizeof(req_msg), "API_REQ_BATT_SETTINGS");
-        if (result == ESP_OK) {
-            requested = true;
-            LOG_DEBUG("API", "Requested battery settings from transmitter");
-        } else {
-            LOG_WARN("API", "Failed to request battery settings: %s", esp_err_to_name(result));
+#if MQTT_FEATURE_COMMANDS
+    if (MqttClient::isEnabled() && MqttClient::isConnected()) {
+        StaticJsonDocument<96> cmd;
+        char request_id[32];
+        snprintf(request_id, sizeof(request_id), "refresh-batt-%lu", static_cast<unsigned long>(millis()));
+        cmd["request_id"] = request_id;
+        cmd["origin"] = "receiver_tft";
+        cmd["schema"] = 1;
+
+        char payload[96];
+        if (serializeJson(cmd, payload, sizeof(payload)) > 0) {
+            requested = MqttClient::publishJson("batt-emu/mqtt-v1/rx/cmd/refresh/battery", payload, false);
+            if (!requested) {
+                LOG_WARN("API", "Failed to publish battery settings refresh command via MQTT");
+            }
         }
-    } else if (ReceiverConnectionHandler::instance().quiet_mode_active()) {
-        LOG_WARN("API", "Skipped battery settings request during reconnect quiet mode");
     }
+#endif
 
     const bool known = TransmitterManager::hasBatterySettings();
     auto settings = TransmitterManager::getBatterySettings();
@@ -127,27 +136,10 @@ esp_err_t api_save_setting_handler(httpd_req_t *req) {
         return ApiResponseUtils::send_error_message(req, "Unsupported value type for field update");
     }
 
-    msg.checksum = EspnowPacketUtils::calculate_message_crc32_zeroed(&msg);
+    LOG_INFO("API", "Message prepared - type=%d, category=%d, field=%d, size=%d bytes",
+             msg.type, msg.category, msg.field_id, static_cast<int>(sizeof(msg)));
 
-    LOG_INFO("API", "Message prepared - type=%d, category=%d, field=%d, checksum=0x%08lX, size=%d bytes",
-             msg.type, msg.category, msg.field_id,
-             static_cast<unsigned long>(msg.checksum), static_cast<int>(sizeof(msg)));
-
-    if (!TransmitterManager::isMACKnown()) {
-        LOG_ERROR("API", "Transmitter not connected");
-        return ApiResponseUtils::send_error_message(req, "Transmitter not connected");
-    }
-
-    if (ReceiverConnectionHandler::instance().quiet_mode_active()) {
-        LOG_WARN("API", "Blocked settings update during reconnect quiet mode");
-        return ApiResponseUtils::send_error_message(req, "ESP-NOW reconnect quiet mode active - try again shortly");
-    }
-
-    LOG_INFO("API", "Sending to transmitter MAC: %s", TransmitterManager::getMACString().c_str());
-
-    esp_err_t result = EspnowTxScheduler::send(TransmitterManager::getMAC(), &msg, sizeof(msg), "API_SETTING_UPDATE");
-    if (result == ESP_OK) {
-        LOG_INFO("API", "✓ ESP-NOW send SUCCESS (category=%d, field=%d)", category, field);
+    auto apply_local_cache = [&]() {
         if (category == SETTINGS_BATTERY) {
             auto emu = TransmitterManager::getBatteryEmulatorSettings();
             switch (field) {
@@ -212,9 +204,63 @@ esp_err_t api_save_setting_handler(httpd_req_t *req) {
             }
             TransmitterManager::storeContactorSettings(contactor);
         }
-    } else {
-        LOG_ERROR("API", "✗ ESP-NOW send FAILED: %s (0x%x)", esp_err_to_name(result), result);
-        LOG_ERROR("API", "Failed details - category=%d, field=%d, msg_size=%d", category, field, sizeof(msg));
+    };
+
+    bool mqtt_sent = false;
+
+#if MQTT_FEATURE_COMMANDS
+    if (MqttClient::isEnabled() && MqttClient::isConnected()) {
+        StaticJsonDocument<256> cmd;
+        char request_id[32];
+        snprintf(request_id, sizeof(request_id), "set-%lu", static_cast<unsigned long>(millis()));
+        cmd["request_id"] = request_id;
+        cmd["origin"] = "receiver_lcd";
+        cmd["schema"] = 1;
+        cmd["category"] = category;
+        cmd["field"] = field;
+        cmd["value"] = value;
+
+        char payload[256];
+        const size_t n = serializeJson(cmd, payload, sizeof(payload));
+        if (n > 0) {
+            char ack_payload[384] = {0};
+            mqtt_sent = MqttClient::publishJsonAndWaitForAck(
+                MQTT_TOPIC_RX_CMD_SETTINGS_UPDATE,
+                payload,
+                request_id,
+                MQTT_TOPIC_TX_ACK_SETTINGS_UPDATE,
+                TimingConfig::SETTINGS_UPDATE_DELAY_MS,
+                ack_payload,
+                sizeof(ack_payload));
+
+            if (mqtt_sent) {
+                StaticJsonDocument<256> ack_doc;
+                if (deserializeJson(ack_doc, ack_payload) == DeserializationError::Ok) {
+                    const bool success = ack_doc["success"] | false;
+                    const char* message = ack_doc["message"] | "";
+                    if (success) {
+                        LOG_INFO("API", "✓ MQTT settings ACK received (category=%d, field=%d)", category, field);
+                        apply_local_cache();
+                        return ApiResponseUtils::send_jsonf(req,
+                                                            "{\"success\":true,\"message\":\"Setting applied via MQTT\",\"category\":%u,\"field\":%u}",
+                                                            static_cast<unsigned>(category),
+                                                            static_cast<unsigned>(field));
+                    }
+
+                    LOG_WARN("API", "MQTT settings ACK reported failure: %s", message);
+                    return ApiResponseUtils::send_jsonf(req,
+                                                        "{\"success\":false,\"error\":\"%s\"}",
+                                                        message[0] != '\0' ? message : "MQTT settings update failed");
+                }
+
+                LOG_WARN("API", "MQTT settings ACK received but could not be parsed");
+                return ApiResponseUtils::send_success_message(req, "Setting command sent via MQTT");
+            }
+        }
     }
-    return ApiResponseUtils::send_espnow_send_result(req, result, "Setting sent to transmitter");
+#endif
+
+    (void)mqtt_sent;
+    LOG_WARN("API", "MQTT command channel unavailable for settings update");
+    return ApiResponseUtils::send_error_message(req, "MQTT command channel unavailable");
 }

@@ -33,10 +33,6 @@ namespace {
     };
 }
 
-namespace ESPNow {
-    extern uint8_t transmitter_mac[6];
-}
-
 namespace TransmitterIdentity {
 
 // ===== Registration =====
@@ -83,19 +79,7 @@ bool has_registered_mac() {
 // ===== Resolution =====
 
 const uint8_t* get_active_mac() {
-    const uint8_t* reg_mac = get_registered_mac();
-    if (reg_mac != nullptr) {
-        return reg_mac;
-    }
-
-    // Fall back to runtime ESP-NOW MAC
-    for (int i = 0; i < 6; ++i) {
-        if (ESPNow::transmitter_mac[i] != 0) {
-            return ESPNow::transmitter_mac;
-        }
-    }
-
-    return nullptr;
+    return get_registered_mac();
 }
 
 // ===== Formatting =====

@@ -1,6 +1,6 @@
 #include "systeminfo_page_script.h"
 
-String get_systeminfo_page_script() {
+const char* get_systeminfo_page_script() {
     return R"rawliteral(
         const RECEIVER_CONFIG_FIELDS = [
             'hostname', 'ssid', 'password', 'useStaticIP',

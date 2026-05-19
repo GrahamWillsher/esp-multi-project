@@ -5,9 +5,15 @@
 
 // Event logs page handler - uses receiver API to fetch logs
 static esp_err_t event_logs_page_handler(httpd_req_t *req) {
-    return send_rendered_page(req, "Event Logs",
-                              get_event_logs_page_content(),
-                              PageRenderOptions(get_event_logs_page_styles(), get_event_logs_page_script()));
+    auto content_generator = [](httpd_req_t* request) -> esp_err_t {
+        const char* content = get_event_logs_page_content();
+        return send_page_content_chunk(request, "event_logs_content", content, strlen(content));
+    };
+
+    return send_rendered_page_streaming(req,
+                                        "Event Logs",
+                                        content_generator,
+                                        PageRenderOptions(get_event_logs_page_styles(), get_event_logs_page_script()));
 }
 
 // Register event logs page

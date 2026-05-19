@@ -645,6 +645,8 @@ esp_err_t send_rendered_page(httpd_req_t* req,
     }
 
     httpd_resp_set_type(req, content_type ? content_type : "text/html");
+    // Section 10.D: Cache static pages aggressively — browser avoids re-download on revisit.
+    httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=86400");
 
     const auto send_chunk = [&](const char* data, size_t len) -> bool {
         return len == 0 || (httpd_resp_send_chunk(req, data, len) == ESP_OK);
@@ -701,6 +703,8 @@ esp_err_t send_rendered_page(httpd_req_t* req,
     }
 
     httpd_resp_set_type(req, content_type ? content_type : "text/html");
+    // Section 10.D: Cache static pages aggressively — browser avoids re-download on revisit.
+    httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=86400");
 
     const auto send_chunk = [&](const char* data, size_t len) -> bool {
         return len == 0 || (httpd_resp_send_chunk(req, data, len) == ESP_OK);

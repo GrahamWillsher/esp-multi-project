@@ -9,10 +9,15 @@
  * Users can view and modify battery settings that are sent to the transmitter.
  */
 static esp_err_t battery_settings_handler(httpd_req_t *req) {
-    String content = get_battery_settings_page_content();
+    auto content_generator = [](httpd_req_t* request) -> esp_err_t {
+        const char* content = get_battery_settings_page_content();
+        return send_page_content_chunk(request, "battery_settings_content", content, strlen(content));
+    };
     const char* script = get_battery_settings_page_script();
-
-    return send_rendered_page(req, "ESP-NOW Receiver - Battery Settings", content, PageRenderOptions("", script));
+    return send_rendered_page_streaming(req,
+                                        "ESP-NOW Receiver - Battery Settings",
+                                        content_generator,
+                                        PageRenderOptions("", script));
 }
 
 /**

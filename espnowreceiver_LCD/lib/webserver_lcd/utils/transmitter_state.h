@@ -3,9 +3,12 @@
 
 #include <Arduino.h>
 #include <cstdint>
-#include <esp32common/espnow/common.h>
 
 namespace TransmitterState {
+
+constexpr uint8_t kEventLogsClearAckFailed = 0;
+constexpr uint8_t kEventLogsClearAckSuccess = 1;
+constexpr uint8_t kHeartbeatFlagGeolocationValid = 0x01;
 
 struct RuntimeSnapshot {
     bool ethernet_connected = false;
@@ -43,7 +46,7 @@ struct EventLogSummarySnapshot {
 
 struct EventLogClearAckSnapshot {
     bool known = false;
-    uint8_t status = EVENT_LOGS_CLEAR_ACK_FAILED;
+    uint8_t status = kEventLogsClearAckFailed;
     uint32_t summary_seq = 0;
     uint32_t uptime_ms = 0;
     uint32_t last_update_ms = 0;
@@ -102,13 +105,23 @@ uint32_t get_metadata_version_number();
 void load_metadata_from_prefs(void* prefs_ptr);
 void save_metadata_to_prefs(void* prefs_ptr);
 
-void store_event_log_summary(const event_log_summary_t& summary);
+void store_event_log_summary(uint32_t seq,
+                             uint32_t total_historical,
+                             uint32_t error_historical,
+                             uint32_t new_since_last_report_total,
+                             uint32_t new_since_last_report_error,
+                             uint32_t uptime_ms);
 EventLogSummarySnapshot get_event_log_summary();
 
-void store_event_log_clear_ack(const event_logs_clear_ack_t& ack);
+void store_event_log_clear_ack(uint8_t status,
+                               uint32_t summary_seq,
+                               uint32_t uptime_ms);
 EventLogClearAckSnapshot get_event_log_clear_ack();
 
-void store_temperature_report(const temperature_report_t& report);
+void store_temperature_report(bool valid,
+                              uint32_t seq,
+                              int16_t temperature_centi_c,
+                              uint32_t uptime_ms);
 TemperatureReportSnapshot get_temperature_report();
 
 StateSnapshot get_state_snapshot();

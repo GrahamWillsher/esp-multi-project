@@ -3,7 +3,6 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
-#include <esp32common/espnow/common.h>
 #include <vector>
 #include "transmitter_settings_types.h"
 #include "transmitter_event_log_types.h"
@@ -32,9 +31,12 @@ public:
         uint32_t last_update_ms = 0;
     };
 
+    static constexpr uint8_t kEventLogsClearAckFailed = 0;
+    static constexpr uint8_t kEventLogsClearAckSuccess = 1;
+
     struct EventLogClearAck {
         bool known = false;
-        uint8_t status = EVENT_LOGS_CLEAR_ACK_FAILED;
+        uint8_t status = kEventLogsClearAckFailed;
         uint32_t summary_seq = 0;
         uint32_t uptime_ms = 0;
         uint32_t last_update_ms = 0;
@@ -173,15 +175,25 @@ public:
     static bool hasEventLogs();
     static void getEventLogsSnapshot(std::vector<EventLogEntry>& out_logs, uint32_t* out_last_update_ms = nullptr);
 
-    // Event log summary counters (from ESP-NOW)
-    static void storeEventLogSummary(const event_log_summary_t& summary);
+    // Event log summary counters (transport-agnostic cache)
+    static void storeEventLogSummary(uint32_t seq,
+                                     uint32_t total_historical,
+                                     uint32_t error_historical,
+                                     uint32_t new_since_last_report_total,
+                                     uint32_t new_since_last_report_error,
+                                     uint32_t uptime_ms);
     static EventLogSummary getEventLogSummary();
 
-    static void storeEventLogClearAck(const event_logs_clear_ack_t& ack);
+    static void storeEventLogClearAck(uint8_t status,
+                                      uint32_t summary_seq,
+                                      uint32_t uptime_ms);
     static EventLogClearAck getEventLogClearAck();
 
-    // Transmitter temperature (from ESP-NOW)
-    static void storeTemperatureReport(const temperature_report_t& report);
+    // Transmitter temperature (transport-agnostic cache)
+    static void storeTemperatureReport(bool valid,
+                                       uint32_t seq,
+                                       int16_t temperature_centi_c,
+                                       uint32_t uptime_ms);
     static TemperatureReport getTemperatureReport();
 };
 

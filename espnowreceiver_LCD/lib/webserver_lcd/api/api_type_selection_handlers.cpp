@@ -6,9 +6,11 @@
 
 #include <esp32common/logging/logging_config.h>
 #include "../../receiver_config/receiver_config_manager.h"
-#include "../../src/espnow/espnow_send.h"
-#include "../../src/espnow/component_apply_tracker.h"
-#include "../../src/espnow/type_catalog_cache.h"
+#include "../../src/mqtt/mqtt_ack_tracker.h"
+#include "../../src/mqtt/mqtt_command_client.h"
+#include "../../src/mqtt/component_apply_tracker.h"
+#include "../../src/mqtt/type_catalog_cache.h"
+#include "../../src/mqtt/mqtt_client.h"
 #include <ArduinoJson.h>
 #include <esp_heap_caps.h>
 #include <esp_system.h>
@@ -16,6 +18,35 @@
 #include <cstring>
 
 namespace {
+
+// MQTT topics for component apply
+static const char* kComponentApplyCommandTopic = "batt-emu/mqtt-v1/rx/cmd/control/component_apply";
+static const char* kRefreshBatteryCatalogTopic = "batt-emu/mqtt-v1/rx/cmd/refresh/catalog_battery";
+static const char* kRefreshInverterCatalogTopic = "batt-emu/mqtt-v1/rx/cmd/refresh/catalog_inverter";
+
+bool request_catalog_refresh(const char* topic, const char* model) {
+    if (!MqttClient::isEnabled() || !MqttClient::isConnected()) {
+        return false;
+    }
+
+    StaticJsonDocument<128> cmd;
+    cmd["request_id"] = esp_random();
+    cmd["model"] = model;
+
+    char payload[192];
+    if (serializeJson(cmd, payload, sizeof(payload)) == 0) {
+        return false;
+    }
+    return MqttClient::publishJson(topic, payload, false);
+}
+
+bool request_battery_types_over_mqtt() {
+    return request_catalog_refresh(kRefreshBatteryCatalogTopic, "catalog_battery");
+}
+
+bool request_inverter_types_over_mqtt() {
+    return request_catalog_refresh(kRefreshInverterCatalogTopic, "catalog_inverter");
+}
 
 struct TypeEntry {
     uint8_t id;
@@ -145,23 +176,82 @@ static esp_err_t api_component_apply_handler(httpd_req_t *req) {
         return ApiResponseUtils::send_jsonf(req, "{\"success\":false,\"error\":\"Failed to start apply transaction\"}");
     }
 
-    if (!send_component_apply_request(request_id, mask, battery_type, inverter_type, battery_interface, inverter_interface)) {
-        ComponentApplyTracker::mark_failed(request_id, "Failed to send apply request to transmitter");
+    auto persist_local_selection = [&]() {
+        if (mask & component_apply_battery_type) {
+            ReceiverNetworkConfig::setBatteryType(battery_type);
+        }
+        if (mask & component_apply_inverter_type) {
+            ReceiverNetworkConfig::setInverterType(inverter_type);
+        }
+        if (mask & component_apply_battery_interface) {
+            ReceiverNetworkConfig::setBatteryInterface(battery_interface);
+        }
+        if (mask & component_apply_inverter_interface) {
+            ReceiverNetworkConfig::setInverterInterface(inverter_interface);
+        }
+    };
+
+    // Try MQTT first
+    bool mqtt_sent = false;
+    if (MqttClient::isEnabled() && MqttClient::isConnected()) {
+        MqttAckTracker::AckResult ack_result;
+        mqtt_sent = MqttCommandClient::sendComponentApply(request_id,
+                                                          mask,
+                                                          battery_type,
+                                                          inverter_type,
+                                                          battery_interface,
+                                                          inverter_interface,
+                                                          2000,
+                                                          &ack_result);
+        if (mqtt_sent) {
+            DynamicJsonDocument ack_doc(512);
+            (void)deserializeJson(ack_doc, ack_result.payload[0] != '\0' ? ack_result.payload : "{}");
+
+            component_apply_ack_t ack{};
+            ack.type = msg_component_apply_ack;
+            ack.request_id = request_id;
+            ack.success = ack_result.success ? 1 : 0;
+            ack.reboot_required = ack_doc["reboot_required"] | false;
+            ack.ready_for_reboot = ack_doc["ready_for_reboot"] | false;
+            ack.apply_mask = ack_doc["apply_mask"] | mask;
+            ack.persisted_mask = ack_doc["persisted_mask"] | 0;
+            ack.battery_type = ack_doc["battery_type"] | battery_type;
+            ack.inverter_type = ack_doc["inverter_type"] | inverter_type;
+            ack.battery_interface = ack_doc["battery_interface"] | battery_interface;
+            ack.inverter_interface = ack_doc["inverter_interface"] | inverter_interface;
+            ack.settings_version = ack_doc["settings_version"] | ack_result.version;
+            strlcpy(ack.message,
+                    ack_result.message[0] != '\0' ? ack_result.message : (ack_result.success ? "OK" : "APPLY_FAILED"),
+                    sizeof(ack.message));
+
+            if (ack_result.success) {
+                ComponentApplyTracker::on_ack(ack);
+                persist_local_selection();
+            } else {
+                ComponentApplyTracker::mark_failed(request_id,
+                                                   ack_result.message[0] != '\0' ? ack_result.message : "Component apply rejected");
+                return ApiResponseUtils::send_jsonf(req,
+                                                    "{\"success\":false,\"error\":\"%s\"}",
+                                                    ack_result.message[0] != '\0' ? ack_result.message : "Component apply rejected");
+            }
+
+            auto snapshot = ComponentApplyTracker::get_snapshot();
+            return ApiResponseUtils::send_jsonf(req,
+                                                "{\"success\":true,\"request_id\":%lu,\"state\":\"%s\",\"message\":\"%s\"}",
+                                                static_cast<unsigned long>(request_id),
+                                                component_apply_state_to_string(snapshot.state),
+                                                snapshot.message[0] != '\0' ? snapshot.message : "Apply request dispatched");
+        }
+    }
+
+    if (!mqtt_sent) {
+        ComponentApplyTracker::mark_failed(request_id, "Failed to send apply request via MQTT");
         return ApiResponseUtils::send_jsonf(req, "{\"success\":false,\"error\":\"Failed to send apply request to transmitter\"}");
     }
 
-    if (mask & component_apply_battery_type) {
-        ReceiverNetworkConfig::setBatteryType(battery_type);
-    }
-    if (mask & component_apply_inverter_type) {
-        ReceiverNetworkConfig::setInverterType(inverter_type);
-    }
-    if (mask & component_apply_battery_interface) {
-        ReceiverNetworkConfig::setBatteryInterface(battery_interface);
-    }
-    if (mask & component_apply_inverter_interface) {
-        ReceiverNetworkConfig::setInverterInterface(inverter_interface);
-    }
+    LOG_DEBUG("COMPONENT_APPLY", "Component apply sent via MQTT (request_id=%lu)", (unsigned long)request_id);
+
+    persist_local_selection();
 
     return ApiResponseUtils::send_jsonf(req,
                                         "{\"success\":true,\"request_id\":%lu,\"state\":\"pending\",\"message\":\"Apply request dispatched\"}",
@@ -249,11 +339,11 @@ static esp_err_t api_component_apply_status_handler(httpd_req_t *req) {
 }
 
 static esp_err_t api_get_battery_types_handler(httpd_req_t *req) {
-    return serve_cached_type_catalog(req, TypeCatalogCache::copy_battery_entries, send_battery_types_request);
+    return serve_cached_type_catalog(req, TypeCatalogCache::copy_battery_entries, request_battery_types_over_mqtt);
 }
 
 static esp_err_t api_get_inverter_types_handler(httpd_req_t *req) {
-    return serve_cached_type_catalog(req, TypeCatalogCache::copy_inverter_entries, send_inverter_types_request);
+    return serve_cached_type_catalog(req, TypeCatalogCache::copy_inverter_entries, request_inverter_types_over_mqtt);
 }
 
 static esp_err_t api_get_selected_types_handler(httpd_req_t *req) {
@@ -271,7 +361,7 @@ static esp_err_t api_get_battery_interfaces_handler(httpd_req_t *req) {
 }
 
 static esp_err_t api_get_inverter_interfaces_handler(httpd_req_t *req) {
-    return serve_cached_type_catalog(req, TypeCatalogCache::copy_inverter_interface_entries, send_inverter_interfaces_request);
+    return serve_cached_type_catalog(req, TypeCatalogCache::copy_inverter_interface_entries, request_inverter_types_over_mqtt);
 }
 
 static esp_err_t api_get_selected_interfaces_handler(httpd_req_t *req) {

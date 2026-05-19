@@ -32,8 +32,9 @@ namespace TaskConfig {
     constexpr uint32_t ESPNOW_TX_STACK = 4096;
 
     // MQTT connection, pub/sub, JSON serialisation.
-    // Larger stack accommodates ArduinoJson scratch buffer.
-    constexpr uint32_t MQTT_CLIENT_STACK = 10240;
+    // Keep this moderate on LCD receiver because web/LVGL startup can leave
+    // limited contiguous internal heap blocks for dynamic task stacks.
+    constexpr uint32_t MQTT_CLIENT_STACK = 6144;
 
     // Periodic ESP-NOW discovery announcements.
     constexpr uint32_t ANNOUNCEMENT_TASK_STACK = 4096;

@@ -3,6 +3,6 @@
 
 #include <Arduino.h>
 
-String get_systeminfo_page_content();
+const char* get_systeminfo_page_content();
 
 #endif

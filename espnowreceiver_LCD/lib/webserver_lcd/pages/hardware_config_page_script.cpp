@@ -1,7 +1,7 @@
 #include "hardware_config_page_script.h"
 
-String get_hardware_config_page_script() {
-    return R"rawliteral(
+const char* get_hardware_config_page_script() {
+    static const char kHardwareConfigPageScript[] = R"rawliteral(
         const FIELD_MAP = {
             canFdAsClassic: { category: 7, field: 4, type: 'checkbox' }, // SETTINGS_CAN / CAN_USE_CANFD_AS_CLASSIC
             canFreq:     { category: 7, field: 0, type: 'number' }, // SETTINGS_CAN / CAN_FREQUENCY_KHZ
@@ -316,4 +316,6 @@ String get_hardware_config_page_script() {
             setInterval(loadLiveLedStatus, 2000);
         });
     )rawliteral";
+
+    return kHardwareConfigPageScript;
 }

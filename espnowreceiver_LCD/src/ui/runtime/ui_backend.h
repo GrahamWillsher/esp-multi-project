@@ -19,7 +19,7 @@ void run_startup_sequence();
 void set_state(float soc_percent, int32_t power_w);
 void set_power_bar_mode(PowerBarRendererMode mode);
 void set_led_state(uint8_t color, uint8_t effect);
-void set_network_status(const char* ip, bool wifi_ok);  // call before tasks start; LVGL-safe
+void set_network_status(const char* status_text, bool wifi_ok);  // call from LVGL task/locked context
 void set_link_connected(bool connected);
 void tick(uint32_t now_ms);
 

@@ -11,9 +11,15 @@
  * inverter protocol sent to the transmitter.
  */
 static esp_err_t inverter_settings_handler(httpd_req_t *req) {
-    const String content = get_inverter_settings_page_content();
-    const String script  = get_inverter_settings_page_script();
-    return send_rendered_page(req, "ESP-NOW Receiver - Inverter Settings", content, PageRenderOptions("", script));
+    auto content_generator = [](httpd_req_t* request) -> esp_err_t {
+        const char* content = get_inverter_settings_page_content();
+        return send_page_content_chunk(request, "inverter_settings_content", content, strlen(content));
+    };
+    const char* script  = get_inverter_settings_page_script();
+    return send_rendered_page_streaming(req,
+                                        "ESP-NOW Receiver - Inverter Settings",
+                                        content_generator,
+                                        PageRenderOptions("", script));
 }
 
 /**

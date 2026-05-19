@@ -8,8 +8,6 @@
 
 class TxStateMachine {
 public:
-    // Shared vocabulary with RxStateMachine and the heartbeat wire format.
-    // DISCONNECTED(0) DISCOVERING(1) CONNECTED(2) ACTIVE(3) STALE(4) RECONNECTING(5) FAILED(6)
     using ConnectionState = EspNowDeviceState;
 
     struct Stats {
@@ -47,8 +45,12 @@ public:
 private:
     TxStateMachine() = default;
 
+    ConnectionState derive_state_locked() const;
+    void note_transition_locked(ConnectionState next_state);
+
     mutable SemaphoreHandle_t mutex_{nullptr};
-    ConnectionState state_{ConnectionState::DISCONNECTED};
     Stats stats_{};
     uint8_t reconnect_exp_{0};
+    bool transmission_active_{false};
+    ConnectionState last_reported_state_{ConnectionState::DISCONNECTED};
 };

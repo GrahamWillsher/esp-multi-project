@@ -29,6 +29,10 @@
 #include <mqtt_manager.h>
 #include <ethernet_config.h>
 
+namespace {
+constexpr BaseType_t ESPNOW_SERVICE_CORE = 1;
+}
+
 EspnowMessageHandler& EspnowMessageHandler::instance() {
     static EspnowMessageHandler instance;
     return instance;
@@ -41,31 +45,44 @@ EspnowMessageHandler::EspnowMessageHandler() {
 }
 
 void EspnowMessageHandler::start_rx_task(QueueHandle_t queue) {
-    // Create main RX task
-    xTaskCreate(
+    // Create main RX task on Core 1 (isolated from battery emulator on Core 0)
+    const BaseType_t rx_task_result = xTaskCreatePinnedToCore(
         rx_task_impl,
         "espnow_rx",
         task_config::STACK_SIZE_ESPNOW_RX,
         (void*)queue,
         task_config::PRIORITY_CRITICAL,
-        nullptr
+        nullptr,
+        ESPNOW_SERVICE_CORE
     );
-    LOG_DEBUG("MSG_HANDLER", "ESP-NOW RX task started");
+    if (rx_task_result != pdPASS) {
+        LOG_ERROR("MSG_HANDLER", "Failed to start ESP-NOW RX task on Core %d", ESPNOW_SERVICE_CORE);
+        return;
+    }
+    LOG_DEBUG("MSG_HANDLER", "ESP-NOW RX task started (Core %d)", ESPNOW_SERVICE_CORE);
     
     // Create network config processing queue and task
     network_config_queue_ = xQueueCreate(task_config::NETWORK_CONFIG_QUEUE_SIZE, sizeof(espnow_queue_msg_t));
     if (network_config_queue_ == nullptr) {
         LOG_ERROR("MSG_HANDLER", "Failed to create network config queue");
     } else {
-        xTaskCreate(
+        const BaseType_t net_cfg_task_result = xTaskCreatePinnedToCore(
             network_config_task_impl,
             "net_config",
             task_config::STACK_SIZE_NETWORK_CONFIG,
             nullptr,
             task_config::PRIORITY_NETWORK_CONFIG,
-            &network_config_task_handle_
+            &network_config_task_handle_,
+            ESPNOW_SERVICE_CORE
         );
-        LOG_DEBUG("MSG_HANDLER", "Network config task started (priority=%d)", task_config::PRIORITY_NETWORK_CONFIG);
+        if (net_cfg_task_result != pdPASS) {
+            network_config_task_handle_ = nullptr;
+            LOG_ERROR("MSG_HANDLER", "Failed to start network config task on Core %d", ESPNOW_SERVICE_CORE);
+        } else {
+            LOG_DEBUG("MSG_HANDLER", "Network config task started (Core %d, priority=%d)",
+                      ESPNOW_SERVICE_CORE,
+                      task_config::PRIORITY_NETWORK_CONFIG);
+        }
     }
 }
 

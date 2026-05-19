@@ -1,16 +1,14 @@
 #include "battery_settings_page_content.h"
 
-String get_battery_settings_page_content() {
-    String content = R"rawliteral(
+const char* get_battery_settings_page_content() {
+    static const char kBatterySettingsPageContent[] = R"rawliteral(
     <h1>Battery Settings</h1>
     <div style='margin-bottom: 20px;'>
         <a href='/' style='display: inline-block; padding: 10px 16px; background: #4CAF50; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;'>
             ← Dashboard
         </a>
     </div>
-    )rawliteral";
-
-    content += R"rawliteral(
+    
     
     <div class='settings-card'>
         <h3>Battery Capacity & Limits</h3>
@@ -104,5 +102,5 @@ String get_battery_settings_page_content() {
     </div>
 )rawliteral";
 
-    return content;
+    return kBatterySettingsPageContent;
 }

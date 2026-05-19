@@ -46,80 +46,94 @@ const char* get_monitor2_page_styles() {
 
 const char* get_monitor2_page_script() {
     return R"rawliteral(
-        let eventSource = null;
-        let reconnectTimer = null;
+        let pollTimer = null;
         let lastUpdate = Date.now();
-        let reconnectDelayMs = 1000;
-        const reconnectDelayMaxMs = 30000;
+        const MONITOR_POLL_BASE_MS = 5000;
+        const MONITOR_POLL_MAX_MS = 30000;
+        let monitorPollDelayMs = MONITOR_POLL_BASE_MS;
 
-        function connectSSE() {
-            // Close existing connection if any
-            if (eventSource) {
-                eventSource.close();
-            }
-
-            // Clear reconnect timer
-            if (reconnectTimer) {
-                clearTimeout(reconnectTimer);
-                reconnectTimer = null;
-            }
-
-            // Create new EventSource connection
-            eventSource = new EventSource('/api/monitor_sse');
-
-            eventSource.onopen = function() {
-                console.log('SSE connection opened');
-                document.getElementById('connection').textContent = '⚡ Connected (Real-time)';
-                document.getElementById('connection').className = 'connection-status';
-                reconnectDelayMs = 1000;
-            };
-
-            eventSource.onmessage = function(event) {
-                try {
-                    const data = JSON.parse(event.data);
-                    document.getElementById('mode').innerText = 'Mode: ' + (data.mode === 'simulated' ? 'Simulated Data' : 'Live ESP-NOW Data');
-                    document.getElementById('soc').innerText = data.soc + ' %';
-                    document.getElementById('power').innerText = data.power + ' W';
-                    document.getElementById('voltage').innerText = (data.voltage_v || 0).toFixed(1) + ' V';
-                    lastUpdate = Date.now();
-                } catch (err) {
-                    console.error('Failed to parse SSE data:', err);
-                }
-            };
-
-            eventSource.onerror = function(err) {
-                console.error('SSE error:', err);
-                document.getElementById('connection').textContent = '❌ Disconnected (Reconnecting...)';
-                document.getElementById('connection').className = 'connection-status disconnected';
-
-                // Close and reconnect with exponential backoff
-                eventSource.close();
-                const waitMs = reconnectDelayMs;
-                reconnectTimer = setTimeout(connectSSE, waitMs);
-                reconnectDelayMs = Math.min(Math.floor(reconnectDelayMs * 1.5), reconnectDelayMaxMs);
-            };
+        function jitterDelay(ms) {
+            const jitter = 0.10;
+            const delta = Math.floor(ms * jitter);
+            const min = Math.max(1000, ms - delta);
+            const max = ms + delta;
+            return Math.floor(Math.random() * (max - min + 1)) + min;
         }
 
-        // Monitor connection health - reconnect if no updates for 30 seconds
+        function retryAfterToMs(response) {
+            const retryAfter = response.headers.get('Retry-After');
+            const retrySeconds = Number(retryAfter);
+            if (!Number.isFinite(retrySeconds) || retrySeconds <= 0) {
+                return null;
+            }
+            return Math.max(MONITOR_POLL_BASE_MS, Math.floor(retrySeconds * 1000));
+        }
+
+        function scheduleNextPoll(delayMs) {
+            if (pollTimer) {
+                clearTimeout(pollTimer);
+            }
+            pollTimer = setTimeout(pollMonitorData, jitterDelay(delayMs));
+        }
+
+        async function pollMonitorData() {
+            const connectionEl = document.getElementById('connection');
+
+            try {
+                const response = await fetch('/api/monitor', { cache: 'no-store' });
+
+                if (!response.ok) {
+                    const retryAfterMs = retryAfterToMs(response);
+                    if (retryAfterMs !== null) {
+                        monitorPollDelayMs = Math.max(MONITOR_POLL_BASE_MS, retryAfterMs);
+                    } else {
+                        monitorPollDelayMs = Math.min(monitorPollDelayMs * 2, MONITOR_POLL_MAX_MS);
+                    }
+
+                    connectionEl.textContent = `❌ Snapshot unavailable (${response.status})`;
+                    connectionEl.className = 'connection-status disconnected';
+                    scheduleNextPoll(monitorPollDelayMs);
+                    return;
+                }
+
+                const data = await response.json();
+                document.getElementById('mode').innerText = 'Mode: ' + (data.mode === 'simulated' ? 'Simulated Data' : 'Live ESP-NOW Data');
+                document.getElementById('soc').innerText = data.soc + ' %';
+                document.getElementById('power').innerText = data.power + ' W';
+                document.getElementById('voltage').innerText = (data.voltage_v || 0).toFixed(1) + ' V';
+                lastUpdate = Date.now();
+
+                connectionEl.textContent = '⚡ Connected (5s snapshot polling)';
+                connectionEl.className = 'connection-status';
+
+                monitorPollDelayMs = MONITOR_POLL_BASE_MS;
+                scheduleNextPoll(monitorPollDelayMs);
+            } catch (err) {
+                console.error('Monitor polling error:', err);
+                monitorPollDelayMs = Math.min(monitorPollDelayMs * 2, MONITOR_POLL_MAX_MS);
+                connectionEl.textContent = '❌ Disconnected (Retrying...)';
+                connectionEl.className = 'connection-status disconnected';
+                scheduleNextPoll(monitorPollDelayMs);
+            }
+        }
+
+        // Monitor staleness for UX visibility.
         setInterval(function() {
             if (Date.now() - lastUpdate > 30000) {
-                console.log('No updates received for 30s, reconnecting...');
-                connectSSE();
+                document.getElementById('connection').textContent = '⚠ Stale data (>30s)';
+                document.getElementById('connection').className = 'connection-status disconnected';
             }
         }, 5000);
 
-        // Start SSE connection on page load
+        // Start polling on page load.
         window.onload = function() {
-            connectSSE();
+            pollMonitorData();
         };
 
-        // Clean up on page unload
+        // Clean up timer on page unload.
         window.onbeforeunload = function() {
-            if (eventSource) {
-                eventSource.close();
-            }
-            if (reconnectTimer) {
-                clearTimeout(reconnectTimer);
+            if (pollTimer) {
+                clearTimeout(pollTimer);
             }
         };
     )rawliteral";

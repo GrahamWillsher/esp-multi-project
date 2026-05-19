@@ -5,6 +5,8 @@
 #include <esp_wifi.h>
 #include <espnow_transmitter.h>
 #include <esp32common/espnow/connection_manager.h>
+#include <esp32common/espnow/tx_scheduler.h>
+#include <channel_manager.h>
 #include "../config/logging_config.h"
 
 namespace {
@@ -13,10 +15,12 @@ constexpr uint32_t SUMMARY_LOG_PERIOD_MS = 60000;
 constexpr uint8_t MAX_CONSECUTIVE_FAILURES = 10;
 constexpr uint32_t BASE_BACKOFF_MS = 2000;
 constexpr uint32_t MAX_BACKOFF_MS = 30000;
+constexpr uint32_t RECOVERY_MAX_BLOCK_MS = 6000;
 
 struct GuardRuntimeState {
     bool recovery_active = false;
     bool recovery_triggered = false;
+    uint32_t recovery_started_ms = 0;
     uint32_t last_mismatch_log_ms = 0;
     uint32_t last_summary_log_ms = 0;
 
@@ -54,6 +58,7 @@ void trigger_recovery_once(const uint8_t* mac, const char* reason) {
 
     g_state.recovery_active = true;
     g_state.recovery_triggered = true;
+    g_state.recovery_started_ms = millis();
     g_state.channel_mismatch_reconnect_triggered++;
 
     LOG_ERROR("TX_SEND_GUARD", "Channel mismatch recovery triggered: %s", reason);
@@ -102,9 +107,9 @@ bool is_peer_channel_coherent(const uint8_t* peer_mac, uint8_t* out_home, uint8_
     if (out_peer) *out_peer = peer_channel;
 
     const bool peer_ok = (peer_channel == 0) || (peer_channel == home_channel);
-    // g_lock_channel: ISR-written channel lock value (uint8_t atomic on ESP32).
-    // 0 means no lock yet (discovery ongoing); non-zero is the locked receiver channel.
-    const bool lock_ok = (g_lock_channel == 0) || (home_channel == g_lock_channel);
+    const uint8_t authority_channel = ChannelManager::instance().get_channel();
+    const bool authority_locked = ChannelManager::instance().is_locked();
+    const bool lock_ok = !authority_locked || (home_channel == authority_channel);
     return peer_ok && lock_ok;
 }
 
@@ -130,28 +135,33 @@ esp_err_t send_to_receiver_guarded(const uint8_t* mac, const uint8_t* data, size
     uint8_t peer = 0;
     const bool coherent = is_peer_channel_coherent(mac, &home, &peer);
 
+    if (g_state.recovery_active && g_state.recovery_started_ms != 0 &&
+        (now - g_state.recovery_started_ms) > RECOVERY_MAX_BLOCK_MS) {
+        LOG_WARN("TX_SEND_GUARD", "Recovery guard timeout elapsed - allowing control sends to resume");
+        g_state.recovery_active = false;
+        g_state.recovery_triggered = false;
+        g_state.recovery_started_ms = 0;
+    }
+
     if (!coherent) {
         g_state.channel_mismatch_detected++;
 
         if (now - g_state.last_mismatch_log_ms >= MISMATCH_LOG_THROTTLE_MS) {
             g_state.last_mismatch_log_ms = now;
-            // g_lock_channel: ISR-written channel — included in diagnostics to show
-            // the locked channel value at time of mismatch detection.
+            const uint8_t authority_channel = ChannelManager::instance().get_channel();
             LOG_ERROR("TX_SEND_GUARD", "%s blocked: channel mismatch (home=%u peer=%u lock=%u)",
-                      tag ? tag : "send", home, peer, g_lock_channel);
+                      tag ? tag : "send", home, peer, authority_channel);
         }
 
-        const auto state = EspNowConnectionManager::instance().get_state();
-        if (state == EspNowConnectionState::CONNECTED) {
-            trigger_recovery_once(mac, "preflight mismatch");
-        }
+        trigger_recovery_once(mac, "preflight mismatch");
         return ESP_ERR_INVALID_STATE;
     }
 
-    // Recovery ends only when we are connected again and channel coherent.
+    // Recovery ends when we make protocol-level forward progress and channel is coherent.
     if (g_state.recovery_active && EspNowConnectionManager::instance().is_connected()) {
         g_state.recovery_active = false;
         g_state.recovery_triggered = false;
+        g_state.recovery_started_ms = 0;
         g_state.channel_mismatch_recovered_quick++;
         g_state.consecutive_failures = 0;
         g_state.send_paused_until_ms = 0;
@@ -162,8 +172,14 @@ esp_err_t send_to_receiver_guarded(const uint8_t* mac, const uint8_t* data, size
         return ESP_ERR_INVALID_STATE;
     }
 
-    const esp_err_t result = esp_now_send(mac, data, len);
+    const esp_err_t result = EspnowTxScheduler::send(mac, data, len, tag ? tag : "send");
     if (result == ESP_OK) {
+        if (g_state.recovery_active || g_state.recovery_triggered) {
+            LOG_INFO("TX_SEND_GUARD", "Recovery cleared - successful guarded send");
+        }
+        g_state.recovery_active = false;
+        g_state.recovery_triggered = false;
+        g_state.recovery_started_ms = 0;
         g_state.consecutive_failures = 0;
         return ESP_OK;
     }
@@ -191,13 +207,17 @@ void notify_connection_state(bool connected) {
         }
         g_state.recovery_active = false;
         g_state.recovery_triggered = false;
+        g_state.recovery_started_ms = 0;
         g_state.consecutive_failures = 0;
         g_state.send_paused_until_ms = 0;
         return;
     }
 
-    // Disconnected state keeps recovery guard active until connection is restored.
-    g_state.recovery_active = true;
+    // Do not force recovery guard active on disconnect; reconnect control traffic
+    // must still flow. Keep existing recovery state if one is already active.
+    if (g_state.recovery_active && g_state.recovery_started_ms == 0) {
+        g_state.recovery_started_ms = millis();
+    }
 }
 
 } // namespace TxSendGuard

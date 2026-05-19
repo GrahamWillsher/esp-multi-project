@@ -1,4 +1,8 @@
 #include "rx_connection_handler.h"
+#include "channel_authority.h"
+#include "link_recovery_coordinator.h"
+#include "radio_pressure_state.h"
+#include "unified_link_fsm.h"
 
 #include <Arduino.h>
 #include <cstring>
@@ -8,14 +12,21 @@
 #include <esp32common/config/timing_config.h>
 #include <esp32common/espnow/common.h>
 #include <esp32common/espnow/mac_utils.h>
+#include <esp32common/patterns/numeric_safety.h>
 #include <esp32common/espnow/rx_heartbeat_manager.h>
 #include <esp32common/espnow/standard_handlers.h>
 #include <esp32common/espnow/tx_scheduler.h>
 #include <channel_manager.h>
 #include <espnow_peer_manager.h>
 #include <logging_config.h>
+#include <rx_radio_arbiter_fsm.h>
 
 namespace {
+
+constexpr uint32_t kConnectConfirmAckRetryIntervalMs = 250;
+constexpr uint8_t kConnectConfirmAckMaxRetries = 20;
+constexpr uint8_t kConnectConfirmAckStatusOk = CONNECT_CONFIRM_STATUS_OK;
+constexpr uint8_t kConnectConfirmAckStatusVersionMismatch = CONNECT_CONFIRM_STATUS_VERSION_MISMATCH;
 
 esp_err_t send_request_data_message(const uint8_t* mac, uint8_t subtype) {
     request_data_t request{msg_request_data, subtype};
@@ -75,6 +86,47 @@ void call_run_project_specific_tick(const ReceiverConnectionHandlerHooks& hooks,
     }
 }
 
+void call_on_radio_deinit(const ReceiverConnectionHandlerHooks& hooks) {
+    if (hooks.on_radio_deinit != nullptr) {
+        hooks.on_radio_deinit(hooks.context);
+    }
+}
+
+void call_on_l2_wifi_restarted(const ReceiverConnectionHandlerHooks& hooks) {
+    if (hooks.on_l2_wifi_restarted != nullptr) {
+        hooks.on_l2_wifi_restarted(hooks.context);
+    }
+}
+
+uint32_t select_no_mem_trigger_threshold(uint32_t base_threshold,
+                                         EspNowConnectionState cm_state,
+                                         RadioPressureState pressure,
+                                         uint32_t consecutive_no_mem) {
+    uint32_t threshold = base_threshold;
+
+    // CONNECTING requires quicker decisiveness than steady-state CONNECTED.
+    if (cm_state == EspNowConnectionState::CONNECTING && threshold > 10U) {
+        threshold = 10U;
+    }
+
+    // Under CRITICAL pressure, trigger recovery sooner.
+    if (pressure == RadioPressureState::CRITICAL && threshold > 6U) {
+        threshold = 6U;
+    }
+
+    // If failures are already climbing, don't wait for very large static thresholds.
+    const uint32_t half_base = (base_threshold >= 2U) ? (base_threshold / 2U) : 1U;
+    if (consecutive_no_mem >= half_base && threshold > 8U) {
+        threshold = 8U;
+    }
+
+    if (threshold < 4U) {
+        threshold = 4U;
+    }
+
+    return threshold;
+}
+
 }  // namespace
 
 ReceiverConnectionHandler& ReceiverConnectionHandler::instance() {
@@ -100,7 +152,21 @@ void ReceiverConnectionHandler::init() {
     pending_peer_cleanup_ = false;
     std::memset(pending_peer_cleanup_mac_, 0, sizeof(pending_peer_cleanup_mac_));
 
+    // ── Wire recovery coordinator hooks from project hooks ─────────────────
+    // Threshold budgets are coordinator-owned (LinkRecoveryCoordinatorConfig).
+    // This handler only selects the dynamic trigger threshold.
+    {
+        esp32common::espnow::LinkRecoveryCoordinatorHooks rc_hooks{};
+        rc_hooks.context              = hooks_.context;
+        rc_hooks.on_radio_deinit      = hooks_.on_radio_deinit;
+        rc_hooks.on_l2_wifi_restarted = hooks_.on_l2_wifi_restarted;
+        rc_hooks.reinstall_send_cb    = hooks_.reinstall_send_cb;
+        esp32common::espnow::LinkRecoveryCoordinator::instance().configure_hooks(rc_hooks);
+        esp32common::espnow::LinkRecoveryCoordinator::instance().reset();
+    }
+
     auto& connection_manager = EspNowConnectionManager::instance();
+    RxRadioArbiterFsm::instance().reset(now_ms);
     connection_manager.set_heartbeat_timeout_ms(config_.heartbeat_timeout_ms);
     connection_manager.set_heartbeat_timeout_enabled(true);
 
@@ -122,13 +188,18 @@ void ReceiverConnectionHandler::init() {
 
                 // Clean connection — clear control-only mode and reset NO_MEM recovery counters
                 EspnowTxScheduler::set_control_only_mode(false);
-                self.no_mem_l1_count_       = 0;
-                self.no_mem_l2_count_       = 0;
-                self.no_mem_last_reinit_ms_ = 0;
+                esp32common::espnow::LinkRecoveryCoordinator::instance().reset();
 
                 self.deferred_peer_.reset();
                 self.pending_peer_cleanup_ = false;
                 std::memset(self.pending_peer_cleanup_mac_, 0, sizeof(self.pending_peer_cleanup_mac_));
+                self.pending_connect_confirm_ack_ = false;
+                self.pending_connect_confirm_ack_session_id_ = 0;
+                self.pending_connect_confirm_ack_session_boot_nonce_ = 0;
+                self.pending_connect_confirm_ack_due_ms_ = 0;
+                self.pending_connect_confirm_ack_retry_count_ = 0;
+                self.pending_connect_confirm_ack_rx_status_ = 0;
+                std::memset(self.pending_connect_confirm_ack_mac_, 0, sizeof(self.pending_connect_confirm_ack_mac_));
 
                 const uint8_t current_channel = ChannelManager::instance().get_channel();
                 ChannelManager::instance().lock_channel(current_channel, "RX_CONN");
@@ -141,6 +212,11 @@ void ReceiverConnectionHandler::init() {
                 self.power_data_confirmed_ = false;
                 self.had_connected_session_ = true;
                 self.init_pending_ = true;
+
+                auto& arbiter = RxRadioArbiterFsm::instance();
+                const uint32_t now = static_cast<uint32_t>(millis());
+                (void)arbiter.on_event(RxRadioArbiterFsm::Event::EV_DISCOVERY_ACK_SENT_OK, now);
+                self.fsm_waiting_first_heartbeat_after_recovery_ = true;
 
                 LOG_INFO("RX_CONN", "[INIT] Connected - init burst deferred to tick() (ACK priority)");
             } else if (old_state == EspNowConnectionState::CONNECTED &&
@@ -163,6 +239,10 @@ void ReceiverConnectionHandler::init() {
                 // Activate control-only mode immediately on link loss
                 EspnowTxScheduler::set_control_only_mode(true);
 
+                (void)RxRadioArbiterFsm::instance().on_event(
+                    RxRadioArbiterFsm::Event::EV_HEARTBEAT_STALE,
+                    static_cast<uint32_t>(millis()));
+
                 // Start reconnect diagnostics if this was a clean prior session
                 if (self.had_connected_session_ && !self.reconnect_diag_active_) {
                     self.begin_reconnect_diagnostics(static_cast<uint32_t>(millis()));
@@ -171,6 +251,13 @@ void ReceiverConnectionHandler::init() {
                 call_on_connection_lost(self.hooks_);
                 self.on_connection_lost();
                 self.deferred_peer_.reset();
+                self.pending_connect_confirm_ack_ = false;
+                self.pending_connect_confirm_ack_session_id_ = 0;
+                self.pending_connect_confirm_ack_session_boot_nonce_ = 0;
+                self.pending_connect_confirm_ack_due_ms_ = 0;
+                self.pending_connect_confirm_ack_retry_count_ = 0;
+                self.pending_connect_confirm_ack_rx_status_ = 0;
+                std::memset(self.pending_connect_confirm_ack_mac_, 0, sizeof(self.pending_connect_confirm_ack_mac_));
 
                 ChannelManager::instance().unlock_channel("RX_CONN");
                 LOG_INFO("RX_CONN", "Connection lost - channel unlocked (peer cleanup deferred)");
@@ -205,6 +292,12 @@ void ReceiverConnectionHandler::on_probe_received(const uint8_t* transmitter_mac
     last_rx_time_ms_ = now;
 
     const auto state = EspNowConnectionManager::instance().get_state();
+    if (had_connected_session_ && state != EspNowConnectionState::CONNECTED) {
+        (void)RxRadioArbiterFsm::instance().on_event(
+            RxRadioArbiterFsm::Event::EV_PROBE_WHILE_PREVIOUSLY_CONNECTED,
+            now);
+    }
+
     const bool already_connecting_same_peer =
         (state == EspNowConnectionState::CONNECTING) &&
         EspNowMacUtils::has_valid_mac(transmitter_mac_) &&
@@ -237,6 +330,35 @@ void ReceiverConnectionHandler::on_peer_registered(const uint8_t* transmitter_ma
         (void)post_connection_event(EspNowEvent::PEER_REGISTERED, transmitter_mac_);
         deferred_peer_.on_event_posted();
     }
+}
+
+void ReceiverConnectionHandler::on_connect_confirm_received(const uint8_t* transmitter_mac,
+                                                           uint16_t session_id,
+                                                           uint16_t session_boot_nonce,
+                                                           uint8_t protocol_version) {
+    if (transmitter_mac != nullptr) {
+        std::memcpy(transmitter_mac_, transmitter_mac, sizeof(transmitter_mac_));
+        std::memcpy(pending_connect_confirm_ack_mac_, transmitter_mac, sizeof(pending_connect_confirm_ack_mac_));
+    }
+
+    last_rx_time_ms_ = millis();
+    pending_connect_confirm_ack_session_id_ = session_id;
+    pending_connect_confirm_ack_session_boot_nonce_ = session_boot_nonce;
+    pending_connect_confirm_ack_rx_status_ =
+        (protocol_version == ESPNOW_PROTOCOL_VERSION)
+            ? kConnectConfirmAckStatusOk
+            : kConnectConfirmAckStatusVersionMismatch;
+    pending_connect_confirm_ack_retry_count_ = 0;
+    pending_connect_confirm_ack_due_ms_ = 0;
+    pending_connect_confirm_ack_ = EspNowMacUtils::has_valid_mac(pending_connect_confirm_ack_mac_);
+
+    LOG_INFO("RX_CONN",
+             "Queued connect_confirm_ack session=%u boot_nonce=%u rx_status=%u",
+             static_cast<unsigned>(pending_connect_confirm_ack_session_id_),
+             static_cast<unsigned>(pending_connect_confirm_ack_session_boot_nonce_),
+             static_cast<unsigned>(pending_connect_confirm_ack_rx_status_));
+
+    try_send_pending_connect_confirm_ack(last_rx_time_ms_, "immediate");
 }
 
 void ReceiverConnectionHandler::on_data_received(const uint8_t* transmitter_mac) {
@@ -278,9 +400,23 @@ void ReceiverConnectionHandler::on_transmitter_reboot_detected() {
 }
 
 void ReceiverConnectionHandler::on_ack_send_pressure(const char* reason) {
-    // ACK send pressure is informational — control_only_mode is already managed
-    // by the connection state callback; no additional FSM driving needed.
+    const uint32_t now = static_cast<uint32_t>(millis());
+    (void)RxRadioArbiterFsm::instance().on_event(
+        RxRadioArbiterFsm::Event::EV_DISCOVERY_ACK_SEND_FAIL_NO_MEM,
+        now);
+
     LOG_WARN("RX_CONN", "ACK send pressure: %s", reason ? reason : "unknown");
+}
+
+void ReceiverConnectionHandler::on_heartbeat_fresh() {
+    const uint32_t now = static_cast<uint32_t>(millis());
+    auto& arbiter = RxRadioArbiterFsm::instance();
+    (void)arbiter.on_event(RxRadioArbiterFsm::Event::EV_HEARTBEAT_FRESH, now);
+
+    if (fsm_waiting_first_heartbeat_after_recovery_) {
+        (void)arbiter.on_event(RxRadioArbiterFsm::Event::EV_FIRST_HEARTBEAT_AFTER_RECOVERY, now);
+        fsm_waiting_first_heartbeat_after_recovery_ = false;
+    }
 }
 
 void ReceiverConnectionHandler::on_type_catalog_versions_received() {
@@ -315,9 +451,8 @@ void ReceiverConnectionHandler::on_connection_lost() {
     catalog_retry_.reset();
     deferred_peer_.reset();
 
-    no_mem_l1_count_       = 0;
-    no_mem_l2_count_       = 0;
-    no_mem_last_reinit_ms_ = 0;
+    esp32common::espnow::LinkRecoveryCoordinator::instance().reset();
+    fsm_waiting_first_heartbeat_after_recovery_ = false;
 }
 
 
@@ -417,6 +552,109 @@ void ReceiverConnectionHandler::flush_deferred_peer_registered() {
     }
 }
 
+void ReceiverConnectionHandler::try_send_pending_connect_confirm_ack(uint32_t now_ms, const char* trigger) {
+    if (!pending_connect_confirm_ack_) {
+        return;
+    }
+
+    if (!esp32common::numeric::due_u32(now_ms, pending_connect_confirm_ack_due_ms_)) {
+        return;
+    }
+
+    if (!EspNowMacUtils::has_valid_mac(pending_connect_confirm_ack_mac_)) {
+        LOG_WARN("RX_CONN", "Dropping pending connect_confirm_ack: invalid MAC");
+        pending_connect_confirm_ack_ = false;
+        pending_connect_confirm_ack_session_id_ = 0;
+        pending_connect_confirm_ack_session_boot_nonce_ = 0;
+        pending_connect_confirm_ack_due_ms_ = 0;
+        pending_connect_confirm_ack_retry_count_ = 0;
+        pending_connect_confirm_ack_rx_status_ = 0;
+        std::memset(pending_connect_confirm_ack_mac_, 0, sizeof(pending_connect_confirm_ack_mac_));
+        return;
+    }
+
+    espnow_connect_confirm_ack_t ack{};
+    ack.type = msg_connect_confirm_ack;
+    ack.protocol_version = ESPNOW_PROTOCOL_VERSION;
+    ack.session_id = pending_connect_confirm_ack_session_id_;
+    ack.rx_status = pending_connect_confirm_ack_rx_status_;
+    ack.session_boot_nonce = pending_connect_confirm_ack_session_boot_nonce_;
+
+    const esp_err_t err = EspnowTxScheduler::send(
+        pending_connect_confirm_ack_mac_,
+        &ack,
+        sizeof(ack),
+        "CONNECT_CONFIRM_ACK");
+
+    if (err == ESP_OK) {
+        LOG_INFO("RX_CONN",
+                 "connect_confirm_ack queued (session=%u boot_nonce=%u rx_status=%u retries=%u trigger=%s)",
+                 static_cast<unsigned>(pending_connect_confirm_ack_session_id_),
+                 static_cast<unsigned>(pending_connect_confirm_ack_session_boot_nonce_),
+                 static_cast<unsigned>(pending_connect_confirm_ack_rx_status_),
+                 static_cast<unsigned>(pending_connect_confirm_ack_retry_count_),
+                 trigger ? trigger : "unknown");
+
+        const uint8_t registered_mac[6] = {
+            pending_connect_confirm_ack_mac_[0], pending_connect_confirm_ack_mac_[1], pending_connect_confirm_ack_mac_[2],
+            pending_connect_confirm_ack_mac_[3], pending_connect_confirm_ack_mac_[4], pending_connect_confirm_ack_mac_[5]
+        };
+
+        pending_connect_confirm_ack_ = false;
+        pending_connect_confirm_ack_session_id_ = 0;
+        pending_connect_confirm_ack_session_boot_nonce_ = 0;
+        pending_connect_confirm_ack_due_ms_ = 0;
+        pending_connect_confirm_ack_retry_count_ = 0;
+        pending_connect_confirm_ack_rx_status_ = 0;
+        std::memset(pending_connect_confirm_ack_mac_, 0, sizeof(pending_connect_confirm_ack_mac_));
+
+        if (ack.rx_status == kConnectConfirmAckStatusOk) {
+            LOG_INFO("RX_CONN",
+                     "[STATE_CHANGE] -> CONNECTED  reason=confirm_ack_queued  session=%u boot_nonce=%u",
+                     static_cast<unsigned>(ack.session_id),
+                     static_cast<unsigned>(ack.session_boot_nonce));
+            EspNowConnectionManager::instance().authorize_peer_registered_transition(registered_mac);
+            on_peer_registered(registered_mac);
+        } else {
+            LOG_WARN("RX_CONN",
+                     "connect_confirm_ack queued with non-OK rx_status=%u; refusing CONNECTED transition",
+                     static_cast<unsigned>(ack.rx_status));
+        }
+        return;
+    }
+
+    (void)esp32common::numeric::increment_saturating<uint8_t>(
+        pending_connect_confirm_ack_retry_count_,
+        kConnectConfirmAckMaxRetries);
+
+    if (pending_connect_confirm_ack_retry_count_ >= kConnectConfirmAckMaxRetries) {
+        LOG_WARN("RX_CONN",
+                 "connect_confirm_ack retry budget exhausted (session=%u boot_nonce=%u retries=%u) - clearing pending context",
+                 static_cast<unsigned>(pending_connect_confirm_ack_session_id_),
+                 static_cast<unsigned>(pending_connect_confirm_ack_session_boot_nonce_),
+                 static_cast<unsigned>(pending_connect_confirm_ack_retry_count_));
+        pending_connect_confirm_ack_ = false;
+        pending_connect_confirm_ack_session_id_ = 0;
+        pending_connect_confirm_ack_session_boot_nonce_ = 0;
+        pending_connect_confirm_ack_due_ms_ = 0;
+        pending_connect_confirm_ack_retry_count_ = 0;
+        pending_connect_confirm_ack_rx_status_ = 0;
+        std::memset(pending_connect_confirm_ack_mac_, 0, sizeof(pending_connect_confirm_ack_mac_));
+        return;
+    }
+
+    pending_connect_confirm_ack_due_ms_ = now_ms + kConnectConfirmAckRetryIntervalMs;
+
+    LOG_WARN("RX_CONN",
+             "connect_confirm_ack enqueue failed: %s (session=%u boot_nonce=%u retry=%u trigger=%s next_retry_in=%lu ms)",
+             esp_err_to_name(err),
+             static_cast<unsigned>(pending_connect_confirm_ack_session_id_),
+             static_cast<unsigned>(pending_connect_confirm_ack_session_boot_nonce_),
+             static_cast<unsigned>(pending_connect_confirm_ack_retry_count_),
+             trigger ? trigger : "unknown",
+             static_cast<unsigned long>(kConnectConfirmAckRetryIntervalMs));
+}
+
 void ReceiverConnectionHandler::send_initialization_requests(const uint8_t* transmitter_mac) {
     if (transmitter_mac == nullptr || !EspNowMacUtils::has_valid_mac(transmitter_mac)) {
         LOG_WARN("RX_CONN", "Cannot send initialization - invalid transmitter MAC");
@@ -439,6 +677,8 @@ void ReceiverConnectionHandler::send_initialization_requests(const uint8_t* tran
 
 void ReceiverConnectionHandler::tick() {
     flush_deferred_peer_registered();
+    try_send_pending_connect_confirm_ack(static_cast<uint32_t>(millis()), "tick");
+    auto& connection_manager = EspNowConnectionManager::instance();
 
     (void)EspnowTxScheduler::check_ack_token_watchdogs();
 
@@ -447,124 +687,89 @@ void ReceiverConnectionHandler::tick() {
     // Level 1 (L1): esp_now_deinit / esp_now_init.
     //   Fast (~100 ms). Clears the ESP-NOW software layer but does NOT flush
     //   the LMAC hardware DMA descriptor ring. Effective for software-stuck
-    //   states. Attempted up to RXCONN_NO_MEM_L1_THRESHOLD times.
+    //   states. Budget is owned by LinkRecoveryCoordinator config.
     //
     // Level 2 (L2): esp_wifi_stop / esp_wifi_start.
     //   Flushes the LMAC hardware completely (~1.7 s including AP re-assoc).
     //   This is the definitive fix for stuck hardware TX descriptors.
-    //   Attempted up to RXCONN_NO_MEM_L2_THRESHOLD times.
+    //   Budget is owned by LinkRecoveryCoordinator config.
     //
     // Level 3: esp_restart — all recovery exhausted.
     //
-    // Thresholds are build-flag tunable via RXCONN_NO_MEM_L1_THRESHOLD and
-    // RXCONN_NO_MEM_L2_THRESHOLD (both default to 3).
+    // Build-flag tuning applies to RXCONN_NO_MEM_TRIGGER_THRESHOLD only.
+    // L1/L2 budgets are configured by LinkRecoveryCoordinator.
+    //
+    // RXCONN_NO_MEM_TRIGGER_THRESHOLD controls how many consecutive msg_ack
+    // NO_MEM failures must occur before L1 recovery is attempted.  The default
+    // (10) is intentionally conservative: transient WiFi TCP bursts from an
+    // HTTP page load or an MQTT connect attempt can easily cause 5-6 failures
+    // without the ESP-NOW stack being genuinely stuck.  A higher threshold
+    // avoids spurious L1_REINIT which is more disruptive than the burst itself.
     //
     // Counters are reset on successful CONNECTED transition.
-#ifndef RXCONN_NO_MEM_L1_THRESHOLD
-#define RXCONN_NO_MEM_L1_THRESHOLD 3
-#endif
-#ifndef RXCONN_NO_MEM_L2_THRESHOLD
-#define RXCONN_NO_MEM_L2_THRESHOLD 3
+#ifndef RXCONN_NO_MEM_TRIGGER_THRESHOLD
+#define RXCONN_NO_MEM_TRIGGER_THRESHOLD 10
 #endif
 
-    constexpr uint32_t kNoMemTriggerThreshold = 5;
+    constexpr uint32_t kNoMemTriggerThresholdBase = RXCONN_NO_MEM_TRIGGER_THRESHOLD;
     const uint32_t consecutive_no_mem = EspnowTxScheduler::get_consecutive_no_mem_count();
-    if (consecutive_no_mem >= kNoMemTriggerThreshold) {
-        // Reset the scheduler counter and drain its queues before any recovery
-        // attempt so the TX worker cannot race a send during reinit.
+    const EspNowConnectionState cm_state = connection_manager.get_state();
+    const RadioPressureState pressure_state = get_radio_pressure_state();
+    const uint32_t kNoMemTriggerThreshold = select_no_mem_trigger_threshold(
+        kNoMemTriggerThresholdBase,
+        cm_state,
+        pressure_state,
+        consecutive_no_mem);
+
+    static uint32_t s_last_logged_threshold = UINT32_MAX;
+    if (s_last_logged_threshold != kNoMemTriggerThreshold) {
+        LOG_INFO("RX_CONN",
+                 "Adaptive NO_MEM trigger threshold=%lu (base=%lu state=%u pressure=%s consecutive=%lu)",
+                 static_cast<unsigned long>(kNoMemTriggerThreshold),
+                 static_cast<unsigned long>(kNoMemTriggerThresholdBase),
+                 static_cast<unsigned>(cm_state),
+                 radio_pressure_state_to_string(pressure_state),
+                 static_cast<unsigned long>(consecutive_no_mem));
+        s_last_logged_threshold = kNoMemTriggerThreshold;
+    }
+
+    const bool allow_no_mem_recovery_escalation =
+        (cm_state == EspNowConnectionState::CONNECTED) ||
+        (cm_state == EspNowConnectionState::CONNECTING);
+
+    if (consecutive_no_mem >= kNoMemTriggerThreshold && !allow_no_mem_recovery_escalation) {
+        LOG_INFO("RX_CONN",
+                 "NO_MEM trigger ignored while state=%u (consecutive=%lu threshold=%lu)",
+                 static_cast<unsigned>(cm_state),
+                 static_cast<unsigned long>(consecutive_no_mem),
+                 static_cast<unsigned long>(kNoMemTriggerThreshold));
         EspnowTxScheduler::reset_consecutive_no_mem_count();
-        EspnowTxScheduler::clear_ack_tokens();
-        EspnowTxScheduler::purge_all_queues();
+    }
 
-        const uint32_t now_reinit = static_cast<uint32_t>(millis());
-        if (no_mem_last_reinit_ms_ > 0 &&
-            (now_reinit - no_mem_last_reinit_ms_) > 30000U) {
-            // More than 30 s since last recovery attempt — not a tight loop;
-            // reset level counters so the escalation ladder restarts.
-            no_mem_l1_count_ = 0;
-            no_mem_l2_count_ = 0;
-        }
-        no_mem_last_reinit_ms_ = now_reinit;
+    if (consecutive_no_mem >= kNoMemTriggerThreshold && allow_no_mem_recovery_escalation) {
+        (void)RxRadioArbiterFsm::instance().on_event(
+            RxRadioArbiterFsm::Event::EV_DISCOVERY_ACK_SEND_FAIL_NO_MEM,
+            static_cast<uint32_t>(millis()));
 
-        if (no_mem_l1_count_ < RXCONN_NO_MEM_L1_THRESHOLD) {
-            // ── Level 1: ESP-NOW deinit / init ────────────────────────────
-            ++no_mem_l1_count_;
-            LOG_WARN("RX_CONN",
-                     "[STATE_CHANGE] RECOVERY -> L1_REINIT  "
-                     "reason=no_mem_stuck  consecutive=%lu  attempt=%u/%d",
-                     static_cast<unsigned long>(consecutive_no_mem),
-                     static_cast<unsigned>(no_mem_l1_count_),
-                     RXCONN_NO_MEM_L1_THRESHOLD);
+        const uint8_t* peer_mac =
+            EspNowMacUtils::has_valid_mac(transmitter_mac_) ? transmitter_mac_ : nullptr;
 
-            esp_now_deinit();
-            vTaskDelay(pdMS_TO_TICKS(100));
-            const esp_err_t l1_err = esp_now_init();
-            if (l1_err == ESP_OK) {
-                esp_wifi_set_ps(WIFI_PS_NONE);
-                if (hooks_.reinstall_send_cb != nullptr) {
-                    hooks_.reinstall_send_cb(hooks_.context);
-                }
-                EspnowPeerManager::add_broadcast_peer();
-                if (EspNowMacUtils::has_valid_mac(transmitter_mac_)) {
-                    EspnowPeerManager::add_peer(transmitter_mac_, /*channel=*/0);
-                }
-                LOG_INFO("RX_CONN",
-                         "L1 reinit OK (attempt %u/%d) -- broadcast+TX peers restored",
-                         static_cast<unsigned>(no_mem_l1_count_),
-                         RXCONN_NO_MEM_L1_THRESHOLD);
-            } else {
-                LOG_ERROR("RX_CONN", "L1 esp_now_init failed: %s", esp_err_to_name(l1_err));
-            }
-
-        } else if (no_mem_l2_count_ < RXCONN_NO_MEM_L2_THRESHOLD) {
-            // ── Level 2: WiFi stop / start — flushes LMAC hardware DMA ───
-            ++no_mem_l2_count_;
-            LOG_WARN("RX_CONN",
-                     "[STATE_CHANGE] RECOVERY -> L2_WIFI_RESTART  "
-                     "reason=l1_exhausted  attempt=%u/%d",
-                     static_cast<unsigned>(no_mem_l2_count_),
-                     RXCONN_NO_MEM_L2_THRESHOLD);
-
-            esp_wifi_stop();
-            vTaskDelay(pdMS_TO_TICKS(200));   // allow LMAC DMA ring to drain
-            esp_wifi_start();
-            vTaskDelay(pdMS_TO_TICKS(1500));  // wait for AP re-association
-            const esp_err_t l2_err = esp_now_init();
-            if (l2_err == ESP_OK) {
-                esp_wifi_set_ps(WIFI_PS_NONE);
-                if (hooks_.reinstall_send_cb != nullptr) {
-                    hooks_.reinstall_send_cb(hooks_.context);
-                }
-                EspnowPeerManager::add_broadcast_peer();
-                if (EspNowMacUtils::has_valid_mac(transmitter_mac_)) {
-                    EspnowPeerManager::add_peer(transmitter_mac_, /*channel=*/0);
-                }
-                // Reset L1 counter so Level 1 is tried again before the next L2.
-                no_mem_l1_count_ = 0;
-                LOG_INFO("RX_CONN",
-                         "L2 WiFi restart OK (attempt %u/%d) -- AP rejoin in progress",
-                         static_cast<unsigned>(no_mem_l2_count_),
-                         RXCONN_NO_MEM_L2_THRESHOLD);
-            } else {
-                LOG_ERROR("RX_CONN",
-                          "L2 esp_now_init after WiFi restart failed: %s",
-                          esp_err_to_name(l2_err));
-            }
-
-        } else {
-            // ── Level 3: all recovery exhausted — reboot ──────────────────
-            LOG_ERROR("RX_CONN",
-                      "[STATE_CHANGE] RECOVERY -> L3_REBOOT  "
-                      "reason=l2_exhausted  l1_attempts=%u  l2_attempts=%u",
-                      static_cast<unsigned>(no_mem_l1_count_),
-                      static_cast<unsigned>(no_mem_l2_count_));
-            vTaskDelay(pdMS_TO_TICKS(500));
-            esp_restart();
-        }
+        // Delegate L1 / L2 / reboot ladder to the shared recovery coordinator.
+        // The coordinator owns all escalation counters, window tracking, peer
+        // restoration, and hook calls; the handler no longer executes raw
+        // esp_now_deinit / esp_wifi_stop / esp_restart directly.
+        esp32common::espnow::LinkRecoveryCoordinator::instance().handle_no_mem_pressure(
+            static_cast<uint32_t>(millis()),
+            consecutive_no_mem,
+            kNoMemTriggerThreshold,
+            /*allow_escalation=*/true,
+            peer_mac);
     }
 
     const uint32_t now = millis();
-    auto& connection_manager = EspNowConnectionManager::instance();
+    auto& arbiter = RxRadioArbiterFsm::instance();
+    (void)arbiter.tick(now);
+    EspnowTxScheduler::set_control_only_mode(arbiter.policy().control_only_mode);
 
     if (!connection_manager.is_connected()) {
         return;
@@ -604,4 +809,8 @@ void ReceiverConnectionHandler::tick() {
     }
 
     call_run_project_specific_tick(hooks_, *this, now);
+}
+
+bool ReceiverConnectionHandler::quiet_mode_active() const {
+    return get_radio_pressure_state() != RadioPressureState::NORMAL;
 }

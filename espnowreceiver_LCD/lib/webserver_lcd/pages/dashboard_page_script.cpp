@@ -6,9 +6,15 @@ const char* get_dashboard_page_script() {
         let lastUpdateTime = Date.now();
         let lastSeenUptimeMs = 0;  // Track previous uptime value to detect actual updates
         let hasHealthSample = false;
+        let dashboardPollTimer = null;
+        let dashboardPollIntervalMs = 1000;
+
+        const DASHBOARD_POLL_BASE_MS = 1000;
+        const DASHBOARD_POLL_CONSTRAINED_MS = 2000;
+        const DASHBOARD_POLL_CRITICAL_MS = 4000;
         
         // Transmitter time is the single source of truth.
-        // Converts the transmitter's UTC epoch + UTC offset (both from ESP-NOW heartbeat)
+        // Converts the transmitter's UTC epoch + UTC offset (from transmitter heartbeat)
         // to a local wall-clock time string. Returns '---' if the clock is not yet synced.
         function resolveTransmitterTimeDisplay(timeData) {
             if (!timeData || !timeData.time_source || timeData.time_source === 0) return '---';
@@ -75,11 +81,11 @@ const char* get_dashboard_page_script() {
             lastUpdateEl.textContent = lastUpdateStr;
             
             // Change color based on staleness
-            if (secondsSinceUpdate < 2) {
+            if (secondsSinceUpdate < 5) {
                 lastUpdateEl.style.color = '#4CAF50';  // Green - fresh
-            } else if (secondsSinceUpdate < 5) {
-                lastUpdateEl.style.color = '#FFD700';  // Yellow - slightly stale
             } else if (secondsSinceUpdate < 10) {
+                lastUpdateEl.style.color = '#FFD700';  // Yellow - slightly stale
+            } else if (secondsSinceUpdate < 20) {
                 lastUpdateEl.style.color = '#FF9800';  // Orange - getting stale
             } else {
                 lastUpdateEl.style.color = '#ff6b35';  // Red - very stale
@@ -120,6 +126,30 @@ const char* get_dashboard_page_script() {
             return new Promise(resolve => setTimeout(resolve, ms));
         }
 
+        function pollIntervalFromPressureHeader(pressureHeader) {
+            const pressure = (pressureHeader || '').toLowerCase();
+            if (pressure === 'critical') return DASHBOARD_POLL_CRITICAL_MS;
+            if (pressure === 'constrained') return DASHBOARD_POLL_CONSTRAINED_MS;
+            return DASHBOARD_POLL_BASE_MS;
+        }
+
+        function retryAfterToMs(response) {
+            const retryAfter = response.headers.get('Retry-After');
+            const retrySeconds = Number(retryAfter);
+            if (!Number.isFinite(retrySeconds) || retrySeconds <= 0) {
+                return null;
+            }
+            return Math.max(1000, Math.floor(retrySeconds * 1000));
+        }
+
+        function scheduleNextDashboardPoll(delayMs) {
+            if (dashboardPollTimer) {
+                clearTimeout(dashboardPollTimer);
+            }
+            const safeDelay = Number.isFinite(delayMs) ? Math.max(500, Math.floor(delayMs)) : DASHBOARD_POLL_BASE_MS;
+            dashboardPollTimer = setTimeout(pollDashboardData, safeDelay);
+        }
+
         function formatTemperature(value) {
             const numeric = Number(value);
             if (!Number.isFinite(numeric)) {
@@ -136,10 +166,24 @@ const char* get_dashboard_page_script() {
         }
 
         
-        // Update transmitter data every 2 seconds (match transmission rate)
-        setInterval(async function() {
+        async function pollDashboardData() {
+            let nextDelayMs = dashboardPollIntervalMs;
             try {
-                const response = await fetch('/api/dashboard_data');
+                const response = await fetch('/api/dashboard_data', { cache: 'no-store' });
+
+                const pressureHeader = response.headers.get('X-Radio-Pressure');
+                dashboardPollIntervalMs = pollIntervalFromPressureHeader(pressureHeader);
+
+                if (!response.ok) {
+                    const retryAfterMs = retryAfterToMs(response);
+                    if (retryAfterMs) {
+                        nextDelayMs = Math.max(dashboardPollIntervalMs, retryAfterMs);
+                    } else {
+                        nextDelayMs = dashboardPollIntervalMs;
+                    }
+                    return;
+                }
+
                 const data = await response.json();
                 
                 // Update transmitter status (dynamic - can change)
@@ -202,50 +246,50 @@ const char* get_dashboard_page_script() {
                     }
                 }
                 
-                // Fetch transmitter time data
-                try {
-                    const timeResponse = await fetch('/api/transmitter_health');
-                    const timeData = await timeResponse.json();
-                    
-                    if (timeData && timeData.uptime_ms !== undefined) {
-                        // Update time display
-                        document.getElementById('txTime').textContent =
-                            resolveTransmitterTimeDisplay(timeData);
-                        document.getElementById('txUptime').textContent = formatUptime(timeData.uptime_ms);
-                        
-                        // Update time source
-                        const sourceEl = document.getElementById('txTimeSource');
-                        sourceEl.textContent = getTimeSourceLabel(timeData.time_source);
-                        sourceEl.style.color = getTimeSourceColor(timeData.time_source);
+                // Health fields are now included in dashboard_data response.
+                // No second fetch to /api/transmitter_health is required.
+                const healthData = data.transmitter;
+                if (healthData && healthData.uptime_ms !== undefined) {
+                    // Update time display
+                    document.getElementById('txTime').textContent =
+                        resolveTransmitterTimeDisplay(healthData);
+                    document.getElementById('txUptime').textContent = formatUptime(healthData.uptime_ms);
 
-                        const geoEl = document.getElementById('txGeoStatus');
-                        if (geoEl) {
-                            if (timeData.geolocation_valid) {
-                                geoEl.textContent = '🌍 Geolocation confirmed';
-                                geoEl.style.color = '#4CAF50';
-                                geoEl.title = 'Timezone has been confirmed by geolocation service.';
-                            } else {
-                                geoEl.textContent = '⚠ Default (UTC) - geolocation pending';
-                                geoEl.style.color = '#FF9800';
-                                geoEl.title = 'Transmitter is currently using fallback timezone. DST transitions are unavailable until geolocation succeeds.';
-                            }
-                        }
-                        
-                        // Only update "last update" time if uptime_ms has actually changed (new data from transmitter)
-                        if (timeData.uptime_ms !== lastSeenUptimeMs) {
-                            lastSeenUptimeMs = timeData.uptime_ms;
-                            lastUpdateTime = Date.now();
-                            hasHealthSample = true;
-                            updateTimerDisplay();
+                    // Update time source
+                    const sourceEl = document.getElementById('txTimeSource');
+                    sourceEl.textContent = getTimeSourceLabel(healthData.time_source);
+                    sourceEl.style.color = getTimeSourceColor(healthData.time_source);
+
+                    const geoEl = document.getElementById('txGeoStatus');
+                    if (geoEl) {
+                        if (healthData.geolocation_valid) {
+                            geoEl.textContent = '🌍 Geolocation confirmed';
+                            geoEl.style.color = '#4CAF50';
+                            geoEl.title = 'Timezone has been confirmed by geolocation service.';
+                        } else {
+                            geoEl.textContent = '⚠ Default (UTC) - geolocation pending';
+                            geoEl.style.color = '#FF9800';
+                            geoEl.title = 'Transmitter is currently using fallback timezone. DST transitions are unavailable until geolocation succeeds.';
                         }
                     }
-                } catch (e) {
-                    console.debug('Time data not yet available:', e);
+
+                    // Only update "last update" time if uptime_ms has actually changed (new data from transmitter)
+                    if (healthData.uptime_ms !== lastSeenUptimeMs) {
+                        lastSeenUptimeMs = healthData.uptime_ms;
+                        lastUpdateTime = Date.now();
+                        hasHealthSample = true;
+                        updateTimerDisplay();
+                    }
                 }
+
+                nextDelayMs = dashboardPollIntervalMs;
             } catch (e) {
                 console.error('Failed to update dashboard:', e);
+                nextDelayMs = Math.max(dashboardPollIntervalMs, DASHBOARD_POLL_CONSTRAINED_MS);
+            } finally {
+                scheduleNextDashboardPoll(nextDelayMs);
             }
-        }, 2000);
+        }
         
         // Load event logs from transmitter
         async function loadEventLogs() {
@@ -304,6 +348,8 @@ const char* get_dashboard_page_script() {
         window.addEventListener('load', function() {
             applyFormattedDeviceNames();
             loadEventLogs();
+            dashboardPollIntervalMs = DASHBOARD_POLL_BASE_MS;
+            pollDashboardData();
         });
 
         // Refresh event log summary when tab becomes active again.
@@ -317,39 +363,5 @@ const char* get_dashboard_page_script() {
         setInterval(updateTimerDisplay, 1000);
         
 
-        setTimeout(async function() {
-            try {
-                const timeResponse = await fetch('/api/transmitter_health');
-                const timeData = await timeResponse.json();
-                
-                if (timeData && timeData.uptime_ms !== undefined) {
-                    document.getElementById('txTime').textContent =
-                        resolveTransmitterTimeDisplay(timeData);
-                    document.getElementById('txUptime').textContent = formatUptime(timeData.uptime_ms);
-                    const sourceEl = document.getElementById('txTimeSource');
-                    sourceEl.textContent = getTimeSourceLabel(timeData.time_source);
-                    sourceEl.style.color = getTimeSourceColor(timeData.time_source);
-
-                    const geoEl = document.getElementById('txGeoStatus');
-                    if (geoEl) {
-                        if (timeData.geolocation_valid) {
-                            geoEl.textContent = '🌍 Geolocation confirmed';
-                            geoEl.style.color = '#4CAF50';
-                            geoEl.title = 'Timezone has been confirmed by geolocation service.';
-                        } else {
-                            geoEl.textContent = '⚠ Default (UTC) - geolocation pending';
-                            geoEl.style.color = '#FF9800';
-                            geoEl.title = 'Transmitter is currently using fallback timezone. DST transitions are unavailable until geolocation succeeds.';
-                        }
-                    }
-                    lastSeenUptimeMs = timeData.uptime_ms;
-                    lastUpdateTime = Date.now();
-                    hasHealthSample = true;
-                    updateTimerDisplay();
-                }
-            } catch (e) {
-                console.debug('Initial time data fetch failed:', e);
-            }
-        }, 500);
     )rawliteral";
 }

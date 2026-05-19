@@ -4,6 +4,7 @@
 #include <cstring>
 #include <esp32common/espnow/connection_manager.h>
 #include <esp32common/espnow/rx_heartbeat_manager.h>
+#include <esp32common/espnow/tx_scheduler.h>
 #include <esp_now.h>
 #include <espnow_peer_manager.h>
 #include "rx_connection_handler.h"
@@ -14,23 +15,36 @@ namespace {
 bool should_send_probe_ack(RxProbeAckThrottleState& throttle_state,
                            const uint8_t* mac,
                            EspNowConnectionState state,
-                           uint32_t now,
-                           uint32_t seq) {
+                           uint32_t now) {
     (void)state;
     const bool same_peer =
         (std::memcmp(throttle_state.last_probe_ack_mac, mac, sizeof(throttle_state.last_probe_ack_mac)) == 0);
 
     const bool connected = (state == EspNowConnectionState::CONNECTED);
-    const uint32_t ack_throttle_ms = connected ? 1200U : 500U;
+    // Discovery reliability requires at least one ACK opportunity per channel
+    // dwell window. If disconnected throttle is too large and the first ACK
+    // enqueue hits transient NO_MEM, the channel can be missed entirely.
+    // Use adaptive throttling:
+    //   - low pressure: allow retries within dwell (faster acquisition)
+    //   - elevated pressure: back off to reduce ACK amplification bursts.
+    const uint32_t no_mem = EspnowTxScheduler::get_consecutive_no_mem_count();
+    const uint32_t disconnected_throttle_ms = (no_mem >= 2U) ? 1200U : 450U;
+    const uint32_t ack_throttle_ms = connected ? 1200U : disconnected_throttle_ms;
 
     if (same_peer && ((now - throttle_state.last_probe_ack_ms) < ack_throttle_ms)) {
         return false;
     }
 
+    return true;
+}
+
+void record_probe_ack_sent(RxProbeAckThrottleState& throttle_state,
+                           const uint8_t* mac,
+                           uint32_t seq,
+                           uint32_t now) {
     throttle_state.last_probe_ack_ms = now;
     throttle_state.last_probe_ack_seq = seq;
     std::memcpy(throttle_state.last_probe_ack_mac, mac, sizeof(throttle_state.last_probe_ack_mac));
-    return true;
 }
 
 }  // namespace
@@ -55,6 +69,29 @@ void register_standard_probe_ack_routes(EspnowMessageRouter& router,
                                         EspnowStandardHandlers::ProbeHandlerConfig& probe_config,
                                         EspnowStandardHandlers::AckHandlerConfig& ack_config,
                                         RxProbeAckThrottleState& throttle_state) {
+    const auto user_ack_send_result_cb = probe_config.on_ack_send_result;
+
+    // Preserve caller-provided probe/connection callbacks and optional state
+    // pointers. The shared registration helper must not clear project wiring
+    // (for example ReceiverConnectionHandler::on_probe_received ingress).
+    probe_config.send_ack_response = true;
+    probe_config.on_ack_send_result = [user_ack_send_result_cb, &throttle_state](const uint8_t* mac,
+                                                                                  uint32_t seq,
+                                                                                  bool success,
+                                                                                  esp_err_t result) {
+        if (!success) {
+            LOG_WARN("ESPNOW", "Discovery ACK failed (seq=%lu): %s",
+                     static_cast<unsigned long>(seq),
+                     esp_err_to_name(result));
+        } else {
+            record_probe_ack_sent(throttle_state, mac, seq, millis());
+        }
+
+        if (user_ack_send_result_cb) {
+            user_ack_send_result_cb(mac, seq, success, result);
+        }
+    };
+
     router.register_route(msg_probe,
         [&probe_config, &throttle_state](const espnow_queue_msg_t* msg, void* /*ctx*/) {
             const auto state = EspNowConnectionManager::instance().get_state();
@@ -63,7 +100,7 @@ void register_standard_probe_ack_routes(EspnowMessageRouter& router,
             if (msg && msg->len >= static_cast<int>(sizeof(probe_t))) {
                 const auto* probe = reinterpret_cast<const probe_t*>(msg->data);
                 const uint32_t now = millis();
-                send_probe_ack = should_send_probe_ack(throttle_state, msg->mac, state, now, probe->seq);
+                send_probe_ack = should_send_probe_ack(throttle_state, msg->mac, state, now);
             }
 
             probe_config.send_ack_response = send_probe_ack;
@@ -82,10 +119,11 @@ void register_standard_probe_ack_routes(EspnowMessageRouter& router,
 
     void register_standard_connect_confirm_route(EspnowMessageRouter& router) {
         // ── msg_connect_confirm (TX → RX, Phase 2 connection handshake) ─────────
-        // Received after the TX gets a PROBE ACK.  Re-register the TX peer with
-        // channel=0 (follow current WiFi AP channel) and reply with confirm_ack.
-        // Only on successful send: ensure on_peer_registered is called so the
-        // connection manager can transition to CONNECTED if not already there.
+        // Received after the TX gets a PROBE ACK. Re-register the TX peer with
+        // channel=0 (follow current WiFi AP channel) and queue confirm_ack send.
+        // ReceiverConnectionHandler now retries confirm_ack after transient
+        // ESP_ERR_ESPNOW_NO_MEM failures instead of treating the handshake as
+        // a one-shot operation.
         // Old TX firmware that does not send this message is unaffected — the probe
         // path still posts PEER_REGISTERED via on_peer_registered() as before.
         router.register_route(
@@ -108,34 +146,11 @@ void register_standard_probe_ack_routes(EspnowMessageRouter& router,
                 // Remove+add is safe even if peer is not yet registered.
                 EspnowPeerManager::remove_peer(msg->mac);
                 EspnowPeerManager::add_peer(const_cast<uint8_t*>(msg->mac), /*channel=*/0);
-
-                // Build and send connect_confirm_ack
-                espnow_connect_confirm_ack_t ack{};
-                ack.type             = msg_connect_confirm_ack;
-                ack.protocol_version = ESPNOW_PROTOCOL_VERSION;
-                ack.session_id       = confirm->session_id;
-                ack.rx_status        = (confirm->protocol_version == ESPNOW_PROTOCOL_VERSION)
-                                           ? CONNECT_CONFIRM_STATUS_OK
-                                           : CONNECT_CONFIRM_STATUS_VERSION_MISMATCH;
-
-                const esp_err_t err = esp_now_send(
+                ReceiverConnectionHandler::instance().on_connect_confirm_received(
                     msg->mac,
-                    reinterpret_cast<const uint8_t*>(&ack),
-                    sizeof(ack));
-
-                if (err == ESP_OK) {
-                    LOG_INFO("RX_CONN",
-                             "[STATE_CHANGE] -> CONNECTED  "
-                             "reason=confirm_ack_sent  session=%u",
-                             static_cast<unsigned>(confirm->session_id));
-                    // Ensure PEER_REGISTERED is posted (idempotent if already CONNECTED)
-                    ReceiverConnectionHandler::instance().on_peer_registered(msg->mac);
-                } else {
-                    LOG_WARN("RX_CONN",
-                             "connect_confirm_ack send failed: %s (session=%u)",
-                             esp_err_to_name(err),
-                             static_cast<unsigned>(confirm->session_id));
-                }
+                    confirm->session_id,
+                    confirm->session_boot_nonce,
+                    confirm->protocol_version);
             },
             0xFF,
             nullptr);
@@ -220,3 +235,4 @@ void register_standard_heartbeat_route(
         0xFF,
         nullptr);
 }
+

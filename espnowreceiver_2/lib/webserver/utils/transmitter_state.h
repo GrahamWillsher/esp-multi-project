@@ -3,9 +3,10 @@
 
 #include <Arduino.h>
 #include <cstdint>
-#include <esp32common/espnow/common.h>
 
 namespace TransmitterState {
+
+constexpr uint8_t kHeartbeatFlagGeolocationValid = 0x01;
 
 void update_runtime_status(bool mqtt_conn, bool eth_conn);
 

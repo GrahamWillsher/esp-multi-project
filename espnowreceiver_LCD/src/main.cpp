@@ -5,12 +5,12 @@
 #include <runtime_common_utils/bootstrap_phase_runner.h>
 #include <runtime_common_utils/ota_boot_guard.h>
 #include <runtime_common_utils/setup_health_gate.h>
-#include <esp32common/espnow/connection_manager.h>
+#include <runtime_common_utils/device_temperature.h>
 
 #include "common_lcd.h"
 #include "config/wifi_setup.h"
-#include "espnow/espnow_runtime.h"
 #include "helpers.h"
+#include "../../lib/webserver_lcd/utils/receiver_config_manager.h"
 #include "../../lib/webserver_lcd/utils/transmitter_manager.h"
 #include "hal/lgfx_waveshare_7.h"
 #include "logging_config.h"
@@ -29,7 +29,15 @@ lgfx_custom::LGFX_Waveshare7* display = nullptr;
 constexpr uint32_t kWebserverStartupTaskStack = 8192;
 constexpr UBaseType_t kWebserverStartupTaskPriority = 1;
 
-bool g_espnow_transport_enabled = false;
+bool g_runtime_ap_recovery_started = false;
+uint32_t g_sta_disconnect_since_ms = 0;
+uint32_t g_last_net_diag_ms = 0;
+bool g_last_sta_connected = false;
+uint32_t g_last_webserver_retry_ms = 0;
+uint32_t g_webserver_retry_attempts = 0;
+
+constexpr uint32_t kNetDiagIntervalMs = 10000;
+constexpr uint32_t kWebserverRetryIntervalMs = 3000;
 
 UI::Runtime::Backend::PowerBarRendererMode to_ui_power_bar_mode(ReceiverNetworkConfig::PowerBarRendererMode mode) {
     switch (mode) {
@@ -108,14 +116,23 @@ void bootstrap_filesystem() {
         WiFiSetup::start_ap_fallback(/*has_credentials=*/cfg_loaded);
     }
 
-    g_espnow_transport_enabled = WiFiSetup::is_sta_connected();
-    LOG_INFO("MAIN", "boot: espnow transport=%s",
-             g_espnow_transport_enabled ? "enabled (STA connected)" : "disabled (config AP mode)");
-
-    char ip_buf[20] = {};
-    WiFiSetup::get_ip_string(ip_buf, sizeof(ip_buf));
+    char net_buf[80] = {};
+    const bool ap_mode = WiFiSetup::is_ap_mode();
+    const bool sta_mode = WiFiSetup::is_sta_connected();
+    if (ap_mode && sta_mode) {
+        snprintf(net_buf, sizeof(net_buf),
+                 "WiFi APSTA A:%s S:%s",
+                 WiFi.softAPIP().toString().c_str(),
+                 WiFi.localIP().toString().c_str());
+    } else if (ap_mode) {
+        snprintf(net_buf, sizeof(net_buf), "WiFi AP %s", WiFi.softAPIP().toString().c_str());
+    } else if (sta_mode) {
+        snprintf(net_buf, sizeof(net_buf), "WiFi STA %s", WiFi.localIP().toString().c_str());
+    } else {
+        snprintf(net_buf, sizeof(net_buf), "WiFi disconnected");
+    }
     // LVGL task has not started yet — safe to call LVGL API directly here.
-    UI::Runtime::Backend::set_network_status(ip_buf, wifi_ok || WiFiSetup::is_ap_mode());
+    UI::Runtime::set_network_status(net_buf, sta_mode || ap_mode);
 }
 
 void webserver_startup_task(void* /*arg*/) {
@@ -146,7 +163,14 @@ void bootstrap_services() {
         handle_error(ErrorSeverity::FATAL, "NVS", "default NVS initialization failed");
     }
 
-    TransmitterManager::init();  // Creates NVS debounce timer before ESP-NOW handlers run.
+    // Keep receiver identity/version fields available for dashboard and APIs.
+    ReceiverConfigManager::init();
+
+    // Seed temperature reading early so dashboard/API has a valid initial value.
+    DeviceTemperature::init();
+    DeviceTemperature::sample_now();
+
+    TransmitterManager::init();  // Creates NVS debounce timer before MQTT-driven cache updates.
 
     // Start webserver in a background task to avoid blocking setup().
     const BaseType_t rc = xTaskCreate(
@@ -165,18 +189,7 @@ void bootstrap_services() {
              static_cast<unsigned long>(kWebserverStartupTaskStack));
 }
 
-void bootstrap_espnow_radio() {
-    if (!g_espnow_transport_enabled) {
-        LOG_INFO("MAIN", "boot: espnow radio skipped (STA not connected)");
-        return;
-    }
 
-    const bool espnow_ok = ESPNowRuntime::init_radio();
-    LOG_INFO("MAIN", "boot: espnow radio=%s", espnow_ok ? "ok" : "failed");
-    if (!espnow_ok) {
-        handle_error(ErrorSeverity::FATAL, "ESPNOW", "ESP-NOW radio initialization failed");
-    }
-}
 
 void bootstrap_tasks() {
     const bool primitives_ok = RuntimeTaskStartup::create_runtime_primitives();
@@ -190,18 +203,7 @@ void bootstrap_tasks() {
     }
 }
 
-void bootstrap_espnow_state() {
-    if (!g_espnow_transport_enabled) {
-        LOG_INFO("MAIN", "boot: espnow state skipped (config AP mode)");
-        return;
-    }
 
-    const bool espnow_ok = ESPNowRuntime::init_state();
-    LOG_INFO("MAIN", "boot: espnow state=%s", espnow_ok ? "ok" : "failed");
-    if (!espnow_ok) {
-        handle_error(ErrorSeverity::FATAL, "ESPNOW", "ESP-NOW state initialization failed");
-    }
-}
 
 }  // namespace
 
@@ -212,9 +214,7 @@ void setup() {
         {"display_content",  bootstrap_display_content},
         {"filesystem",       bootstrap_filesystem},
         {"services",         bootstrap_services},
-        {"espnow_radio",     bootstrap_espnow_radio},
         {"tasks",            bootstrap_tasks},
-        {"espnow_state",     bootstrap_espnow_state},
     };
 
     BootstrapPhaseRunner::run_phases(
@@ -225,7 +225,6 @@ void setup() {
         const SetupHealthGate::Check checks[] = {
             {"heap_ok", ESP.getFreeHeap() > 32768},
             {"lvgl_mutex_ok", RTOS::lvgl_mutex != nullptr},
-            {"espnow_queue_ok", !g_espnow_transport_enabled || ESPNow::message_queue != nullptr},
             {"display_queue_ok", RTOS::display_update_queue != nullptr},
         };
 
@@ -247,11 +246,89 @@ void setup() {
 
 void loop() {
     const uint32_t now = millis();
+    const bool sta_connected = WiFiSetup::is_sta_connected();
+    const bool ap_mode = WiFiSetup::is_ap_mode();
+    const bool network_available = sta_connected || ap_mode;
 
-    if (!g_espnow_transport_enabled && WiFiSetup::service_recovery()) {
-        LOG_INFO("MAIN", "STA recovery succeeded; rebooting to initialize full runtime stack in STA mode");
-        smart_delay(250);
-        ESP.restart();
+    if (sta_connected != g_last_sta_connected) {
+        LOG_INFO("MAIN", "STA transition: %s -> %s",
+                 g_last_sta_connected ? "up" : "down",
+                 sta_connected ? "up" : "down");
+
+        // Keep an already-running server alive across STA recovery transitions.
+        // Forcing stop/start here can race socket teardown and cause listen/task
+        // startup failures on some reconnect paths.
+        if (sta_connected) {
+            if (server == nullptr) {
+                LOG_INFO("MAIN", "STA recovered with webserver down; watchdog will reinitialize");
+            } else {
+                LOG_INFO("MAIN", "STA recovered; keeping existing webserver instance running");
+            }
+        }
+
+        g_last_sta_connected = sta_connected;
+    }
+
+    // If AP+STA fallback is active, continue retrying STA in background and
+    // recover services in place once connection has stabilized.
+    if (ap_mode && WiFiSetup::service_recovery()) {
+        LOG_INFO("MAIN", "STA recovery succeeded; applying in-place runtime recovery");
+        g_runtime_ap_recovery_started = false;
+        g_sta_disconnect_since_ms = 0;
+
+        if (server == nullptr) {
+            LOG_INFO("MAIN", "Webserver not running after STA recovery; reinitializing");
+            WebserverLcd::init();
+        }
+    }
+
+    // Webserver watchdog: main.cpp is the SINGLE recovery coordinator (FSM spec section 3.6).
+    // Check backoff before attempting init to prevent dual-ownership recovery.
+    if (network_available && server == nullptr &&
+        (g_last_webserver_retry_ms == 0 || (now - g_last_webserver_retry_ms) >= kWebserverRetryIntervalMs)) {
+        // Respect deterministic backoff: do not call init while backoff active
+        if (!WebserverLcd::is_webserver_backoff_active()) {
+            // Backoff expired or never entered; attempt init
+            g_last_webserver_retry_ms = now;
+            ++g_webserver_retry_attempts;
+            LOG_WARN("MAIN", "Webserver not running while network is available; reinitializing");
+            WebserverLcd::init();
+        }
+    }
+
+    if ((now - g_last_net_diag_ms) >= kNetDiagIntervalMs) {
+        g_last_net_diag_ms = now;
+        const wifi_mode_t mode = WiFi.getMode();
+        const char* mode_str =
+            (mode == WIFI_MODE_STA)   ? "STA" :
+            (mode == WIFI_MODE_AP)    ? "AP" :
+            (mode == WIFI_MODE_APSTA) ? "APSTA" : "NULL";
+
+        LOG_INFO("NET", "mode=%s sta=%s ap=%s sta_ip=%s ap_ip=%s ch=%d",
+                 mode_str,
+                 sta_connected ? "up" : "down",
+                 ap_mode ? "up" : "down",
+                 WiFi.localIP().toString().c_str(),
+                 WiFi.softAPIP().toString().c_str(),
+                 static_cast<int>(WiFi.channel()));
+
+        LOG_INFO("NET", "webserver=%s retry_attempts=%lu last_retry_ms=%lu",
+                 (server != nullptr) ? "running" : "stopped",
+             static_cast<unsigned long>(g_webserver_retry_attempts),
+                 static_cast<unsigned long>(g_last_webserver_retry_ms));
+
+        WebserverRuntimeMetrics web_metrics{};
+        get_webserver_runtime_metrics(web_metrics);
+        LOG_INFO("NET", "http metrics: init=%lu/%lu fail=%lu req_total=%lu req_fail=%lu active=%lu max_dur=%lu ms last_dur=%lu ms recycle=%lu",
+                 static_cast<unsigned long>(web_metrics.init_successes),
+                 static_cast<unsigned long>(web_metrics.init_attempts),
+                 static_cast<unsigned long>(web_metrics.init_failures),
+                 static_cast<unsigned long>(web_metrics.request_total),
+                 static_cast<unsigned long>(web_metrics.request_failures),
+                 static_cast<unsigned long>(web_metrics.active_requests),
+                 static_cast<unsigned long>(web_metrics.max_request_duration_ms),
+                 static_cast<unsigned long>(web_metrics.last_request_duration_ms),
+                 static_cast<unsigned long>(web_metrics.recycle_count));
     }
 
     smart_delay(10);

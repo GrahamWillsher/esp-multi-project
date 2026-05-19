@@ -97,15 +97,4 @@ void escape_double_quotes(const char* src, char* dst, size_t max_len) {
     dst[copy_index] = '\0';
 }
 
-esp_err_t send_espnow_send_result(httpd_req_t* req,
-                                  esp_err_t espnow_result,
-                                  const char* success_msg) {
-    if (espnow_result == ESP_OK) {
-        return send_success_message(req, success_msg);
-    }
-    return send_jsonf(req,
-                      "{\"success\":false,\"message\":\"ESP-NOW send failed: %s\"}",
-                      esp_err_to_name(espnow_result));
-}
-
 } // namespace ApiResponseUtils

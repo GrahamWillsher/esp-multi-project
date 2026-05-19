@@ -13,7 +13,6 @@
 
 extern volatile bool g_ack_received;
 extern volatile uint32_t g_ack_seq;
-extern volatile uint8_t g_lock_channel;
 extern espnow_payload_t tx_data;
 extern QueueHandle_t espnow_rx_queue;  // Project-specific queue
 

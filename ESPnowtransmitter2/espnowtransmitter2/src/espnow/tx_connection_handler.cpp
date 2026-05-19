@@ -20,6 +20,7 @@
 #include "tx_send_guard.h"
 #include "version_beacon_manager.h"
 #include "../battery_emulator/devboard/utils/led_handler.h"
+#include <esp32common/espnow/channel_authority.h>
 #include <esp32common/espnow/connection_manager.h>
 #include <esp32common/espnow/mac_utils.h>
 #include <esp32common/config/timing_config.h>
@@ -27,6 +28,7 @@
 #include <esp32common/logging/logging_config.h>
 #include <Arduino.h>
 #include <cstring>
+#include <channel_manager.h>
 
 // ============================================================================
 // Singleton
@@ -106,6 +108,8 @@ void TransmitterConnectionHandler::init() {
                 HeartbeatManager::instance().reset();
                 TxStateMachine::instance().on_connection_lost();
 
+                esp32common::espnow::ChannelAuthority::instance().unlock("TX_CONN");
+
                 // Remove peer and unlock channel
                 const uint8_t* peer_mac =
                     TransmitterConnectionHandler::instance().get_receiver_mac();
@@ -116,21 +120,21 @@ void TransmitterConnectionHandler::init() {
                     }
                 }
 
-                // NOTE: auto-reconnect will post CONNECTION_START -> CONNECTING
-                // which triggers the IDLE->CONNECTING callback above, which
-                // notifies TxReconnectManager.  No explicit notify needed here.
+                // Explicit reconnect kickoff (legacy implicit auto-reconnect
+                // ownership has been removed from EspNowConnectionManager).
+                post_connection_event(EspNowEvent::CONNECTION_START, nullptr);
                 LOG_INFO("TX_CONN",
-                         "Connection lost -- auto-reconnect will trigger discovery");
+                         "Connection lost -- posted CONNECTION_START for reconnect");
             }
 
             // ── CONNECTING -> IDLE (35 s timeout cycling) ─────────────────
-            // Auto-reconnect posts CONNECTION_START -> CONNECTING immediately.
-            // The resulting IDLE->CONNECTING callback notifies the manager,
-            // which ignores the duplicate CONNECT if a scan is already running.
+            // Legacy CONNECTING timeout ownership has been removed from
+            // EspNowConnectionManager; this path should now be rare.
             else if (old_state == EspNowConnectionState::CONNECTING &&
                      new_state == EspNowConnectionState::IDLE) {
                 LOG_INFO("TX_CONN",
-                         "CONNECTING timeout -> IDLE (auto-reconnect will re-enter CONNECTING)");
+                         "CONNECTING -> IDLE");
+                post_connection_event(EspNowEvent::CONNECTION_START, nullptr);
             }
         });
 

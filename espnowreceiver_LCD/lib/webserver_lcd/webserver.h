@@ -23,11 +23,26 @@ struct WebserverRuntimeMetrics {
     uint32_t init_attempts;
     uint32_t init_successes;
     uint32_t init_failures;
+    uint32_t request_total;
+    uint32_t request_failures;
+    uint32_t last_request_complete_ms;
+    uint32_t last_request_duration_ms;
+    uint32_t max_request_duration_ms;
+    uint32_t active_requests;
+    uint32_t recycle_count;
 };
+
+/**
+ * @brief Check if webserver startup is currently in backoff window
+ * Respects deterministic backoff policy per FSM spec (section 7.1)
+ * @return true if backoff is active and no init attempt should be made
+ */
+bool is_webserver_backoff_active();
 
 /**
  * @brief Initialize webserver for ESP-NOW receiver
  * Sets up modular page handlers, API endpoints, and utilities
+ * Note: Caller (main watchdog) is responsible for checking is_webserver_backoff_active() first
  * @return void
  */
 void init_webserver();
@@ -38,6 +53,10 @@ void init_webserver();
  */
 void stop_webserver();
 void get_webserver_runtime_metrics(WebserverRuntimeMetrics& out_metrics);
+void webserver_on_request_start(uint32_t now_ms);
+void webserver_on_request_progress(uint32_t now_ms);
+void webserver_on_request_end(uint32_t now_ms, uint32_t duration_ms, bool success);
+bool webserver_should_recycle(uint32_t now_ms, uint32_t& out_oldest_inflight_ms);
 
 /**
  * @brief Notify SSE clients that battery data has been updated
@@ -47,23 +66,5 @@ void get_webserver_runtime_metrics(WebserverRuntimeMetrics& out_metrics);
  */
 void notify_sse_data_updated();
 
-/**
- * @brief Register the transmitter MAC address for control messages
- * Call this when first data is received from transmitter
- * Uses TransmitterManager utility class
- * @param mac Pointer to 6-byte MAC address
- * @return void
- */
-void register_transmitter_mac(const uint8_t* mac);
-
-/**
- * @brief Store transmitter IP address data received via ESP-NOW
- * Uses TransmitterManager utility class
- * @param ip Pointer to 4-byte IP address
- * @param gateway Pointer to 4-byte gateway address
- * @param subnet Pointer to 4-byte subnet mask
- * @return void
- */
-void store_transmitter_ip_data(const uint8_t* ip, const uint8_t* gateway, const uint8_t* subnet);
 
 #endif

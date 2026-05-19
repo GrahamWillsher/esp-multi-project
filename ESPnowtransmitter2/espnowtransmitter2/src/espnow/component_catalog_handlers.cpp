@@ -356,34 +356,14 @@ void handle_component_interface(const espnow_queue_msg_t& msg) {
     LOG_INFO("COMP_IF", "Component interface selection saved; awaiting explicit reboot command to apply changes");
 }
 
-void handle_component_apply_request(const espnow_queue_msg_t& msg) {
-    if (msg.len < (int)sizeof(component_apply_request_t)) {
-        LOG_WARN("COMP_APPLY", "Invalid apply request size: %d", msg.len);
-        return;
-    }
-
-    const component_apply_request_t* request = reinterpret_cast<const component_apply_request_t*>(msg.data);
-
-    component_apply_ack_t ack{};
-    ack.type = msg_component_apply_ack;
-    ack.request_id = request->request_id;
-    ack.apply_mask = request->apply_mask;
-    ack.success = 0;
-    ack.reboot_required = 0;
-    ack.ready_for_reboot = 0;
-    ack.persisted_mask = 0;
-    ack.settings_version = static_cast<uint32_t>(SystemSettings::instance().get_config_version());
-    strncpy(ack.message, "Apply failed", sizeof(ack.message) - 1);
-    ack.message[sizeof(ack.message) - 1] = '\0';
-
-    if (!EspnowPacketUtils::verify_message_crc32(request)) {
-        strncpy(ack.message, "CRC32 mismatch", sizeof(ack.message) - 1);
-        load_interface_selection(ack.battery_interface, ack.inverter_interface);
-        ack.battery_type = SystemSettings::instance().get_battery_profile_type();
-        ack.inverter_type = SystemSettings::instance().get_inverter_type();
-        send_component_apply_ack(msg.mac, ack);
-        return;
-    }
+ComponentApplyResult apply_components(uint8_t apply_mask,
+                                      uint8_t battery_type,
+                                      uint8_t inverter_type,
+                                      uint8_t battery_interface,
+                                      uint8_t inverter_interface) {
+    ComponentApplyResult result{};
+    result.settings_version = static_cast<uint32_t>(SystemSettings::instance().get_config_version());
+    strncpy(result.message, "Apply failed", sizeof(result.message) - 1);
 
     SystemSettings& settings = SystemSettings::instance();
 
@@ -391,47 +371,42 @@ void handle_component_apply_request(const espnow_queue_msg_t& msg) {
     uint8_t current_inverter_interface = 0;
     load_interface_selection(current_battery_interface, current_inverter_interface);
 
-    ack.battery_type = settings.get_battery_profile_type();
-    ack.inverter_type = settings.get_inverter_type();
-    ack.battery_interface = current_battery_interface;
-    ack.inverter_interface = current_inverter_interface;
+    result.battery_type      = settings.get_battery_profile_type();
+    result.inverter_type     = settings.get_inverter_type();
+    result.battery_interface = current_battery_interface;
+    result.inverter_interface = current_inverter_interface;
 
-    const bool wants_battery_type = (request->apply_mask & component_apply_battery_type) != 0;
-    const bool wants_inverter_type = (request->apply_mask & component_apply_inverter_type) != 0;
-    const bool wants_battery_interface = (request->apply_mask & component_apply_battery_interface) != 0;
-    const bool wants_inverter_interface = (request->apply_mask & component_apply_inverter_interface) != 0;
+    const bool wants_battery_type       = (apply_mask & component_apply_battery_type) != 0;
+    const bool wants_inverter_type      = (apply_mask & component_apply_inverter_type) != 0;
+    const bool wants_battery_interface  = (apply_mask & component_apply_battery_interface) != 0;
+    const bool wants_inverter_interface = (apply_mask & component_apply_inverter_interface) != 0;
 
-    if (request->apply_mask == 0) {
-        ack.success = 1;
-        strncpy(ack.message, "No changes requested", sizeof(ack.message) - 1);
-        send_component_apply_ack(msg.mac, ack);
-        return;
+    if (apply_mask == 0) {
+        result.success = true;
+        strncpy(result.message, "No changes requested", sizeof(result.message) - 1);
+        return result;
     }
 
 #if CONFIG_CAN_ENABLED
-    if (wants_battery_type && !is_supported_battery_selection(request->battery_type)) {
-        strncpy(ack.message, "Unsupported battery type", sizeof(ack.message) - 1);
-        send_component_apply_ack(msg.mac, ack);
-        return;
+    if (wants_battery_type && !is_supported_battery_selection(battery_type)) {
+        strncpy(result.message, "Unsupported battery type", sizeof(result.message) - 1);
+        return result;
     }
 
-    if (wants_inverter_type && !is_supported_inverter_selection(request->inverter_type)) {
-        strncpy(ack.message, "Unsupported inverter type", sizeof(ack.message) - 1);
-        send_component_apply_ack(msg.mac, ack);
-        return;
+    if (wants_inverter_type && !is_supported_inverter_selection(inverter_type)) {
+        strncpy(result.message, "Unsupported inverter type", sizeof(result.message) - 1);
+        return result;
     }
 #endif
 
-    if (wants_battery_interface && !is_valid_interface_id(request->battery_interface)) {
-        strncpy(ack.message, "Invalid battery interface", sizeof(ack.message) - 1);
-        send_component_apply_ack(msg.mac, ack);
-        return;
+    if (wants_battery_interface && !is_valid_interface_id(battery_interface)) {
+        strncpy(result.message, "Invalid battery interface", sizeof(result.message) - 1);
+        return result;
     }
 
-    if (wants_inverter_interface && !is_valid_interface_id(request->inverter_interface)) {
-        strncpy(ack.message, "Invalid inverter interface", sizeof(ack.message) - 1);
-        send_component_apply_ack(msg.mac, ack);
-        return;
+    if (wants_inverter_interface && !is_valid_interface_id(inverter_interface)) {
+        strncpy(result.message, "Invalid inverter interface", sizeof(result.message) - 1);
+        return result;
     }
 
     bool changed_any = false;
@@ -439,82 +414,74 @@ void handle_component_apply_request(const espnow_queue_msg_t& msg) {
     bool inverter_type_changed = false;
 
     if (wants_battery_type) {
-        if (settings.get_battery_profile_type() == request->battery_type) {
-            ack.persisted_mask |= component_apply_battery_type;
-        } else if (settings.set_battery_profile_type(request->battery_type)) {
-            ack.persisted_mask |= component_apply_battery_type;
+        if (settings.get_battery_profile_type() == battery_type) {
+            result.persisted_mask |= component_apply_battery_type;
+        } else if (settings.set_battery_profile_type(battery_type)) {
+            result.persisted_mask |= component_apply_battery_type;
             changed_any = true;
             battery_type_changed = true;
-            ack.battery_type = request->battery_type;
+            result.battery_type = battery_type;
         } else {
-            strncpy(ack.message, "Failed saving battery type", sizeof(ack.message) - 1);
-            send_component_apply_ack(msg.mac, ack);
-            return;
+            strncpy(result.message, "Failed saving battery type", sizeof(result.message) - 1);
+            return result;
         }
     }
 
     if (wants_inverter_type) {
-        if (settings.get_inverter_type() == request->inverter_type) {
-            ack.persisted_mask |= component_apply_inverter_type;
-        } else if (settings.set_inverter_type(request->inverter_type)) {
-            ack.persisted_mask |= component_apply_inverter_type;
+        if (settings.get_inverter_type() == inverter_type) {
+            result.persisted_mask |= component_apply_inverter_type;
+        } else if (settings.set_inverter_type(inverter_type)) {
+            result.persisted_mask |= component_apply_inverter_type;
             changed_any = true;
             inverter_type_changed = true;
-            ack.inverter_type = request->inverter_type;
+            result.inverter_type = inverter_type;
         } else {
-            strncpy(ack.message, "Failed saving inverter type", sizeof(ack.message) - 1);
-            send_component_apply_ack(msg.mac, ack);
-            return;
+            strncpy(result.message, "Failed saving inverter type", sizeof(result.message) - 1);
+            return result;
         }
     }
 
-    const uint8_t target_battery_interface = wants_battery_interface ? request->battery_interface : current_battery_interface;
-    const uint8_t target_inverter_interface = wants_inverter_interface ? request->inverter_interface : current_inverter_interface;
+    const uint8_t target_battery_interface  = wants_battery_interface  ? battery_interface  : current_battery_interface;
+    const uint8_t target_inverter_interface = wants_inverter_interface ? inverter_interface : current_inverter_interface;
 
     if (wants_battery_interface || wants_inverter_interface) {
         const bool interface_changed =
-            (target_battery_interface != current_battery_interface) ||
+            (target_battery_interface  != current_battery_interface) ||
             (target_inverter_interface != current_inverter_interface);
 
         if (!interface_changed || save_interface_selection(target_battery_interface, target_inverter_interface)) {
-            if (wants_battery_interface) {
-                ack.persisted_mask |= component_apply_battery_interface;
-            }
-            if (wants_inverter_interface) {
-                ack.persisted_mask |= component_apply_inverter_interface;
-            }
+            if (wants_battery_interface)  { result.persisted_mask |= component_apply_battery_interface; }
+            if (wants_inverter_interface) { result.persisted_mask |= component_apply_inverter_interface; }
             changed_any = changed_any || interface_changed;
-            ack.battery_interface = target_battery_interface;
-            ack.inverter_interface = target_inverter_interface;
+            result.battery_interface  = target_battery_interface;
+            result.inverter_interface = target_inverter_interface;
         } else {
-            strncpy(ack.message, "Failed saving interfaces", sizeof(ack.message) - 1);
-            send_component_apply_ack(msg.mac, ack);
-            return;
+            strncpy(result.message, "Failed saving interfaces", sizeof(result.message) - 1);
+            return result;
         }
     }
 
 #if CONFIG_CAN_ENABLED
     if (wants_battery_type) {
-        user_selected_battery_type = static_cast<BatteryType>(ack.battery_type);
+        user_selected_battery_type = static_cast<BatteryType>(result.battery_type);
         if (!BatteryManager::instance().is_primary_battery_initialized()) {
-            BatteryManager::instance().init_primary_battery(static_cast<BatteryType>(ack.battery_type));
+            BatteryManager::instance().init_primary_battery(static_cast<BatteryType>(result.battery_type));
         }
     }
 
     if (wants_inverter_type) {
-        user_selected_inverter_protocol = static_cast<InverterProtocolType>(ack.inverter_type);
+        user_selected_inverter_protocol = static_cast<InverterProtocolType>(result.inverter_type);
         if (!BatteryManager::instance().is_inverter_initialized()) {
-            BatteryManager::instance().init_inverter(static_cast<InverterProtocolType>(ack.inverter_type));
+            BatteryManager::instance().init_inverter(static_cast<InverterProtocolType>(result.inverter_type));
         }
     }
 #endif
 
     if (battery_type_changed) {
-        StaticData::update_battery_specs(ack.battery_type);
+        StaticData::update_battery_specs(result.battery_type);
     }
-
     if (inverter_type_changed) {
-        StaticData::update_inverter_specs(ack.inverter_type);
+        StaticData::update_inverter_specs(result.inverter_type);
     }
 
     if ((battery_type_changed || inverter_type_changed) && MqttManager::instance().is_connected()) {
@@ -529,20 +496,62 @@ void handle_component_apply_request(const espnow_queue_msg_t& msg) {
         MqttManager::instance().publish_static_specs();
     }
 
-    ack.success = (ack.persisted_mask == request->apply_mask) ? 1 : 0;
-    ack.reboot_required = (changed_any && ack.success) ? 1 : 0;
-    ack.ready_for_reboot = (ack.success && ack.reboot_required) ? 1 : 0;
-    ack.settings_version = static_cast<uint32_t>(settings.get_config_version());
+    result.success          = (result.persisted_mask == apply_mask) ? true : false;
+    result.reboot_required  = (changed_any && result.success);
+    result.settings_version = static_cast<uint32_t>(settings.get_config_version());
 
-    if (ack.success) {
-        if (ack.reboot_required) {
-            strncpy(ack.message, "Persisted - reboot required", sizeof(ack.message) - 1);
-        } else {
-            strncpy(ack.message, "No reboot required", sizeof(ack.message) - 1);
-        }
+    if (result.success) {
+        strncpy(result.message,
+                result.reboot_required ? "Persisted - reboot required" : "No reboot required",
+                sizeof(result.message) - 1);
     } else {
-        strncpy(ack.message, "Persisted mask mismatch", sizeof(ack.message) - 1);
+        strncpy(result.message, "Persisted mask mismatch", sizeof(result.message) - 1);
     }
+
+    return result;
+}
+
+void handle_component_apply_request(const espnow_queue_msg_t& msg) {
+    if (msg.len < (int)sizeof(component_apply_request_t)) {
+        LOG_WARN("COMP_APPLY", "Invalid apply request size: %d", msg.len);
+        return;
+    }
+
+    const component_apply_request_t* request = reinterpret_cast<const component_apply_request_t*>(msg.data);
+
+    component_apply_ack_t ack{};
+    ack.type = msg_component_apply_ack;
+    ack.request_id = request->request_id;
+    ack.apply_mask = request->apply_mask;
+
+    if (!EspnowPacketUtils::verify_message_crc32(request)) {
+        strncpy(ack.message, "CRC32 mismatch", sizeof(ack.message) - 1);
+        load_interface_selection(ack.battery_interface, ack.inverter_interface);
+        ack.battery_type = SystemSettings::instance().get_battery_profile_type();
+        ack.inverter_type = SystemSettings::instance().get_inverter_type();
+        ack.settings_version = static_cast<uint32_t>(SystemSettings::instance().get_config_version());
+        send_component_apply_ack(msg.mac, ack);
+        return;
+    }
+
+    // Delegate to the transport-agnostic service function.
+    const ComponentApplyResult r = apply_components(request->apply_mask,
+                                                     request->battery_type,
+                                                     request->inverter_type,
+                                                     request->battery_interface,
+                                                     request->inverter_interface);
+
+    ack.success           = r.success ? 1u : 0u;
+    ack.reboot_required   = r.reboot_required ? 1u : 0u;
+    ack.ready_for_reboot  = (r.success && r.reboot_required) ? 1u : 0u;
+    ack.persisted_mask    = r.persisted_mask;
+    ack.battery_type      = r.battery_type;
+    ack.inverter_type     = r.inverter_type;
+    ack.battery_interface = r.battery_interface;
+    ack.inverter_interface = r.inverter_interface;
+    ack.settings_version  = r.settings_version;
+    strncpy(ack.message, r.message, sizeof(ack.message) - 1);
+    ack.message[sizeof(ack.message) - 1] = '\0';
 
     send_component_apply_ack(msg.mac, ack);
 }

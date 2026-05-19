@@ -2,6 +2,7 @@
 #include <PubSubClient.h>
 #include <WiFiClient.h>
 #include <vector>
+#include <cstdint>
 
 /**
  * @brief MQTT connection state machine states
@@ -86,6 +87,13 @@ public:
      * @return true if published successfully, false otherwise
      */
     bool publish_data(int soc, long power, const char* timestamp, bool eth_connected);
+
+    /**
+     * @brief Publish minimal heartbeat on batt-emu namespace
+     * @param eth_connected Ethernet connection status
+     * @return true if published successfully, false otherwise
+     */
+    bool publish_heartbeat(bool eth_connected);
     
     /**
      * @brief Publish status message
@@ -124,6 +132,72 @@ public:
      * @return true if published successfully, false otherwise
      */
     bool publish_inverter_type_catalog();
+
+        /**
+         * @brief Publish retained network config snapshot to batt-emu/mqtt-v1/tx/state/static/network
+         * @return true if published successfully, false otherwise
+         */
+        bool publish_static_network();
+
+        /**
+         * @brief Publish retained MQTT config snapshot to batt-emu/mqtt-v1/tx/state/static/mqtt
+         * @return true if published successfully, false otherwise
+         */
+        bool publish_static_mqtt();
+
+        /**
+         * @brief Publish retained power/charger config snapshot to batt-emu/mqtt-v1/tx/state/static/power
+         * @return true if published successfully, false otherwise
+         */
+        bool publish_static_power();
+
+        /**
+         * @brief Publish retained LED config snapshot to batt-emu/mqtt-v1/tx/state/static/led
+         * @return true if published successfully, false otherwise
+         */
+        bool publish_static_led();
+
+        /**
+         * @brief Publish retained firmware/protocol metadata to batt-emu/mqtt-v1/tx/meta/version
+         * @return true if published successfully, false otherwise
+         */
+        bool publish_meta_version();
+
+        /**
+         * @brief Publish retained per-model version map to batt-emu/mqtt-v1/tx/meta/schema_versions
+         * @return true if published successfully, false otherwise
+         */
+        bool publish_meta_schema_versions();
+
+        /**
+         * @brief Publish retained runtime connectivity/status metadata to batt-emu/mqtt-v1/tx/meta/runtime
+         * @return true if published successfully, false otherwise
+         */
+        bool publish_meta_runtime();
+
+        /**
+         * @brief Publish live LED runtime state to batt-emu/mqtt-v1/tx/state/runtime/led
+         * @return true if published successfully, false otherwise
+         */
+        bool publish_runtime_led();
+
+        /**
+         * @brief Publish live system runtime state to batt-emu/mqtt-v1/tx/state/runtime/system
+         * @return true if published successfully, false otherwise
+         */
+        bool publish_runtime_system();
+
+        /**
+         * @brief Publish live charger runtime state to batt-emu/mqtt-v1/tx/state/runtime/charger
+         * @return true if published successfully, false otherwise
+         */
+        bool publish_runtime_charger();
+
+        /**
+         * @brief Publish live inverter runtime state to batt-emu/mqtt-v1/tx/state/runtime/inverter
+         * @return true if published successfully, false otherwise
+         */
+        bool publish_runtime_inverter();
     
     /**
      * @brief Publish cell voltages and balancing status (BE/cell_data topic)
@@ -197,6 +271,126 @@ private:
      * @param url Firmware URL to download from
      */
     void handle_ota_command(const char* url);
+
+    /**
+     * @brief Handle control command topic via MQTT payload JSON
+     */
+    void handle_control_command(const char* topic, const char* payload);
+
+    /**
+     * @brief Handle settings update command topic via MQTT payload JSON
+     */
+    void handle_settings_command(const char* topic, const char* payload);
+
+    /**
+     * @brief Handle network config update command topic via MQTT payload JSON
+     */
+    void handle_network_command(const char* topic, const char* payload);
+
+    /**
+     * @brief Handle MQTT config update command topic via MQTT payload JSON
+     */
+    void handle_mqtt_command(const char* topic, const char* payload);
+
+    /**
+     * @brief Handle refresh command topic via MQTT payload JSON
+     */
+    void handle_refresh_command(const char* topic, const char* payload);
+
+    /**
+     * @brief Handle stream control command topic via MQTT payload JSON
+     */
+    void handle_stream_command(const char* topic, const char* payload);
+
+    /**
+     * @brief Apply debug log level update and publish ACK
+     */
+    void handle_control_debug_level(const char* request_id, int level);
+
+    /**
+     * @brief Apply reboot control and publish ACK before restart
+     */
+    void handle_control_reboot(const char* request_id);
+
+    /**
+     * @brief Apply test-data mode control and publish ACK
+     */
+    void handle_control_test_data_mode(const char* request_id, int mode);
+
+    /**
+     * @brief Apply OTA session arm control and publish ACK
+     */
+    void handle_control_ota_start(const char* request_id);
+
+    /**
+     * @brief Publish control ACK payload to batt-emu namespace
+     */
+    bool publish_control_ack(const char* request_id,
+                             const char* action,
+                             bool success,
+                             const char* code,
+                             const char* message);
+
+    bool publish_component_apply_ack(const char* request_id,
+                                     bool success,
+                                     const char* code,
+                                     const char* message,
+                                     bool reboot_required,
+                                     uint8_t apply_mask,
+                                     uint8_t persisted_mask,
+                                     uint8_t battery_type,
+                                     uint8_t inverter_type,
+                                     uint8_t battery_interface,
+                                     uint8_t inverter_interface,
+                                     uint32_t settings_version);
+
+    /**
+     * @brief Publish settings ACK payload to batt-emu namespace
+     */
+    bool publish_settings_ack(const char* request_id,
+                              uint8_t category,
+                              uint8_t field_id,
+                              bool success,
+                              uint32_t new_version,
+                              const char* code,
+                              const char* message);
+
+    /**
+     * @brief Publish network update ACK payload to batt-emu namespace
+     */
+    bool publish_network_ack(const char* request_id,
+                             bool success,
+                             const char* code,
+                             const char* message);
+
+    /**
+     * @brief Publish MQTT config update ACK payload to batt-emu namespace
+     */
+    bool publish_mqtt_ack(const char* request_id,
+                          bool success,
+                          const char* code,
+                          const char* message);
+
+    /**
+     * @brief Publish event logs clear ACK payload to batt-emu namespace
+     */
+    bool publish_event_logs_clear_ack(const char* request_id,
+                                      bool success,
+                                      const char* code,
+                                      const char* message);
+
+    /**
+     * @brief Republish a cached ACK when a duplicate request_id is received
+     * @return true when request_id was a known duplicate and handled
+     */
+    bool publish_cached_ack_if_duplicate(const char* request_id);
+
+    /**
+     * @brief Cache last ACK payload for request_id duplicate handling
+     */
+    void remember_ack_payload(const char* request_id,
+                              const char* topic,
+                              const char* payload);
     
     /**
      * @brief Attempt actual MQTT connection (internal)
@@ -270,6 +464,16 @@ private:
     std::vector<EventLogSubscription> event_log_subscriptions_;
     uint32_t next_event_log_subscription_id_{1};
     uint32_t event_log_ttl_reap_count_{0};
+
+    struct AckCacheEntry {
+        char request_id[48];
+        char topic[64];
+        char payload[PAYLOAD_BUFFER_SIZE];
+        uint32_t ts_ms;
+    };
+
+    std::vector<AckCacheEntry> ack_cache_;
+    static constexpr size_t MAX_ACK_CACHE_ENTRIES = 128;
 
     // Snapshot/session state for event-log publishing
     uint64_t event_snapshot_id_{0};

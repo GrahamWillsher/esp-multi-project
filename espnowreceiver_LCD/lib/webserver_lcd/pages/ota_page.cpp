@@ -12,13 +12,17 @@
  * Features file selection, upload progress tracking, and automatic redirect on success.
  */
 static esp_err_t ota_handler(httpd_req_t *req) {
-    String content = get_ota_page_content();
+    // Content is a static flash-resident literal: zero heap allocation per request.
+    const auto content_generator = [](httpd_req_t* request) -> esp_err_t {
+        const char* c = get_ota_page_content();
+        return send_page_content_chunk(request, "ota_content", c, strlen(c));
+    };
     const char* script = get_ota_page_script();
 
-    return send_rendered_page(req,
-                              "OTA Firmware Update",
-                              content,
-                              PageRenderOptions("", script, false));
+    return send_rendered_page_streaming(req,
+                                        "OTA Firmware Update",
+                                        content_generator,
+                                        PageRenderOptions("", script, false));
 }
 
 /**

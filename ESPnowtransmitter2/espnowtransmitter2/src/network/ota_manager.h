@@ -83,6 +83,13 @@ private:
      * @return ESP_OK on success
      */
     static esp_err_t health_handler(httpd_req_t *req);
+
+    /**
+     * @brief HTTP handler listing registered HTTP routes
+     * @param req HTTP request object
+     * @return ESP_OK on success
+     */
+    static esp_err_t routes_handler(httpd_req_t *req);
     
     /**
      * @brief HTTP handler for event logs API

@@ -15,7 +15,7 @@ constexpr uint32_t kPollStepMs = 500;
 constexpr uint32_t kRecoveryRetryInitialMs = 5000;
 constexpr uint32_t kRecoveryRetryStepMs = 5000;
 constexpr uint32_t kRecoveryRetryMaxMs = 60000;
-constexpr uint32_t kRecoveryStableConnectMs = 3000;
+constexpr uint32_t kRecoveryStableConnectMs = 10000;
 constexpr const char* kApSsid = "ESP32-LCD-Setup";
 constexpr const char* kApIp   = "192.168.4.1";
 constexpr uint8_t kApChannel = 1;
@@ -24,14 +24,26 @@ bool g_recovery_active = false;
 uint32_t g_recovery_next_retry_ms = 0;
 uint32_t g_recovery_retry_interval_ms = kRecoveryRetryInitialMs;
 uint32_t g_recovery_connected_since_ms = 0;
+bool g_mdns_started = false;
 
 void start_mdns(const char* hostname) {
     const char* h = (hostname && hostname[0] != '\0') ? hostname : "lcd-receiver";
+
+    if (g_mdns_started) {
+        MDNS.end();
+        g_mdns_started = false;
+    }
+
     if (!MDNS.begin(h)) {
         LOG_WARN("WIFI", "mDNS.begin('%s') failed", h);
         return;
     }
-    MDNS.addService("http", "tcp", 80);
+
+    g_mdns_started = true;
+    if (!MDNS.addService("http", "tcp", 80)) {
+        LOG_WARN("WIFI", "mDNS service registration failed for http.tcp on host '%s'", h);
+    }
+
     LOG_INFO("WIFI", "mDNS started: http://%s.local/", h);
 }
 }  // namespace
@@ -107,7 +119,7 @@ void start_ap_fallback(const bool has_credentials) {
              kApSsid,
              static_cast<unsigned>(kApChannel),
              has_credentials ? "AP+STA recovery" : "AP-only provisioning");
-    WiFi.disconnect(true, true);
+    WiFi.disconnect(false, false);
     WiFi.mode(has_credentials ? WIFI_AP_STA : WIFI_AP);
     WiFi.softAP(kApSsid, nullptr, kApChannel);  // open — no password
     LOG_INFO("WIFI", "AP fallback started: SSID=%s IP=%s CH=%d mode=%s",

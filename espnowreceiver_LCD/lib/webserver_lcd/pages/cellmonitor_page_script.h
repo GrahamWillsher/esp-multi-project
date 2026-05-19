@@ -6,8 +6,9 @@
  * @brief Generate the JavaScript for the Cell Monitor page.
  *
  * Returns the full script block (without <script> tags) for the cell
- * monitor: SSE connection to /api/cell_stream, cell grid rendering,
- * voltage distribution bar chart, and bi-directional hover highlighting.
+ * monitor: 5-second snapshot polling from /api/cell_data (with backoff),
+ * cell grid rendering, voltage distribution bar chart, and bi-directional
+ * hover highlighting.
  *
  * @return Pointer to static JavaScript payload.
  */

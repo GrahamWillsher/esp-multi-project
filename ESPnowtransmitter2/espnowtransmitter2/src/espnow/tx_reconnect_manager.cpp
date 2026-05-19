@@ -24,14 +24,18 @@
 #include "tx_state_machine.h"
 #include "../config/task_config.h"
 #include "../config/logging_config.h"
+#include <esp32common/espnow/channel_authority.h>
 #include <esp32common/espnow/connection_manager.h>
+#include <esp32common/espnow/unified_link_fsm.h>
 #include <esp32common/config/timing_config.h>
+#include <esp32common/patterns/numeric_safety.h>
 #include <espnow_peer_manager.h>
-#include <espnow_transmitter.h>   // g_lock_channel
 #include <channel_manager.h>
+#include <esp_system.h>
 #include <Arduino.h>
 #include <esp_now.h>
 #include <esp32common/espnow/common.h>
+#include "tx_send_guard.h"
 
 // ============================================================================
 // Internal types (translation-unit scope)
@@ -46,16 +50,31 @@ struct WorkerContext {
     uint8_t       start_channel_hint; ///< Where to start scanning
 };
 
-// ── Backoff schedule (indexed by scan_attempt_) ──────────────────────────
+// ── Adaptive backoff schedule (indexed by completed scan_attempt_) ───────
 // attempt 0: first scan starts immediately (no wait)
-// attempt 1: 3 s   (first failure — brief pause before retry)
-// attempt 2+: 5 s  (settled wait matching DISCOVERY_RETRY_INTERVAL_MS)
-constexpr uint32_t kBackoffTable[] = { 0, 3000, 5000 };
+// attempts 1-2: fast reacquisition while the receiver may still be settling
+// attempts 3-4: moderate retry cadence once the easy reconnect window passes
+// attempts 5+: sparse background search to avoid steady discovery pressure
+constexpr uint32_t kBackoffTable[] = { 0, 3000, 5000, 10000, 15000, 30000, 60000 };
 constexpr size_t   kBackoffCount   = sizeof(kBackoffTable) / sizeof(kBackoffTable[0]);
 
 inline uint32_t backoff_for_attempt(uint32_t attempt) {
     const size_t idx = (attempt < kBackoffCount) ? attempt : (kBackoffCount - 1);
     return kBackoffTable[idx];
+}
+
+inline const char* reconnect_cadence_label(uint32_t attempt) {
+    if (attempt <= 2U) {
+        return "fast-acquire";
+    }
+    if (attempt <= 4U) {
+        return "settled-retry";
+    }
+    return "background-search";
+}
+
+uint8_t select_scan_hint_channel() {
+    return esp32common::espnow::ChannelAuthority::instance().reconnect_hint_channel();
 }
 
 }  // namespace
@@ -72,6 +91,12 @@ TxReconnectManager& TxReconnectManager::instance() {
 // Public init
 // ============================================================================
 void TxReconnectManager::init() {
+    session_boot_nonce_ = static_cast<uint16_t>(esp_random() & 0xFFFFU);
+    if (session_boot_nonce_ == 0U) {
+        session_boot_nonce_ = 1U;
+    }
+    esp32common::espnow::UnifiedLinkFsm::instance().set_session_boot_nonce(session_boot_nonce_);
+
     // Queue depth 8: enough to buffer CONNECT + STOP storms during rapid cycling
     event_queue_ = xQueueCreate(8, sizeof(ReconnectMsg));
     configASSERT(event_queue_ != nullptr);
@@ -145,14 +170,17 @@ void TxReconnectManager::run_manager() {
                     handle_worker_miss();
                     break;
                 case ReconnectEvent::CONFIRM_ACK:
-                    handle_confirm_ack(msg.session_id);
+                    handle_confirm_ack(msg.session_id,
+                                       msg.session_boot_nonce,
+                                       msg.rx_status,
+                                       msg.mac);
                     break;
             }
         }
 
         // Backoff expiry check (polled every 50 ms while in BACKOFF state)
         if (state_ == ManagerState::BACKOFF) {
-            if ((int32_t)(millis() - backoff_until_ms_) >= 0) {
+            if (esp32common::numeric::due_u32(millis(), backoff_until_ms_)) {
                 LOG_INFO("RECONNECT", "Backoff expired — starting scan (attempt %lu)",
                          static_cast<unsigned long>(scan_attempt_ + 1));
                 start_worker_scan();
@@ -161,7 +189,7 @@ void TxReconnectManager::run_manager() {
 
         // Confirm timeout check (polled every 50 ms while in CONFIRMING state)
         if (state_ == ManagerState::CONFIRMING) {
-            if ((int32_t)(millis() - confirm_timeout_until_ms_) >= 0) {
+            if (esp32common::numeric::due_u32(millis(), confirm_timeout_until_ms_)) {
                 constexpr uint8_t kMaxConfirmRetries = 2;
                 if (confirm_retry_count_ >= kMaxConfirmRetries) {
                     LOG_WARN("RECONNECT",
@@ -172,7 +200,9 @@ void TxReconnectManager::run_manager() {
                     state_ = ManagerState::SCANNING;
                     start_worker_scan();
                 } else {
-                    ++confirm_retry_count_;
+                    (void)esp32common::numeric::increment_saturating<uint8_t>(
+                        confirm_retry_count_,
+                        kMaxConfirmRetries);
                     LOG_INFO("RECONNECT",
                              "confirm_confirm retry %u/%u (session=%u)",
                              static_cast<unsigned>(confirm_retry_count_),
@@ -240,17 +270,24 @@ void TxReconnectManager::handle_worker_found(uint8_t channel, const uint8_t* mac
              "✓ Receiver found on ch=%d after %lu scan attempt(s)",
              channel, static_cast<unsigned long>(scan_attempt_ + 1));
 
-    // ── 1. Lock global channel (read by many components) ────────────────
-    g_lock_channel = channel;
-    ChannelManager::instance().lock_channel(channel, "RECONNECT_MGR");
+    // ── 1. Commit the receiver-confirmed operating channel through the shared
+    //       channel authority. This is the single runtime owner of channel lock.
+    esp32common::espnow::ChannelAuthority::instance().commit_receiver_confirmed_channel(
+        channel,
+        "RECONNECT_MGR",
+        false);
 
-    // ── 2. Register peer with the discovered channel so we can send confirm ─
-    if (!EspnowPeerManager::is_peer_registered(mac)) {
-        EspnowPeerManager::add_peer(const_cast<uint8_t*>(mac), channel);
-        LOG_INFO("RECONNECT", "  ✓ Peer registered");
-    } else {
-        LOG_DEBUG("RECONNECT", "  - Peer already registered");
+    // ── 2. Register peer with channel=0 so ESP-NOW sends on the current WiFi
+    //       channel rather than a hardcoded value.  Using a specific channel risks
+    //       ESP_ERR_ESPNOW_ARG ("Peer channel is not equal to the home channel")
+    //       if the WiFi stack has already reverted to its STA-associated channel
+    //       by the time esp_now_send() is called.  channel=0 always matches.
+    //       (Same reasoning as the receiver's handle_probe — see espnow_standard_handlers.cpp)
+    if (EspnowPeerManager::is_peer_registered(mac)) {
+        EspnowPeerManager::remove_peer(mac);
     }
+    EspnowPeerManager::add_peer(const_cast<uint8_t*>(mac), /*channel=*/0);
+    LOG_INFO("RECONNECT", "  ✓ Peer registered (channel=0: follows WiFi home channel)");
 
     // ── 3. Update TX connection handler caches (no PEER_REGISTERED yet) ─
     //  on_ack_received stores receiver_mac_ + receiver_channel_.
@@ -259,11 +296,18 @@ void TxReconnectManager::handle_worker_found(uint8_t channel, const uint8_t* mac
 
     // ── 4. Send connect_confirm and enter CONFIRMING ─────────────────────
     //  Store confirmation context for timeout retries and session matching.
-    ++session_id_;
+    if (!esp32common::numeric::increment_saturating<uint16_t>(session_id_)) {
+        session_id_ = 0;
+    }
     memcpy(confirm_peer_mac_, mac, 6);
     confirm_channel_           = channel;
     confirm_retry_count_       = 0;
     confirm_timeout_until_ms_  = millis() + 2000U;
+
+    esp32common::espnow::UnifiedLinkFsm::instance().begin_handshake(
+        session_boot_nonce_,
+        session_id_,
+        confirm_channel_);
 
     send_connect_confirm(confirm_peer_mac_);
     state_        = ManagerState::CONFIRMING;
@@ -271,17 +315,29 @@ void TxReconnectManager::handle_worker_found(uint8_t channel, const uint8_t* mac
 
     LOG_INFO("RECONNECT",
              "[STATE_CHANGE] SCANNING -> CONFIRMING  "
-             "reason=worker_found  ch=%d  session=%u",
-             channel, static_cast<unsigned>(session_id_));
+             "reason=worker_found  ch=%d  session=%u  boot_nonce=%u",
+             channel,
+             static_cast<unsigned>(session_id_),
+             static_cast<unsigned>(session_boot_nonce_));
 }
 
 // ============================================================================
 // handle_confirm_ack — called from run_manager() on CONFIRM_ACK event
 // ============================================================================
-void TxReconnectManager::handle_confirm_ack(uint16_t session_id) {
+void TxReconnectManager::handle_confirm_ack(uint16_t session_id,
+                                            uint16_t session_boot_nonce,
+                                            uint8_t rx_status,
+                                            const uint8_t* mac) {
     if (state_ != ManagerState::CONFIRMING) {
         LOG_DEBUG("RECONNECT",
                   "CONFIRM_ACK ignored (not in CONFIRMING state, likely stale)");
+        return;
+    }
+
+    if (mac != nullptr && std::memcmp(mac, confirm_peer_mac_, sizeof(confirm_peer_mac_)) != 0) {
+        LOG_WARN("RECONNECT",
+                 "CONFIRM_ACK peer mismatch — discarding stale ack from %02X:%02X:%02X:%02X:%02X:%02X",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
         return;
     }
 
@@ -293,11 +349,39 @@ void TxReconnectManager::handle_confirm_ack(uint16_t session_id) {
         return;
     }
 
+    if (session_boot_nonce != session_boot_nonce_) {
+        LOG_WARN("RECONNECT",
+                 "CONFIRM_ACK boot nonce mismatch (got %u, expected %u) — discarding",
+                 static_cast<unsigned>(session_boot_nonce),
+                 static_cast<unsigned>(session_boot_nonce_));
+        return;
+    }
+
+    if (rx_status != CONNECT_CONFIRM_STATUS_OK) {
+        LOG_WARN("RECONNECT",
+                 "CONFIRM_ACK rejected by receiver (rx_status=%u session=%u boot_nonce=%u)",
+                 static_cast<unsigned>(rx_status),
+                 static_cast<unsigned>(session_id_),
+                 static_cast<unsigned>(session_boot_nonce_));
+        return;
+    }
+
     LOG_INFO("RECONNECT",
              "[STATE_CHANGE] CONFIRMING -> CONNECTED  "
-             "reason=confirm_ack_received  session=%u  ch=%d",
+             "reason=confirm_ack_received  session=%u  boot_nonce=%u  ch=%d",
              static_cast<unsigned>(session_id_),
+             static_cast<unsigned>(session_boot_nonce_),
              static_cast<int>(confirm_channel_));
+
+    EspNowConnectionManager::instance().authorize_peer_registered_transition(confirm_peer_mac_);
+    esp32common::espnow::UnifiedLinkFsm::instance().commit_link_up(
+        session_boot_nonce_,
+        session_id_,
+        confirm_channel_);
+    esp32common::espnow::ChannelAuthority::instance().commit_receiver_confirmed_channel(
+        confirm_channel_,
+        "RECONNECT_ACK",
+        true);
 
     // Re-register peer with channel=0 so all future sends use the current
     // WiFi channel rather than a hard-coded value (correct now channel lock
@@ -328,11 +412,19 @@ void TxReconnectManager::handle_confirm_ack(uint16_t session_id) {
 // ============================================================================
 // on_confirm_ack_received — called from route handler (ESP-NOW task, thread-safe)
 // ============================================================================
-void TxReconnectManager::on_confirm_ack_received(uint16_t session_id) {
+void TxReconnectManager::on_confirm_ack_received(const uint8_t* mac,
+                                                 uint16_t session_id,
+                                                 uint16_t session_boot_nonce,
+                                                 uint8_t rx_status) {
     if (!event_queue_) return;
     ReconnectMsg msg{};
-    msg.event      = ReconnectEvent::CONFIRM_ACK;
+    msg.event = ReconnectEvent::CONFIRM_ACK;
+    msg.rx_status = rx_status;
     msg.session_id = session_id;
+    msg.session_boot_nonce = session_boot_nonce;
+    if (mac != nullptr) {
+        std::memcpy(msg.mac, mac, sizeof(msg.mac));
+    }
     // Drop silently if queue is full — a retry will follow within 2 s
     xQueueSend(event_queue_, &msg, pdMS_TO_TICKS(50));
 }
@@ -346,22 +438,26 @@ void TxReconnectManager::send_connect_confirm(const uint8_t* mac) {
     pkt.protocol_version = ESPNOW_PROTOCOL_VERSION;
     pkt.session_id       = session_id_;
     pkt.channel          = confirm_channel_;
+    pkt.session_boot_nonce = session_boot_nonce_;
 
-    const esp_err_t err = esp_now_send(
+    const esp_err_t err = TxSendGuard::send_to_receiver_guarded(
         mac,
         reinterpret_cast<const uint8_t*>(&pkt),
-        sizeof(pkt));
+        sizeof(pkt),
+        "connect_confirm");
 
     if (err == ESP_OK) {
         LOG_INFO("RECONNECT",
-                 "connect_confirm sent (session=%u, ch=%d)",
+                 "connect_confirm sent (session=%u, boot_nonce=%u, ch=%d)",
                  static_cast<unsigned>(session_id_),
+                 static_cast<unsigned>(session_boot_nonce_),
                  static_cast<int>(confirm_channel_));
     } else {
         LOG_WARN("RECONNECT",
-                 "connect_confirm send failed: %s (session=%u)",
+                 "connect_confirm send failed: %s (session=%u boot_nonce=%u)",
                  esp_err_to_name(err),
-                 static_cast<unsigned>(session_id_));
+                 static_cast<unsigned>(session_id_),
+                 static_cast<unsigned>(session_boot_nonce_));
     }
 }
 
@@ -371,13 +467,15 @@ void TxReconnectManager::handle_worker_miss() {
         return;
     }
 
-    scan_attempt_++;
+    (void)esp32common::numeric::increment_saturating<uint32_t>(scan_attempt_);
     const uint32_t bkoff = backoff_for_attempt(scan_attempt_);
+    esp32common::espnow::UnifiedLinkFsm::instance().begin_discovery();
 
     LOG_WARN("RECONNECT",
-             "✗ Scan attempt %lu complete — receiver not found (backoff %lu ms)",
+             "✗ Scan attempt %lu complete — receiver not found (backoff %lu ms, mode=%s)",
              static_cast<unsigned long>(scan_attempt_),
-             static_cast<unsigned long>(bkoff));
+             static_cast<unsigned long>(bkoff),
+             reconnect_cadence_label(scan_attempt_));
 
     if (bkoff == 0) {
         // No wait — start next scan immediately
@@ -397,7 +495,7 @@ void TxReconnectManager::start_worker_scan() {
     // Heap-allocate context — worker frees it before self-deleting.
     auto* ctx = new WorkerContext{};
     ctx->result_queue       = event_queue_;
-    ctx->start_channel_hint = ChannelManager::instance().get_channel();
+    ctx->start_channel_hint = select_scan_hint_channel();
 
     LOG_INFO("RECONNECT",
              "Starting hop worker: hint ch=%d, scan #%lu",

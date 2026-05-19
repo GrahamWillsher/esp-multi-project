@@ -6,9 +6,9 @@
 
 #include <esp32common/logging/logging_config.h>
 #include "../../receiver_config/receiver_config_manager.h"
-#include "../../src/espnow/espnow_send.h"
 #include "../../src/espnow/component_apply_tracker.h"
 #include "../../src/espnow/type_catalog_cache.h"
+#include "../../src/mqtt/mqtt_client.h"
 #include <ArduinoJson.h>
 #include <esp_heap_caps.h>
 #include <esp_system.h>
@@ -16,6 +16,12 @@
 #include <cstring>
 
 namespace {
+
+// MQTT topics for component apply
+static const char* kComponentApplyCommandTopic = "batt-emu/mqtt-v1/rx/cmd/control/component_apply";
+static const char* kComponentApplyAckTopic = "batt-emu/mqtt-v1/tx/ack/control";
+static const char* kRefreshBatteryCatalogTopic = "batt-emu/mqtt-v1/rx/cmd/refresh/catalog_battery";
+static const char* kRefreshInverterCatalogTopic = "batt-emu/mqtt-v1/rx/cmd/refresh/catalog_inverter";
 
 struct TypeEntry {
     uint8_t id;
@@ -38,6 +44,37 @@ static TypeEntry battery_interfaces[] = {
 static constexpr size_t kMaxTypeEntries = 128;
 using CatalogCopyFn = size_t (*)(TypeCatalogCache::TypeEntry*, size_t);
 using CatalogRequestFn = bool (*)();
+
+static bool publish_catalog_refresh(const char* topic) {
+    if (!(MqttClient::isEnabled() && MqttClient::isConnected())) {
+        return false;
+    }
+
+    StaticJsonDocument<96> cmd;
+    char request_id[32];
+    snprintf(request_id, sizeof(request_id), "refresh-%lu", static_cast<unsigned long>(millis()));
+    cmd["request_id"] = request_id;
+    cmd["origin"] = "receiver_tft";
+    cmd["schema"] = 1;
+
+    char payload[96];
+    if (serializeJson(cmd, payload, sizeof(payload)) > 0) {
+        return MqttClient::publishJson(topic, payload, false);
+    }
+    return false;
+}
+
+static bool send_battery_types_request() {
+    return publish_catalog_refresh(kRefreshBatteryCatalogTopic);
+}
+
+static bool send_inverter_types_request() {
+    return publish_catalog_refresh(kRefreshInverterCatalogTopic);
+}
+
+static bool send_inverter_interfaces_request() {
+    return publish_catalog_refresh(kRefreshInverterCatalogTopic);
+}
 
 // Serialize a sorted copy of types[] to JSON. Uses a static BSS buffer (httpd is
 // single-task so there is no re-entrancy concern). TypeEntry.name pointers must
@@ -145,23 +182,97 @@ static esp_err_t api_component_apply_handler(httpd_req_t *req) {
         return ApiResponseUtils::send_jsonf(req, "{\"success\":false,\"error\":\"Failed to start apply transaction\"}");
     }
 
-    if (!send_component_apply_request(request_id, mask, battery_type, inverter_type, battery_interface, inverter_interface)) {
-        ComponentApplyTracker::mark_failed(request_id, "Failed to send apply request to transmitter");
-        return ApiResponseUtils::send_jsonf(req, "{\"success\":false,\"error\":\"Failed to send apply request to transmitter\"}");
+    auto persist_local_selection = [&]() {
+        if (mask & component_apply_battery_type) {
+            ReceiverNetworkConfig::setBatteryType(battery_type);
+        }
+        if (mask & component_apply_inverter_type) {
+            ReceiverNetworkConfig::setInverterType(inverter_type);
+        }
+        if (mask & component_apply_battery_interface) {
+            ReceiverNetworkConfig::setBatteryInterface(battery_interface);
+        }
+        if (mask & component_apply_inverter_interface) {
+            ReceiverNetworkConfig::setInverterInterface(inverter_interface);
+        }
+    };
+
+    // Try MQTT first
+    bool mqtt_sent = false;
+    if (MqttClient::isEnabled() && MqttClient::isConnected()) {
+        StaticJsonDocument<256> mqtt_cmd;
+        char request_id_str[16];
+        snprintf(request_id_str, sizeof(request_id_str), "%lu", static_cast<unsigned long>(request_id));
+        mqtt_cmd["request_id"] = request_id_str;
+        mqtt_cmd["origin"] = "receiver_tft";
+        mqtt_cmd["schema"] = 1;
+        mqtt_cmd["apply_mask"] = mask;
+        mqtt_cmd["battery_type"] = battery_type;
+        mqtt_cmd["inverter_type"] = inverter_type;
+        mqtt_cmd["battery_interface"] = battery_interface;
+        mqtt_cmd["inverter_interface"] = inverter_interface;
+        mqtt_cmd["confirm"] = true;
+
+        char mqtt_payload[256];
+        if (serializeJson(mqtt_cmd, mqtt_payload, sizeof(mqtt_payload)) > 0) {
+            char ack_payload[512] = {0};
+            if (MqttClient::publishJsonAndWaitForAck(kComponentApplyCommandTopic,
+                                                     mqtt_payload,
+                                                     request_id_str,
+                                                     kComponentApplyAckTopic,
+                                                     2000,
+                                                     ack_payload,
+                                                     sizeof(ack_payload))) {
+                mqtt_sent = true;
+                LOG_DEBUG("COMPONENT_APPLY", "Published MQTT component_apply command (request_id=%lu)", (unsigned long)request_id);
+
+                StaticJsonDocument<512> ack_doc;
+                if (deserializeJson(ack_doc, ack_payload) == DeserializationError::Ok) {
+                    const bool ack_success = ack_doc["success"] | false;
+                    if (!ack_success) {
+                        const char* message = ack_doc["message"] | "Component apply rejected";
+                        ComponentApplyTracker::mark_failed(request_id, message);
+                        return ApiResponseUtils::send_jsonf(req,
+                                                            "{\"success\":false,\"error\":\"%s\"}",
+                                                            message);
+                    }
+
+                    component_apply_ack_t ack{};
+                    ack.type = msg_component_apply_ack;
+                    ack.request_id = request_id;
+                    ack.success = 1;
+                    ack.reboot_required = ack_doc["reboot_required"] | false;
+                    ack.ready_for_reboot = ack_doc["ready_for_reboot"] | false;
+                    ack.apply_mask = ack_doc["apply_mask"] | mask;
+                    ack.persisted_mask = ack_doc["persisted_mask"] | 0;
+                    ack.battery_type = ack_doc["battery_type"] | battery_type;
+                    ack.inverter_type = ack_doc["inverter_type"] | inverter_type;
+                    ack.battery_interface = ack_doc["battery_interface"] | battery_interface;
+                    ack.inverter_interface = ack_doc["inverter_interface"] | inverter_interface;
+                    ack.settings_version = ack_doc["settings_version"] | 0;
+                    strlcpy(ack.message, ack_doc["message"] | "OK", sizeof(ack.message));
+                    ComponentApplyTracker::on_ack(ack);
+                    persist_local_selection();
+
+                    auto snapshot = ComponentApplyTracker::get_snapshot();
+                    return ApiResponseUtils::send_jsonf(req,
+                                                        "{\"success\":true,\"request_id\":%lu,\"state\":\"%s\",\"message\":\"%s\"}",
+                                                        static_cast<unsigned long>(request_id),
+                                                        component_apply_state_to_string(snapshot.state),
+                                                        snapshot.message[0] != '\0' ? snapshot.message : "Apply request dispatched");
+                }
+            }
+        }
     }
 
-    if (mask & component_apply_battery_type) {
-        ReceiverNetworkConfig::setBatteryType(battery_type);
+    if (!mqtt_sent) {
+        ComponentApplyTracker::mark_failed(request_id, "MQTT command channel unavailable");
+        return ApiResponseUtils::send_jsonf(req, "{\"success\":false,\"error\":\"MQTT command channel unavailable\"}");
     }
-    if (mask & component_apply_inverter_type) {
-        ReceiverNetworkConfig::setInverterType(inverter_type);
-    }
-    if (mask & component_apply_battery_interface) {
-        ReceiverNetworkConfig::setBatteryInterface(battery_interface);
-    }
-    if (mask & component_apply_inverter_interface) {
-        ReceiverNetworkConfig::setInverterInterface(inverter_interface);
-    }
+
+    LOG_DEBUG("COMPONENT_APPLY", "Component apply sent via MQTT (request_id=%lu)", (unsigned long)request_id);
+
+    persist_local_selection();
 
     return ApiResponseUtils::send_jsonf(req,
                                         "{\"success\":true,\"request_id\":%lu,\"state\":\"pending\",\"message\":\"Apply request dispatched\"}",

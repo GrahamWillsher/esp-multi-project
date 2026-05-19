@@ -2,20 +2,22 @@
 #include "../common/page_generator.h"
 #include <Arduino.h>
 
-static esp_err_t root_handler(httpd_req_t *req) {
-    String content = R"rawliteral(
-    <h1>Transmitter Configuration</h1>
-    )rawliteral";
+// ──────────────────────────────────────────────────────────────────────────────
+// All HTML and JS for the settings page is fully static (values loaded via JS
+// API calls after the page is served). Both literals live in flash read-only
+// data; zero heap allocation per request.
+// ──────────────────────────────────────────────────────────────────────────────
 
-    content += R"rawliteral(
+namespace {
+
+static const char kSettingsContent[] = R"rawliteral(
+    <h1>Transmitter Configuration</h1>
     <div style='margin-bottom: 20px;'>
         <a href='/' style='display: inline-block; padding: 10px 16px; background: #4CAF50; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;'>
             ← Dashboard
         </a>
     </div>
-    )rawliteral";
 
-    content += R"rawliteral(
     <div class='settings-card'>
         <h3>Transmitter Details</h3>
         <div class='settings-row'><label>Status:</label><input type='text' id='txStatus' value='Loading...' disabled class='readonly-field' /></div>
@@ -120,7 +122,7 @@ static esp_err_t root_handler(httpd_req_t *req) {
     </div>
     )rawliteral";
 
-    String script = R"rawliteral(
+static const char kSettingsScript[] = R"rawliteral(
         const TX_CONFIG_FIELDS = [
             'txUseStaticIP',
             'staticIp0', 'staticIp1', 'staticIp2', 'staticIp3',
@@ -476,11 +478,19 @@ static esp_err_t root_handler(httpd_req_t *req) {
         });
     )rawliteral";
 
-    return send_rendered_page(req,
-                              "ESP-NOW Receiver - Transmitter Config",
-                              content,
-                              PageRenderOptions("", script),
-                              "text/html");
+// Sends static flash-resident content; zero String heap allocation per request.
+esp_err_t settings_content_generator(httpd_req_t* req) {
+    return send_page_content_chunk(req, "settings_content", kSettingsContent, sizeof(kSettingsContent) - 1);
+}
+
+}  // namespace
+
+static esp_err_t root_handler(httpd_req_t *req) {
+    return send_rendered_page_streaming(req,
+                                        "ESP-NOW Receiver - Transmitter Config",
+                                        settings_content_generator,
+                                        PageRenderOptions(nullptr, kSettingsScript),
+                                        "text/html");
 }
 
 esp_err_t register_settings_page(httpd_handle_t server) {

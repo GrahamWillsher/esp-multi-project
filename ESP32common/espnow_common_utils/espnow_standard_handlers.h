@@ -10,6 +10,7 @@
 #pragma once
 
 #include <esp32common/espnow/common.h>
+#include <esp_err.h>
 #include <functional>
 
 namespace EspnowStandardHandlers {
@@ -34,6 +35,17 @@ namespace EspnowStandardHandlers {
      * @param seq Sequence number from PROBE
      */
     using ProbeReceivedCallback = std::function<void(const uint8_t* mac, uint32_t seq)>;
+
+    /**
+     * @brief Callback for discovery ACK send outcome.
+     *
+     * Called only when a PROBE handler actually attempts to send an ACK.
+     * The callback can use this to update throttle state only after success.
+     */
+    using AckSendResultCallback = std::function<void(const uint8_t* mac,
+                                                     uint32_t seq,
+                                                     bool success,
+                                                     esp_err_t result)>;
     
     /**
      * @brief Configuration for standard PROBE handler
@@ -41,11 +53,14 @@ namespace EspnowStandardHandlers {
     struct ProbeHandlerConfig {
         ConnectionCallback on_connection;  ///< Called on false->true edge when connection_flag is provided
         ProbeReceivedCallback on_probe_received;  ///< Called every time a PROBE is received
+        AckSendResultCallback on_ack_send_result;  ///< Called after ACK send attempt completes
         bool send_ack_response;           ///< true to automatically send ACK response
         volatile bool* connection_flag;   ///< Optional: pointer to connection status flag to update
         uint8_t* peer_mac_storage;        ///< Optional: pointer to 6-byte array to store peer MAC
     };
     
+    using AckChannelCallback = std::function<void(uint8_t channel, bool set_wifi_channel)>;
+
     /**
      * @brief Configuration for standard ACK handler
      */
@@ -54,7 +69,8 @@ namespace EspnowStandardHandlers {
         volatile bool* connection_flag;   ///< Optional: pointer to connection status flag to update
         uint8_t* peer_mac_storage;        ///< Optional: pointer to 6-byte array to store peer MAC
         volatile uint32_t* expected_seq;  ///< Optional: pointer to expected sequence number
-        volatile uint8_t* lock_channel;   ///< Optional: pointer to channel lock variable
+        volatile uint8_t* lock_channel;   ///< Optional: legacy pointer to channel lock variable
+        AckChannelCallback on_channel_reported;  ///< Optional: shared channel-authority update hook
         volatile bool* ack_received_flag; ///< Optional: pointer to ACK received flag (for discovery)
         bool set_wifi_channel;            ///< true to automatically set WiFi to received channel
     };
@@ -104,7 +120,7 @@ namespace EspnowStandardHandlers {
      * @param channel Current WiFi channel
      * @return true if send successful
      */
-    bool send_ack_response(const uint8_t* peer_mac, uint32_t seq, uint8_t channel);
+    esp_err_t send_ack_response(const uint8_t* peer_mac, uint32_t seq, uint8_t channel);
     bool read_ack_send_stats(AckSendStats& out_stats);
     void reset_ack_send_stats();
     

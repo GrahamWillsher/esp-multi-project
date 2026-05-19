@@ -42,8 +42,10 @@ enum class ReconnectEvent : uint8_t {
 struct ReconnectMsg {
     ReconnectEvent event{ReconnectEvent::CONNECT};
     uint8_t        channel{0};
+    uint8_t        rx_status{0};
     uint8_t        mac[6]{};
     uint16_t       session_id{0};  ///< Used by CONFIRM_ACK event
+    uint16_t       session_boot_nonce{0};
 };
 
 // ---------------------------------------------------------------------------
@@ -71,7 +73,10 @@ public:
      * @brief Called from the msg_connect_confirm_ack route handler (ESP-NOW RX task).
      *        Thread-safe: posts a CONFIRM_ACK event to the manager queue.
      */
-    void on_confirm_ack_received(uint16_t session_id);
+    void on_confirm_ack_received(const uint8_t* mac,
+                                 uint16_t session_id,
+                                 uint16_t session_boot_nonce,
+                                 uint8_t rx_status);
 
     // Non-copyable singleton
     TxReconnectManager(const TxReconnectManager&) = delete;
@@ -90,7 +95,10 @@ private:
     void handle_stop();
     void handle_worker_found(uint8_t channel, const uint8_t* mac);
     void handle_worker_miss();
-    void handle_confirm_ack(uint16_t session_id);
+    void handle_confirm_ack(uint16_t session_id,
+                            uint16_t session_boot_nonce,
+                            uint8_t rx_status,
+                            const uint8_t* mac);
     void start_worker_scan();
     void send_connect_confirm(const uint8_t* mac);
 
@@ -103,6 +111,7 @@ private:
 
     // Confirmation handshake state (CONFIRMING only)
     uint16_t session_id_              {0};   ///< Incremented each time a confirm is sent
+    uint16_t session_boot_nonce_      {0};   ///< Random per transmitter boot; pairs with session_id_
     uint32_t confirm_timeout_until_ms_{0};   ///< millis() deadline for confirm_ack
     uint8_t  confirm_retry_count_     {0};   ///< Retries before returning to SCANNING
     uint8_t  confirm_peer_mac_[6]     {};    ///< MAC of the peer being confirmed

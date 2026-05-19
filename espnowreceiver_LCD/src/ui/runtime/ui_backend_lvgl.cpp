@@ -881,15 +881,15 @@ void animate_power_ripple(uint32_t now_ms) {
 
 }  // namespace
 
-void set_network_status(const char* ip, bool wifi_ok) {
+void set_network_status(const char* status_text, bool wifi_ok) {
     if (!ip_label_) {
         return;
     }
-    char buf[40];
-    if (wifi_ok && ip && ip[0] != '\0') {
-        snprintf(buf, sizeof(buf), "WiFi: %s", ip);
+    char buf[80];
+    if (wifi_ok && status_text && status_text[0] != '\0') {
+        snprintf(buf, sizeof(buf), "%s", status_text);
     } else if (wifi_ok) {
-        snprintf(buf, sizeof(buf), "WiFi: AP mode");
+        snprintf(buf, sizeof(buf), "WiFi: connected");
     } else {
         snprintf(buf, sizeof(buf), "WiFi: ---.---.---.---");
     }

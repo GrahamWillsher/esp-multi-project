@@ -33,6 +33,7 @@
 #include <functional>
 #include <vector>
 #include <Arduino.h>
+#include <esp32common/espnow/link_truth.h>
 
 /**
  * @class EspNowConnectionManager
@@ -103,26 +104,6 @@ public:
     void register_state_callback(StateChangeCallback callback);
     
     /**
-     * @brief Enable or disable auto-reconnect
-     * 
-     * When enabled, CONNECTION_LOST → IDLE transitions will automatically
-     * post a CONNECTION_START event to restart the connection process.
-     * 
-     * @param enable true to enable auto-reconnect
-     */
-    void set_auto_reconnect(bool enable);
-    
-    /**
-     * @brief Set timeout for CONNECTING state
-     * 
-     * If set to non-zero, the connection manager will automatically
-     * transition to IDLE if CONNECTING state lasts longer than timeout.
-     * 
-     * @param timeout_ms Timeout in milliseconds (0 = no timeout)
-     */
-    void set_connecting_timeout_ms(uint32_t timeout_ms);
-
-    /**
      * @brief Enable/disable heartbeat timeout handling inside connection manager
      *
      * When enabled, CONNECTED state will auto-post CONNECTION_LOST if no
@@ -148,6 +129,19 @@ public:
      * @return true if event queued successfully
      */
     bool post_event(EspNowEvent event, const uint8_t* mac = nullptr);
+
+    /**
+     * @brief One-shot authorization for CONNECTING -> CONNECTED promotion.
+     *
+     * Only the current authoritative handshake path should arm this gate.
+     * Any PEER_REGISTERED event received without authorization is ignored.
+     */
+    void authorize_peer_registered_transition(const uint8_t* mac = nullptr);
+
+    /**
+     * @brief Clear any pending CONNECTED transition authorization.
+     */
+    void clear_peer_registered_transition_authorization();
     
     /**
      * @brief Process all pending events
@@ -249,6 +243,9 @@ public:
      */
     uint32_t get_state_time_ms() const;
 
+    esp32common::espnow::LinkTruth get_link_truth() const;
+    esp32common::espnow::LinkPhase get_link_phase() const;
+
 private:
     // ===== PRIVATE STATE =====
     
@@ -257,8 +254,6 @@ private:
     uint32_t state_enter_time_;               // When we entered current state
     QueueHandle_t event_queue_;               // FreeRTOS queue for events
     std::vector<StateChangeCallback> state_callbacks_;  // Registered state change callbacks
-    bool auto_reconnect_enabled_;             // Auto-reconnect on connection loss
-    uint32_t connecting_timeout_ms_;          // Timeout for CONNECTING state (0 = no timeout)
     bool heartbeat_timeout_enabled_;          // Heartbeat timeout ownership toggle
     uint32_t heartbeat_timeout_ms_;           // Heartbeat timeout threshold in ms
     bool heartbeat_timeout_reported_;         // Guard to avoid repeated timeout events
@@ -275,6 +270,9 @@ private:
     uint32_t heartbeats_received_{0};
     uint32_t heartbeat_timeouts_{0};
     uint32_t total_connected_time_ms_{0};
+
+    bool peer_registered_transition_authorized_{false};
+    uint8_t authorized_peer_mac_[6]{};
     
     // Private constructor (singleton)
     EspNowConnectionManager();
@@ -314,6 +312,8 @@ private:
      * @param event The event to handle
      */
     void handle_connected_event(const EspNowStateChange& event);
+
+    bool is_authorized_peer_registered_event(const EspNowStateChange& event) const;
 };
 
 // ===== GLOBAL QUEUE (exported for use by all modules) =====

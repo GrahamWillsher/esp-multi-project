@@ -1,7 +1,6 @@
 #include "transmitter_state.h"
 
 #include <Preferences.h>
-#include <esp32common/espnow/connection_manager.h>
 #include <string.h>
 
 #include "../logging.h"
@@ -84,8 +83,8 @@ bool was_last_send_successful() {
 }
 
 bool is_transmitter_connected() {
-    return EspNowConnectionManager::instance().is_connected() &&
-           TransmitterIdentity::get_active_mac() != nullptr;
+    return TransmitterMqttSpecs::is_connected() &&
+           TransmitterIdentity::has_registered_mac();
 }
 
 void update_time_data(uint64_t uptime_ms, uint64_t unix_time, int16_t utc_offset_min, uint8_t time_source) {
@@ -120,7 +119,7 @@ uint8_t get_heartbeat_flags() {
 }
 
 bool is_geolocation_valid() {
-    return (runtime_status.heartbeat_flags & HEARTBEAT_FLAG_GEOLOCATION_VALID) != 0;
+    return (runtime_status.heartbeat_flags & kHeartbeatFlagGeolocationValid) != 0;
 }
 
 void store_metadata(bool valid,

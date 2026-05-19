@@ -4,8 +4,7 @@
 #include "../utils/transmitter_manager.h"
 #include "../logging.h"
 #include "../../src/memory/memory_sampler.h"
-#include "../../../src/espnow/espnow_send.h"
-#include "../../../src/espnow/rx_connection_handler.h"
+#include "../../src/mqtt/mqtt_client.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -13,12 +12,10 @@
 #include <WiFiClient.h>
 #include <ArduinoJson.h>
 #include <Update.h>
-#include <esp_now.h>
-#include <esp32common/espnow/common.h>
-#include <esp32common/espnow/tx_scheduler.h>
 #include <firmware_version.h>
 #include <firmware_compatibility_policy.h>
 #include <mbedtls/sha256.h>
+#include <esp32common/mqtt/mqtt_feature_flags.h>
 
 namespace ESPNow {
     extern uint8_t current_led_color;
@@ -27,6 +24,9 @@ namespace ESPNow {
 }
 
 namespace {
+constexpr const char* MQTT_TOPIC_RX_CMD_CONTROL_REBOOT = "batt-emu/mqtt-v1/rx/cmd/control/reboot";
+constexpr const char* MQTT_TOPIC_TX_ACK_CONTROL = "batt-emu/mqtt-v1/tx/ack/control";
+constexpr const char* MQTT_TOPIC_RX_CMD_REFRESH_LED = "batt-emu/mqtt-v1/rx/cmd/refresh/led";
 constexpr size_t OTA_IMAGE_SHA256_HEX_LEN = 64;
 constexpr size_t OTA_RESPONSE_BODY_MAX_LEN = 512;
 constexpr uint8_t OTA_CHALLENGE_FETCH_ATTEMPTS = 6;
@@ -47,6 +47,8 @@ constexpr uint32_t OTA_FINAL_RESPONSE_PARSE_TIMEOUT_MS = 3000;
 constexpr uint32_t OTA_START_CONTROL_SETTLE_DELAY_MS = 200;
 constexpr uint32_t OTA_RX_REBOOT_DELAY_MS = 250;
 constexpr size_t OTA_UPLOAD_CHUNK_BYTES = 2048;
+
+bool request_led_state_refresh_mqtt();
 
 // RAII guard: increments the burst-mode reference count on construction and
 // releases it on destruction. Placed at the top of OTA upload handlers so
@@ -72,7 +74,7 @@ struct ReceiverOtaLedOverrideGuard {
 
     ~ReceiverOtaLedOverrideGuard() {
         ESPNow::receiver_ota_led_override_active = false;
-        const bool requested = send_led_state_request();
+        const bool requested = request_led_state_refresh_mqtt();
         LOG_INFO("OTA_RX", "Receiver self-OTA LED override disabled; requested transmitter LED sync=%s",
                  requested ? "yes" : "no");
     }
@@ -497,33 +499,75 @@ OtaResponseResult await_and_parse_ota_response(WiFiClient& tx_client) {
 
     return result;
 }
+
+bool request_led_state_refresh_mqtt() {
+#if MQTT_FEATURE_COMMANDS
+    if (!(MqttClient::isEnabled() && MqttClient::isConnected())) {
+        return false;
+    }
+
+    StaticJsonDocument<96> cmd;
+    char request_id[32];
+    snprintf(request_id, sizeof(request_id), "refresh-led-%lu", static_cast<unsigned long>(millis()));
+    cmd["request_id"] = request_id;
+    cmd["origin"] = "receiver_tft";
+    cmd["schema"] = 1;
+
+    char payload[96];
+    if (serializeJson(cmd, payload, sizeof(payload)) > 0) {
+        return MqttClient::publishJson(MQTT_TOPIC_RX_CMD_REFRESH_LED, payload, false);
+    }
+#endif
+    return false;
+}
 }
 
 esp_err_t api_reboot_handler(httpd_req_t *req) {
-    if (ReceiverConnectionHandler::instance().quiet_mode_active()) {
-        LOG_WARN("REBOOT", "Blocked reboot command during reconnect quiet mode");
-        return ApiResponseUtils::send_error_message(req, "ESP-NOW reconnect quiet mode active - reboot command blocked");
-    }
+#if MQTT_FEATURE_COMMANDS
+    if (MqttClient::isEnabled() && MqttClient::isConnected()) {
+        StaticJsonDocument<128> cmd;
+        char request_id[32];
+        snprintf(request_id, sizeof(request_id), "rb-%lu", static_cast<unsigned long>(millis()));
+        cmd["request_id"] = request_id;
+        cmd["origin"] = "receiver_tft";
+        cmd["schema"] = 1;
+        cmd["confirm"] = true;
 
-    const uint8_t* target_mac = TransmitterManager::getMAC();
-    const char* mac_source = "TransmitterManager";
+        char payload[128];
+        const size_t n = serializeJson(cmd, payload, sizeof(payload));
+        if (n > 0) {
+            char ack_payload[384] = {0};
+            if (MqttClient::publishJsonAndWaitForAck(MQTT_TOPIC_RX_CMD_CONTROL_REBOOT,
+                                                     payload,
+                                                     request_id,
+                                                     MQTT_TOPIC_TX_ACK_CONTROL,
+                                                     2000,
+                                                     ack_payload,
+                                                     sizeof(ack_payload))) {
+                StaticJsonDocument<256> ack_doc;
+                if (deserializeJson(ack_doc, ack_payload) == DeserializationError::Ok) {
+                    const bool success = ack_doc["success"] | false;
+                    const char* message = ack_doc["message"] | "Reboot command sent";
+                    if (success) {
+                        LOG_INFO("REBOOT", "Reboot ACK received via MQTT");
+                        return ApiResponseUtils::send_jsonf(req,
+                                                            "{\"success\":true,\"message\":\"%s\",\"source\":\"mqtt\"}",
+                                                            message);
+                    }
+                    return ApiResponseUtils::send_error_message(req, message);
+                }
 
-    if (target_mac != nullptr) {
-        reboot_t reboot_msg = { msg_reboot };
-        esp_err_t result = EspnowTxScheduler::send(target_mac, &reboot_msg, sizeof(reboot_msg), "API_REBOOT");
-        if (result == ESP_OK) {
-            LOG_INFO("REBOOT", "Sent command to transmitter via %s", mac_source);
-            return ApiResponseUtils::send_jsonf(req,
-                                                "{\"success\":true,\"message\":\"Reboot command sent\",\"source\":\"%s\"}",
-                                                mac_source);
-        } else {
-            LOG_ERROR("REBOOT", "Failed to send command: %s", esp_err_to_name(result));
-            return ApiResponseUtils::send_error_message(req, esp_err_to_name(result));
+                LOG_WARN("REBOOT", "MQTT reboot ACK received but could not be parsed");
+                return ApiResponseUtils::send_jsonf(req,
+                                                    "{\"success\":true,\"message\":\"Reboot command sent\",\"source\":\"mqtt\"}");
+            }
         }
-    } else {
-        LOG_WARN("REBOOT", "Transmitter MAC unknown, cannot send command");
-        return ApiResponseUtils::send_error_message(req, "Transmitter MAC unknown");
+
+        LOG_WARN("REBOOT", "MQTT reboot publish failed");
     }
+#endif
+
+    return ApiResponseUtils::send_error_message(req, "MQTT command channel unavailable");
 }
 
 esp_err_t api_transmitter_ota_status_handler(httpd_req_t *req) {
@@ -771,14 +815,7 @@ esp_err_t api_ota_upload_handler(httpd_req_t *req) {
 
     const size_t firmware_size = remaining;
 
-    if (TransmitterManager::isMACKnown() &&
-        !ReceiverConnectionHandler::instance().quiet_mode_active()) {
-        ota_start_t ota_msg = { msg_ota_start, (uint32_t)firmware_size };
-        (void)EspnowTxScheduler::send(TransmitterManager::getMAC(), &ota_msg, sizeof(ota_msg), "API_OTA_START");
-        vTaskDelay(pdMS_TO_TICKS(OTA_START_CONTROL_SETTLE_DELAY_MS));
-    } else if (ReceiverConnectionHandler::instance().quiet_mode_active()) {
-        LOG_WARN("OTA", "Skipped OTA_START ESP-NOW control during reconnect quiet mode");
-    }
+    vTaskDelay(pdMS_TO_TICKS(OTA_START_CONTROL_SETTLE_DELAY_MS));
 
     // Fetch OTA session challenge from transmitter so auth headers can be sent with the upload.
     // Preferred: use pre-armed challenge from /api/ota_status (after OTA_START control msg).

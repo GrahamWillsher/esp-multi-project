@@ -1,13 +1,17 @@
 #include "mqtt_client.h"
 #include "../lib/webserver/utils/transmitter_manager.h"
+#include "../lib/webserver/utils/transmitter_network.h"
+#include "../lib/webserver/utils/transmitter_mqtt_specs.h"
 #include "../lib/webserver/utils/cell_data_cache.h"
 #include "../lib/webserver/utils/transmitter_event_log_cache.h"
 #include "../common.h"
-#include "../espnow/espnow_send.h"
 #include "../espnow/type_catalog_cache.h"
+#include "../espnow/battery_data_store.h"
 #include <ArduinoJson.h>
 #include <array>
+#include <cmath>
 #include <cstring>
+#include <esp_system.h>
 
 namespace {
 
@@ -27,6 +31,43 @@ uint32_t fnv1a_runtime(const char* str) {
 std::array<TypeCatalogCache::TypeEntry, 128> g_battery_catalog_scratch{};
 std::array<TypeCatalogCache::TypeEntry, 128> g_inverter_catalog_scratch{};
 
+// Parse "a.b.c.d" IP string into 4-byte array. Returns false on failure.
+bool parse_ip_string(const char* s, uint8_t out[4]) {
+    if (!s || !out) return false;
+    int parts[4] = {};
+    int n = sscanf(s, "%d.%d.%d.%d", &parts[0], &parts[1], &parts[2], &parts[3]);
+    if (n != 4) return false;
+    for (int i = 0; i < 4; i++) {
+        if (parts[i] < 0 || parts[i] > 255) return false;
+        out[i] = static_cast<uint8_t>(parts[i]);
+    }
+    return true;
+}
+
+constexpr const char* MQTT_TOPIC_RX_CMD_STREAM_EVENT_LOGS = "batt-emu/mqtt-v1/rx/cmd/stream/event_logs";
+
+bool publish_event_logs_stream_control(bool subscribe) {
+    if (!MqttClient::isEnabled() || !MqttClient::isConnected()) {
+        LOG_WARN("MQTT", "Skipping stream/event_logs %s command: MQTT not connected",
+                 subscribe ? "subscribe" : "unsubscribe");
+        return false;
+    }
+
+    char payload[192];
+    snprintf(payload,
+             sizeof(payload),
+             "{\"request_id\":\"rx-%08lx-%08lx\",\"stream\":\"event_logs\",\"action\":\"%s\"}",
+             static_cast<unsigned long>(millis()),
+             static_cast<unsigned long>(esp_random()),
+             subscribe ? "subscribe" : "unsubscribe");
+
+    const bool ok = MqttClient::publishJson(MQTT_TOPIC_RX_CMD_STREAM_EVENT_LOGS, payload, false);
+    LOG_INFO("MQTT", "stream/event_logs %s command %s",
+             subscribe ? "subscribe" : "unsubscribe",
+             ok ? "published" : "failed");
+    return ok;
+}
+
 } // namespace
 
 // Static member initialization
@@ -39,6 +80,8 @@ uint8_t MqttClient::broker_ip_[4] = {0, 0, 0, 0};
 uint16_t MqttClient::broker_port_ = 1883;
 bool MqttClient::enabled_ = false;
 unsigned long MqttClient::last_connect_attempt_ = 0;
+SemaphoreHandle_t MqttClient::ack_mutex_ = nullptr;
+std::vector<MqttClient::PendingAck> MqttClient::pending_acks_;
 
 // Cell data subscription state management
 int MqttClient::cell_data_subscribers_ = 0;
@@ -51,6 +94,8 @@ int MqttClient::event_log_subscribers_ = 0;
 
 void MqttClient::init(const uint8_t* mqtt_server, uint16_t mqtt_port, const char* client_id) {
     if (!mqtt_server) return;
+
+    ensureAckMutex();
     
     memcpy(broker_ip_, mqtt_server, 4);
     broker_port_ = mqtt_port;
@@ -86,33 +131,53 @@ bool MqttClient::connect() {
     if (!enabled_ || broker_ip_[0] == 0) {
         return false;
     }
-    
+
     if (mqtt_client_.connected()) {
         return true;
     }
-    
+
+    if (WiFi.status() != WL_CONNECTED) {
+        LOG_WARN("MQTT", "Connect skipped: WiFi not connected (status=%d)", static_cast<int>(WiFi.status()));
+        return false;
+    }
+
     // Throttle connection attempts
     unsigned long now = millis();
     if (now - last_connect_attempt_ < RECONNECT_INTERVAL_MS) {
         return false;
     }
     last_connect_attempt_ = now;
-    
-    LOG_INFO("MQTT", "Connecting to broker...");
-    
+
+    LOG_INFO("MQTT", "Connecting to broker %d.%d.%d.%d:%u (local=%s rssi=%d)...",
+             broker_ip_[0], broker_ip_[1], broker_ip_[2], broker_ip_[3],
+             static_cast<unsigned>(broker_port_),
+             WiFi.localIP().toString().c_str(),
+             static_cast<int>(WiFi.RSSI()));
+
     bool connected = false;
     if (username_[0] != '\0') {
         connected = mqtt_client_.connect(client_id_, username_, password_);
     } else {
         connected = mqtt_client_.connect(client_id_);
     }
-    
+
     if (connected) {
         LOG_INFO("MQTT", "Connected successfully");
         subscribeToTopics();
         return true;
     } else {
-        LOG_ERROR("MQTT", "Connection failed, state=%d", mqtt_client_.state());
+        const int state = mqtt_client_.state();
+        IPAddress broker_ip(broker_ip_[0], broker_ip_[1], broker_ip_[2], broker_ip_[3]);
+        WiFiClient probe;
+        probe.setTimeout(1500);
+        const bool tcp_ok = probe.connect(broker_ip, broker_port_);
+        if (tcp_ok) {
+            probe.stop();
+        }
+
+        LOG_ERROR("MQTT", "Connection failed, state=%d (tcp_probe=%s)",
+                  state,
+                  tcp_ok ? "reachable" : "unreachable");
         return false;
     }
 }
@@ -126,6 +191,40 @@ void MqttClient::disconnect() {
 
 bool MqttClient::isConnected() {
     return mqtt_client_.connected();
+}
+
+bool MqttClient::publishJson(const char* topic, const char* payload, bool retained) {
+    if (!enabled_ || topic == nullptr || payload == nullptr) {
+        return false;
+    }
+
+    if (!mqtt_client_.connected()) {
+        return false;
+    }
+
+    return mqtt_client_.publish(topic, payload, retained);
+}
+
+bool MqttClient::publishJsonAndWaitForAck(const char* topic,
+                                          const char* payload,
+                                          const char* request_id,
+                                          const char* ack_topic,
+                                          uint32_t timeout_ms,
+                                          char* ack_payload,
+                                          size_t ack_payload_size) {
+    if (!publishJson(topic, payload, false)) {
+        return false;
+    }
+
+    const uint32_t start_ms = millis();
+    while ((millis() - start_ms) < timeout_ms) {
+        if (tryConsumePendingAck(request_id, ack_topic, ack_payload, ack_payload_size)) {
+            return true;
+        }
+        vTaskDelay(pdMS_TO_TICKS(25));
+    }
+
+    return false;
 }
 
 void MqttClient::loop() {
@@ -165,45 +264,136 @@ void MqttClient::messageCallback(char* topic, uint8_t* payload, unsigned int len
     // Hash-based dispatch keeps topic handling O(1)-like for small fixed route sets,
     // while retaining strcmp guards to eliminate any practical collision risk.
     switch (fnv1a_runtime(topic)) {
-        case fnv1a_const("transmitter/BE/spec_data"):
-            if (strcmp(topic, "transmitter/BE/spec_data") == 0) {
-                handleSpecData(json_payload, length);
+        case fnv1a_const("batt-emu/mqtt-v1/tx/ack/battery"):
+        case fnv1a_const("batt-emu/mqtt-v1/tx/ack/power"):
+        case fnv1a_const("batt-emu/mqtt-v1/tx/ack/network"):
+        case fnv1a_const("batt-emu/mqtt-v1/tx/ack/mqtt"):
+        case fnv1a_const("batt-emu/mqtt-v1/tx/ack/inverter"):
+        case fnv1a_const("batt-emu/mqtt-v1/tx/ack/can"):
+        case fnv1a_const("batt-emu/mqtt-v1/tx/ack/contactor"):
+        case fnv1a_const("batt-emu/mqtt-v1/tx/ack/control"):
+        case fnv1a_const("batt-emu/mqtt-v1/tx/ack/component"):
+        case fnv1a_const("batt-emu/mqtt-v1/tx/ack/event_logs_clear"):
+        case fnv1a_const("batt-emu/mqtt-v1/tx/ack/refresh"):
+            if (strncmp(topic, "batt-emu/mqtt-v1/tx/ack/", 24) == 0) {
+                if (strcmp(topic, "batt-emu/mqtt-v1/tx/ack/event_logs_clear") == 0) {
+                    handleEventLogsClearAck(json_payload, length);
+                }
+                handleAckMessage(topic, json_payload, length);
                 return;
             }
             break;
-        case fnv1a_const("transmitter/BE/spec_data_2"):
-            if (strcmp(topic, "transmitter/BE/spec_data_2") == 0) {
-                handleSpecData2(json_payload, length);
-                return;
-            }
-            break;
-        case fnv1a_const("transmitter/BE/battery_specs"):
-            if (strcmp(topic, "transmitter/BE/battery_specs") == 0) {
-                handleBatterySpecs(json_payload, length);
-                return;
-            }
-            break;
-        case fnv1a_const("transmitter/BE/battery_type_catalog"):
-            if (strcmp(topic, "transmitter/BE/battery_type_catalog") == 0) {
-                handleBatteryTypeCatalog(json_payload, length);
-                return;
-            }
-            break;
-        case fnv1a_const("transmitter/BE/inverter_type_catalog"):
-            if (strcmp(topic, "transmitter/BE/inverter_type_catalog") == 0) {
-                handleInverterTypeCatalog(json_payload, length);
-                return;
-            }
-            break;
-        case fnv1a_const("transmitter/BE/cell_data"):
-            if (strcmp(topic, "transmitter/BE/cell_data") == 0) {
+        case fnv1a_const("batt-emu/mqtt-v1/tx/state/cell_data/chunk"):
+            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/cell_data/chunk") == 0) {
                 handleCellData(json_payload, length);
                 return;
             }
             break;
-        case fnv1a_const("transmitter/BE/event_logs"):
-            if (strcmp(topic, "transmitter/BE/event_logs") == 0) {
+        case fnv1a_const("batt-emu/mqtt-v1/tx/state/battery_live"):
+            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/battery_live") == 0) {
+                handleBatteryLive(json_payload, length);
+                return;
+            }
+            break;
+        case fnv1a_const("batt-emu/mqtt-v1/tx/state/runtime/led"):
+            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/runtime/led") == 0) {
+                handleRuntimeLed(json_payload, length);
+                return;
+            }
+            break;
+        case fnv1a_const("batt-emu/mqtt-v1/tx/state/runtime/system"):
+            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/runtime/system") == 0) {
+                handleRuntimeSystem(json_payload, length);
+                return;
+            }
+            break;
+        case fnv1a_const("batt-emu/mqtt-v1/tx/state/runtime/charger"):
+            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/runtime/charger") == 0) {
+                handleRuntimeCharger(json_payload, length);
+                return;
+            }
+            break;
+        case fnv1a_const("batt-emu/mqtt-v1/tx/state/runtime/inverter"):
+            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/runtime/inverter") == 0) {
+                handleRuntimeInverter(json_payload, length);
+                return;
+            }
+            break;
+        case fnv1a_const("batt-emu/mqtt-v1/tx/state/summary/event_logs"):
+            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/summary/event_logs") == 0) {
+                handleEventLogSummary(json_payload, length);
+                return;
+            }
+            break;
+        case fnv1a_const("batt-emu/mqtt-v1/tx/state/event_logs/chunk"):
+            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/event_logs/chunk") == 0) {
                 handleEventLogs(json_payload, length);
+                return;
+            }
+            break;
+        case fnv1a_const("batt-emu/mqtt-v1/tx/state/static/battery"):
+            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/static/battery") == 0) {
+                handleBatterySpecs(json_payload, length);
+                return;
+            }
+            break;
+        case fnv1a_const("batt-emu/mqtt-v1/tx/state/static/inverter"):
+            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/static/inverter") == 0) {
+                handleSpecData2(json_payload, length);
+                return;
+            }
+            break;
+        case fnv1a_const("batt-emu/mqtt-v1/tx/state/static/catalog_battery"):
+            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/static/catalog_battery") == 0) {
+                handleBatteryTypeCatalog(json_payload, length);
+                return;
+            }
+            break;
+        case fnv1a_const("batt-emu/mqtt-v1/tx/state/static/catalog_inverter"):
+            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/static/catalog_inverter") == 0) {
+                handleInverterTypeCatalog(json_payload, length);
+                return;
+            }
+            break;
+        case fnv1a_const("batt-emu/mqtt-v1/tx/state/static/network"):
+            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/static/network") == 0) {
+                handleStaticNetwork(json_payload, length);
+                return;
+            }
+            break;
+        case fnv1a_const("batt-emu/mqtt-v1/tx/state/static/mqtt"):
+            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/static/mqtt") == 0) {
+                handleStaticMqtt(json_payload, length);
+                return;
+            }
+            break;
+        case fnv1a_const("batt-emu/mqtt-v1/tx/state/static/power"):
+            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/static/power") == 0) {
+                handleStaticPower(json_payload, length);
+                return;
+            }
+            break;
+        case fnv1a_const("batt-emu/mqtt-v1/tx/state/static/led"):
+            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/static/led") == 0) {
+                handleStaticLed(json_payload, length);
+                return;
+            }
+            break;
+        case fnv1a_const("batt-emu/mqtt-v1/tx/meta/version"):
+            if (strcmp(topic, "batt-emu/mqtt-v1/tx/meta/version") == 0) {
+                handleMetaVersion(json_payload, length);
+                return;
+            }
+            break;
+        case fnv1a_const("batt-emu/mqtt-v1/tx/meta/schema_versions"):
+            if (strcmp(topic, "batt-emu/mqtt-v1/tx/meta/schema_versions") == 0) {
+                handleMetaSchemaVersions(json_payload, length);
+                return;
+            }
+            break;
+        case fnv1a_const("batt-emu/mqtt-v1/tx/meta/runtime"):
+            if (strcmp(topic, "batt-emu/mqtt-v1/tx/meta/runtime") == 0) {
+                handleMetaRuntime(json_payload, length);
                 return;
             }
             break;
@@ -215,18 +405,29 @@ void MqttClient::messageCallback(char* topic, uint8_t* payload, unsigned int len
 }
 
 void MqttClient::subscribeToTopics() {
-    // Phase 1.5: Subscribe to transmitter namespace topics (was BE/* - now transmitter/BE/*)
-    // Prevents collisions with other devices publishing to BE/* topics
-    mqtt_client_.subscribe("transmitter/BE/spec_data");
-    mqtt_client_.subscribe("transmitter/BE/spec_data_2");
-    mqtt_client_.subscribe("transmitter/BE/battery_specs");
-    mqtt_client_.subscribe("transmitter/BE/battery_type_catalog");
-    mqtt_client_.subscribe("transmitter/BE/inverter_type_catalog");
-    mqtt_client_.subscribe("transmitter/BE/event_logs");
+    // MQTT-only topic namespace.
+    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/static/battery");
+    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/static/inverter");
+    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/static/catalog_battery");
+    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/static/catalog_inverter");
+    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/static/network");
+    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/static/mqtt");
+    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/static/power");
+    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/static/led");
+    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/meta/version");
+    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/meta/schema_versions");
+    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/meta/runtime");
+    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/battery_live");
+    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/runtime/led");
+    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/runtime/system");
+    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/runtime/charger");
+    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/runtime/inverter");
+    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/summary/event_logs");
+    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/ack/#");
     
     // Only subscribe to cell_data if not paused (subscription optimization)
     if (cell_data_state_ != PAUSED) {
-        mqtt_client_.subscribe("transmitter/BE/cell_data");
+        mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/cell_data/chunk");
         LOG_INFO("SUBSCRIPTION", "Subscribed to all topics including cell_data");
     } else {
         LOG_INFO("SUBSCRIPTION", "Subscribed to spec topics only (cell_data paused)");
@@ -454,6 +655,525 @@ void MqttClient::handleEventLogs(const char* json_payload, size_t length) {
     LOG_INFO("MQTT", "Stored event logs from transmitter/BE/event_logs");
 }
 
+void MqttClient::handleBatteryLive(const char* json_payload, size_t length) {
+    LOG_DEBUG("MQTT", "Processing batt-emu/mqtt-v1/tx/state/battery_live");
+
+    DynamicJsonDocument doc(512);
+    DeserializationError error = deserializeJson(doc, json_payload, length);
+    if (error) {
+        LOG_ERROR("MQTT", "Failed to parse battery_live: %s", error.c_str());
+        return;
+    }
+
+    float soc_value = NAN;
+    if (doc.containsKey("soc_percent")) {
+        soc_value = doc["soc_percent"].as<float>();
+    } else if (doc.containsKey("soc")) {
+        soc_value = doc["soc"].as<float>();
+    } else if (doc.containsKey("reported_soc")) {
+        soc_value = doc["reported_soc"].as<float>() / 100.0f;
+    }
+
+    if (!isfinite(soc_value)) {
+        LOG_WARN("MQTT", "battery_live missing SOC field");
+        return;
+    }
+
+    int soc_int = static_cast<int>(soc_value + 0.5f);
+    if (soc_int < 0) soc_int = 0;
+    if (soc_int > 100) soc_int = 100;
+
+    int32_t power_w = 0;
+    if (doc.containsKey("power_w")) {
+        power_w = doc["power_w"].as<int32_t>();
+    } else if (doc.containsKey("power_W")) {
+        power_w = doc["power_W"].as<int32_t>();
+    } else if (doc.containsKey("power")) {
+        power_w = doc["power"].as<int32_t>();
+    }
+
+    int32_t voltage_mv = 0;
+    if (doc.containsKey("voltage_mv")) {
+        voltage_mv = doc["voltage_mv"].as<int32_t>();
+    } else if (doc.containsKey("voltage_V")) {
+        voltage_mv = static_cast<int32_t>(doc["voltage_V"].as<float>() * 1000.0f);
+    } else if (doc.containsKey("voltage_v")) {
+        voltage_mv = static_cast<int32_t>(doc["voltage_v"].as<float>() * 1000.0f);
+    }
+
+    int32_t current_ma = 0;
+    if (doc.containsKey("current_ma")) {
+        current_ma = doc["current_ma"].as<int32_t>();
+    } else if (doc.containsKey("current_mA")) {
+        current_ma = doc["current_mA"].as<int32_t>();
+    } else if (doc.containsKey("current_A")) {
+        current_ma = static_cast<int32_t>(doc["current_A"].as<float>() * 1000.0f);
+    } else if (doc.containsKey("current_a")) {
+        current_ma = static_cast<int32_t>(doc["current_a"].as<float>() * 1000.0f);
+    }
+
+    int16_t temperature_centi_c = 0;
+    bool has_temperature = false;
+
+    if (doc.containsKey("temperature_centi_c")) {
+        temperature_centi_c = doc["temperature_centi_c"].as<int16_t>();
+        has_temperature = true;
+    } else if (doc.containsKey("temperature_c")) {
+        temperature_centi_c = static_cast<int16_t>(doc["temperature_c"].as<float>() * 100.0f);
+        has_temperature = true;
+    }
+
+    int16_t temperature_dC = 0;
+    if (has_temperature) {
+        temperature_dC = static_cast<int16_t>((temperature_centi_c >= 0)
+            ? ((temperature_centi_c + 5) / 10)
+            : ((temperature_centi_c - 5) / 10));
+    }
+
+    uint16_t max_charge_power_w = doc["max_charge_power_w"] | static_cast<uint16_t>(0);
+    uint16_t max_discharge_power_w = doc["max_discharge_power_w"] | static_cast<uint16_t>(0);
+    uint8_t bms_status = doc["bms_status"] | static_cast<uint8_t>(BMS_OFFLINE);
+
+    battery_status_msg_t msg{};
+    msg.type = msg_battery_status;
+    msg.soc_percent_100 = static_cast<uint16_t>(soc_int * 100);
+    msg.voltage_mV = static_cast<uint32_t>(voltage_mv < 0 ? 0 : voltage_mv);
+    msg.current_mA = current_ma;
+    msg.temperature_dC = temperature_dC;
+    msg.power_W = power_w;
+    msg.max_charge_power_W = max_charge_power_w;
+    msg.max_discharge_power_W = max_discharge_power_w;
+    msg.bms_status = bms_status;
+    msg.checksum = 0;
+
+    BatteryData::update_battery_status(msg);
+
+    if (has_temperature) {
+        const uint32_t seq = doc["seq"] | static_cast<uint32_t>(millis());
+        const uint32_t uptime_ms = doc["uptime_ms"] | static_cast<uint32_t>(millis());
+        TransmitterManager::storeTemperatureReport(true, seq, temperature_centi_c, uptime_ms);
+    }
+}
+
+void MqttClient::handleRuntimeLed(const char* json_payload, size_t length) {
+    LOG_DEBUG("MQTT", "Processing batt-emu/mqtt-v1/tx/state/runtime/led");
+
+    DynamicJsonDocument doc(384);
+    DeserializationError error = deserializeJson(doc, json_payload, length);
+    if (error) {
+        LOG_ERROR("MQTT", "Failed to parse runtime/led: %s", error.c_str());
+        return;
+    }
+
+    const uint8_t color = doc["color"] | static_cast<uint8_t>(LED_WIRE_ORANGE);
+    const uint8_t effect = doc["effect"] | static_cast<uint8_t>(LED_WIRE_CONTINUOUS);
+
+    if (color > LED_WIRE_BLUE || effect > LED_WIRE_HEARTBEAT) {
+        LOG_WARN("MQTT", "runtime/led out-of-range payload ignored (color=%u effect=%u)",
+                 static_cast<unsigned>(color),
+                 static_cast<unsigned>(effect));
+        return;
+    }
+
+    ESPNow::current_led_color = static_cast<LEDColor>(color);
+    ESPNow::current_led_effect = static_cast<LEDEffect>(effect);
+}
+
+void MqttClient::handleRuntimeSystem(const char* json_payload, size_t length) {
+    LOG_DEBUG("MQTT", "Processing batt-emu/mqtt-v1/tx/state/runtime/system");
+
+    DynamicJsonDocument doc(384);
+    DeserializationError error = deserializeJson(doc, json_payload, length);
+    if (error) {
+        LOG_ERROR("MQTT", "Failed to parse runtime/system: %s", error.c_str());
+        return;
+    }
+
+    system_status_msg_t msg{};
+    msg.type = msg_system_status;
+    msg.contactor_state = doc["contactor_state"] | static_cast<uint8_t>(0);
+    msg.error_flags = doc["error_flags"] | static_cast<uint8_t>(0);
+    msg.warning_flags = doc["warning_flags"] | static_cast<uint8_t>(0);
+    msg.uptime_seconds = doc["uptime_seconds"] | static_cast<uint32_t>(0);
+    msg.checksum = 0;
+
+    BatteryData::update_system_status(msg);
+}
+
+void MqttClient::handleRuntimeCharger(const char* json_payload, size_t length) {
+    LOG_DEBUG("MQTT", "Processing batt-emu/mqtt-v1/tx/state/runtime/charger");
+
+    DynamicJsonDocument doc(512);
+    DeserializationError error = deserializeJson(doc, json_payload, length);
+    if (error) {
+        LOG_ERROR("MQTT", "Failed to parse runtime/charger: %s", error.c_str());
+        return;
+    }
+
+    charger_status_msg_t msg{};
+    msg.type = msg_charger_status;
+    msg.hv_voltage_dV = static_cast<uint16_t>(doc["hv_voltage_dV"] | doc["hv_voltage_mv"] | 0);
+    msg.hv_current_dA = static_cast<int16_t>(doc["hv_current_dA"] | doc["hv_current_ma"] | 0);
+    msg.lv_voltage_dV = static_cast<uint16_t>(doc["lv_voltage_dV"] | doc["lv_voltage_mv"] | 0);
+    msg.lv_current_dA = static_cast<int16_t>(doc["lv_current_dA"] | doc["lv_current_ma"] | 0);
+    msg.ac_voltage_V = static_cast<uint16_t>(doc["ac_voltage_V"] | doc["ac_voltage_mv"] | 0);
+    msg.ac_current_dA = static_cast<int16_t>(doc["ac_current_dA"] | doc["ac_current_ma"] | 0);
+    msg.power_W = static_cast<uint16_t>(doc["power_W"] | doc["power_w"] | 0);
+    msg.charger_status = static_cast<uint8_t>(doc["charger_status"] | 0);
+    msg.checksum = 0;
+
+    BatteryData::update_charger_status(msg);
+}
+
+void MqttClient::handleRuntimeInverter(const char* json_payload, size_t length) {
+    LOG_DEBUG("MQTT", "Processing batt-emu/mqtt-v1/tx/state/runtime/inverter");
+
+    DynamicJsonDocument doc(512);
+    DeserializationError error = deserializeJson(doc, json_payload, length);
+    if (error) {
+        LOG_ERROR("MQTT", "Failed to parse runtime/inverter: %s", error.c_str());
+        return;
+    }
+
+    inverter_status_msg_t msg{};
+    msg.type = msg_inverter_status;
+    msg.ac_voltage_V = static_cast<uint16_t>(doc["ac_voltage_V"] | 0);
+    msg.ac_frequency_dHz = static_cast<uint16_t>(doc["ac_frequency_dHz"] | 0);
+    msg.ac_current_dA = static_cast<int16_t>(doc["ac_current_dA"] | doc["ac_current_ma"] | 0);
+    msg.power_W = static_cast<int32_t>(doc["power_W"] | doc["power_w"] | 0);
+    msg.inverter_status = static_cast<uint8_t>(doc["inverter_status"] | 0);
+    msg.checksum = 0;
+
+    BatteryData::update_inverter_status(msg);
+}
+
+void MqttClient::handleEventLogSummary(const char* json_payload, size_t length) {
+    LOG_DEBUG("MQTT", "Processing batt-emu/mqtt-v1/tx/state/summary/event_logs");
+
+    DynamicJsonDocument doc(512);
+    DeserializationError error = deserializeJson(doc, json_payload, length);
+    if (error) {
+        LOG_ERROR("MQTT", "Failed to parse summary/event_logs: %s", error.c_str());
+        return;
+    }
+
+    const uint32_t seq = doc["seq"] | doc["snapshot_id"] | static_cast<uint32_t>(0);
+    const uint32_t total_historical = doc["total_historical"] | doc["event_count"] | static_cast<uint32_t>(0);
+    const uint32_t error_historical = doc["error_historical"] | static_cast<uint32_t>(0);
+    const uint32_t new_total = doc["new_since_last_report_total"] | static_cast<uint32_t>(0);
+    const uint32_t new_error = doc["new_since_last_report_error"] | static_cast<uint32_t>(0);
+    const uint32_t uptime_ms = doc["uptime_ms"] | doc["ts_ms"] | static_cast<uint32_t>(0);
+
+    TransmitterManager::storeEventLogSummary(seq,
+                                             total_historical,
+                                             error_historical,
+                                             new_total,
+                                             new_error,
+                                             uptime_ms);
+}
+
+void MqttClient::handleEventLogsClearAck(const char* json_payload, size_t length) {
+    DynamicJsonDocument doc(384);
+    DeserializationError error = deserializeJson(doc, json_payload, length);
+    if (error) {
+        LOG_WARN("MQTT", "Failed to parse event_logs_clear ACK: %s", error.c_str());
+        return;
+    }
+
+    const bool success = doc["success"] | false;
+    const uint32_t summary_seq = doc["summary_seq"] | static_cast<uint32_t>(0);
+    const uint32_t uptime_ms = doc["ts_ms"] | static_cast<uint32_t>(millis());
+
+    TransmitterManager::storeEventLogClearAck(
+        success ? TransmitterManager::kEventLogsClearAckSuccess : TransmitterManager::kEventLogsClearAckFailed,
+        summary_seq,
+        uptime_ms);
+}
+
+void MqttClient::handleStaticNetwork(const char* json_payload, size_t length) {
+    LOG_DEBUG("MQTT", "Processing batt-emu/mqtt-v1/tx/state/static/network");
+
+    DynamicJsonDocument doc(512);
+    DeserializationError error = deserializeJson(doc, json_payload, length);
+    if (error) {
+        LOG_ERROR("MQTT", "Failed to parse static/network: %s", error.c_str());
+        return;
+    }
+
+    uint8_t curr_ip[4] = {};
+    uint8_t curr_gw[4] = {};
+    uint8_t curr_sn[4] = {};
+    uint8_t stat_ip[4] = {};
+    uint8_t stat_gw[4] = {};
+    uint8_t stat_sn[4] = {};
+    uint8_t dns1[4] = {};
+    uint8_t dns2[4] = {};
+    const bool use_static = doc["use_static_ip"] | false;
+
+    if (!parse_ip_string(doc["current_ip"] | "", curr_ip) ||
+        !parse_ip_string(doc["gateway"] | "", curr_gw) ||
+        !parse_ip_string(doc["subnet"] | "", curr_sn)) {
+        LOG_WARN("MQTT", "static/network missing required current IP fields");
+        return;
+    }
+    parse_ip_string(doc["static_ip"] | "", stat_ip);
+    parse_ip_string(doc["static_gateway"] | "", stat_gw);
+    parse_ip_string(doc["static_subnet"] | "", stat_sn);
+    parse_ip_string(doc["dns_primary"] | "", dns1);
+    parse_ip_string(doc["dns_secondary"] | "", dns2);
+
+    TransmitterNetwork::store_network_config(
+        curr_ip, curr_gw, curr_sn,
+        stat_ip, stat_gw, stat_sn,
+        dns1, dns2,
+        use_static,
+        0,
+        false);
+
+    LOG_INFO("MQTT", "Updated transmitter network config from static/network retained topic");
+}
+
+void MqttClient::handleStaticMqtt(const char* json_payload, size_t length) {
+    LOG_DEBUG("MQTT", "Processing batt-emu/mqtt-v1/tx/state/static/mqtt");
+
+    DynamicJsonDocument doc(256);
+    DeserializationError error = deserializeJson(doc, json_payload, length);
+    if (error) {
+        LOG_ERROR("MQTT", "Failed to parse static/mqtt: %s", error.c_str());
+        return;
+    }
+
+    uint8_t server[4] = {};
+    if (!parse_ip_string(doc["server"] | "", server)) {
+        LOG_WARN("MQTT", "static/mqtt missing valid server IP");
+        return;
+    }
+
+    TransmitterMqttSpecs::store_mqtt_config(
+        doc["enabled"] | false,
+        server,
+        doc["port"] | static_cast<uint16_t>(1883),
+        doc["username"] | "",
+        "",
+        doc["client_id"] | "",
+        false,
+        0,
+        false);
+
+    LOG_INFO("MQTT", "Updated transmitter MQTT config from static/mqtt retained topic");
+}
+
+void MqttClient::handleStaticPower(const char* json_payload, size_t length) {
+    LOG_DEBUG("MQTT", "Processing batt-emu/mqtt-v1/tx/state/static/power");
+
+    DynamicJsonDocument doc(768);
+    DeserializationError error = deserializeJson(doc, json_payload, length);
+    if (error) {
+        LOG_ERROR("MQTT", "Failed to parse static/power: %s", error.c_str());
+        return;
+    }
+
+    TransmitterManager::storeChargerSpecs(doc.as<JsonObject>());
+    LOG_INFO("MQTT", "Updated transmitter power/charger specs from static/power retained topic");
+}
+
+void MqttClient::handleStaticLed(const char* json_payload, size_t length) {
+    LOG_DEBUG("MQTT", "Processing batt-emu/mqtt-v1/tx/state/static/led");
+
+    DynamicJsonDocument doc(512);
+    DeserializationError error = deserializeJson(doc, json_payload, length);
+    if (error) {
+        LOG_ERROR("MQTT", "Failed to parse static/led: %s", error.c_str());
+        return;
+    }
+
+    TransmitterManager::storeSystemSpecs(doc.as<JsonObject>());
+    LOG_INFO("MQTT", "Updated transmitter LED/system specs from static/led retained topic");
+}
+
+void MqttClient::handleMetaVersion(const char* json_payload, size_t length) {
+    LOG_DEBUG("MQTT", "Processing batt-emu/mqtt-v1/tx/meta/version");
+
+    DynamicJsonDocument doc(384);
+    DeserializationError error = deserializeJson(doc, json_payload, length);
+    if (error) {
+        LOG_ERROR("MQTT", "Failed to parse meta/version: %s", error.c_str());
+        return;
+    }
+
+    const char* firmware = doc["firmware"] | "0.0.0";
+    uint8_t major = 0;
+    uint8_t minor = 0;
+    uint8_t patch = 0;
+    (void)sscanf(firmware, "%hhu.%hhu.%hhu", &major, &minor, &patch);
+
+    TransmitterManager::storeMetadata(
+        true,
+        "mqtt",
+        doc["device"] | "TRANSMITTER",
+        major,
+        minor,
+        patch,
+        doc["build_date"] | "");
+
+    LOG_INFO("MQTT", "Updated transmitter metadata from meta/version retained topic");
+}
+
+void MqttClient::handleMetaSchemaVersions(const char* json_payload, size_t length) {
+    LOG_DEBUG("MQTT", "Processing batt-emu/mqtt-v1/tx/meta/schema_versions");
+
+    DynamicJsonDocument doc(384);
+    DeserializationError error = deserializeJson(doc, json_payload, length);
+    if (error) {
+        LOG_ERROR("MQTT", "Failed to parse meta/schema_versions: %s", error.c_str());
+        return;
+    }
+
+    const uint32_t network_version = doc["network"] | static_cast<uint32_t>(0);
+    const uint32_t mqtt_version = doc["mqtt"] | static_cast<uint32_t>(0);
+
+    TransmitterNetwork::update_network_mode(TransmitterNetwork::is_static_ip(), network_version);
+
+    TransmitterMqttSpecs::store_mqtt_config(
+        TransmitterMqttSpecs::is_enabled(),
+        TransmitterMqttSpecs::get_server(),
+        TransmitterMqttSpecs::get_port(),
+        TransmitterMqttSpecs::get_username(),
+        "",
+        TransmitterMqttSpecs::get_client_id(),
+        TransmitterMqttSpecs::is_connected(),
+        mqtt_version,
+        false);
+
+    LOG_INFO("MQTT", "Applied meta/schema_versions (network=%lu mqtt=%lu)",
+             static_cast<unsigned long>(network_version),
+             static_cast<unsigned long>(mqtt_version));
+}
+
+void MqttClient::handleMetaRuntime(const char* json_payload, size_t length) {
+    LOG_DEBUG("MQTT", "Processing batt-emu/mqtt-v1/tx/meta/runtime");
+
+    DynamicJsonDocument doc(256);
+    DeserializationError error = deserializeJson(doc, json_payload, length);
+    if (error) {
+        LOG_ERROR("MQTT", "Failed to parse meta/runtime: %s", error.c_str());
+        return;
+    }
+
+    const bool mqtt_connected = doc["mqtt_connected"] | false;
+    const bool ethernet_connected = doc["ethernet_connected"] | false;
+
+    TransmitterManager::updateRuntimeStatus(mqtt_connected, ethernet_connected);
+    (void)TransmitterMqttSpecs::update_runtime_connection(mqtt_connected);
+
+    LOG_INFO("MQTT", "Updated runtime state from meta/runtime (mqtt=%d eth=%d)",
+             static_cast<int>(mqtt_connected),
+             static_cast<int>(ethernet_connected));
+}
+
+void MqttClient::ensureAckMutex() {
+    if (ack_mutex_ == nullptr) {
+        ack_mutex_ = xSemaphoreCreateMutex();
+    }
+}
+
+void MqttClient::storePendingAck(const char* request_id,
+                                 const char* topic,
+                                 const char* payload,
+                                 size_t length) {
+    if (request_id == nullptr || request_id[0] == '\0' || topic == nullptr || payload == nullptr) {
+        return;
+    }
+
+    ensureAckMutex();
+    if (ack_mutex_ == nullptr) {
+        return;
+    }
+
+    if (xSemaphoreTake(ack_mutex_, pdMS_TO_TICKS(50)) != pdTRUE) {
+        return;
+    }
+
+    auto it = std::find_if(pending_acks_.begin(), pending_acks_.end(),
+                           [request_id](const PendingAck& ack) {
+                               return strcmp(ack.request_id, request_id) == 0;
+                           });
+    if (it == pending_acks_.end()) {
+        if (pending_acks_.size() >= MAX_PENDING_ACKS) {
+            pending_acks_.erase(pending_acks_.begin());
+        }
+        pending_acks_.push_back({});
+        it = std::prev(pending_acks_.end());
+    }
+
+    strncpy(it->request_id, request_id, sizeof(it->request_id) - 1);
+    it->request_id[sizeof(it->request_id) - 1] = '\0';
+    strncpy(it->topic, topic, sizeof(it->topic) - 1);
+    it->topic[sizeof(it->topic) - 1] = '\0';
+
+    const size_t copy_len = std::min(length, sizeof(it->payload) - 1);
+    memcpy(it->payload, payload, copy_len);
+    it->payload[copy_len] = '\0';
+    it->received = true;
+    it->received_ms = millis();
+
+    xSemaphoreGive(ack_mutex_);
+}
+
+bool MqttClient::tryConsumePendingAck(const char* request_id,
+                                      const char* ack_topic,
+                                      char* ack_payload,
+                                      size_t ack_payload_size) {
+    if (request_id == nullptr || request_id[0] == '\0' || ack_topic == nullptr) {
+        return false;
+    }
+
+    ensureAckMutex();
+    if (ack_mutex_ == nullptr) {
+        return false;
+    }
+
+    if (xSemaphoreTake(ack_mutex_, pdMS_TO_TICKS(20)) != pdTRUE) {
+        return false;
+    }
+
+    auto it = std::find_if(pending_acks_.begin(), pending_acks_.end(),
+                           [request_id, ack_topic](const PendingAck& ack) {
+                               return ack.received &&
+                                      strcmp(ack.request_id, request_id) == 0 &&
+                                      strcmp(ack.topic, ack_topic) == 0;
+                           });
+
+    const bool found = (it != pending_acks_.end());
+    if (found) {
+        if (ack_payload != nullptr && ack_payload_size > 0) {
+            strlcpy(ack_payload, it->payload, ack_payload_size);
+        }
+        pending_acks_.erase(it);
+    }
+
+    xSemaphoreGive(ack_mutex_);
+    return found;
+}
+
+void MqttClient::handleAckMessage(const char* topic, const char* json_payload, size_t length) {
+    StaticJsonDocument<256> doc;
+    DeserializationError error = deserializeJson(doc, json_payload, length);
+    if (error) {
+        LOG_WARN("MQTT", "Failed to parse ACK payload on %s: %s", topic, error.c_str());
+        return;
+    }
+
+    const char* request_id = doc["request_id"] | "";
+    if (request_id[0] == '\0') {
+        LOG_WARN("MQTT", "Ignoring ACK on %s without request_id", topic);
+        return;
+    }
+
+    storePendingAck(request_id, topic, json_payload, length);
+    LOG_DEBUG("MQTT", "Stored ACK for request_id=%s on %s", request_id, topic);
+}
+
 /**
  * @brief Increment cell data subscriber count and resume subscription if needed
  * 
@@ -580,11 +1300,11 @@ void MqttClient::incrementEventLogSubscribers() {
     event_log_subscribers_++;
     LOG_INFO("MQTT", "Event log subscriber count: %d", event_log_subscribers_);
 
-    // Notify transmitter to start publishing event logs (ESP-NOW) on first subscriber
+    // Notify transmitter to start publishing event logs on first subscriber.
     if (was_zero) {
         // Start fresh receiver-side snapshot session on /events open.
         TransmitterEventLogCache::begin_snapshot_session(true);
-        send_event_logs_control(true);
+        (void)publish_event_logs_stream_control(true);
     }
 }
 
@@ -592,10 +1312,10 @@ void MqttClient::decrementEventLogSubscribers() {
     if (event_log_subscribers_ > 0) {
         event_log_subscribers_--;
         LOG_INFO("MQTT", "Event log subscriber count: %d", event_log_subscribers_);
-        
+
         if (event_log_subscribers_ == 0) {
-            // Notify transmitter to stop publishing (ESP-NOW)
-            send_event_logs_control(false);
+            // Notify transmitter to stop publishing.
+            (void)publish_event_logs_stream_control(false);
 
             // /events close semantics: clear receiver cache/session state.
             TransmitterEventLogCache::end_snapshot_session(true);
@@ -611,7 +1331,7 @@ int MqttClient::getEventLogSubscriberCount() {
  * @brief Timer callback: Pause cell_data subscription after grace period
  * 
  * Called after 30 seconds of no SSE clients connected.
- * Unsubscribes from transmitter/BE/cell_data to save bandwidth and CPU.
+ * Unsubscribes from batt-emu/mqtt-v1/tx/state/cell_data/chunk to save bandwidth and CPU.
  * 
  * If new SSE client connects before this callback fires, the timer is cancelled
  * in incrementCellDataSubscribers() and this callback never executes.
@@ -652,7 +1372,7 @@ void MqttClient::processDeferredSubscriptionActions() {
         return;
     }
 
-    const bool unsubscribed = mqtt_client_.unsubscribe("transmitter/BE/cell_data");
+    const bool unsubscribed = mqtt_client_.unsubscribe("batt-emu/mqtt-v1/tx/state/cell_data/chunk");
     if (unsubscribed) {
         cell_data_state_ = PAUSED;
         LOG_INFO("SUBSCRIPTION", "Paused cell_data subscription after grace period");

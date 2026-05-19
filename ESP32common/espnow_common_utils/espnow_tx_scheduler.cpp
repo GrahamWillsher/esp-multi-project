@@ -1,6 +1,7 @@
 #include "espnow_tx_scheduler.h"
 
 #include <esp32common/espnow/common.h>
+#include <esp32common/patterns/numeric_safety.h>
 #include <esp_now.h>
 #include <freertos/queue.h>
 #include <freertos/task.h>
@@ -38,12 +39,19 @@ struct AckTokenSlot {
     uint32_t acquired_ms = 0;
 };
 
-static constexpr uint32_t ACK_TOKEN_WATCHDOG_MS = 500;
+// Keep ACK token ownership long enough to span a full probe/ACK dwell window.
+// Spec baseline (ESPNOW_SINGLE_STATE_MACHINE_SOURCE_OF_TRUTH_REWRITE_2026_05_08.md,
+// section 7.1) requires a 3000 ms ACK token watchdog timeout.
+static constexpr uint32_t ACK_TOKEN_WATCHDOG_MS = 3000;
 static constexpr size_t ACK_TOKEN_SLOT_COUNT = 8;
+static constexpr uint32_t NO_MEM_WARN_LOG_INTERVAL_MS = 10000;
+static constexpr uint32_t ACK_WATCHDOG_WARN_LOG_INTERVAL_MS = 10000;
+static constexpr uint32_t ACK_NO_MEM_COUNT_EXPIRY_MS = 15000;
 
 QueueHandle_t g_queues[static_cast<size_t>(MessagePriority::COUNT)] = {
     nullptr, nullptr, nullptr, nullptr
 };
+QueueSetHandle_t g_queue_set = nullptr;
 TaskHandle_t g_task = nullptr;
 InitOptions g_options{};
 Stats g_stats{};
@@ -52,6 +60,11 @@ uint32_t g_last_send_ms[256] = {0};
 bool g_control_only_mode = false;
 AckTokenSlot g_ack_tokens[ACK_TOKEN_SLOT_COUNT] = {};
 uint32_t g_consecutive_no_mem_count = 0;   ///< Count of ACK sends that exhausted all retries with NO_MEM
+uint32_t g_last_ack_no_mem_ms = 0;
+uint32_t g_last_no_mem_warn_ms = 0;
+uint32_t g_suppressed_no_mem_warn_count = 0;
+uint32_t g_last_ack_watchdog_warn_ms = 0;
+uint32_t g_suppressed_ack_watchdog_warn_count = 0;
 
 uint32_t now_ms() {
     return static_cast<uint32_t>(xTaskGetTickCount() * portTICK_PERIOD_MS);
@@ -109,6 +122,8 @@ MessagePriority classify_priority(uint8_t msg_type) {
         case msg_ack:
         case msg_heartbeat:
         case msg_heartbeat_ack:
+        case msg_connect_confirm:
+        case msg_connect_confirm_ack:
             return MessagePriority::CONTROL;
 
         case msg_probe:
@@ -127,6 +142,10 @@ SendPolicy policy_for(uint8_t msg_type) {
     switch (msg_type) {
         case msg_heartbeat:            return {800, 4};
         case msg_heartbeat_ack:        return {80, 8};
+        // Handshake control: same retry budget as discovery ACK; must survive
+        // transient WiFi TX buffer starvation in the CONNECTING window.
+        case msg_connect_confirm:      return {150, 12};
+        case msg_connect_confirm_ack:  return {150, 12};
         // Discovery ACK is reconnect-critical. Under transient WiFi TX buffer
         // starvation (ESP_ERR_ESPNOW_NO_MEM), a longer bounded retry window is
         // required to survive the pressure interval within the same dwell.
@@ -214,7 +233,7 @@ bool requeue_deferred(MessagePriority prio, const TxItem& item) {
     return xQueueSend(q, &item, 0) == pdTRUE;
 }
 
-void create_priority_queues(uint8_t total_depth) {
+bool create_priority_queues(uint8_t total_depth) {
     const uint8_t depth = (total_depth == 0) ? 1 : total_depth;
     const uint8_t d0 = (depth >= 4) ? static_cast<uint8_t>((depth * 30U) / 100U) : 1; // control
     const uint8_t d1 = (depth >= 4) ? static_cast<uint8_t>((depth * 20U) / 100U) : 1; // discovery
@@ -231,15 +250,38 @@ void create_priority_queues(uint8_t total_depth) {
     g_queues[2] = xQueueCreate(q2, sizeof(TxItem));
     g_queues[3] = xQueueCreate(q3, sizeof(TxItem));
 
+    if (g_queues[0] == nullptr || g_queues[1] == nullptr || g_queues[2] == nullptr || g_queues[3] == nullptr) {
+        return false;
+    }
+
+    const UBaseType_t set_capacity = static_cast<UBaseType_t>(q0 + q1 + q2 + q3);
+    g_queue_set = xQueueCreateSet(set_capacity);
+    if (g_queue_set == nullptr) {
+        return false;
+    }
+
+    for (size_t i = 0; i < static_cast<size_t>(MessagePriority::COUNT); ++i) {
+        if (xQueueAddToSet(g_queues[i], g_queue_set) != pdPASS) {
+            return false;
+        }
+    }
+
     LOG_INFO("ESPNOW_TX", "Priority queues: P0=%u P1=%u P2=%u P3=%u (total=%u)",
              static_cast<unsigned>(q0),
              static_cast<unsigned>(q1),
              static_cast<unsigned>(q2),
              static_cast<unsigned>(q3),
              static_cast<unsigned>(depth));
+
+    return true;
 }
 
 void destroy_priority_queues() {
+    if (g_queue_set != nullptr) {
+        vQueueDelete(g_queue_set);
+        g_queue_set = nullptr;
+    }
+
     for (size_t i = 0; i < static_cast<size_t>(MessagePriority::COUNT); ++i) {
         if (g_queues[i] != nullptr) {
             vQueueDelete(g_queues[i]);
@@ -287,10 +329,17 @@ esp_err_t send_immediate_with_retry(const uint8_t* mac, const uint8_t* data, siz
 void task_tx_worker(void* /*parameter*/) {
     TxItem item{};
     MessagePriority prio = MessagePriority::DATA;
+    const uint32_t idle_block_timeout_ms = (g_options.idle_block_timeout_ms == 0U)
+                                               ? 20U
+                                               : g_options.idle_block_timeout_ms;
 
     for (;;) {
         if (!dequeue_next_priority_item(item, prio)) {
-            vTaskDelay(pdMS_TO_TICKS(1));
+            if (g_queue_set != nullptr) {
+                (void)xQueueSelectFromSet(g_queue_set, pdMS_TO_TICKS(idle_block_timeout_ms));
+            } else {
+                vTaskDelay(pdMS_TO_TICKS(idle_block_timeout_ms));
+            }
             continue;
         }
 
@@ -309,7 +358,11 @@ void task_tx_worker(void* /*parameter*/) {
             }
             portEXIT_CRITICAL(&g_stats_mux);
 
-            vTaskDelay(pdMS_TO_TICKS(1));
+            const uint32_t remaining_ms = policy.min_gap_ms - elapsed;
+            const uint32_t defer_ms = (remaining_ms < idle_block_timeout_ms)
+                                          ? remaining_ms
+                                          : idle_block_timeout_ms;
+            vTaskDelay(pdMS_TO_TICKS((defer_ms == 0U) ? 1U : defer_ms));
             continue;
         }
 
@@ -330,17 +383,40 @@ void task_tx_worker(void* /*parameter*/) {
             if (result == ESP_ERR_ESPNOW_NO_MEM) {
                 g_last_send_ms[item.type] = now;
                 if (item.type == msg_ack) {
-                    g_consecutive_no_mem_count++;  // track persistent buffer exhaustion
+                    (void)esp32common::numeric::increment_saturating<uint32_t>(g_consecutive_no_mem_count);  // track persistent buffer exhaustion
+                    g_last_ack_no_mem_ms = now;
                 }
             }
         }
         portEXIT_CRITICAL(&g_stats_mux);
 
         if (result != ESP_OK) {
-            LOG_WARN("ESPNOW_TX", "Send failed (type=%u len=%u): %s",
-                     static_cast<unsigned>(item.type),
-                     static_cast<unsigned>(item.len),
-                     esp_err_to_name(result));
+            const uint32_t now_log = now_ms();
+            if (result == ESP_ERR_ESPNOW_NO_MEM) {
+                if ((now_log - g_last_no_mem_warn_ms) >= NO_MEM_WARN_LOG_INTERVAL_MS) {
+                    if (g_suppressed_no_mem_warn_count > 0) {
+                        LOG_WARN("ESPNOW_TX", "Send failed (type=%u len=%u): %s (suppressed=%lu)",
+                                 static_cast<unsigned>(item.type),
+                                 static_cast<unsigned>(item.len),
+                                 esp_err_to_name(result),
+                                 static_cast<unsigned long>(g_suppressed_no_mem_warn_count));
+                    } else {
+                        LOG_WARN("ESPNOW_TX", "Send failed (type=%u len=%u): %s",
+                                 static_cast<unsigned>(item.type),
+                                 static_cast<unsigned>(item.len),
+                                 esp_err_to_name(result));
+                    }
+                    g_last_no_mem_warn_ms = now_log;
+                    g_suppressed_no_mem_warn_count = 0;
+                } else {
+                    (void)esp32common::numeric::increment_saturating<uint32_t>(g_suppressed_no_mem_warn_count);
+                }
+            } else {
+                LOG_WARN("ESPNOW_TX", "Send failed (type=%u len=%u): %s",
+                         static_cast<unsigned>(item.type),
+                         static_cast<unsigned>(item.len),
+                         esp_err_to_name(result));
+            }
 
             // Discovery ACK sends can fail synchronously (e.g. NO_MEM) and then
             // never receive a send callback. Release the per-peer ACK token
@@ -348,6 +424,16 @@ void task_tx_worker(void* /*parameter*/) {
             // probe instead of waiting for watchdog expiry.
             if (item.type == msg_ack) {
                 release_ack_token(item.mac, "send_failed");
+            }
+
+            // Back off the TX worker after a NO_MEM failure so the WiFi LMAC
+            // DMA ring has time to drain TCP/IP buffers (e.g. HTTP page load or
+            // MQTT connect attempt) before the next esp_now_send() call.
+            // Without this the worker loops every 1 ms and hammers the full
+            // LMAC ring, turning a transient ~20-50 ms WiFi burst into 5+
+            // consecutive failures that trigger the expensive L1_REINIT path.
+            if (result == ESP_ERR_ESPNOW_NO_MEM) {
+                vTaskDelay(pdMS_TO_TICKS(40));
             }
         }
 
@@ -454,11 +540,24 @@ uint32_t check_ack_token_watchdogs() {
     }
     portEXIT_CRITICAL(&g_stats_mux);
 
-    for (size_t i = 0; i < expired_count; ++i) {
-        LOG_WARN("ESPNOW_TX", "ACK token watchdog release for %02X:%02X:%02X:%02X:%02X:%02X (held=%lu ms)",
-                 expired[i].mac[0], expired[i].mac[1], expired[i].mac[2],
-                 expired[i].mac[3], expired[i].mac[4], expired[i].mac[5],
-                 static_cast<unsigned long>(expired[i].held_ms));
+    const uint32_t now_log = now_ms();
+    if (expired_count > 0) {
+        if ((now_log - g_last_ack_watchdog_warn_ms) >= ACK_WATCHDOG_WARN_LOG_INTERVAL_MS) {
+            LOG_WARN("ESPNOW_TX", "ACK watchdog releases=%lu (suppressed=%lu)",
+                     static_cast<unsigned long>(expired_count),
+                     static_cast<unsigned long>(g_suppressed_ack_watchdog_warn_count));
+            const ExpiredToken& first = expired[0];
+            LOG_DEBUG("ESPNOW_TX", "ACK watchdog sample peer=%02X:%02X:%02X:%02X:%02X:%02X held=%lu ms",
+                      first.mac[0], first.mac[1], first.mac[2],
+                      first.mac[3], first.mac[4], first.mac[5],
+                      static_cast<unsigned long>(first.held_ms));
+            g_last_ack_watchdog_warn_ms = now_log;
+            g_suppressed_ack_watchdog_warn_count = 0;
+        } else {
+            (void)esp32common::numeric::add_saturating<uint32_t>(
+                g_suppressed_ack_watchdog_warn_count,
+                static_cast<uint32_t>(expired_count));
+        }
     }
 
     return static_cast<uint32_t>(expired_count);
@@ -486,7 +585,11 @@ bool init(const InitOptions& options) {
     }
 
     if (g_queues[0] == nullptr) {
-        create_priority_queues(g_options.queue_depth);
+        if (!create_priority_queues(g_options.queue_depth)) {
+            LOG_ERROR("ESPNOW_TX", "Failed to create priority queues");
+            destroy_priority_queues();
+            return false;
+        }
     }
 
     if (g_queues[0] == nullptr || g_queues[1] == nullptr || g_queues[2] == nullptr || g_queues[3] == nullptr) {
@@ -507,15 +610,17 @@ bool init(const InitOptions& options) {
 
         if (rc != pdPASS) {
             LOG_ERROR("ESPNOW_TX", "Failed to create task '%s'", g_options.task_name);
+            destroy_priority_queues();
             return false;
         }
     }
 
-    LOG_INFO("ESPNOW_TX", "Initialized (depth=%u retries=%u baseDelay=%lu interFrame=%lu)",
+    LOG_INFO("ESPNOW_TX", "Initialized (depth=%u retries=%u baseDelay=%lu interFrame=%lu idleBlock=%lu)",
              static_cast<unsigned>(g_options.queue_depth),
              static_cast<unsigned>(g_options.no_mem_retry_attempts),
              static_cast<unsigned long>(g_options.retry_base_delay_ms),
-             static_cast<unsigned long>(g_options.inter_frame_delay_ms));
+             static_cast<unsigned long>(g_options.inter_frame_delay_ms),
+             static_cast<unsigned long>(g_options.idle_block_timeout_ms));
     return true;
 }
 
@@ -674,7 +779,17 @@ void reset_stats() {
 
 uint32_t get_consecutive_no_mem_count() {
     portENTER_CRITICAL(&g_stats_mux);
-    const uint32_t count = g_consecutive_no_mem_count;
+    uint32_t count = g_consecutive_no_mem_count;
+    if (count > 0 && g_last_ack_no_mem_ms > 0) {
+        const uint32_t age_ms = now_ms() - g_last_ack_no_mem_ms;
+        if (age_ms >= ACK_NO_MEM_COUNT_EXPIRY_MS) {
+            // If there has been no new ACK NO_MEM event for a while, treat
+            // the burst as transient and clear stale pressure signal.
+            g_consecutive_no_mem_count = 0;
+            g_last_ack_no_mem_ms = 0;
+            count = 0;
+        }
+    }
     portEXIT_CRITICAL(&g_stats_mux);
     return count;
 }
@@ -682,6 +797,7 @@ uint32_t get_consecutive_no_mem_count() {
 void reset_consecutive_no_mem_count() {
     portENTER_CRITICAL(&g_stats_mux);
     g_consecutive_no_mem_count = 0;
+    g_last_ack_no_mem_ms = 0;
     portEXIT_CRITICAL(&g_stats_mux);
 }
 

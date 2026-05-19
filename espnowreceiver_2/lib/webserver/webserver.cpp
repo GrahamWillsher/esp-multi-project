@@ -1,7 +1,6 @@
 #include "webserver.h"
 #include "page_definitions.h"
 #include "page_registration_factory.h"
-#include "utils/transmitter_manager.h"
 #include "utils/sse_notifier.h"
 #include "pages/pages.h"
 #include "api/api_handlers.h"
@@ -119,7 +118,7 @@ void init_webserver() {
     config.uri_match_fn = httpd_uri_match_wildcard;
     config.server_port = 80;
     config.recv_wait_timeout = 10;  // Receive timeout for battery data uploads
-    config.send_wait_timeout = 10;  // Send timeout for large JSON responses
+    config.send_wait_timeout = 15;  // Send timeout for large JSON responses (Section 10: match LCD parity)
     config.lru_purge_enable = true;
 
     g_webserver_metrics.server_port = static_cast<uint16_t>(config.server_port);
@@ -204,12 +203,3 @@ void notify_sse_data_updated() {
     SSENotifier::notifyDataUpdated();
 }
 
-// Register the transmitter MAC address for sending control messages
-void register_transmitter_mac(const uint8_t* mac) {
-    TransmitterManager::registerMAC(mac);
-}
-
-// Store transmitter IP address data received via ESP-NOW
-void store_transmitter_ip_data(const uint8_t* ip, const uint8_t* gateway, const uint8_t* subnet) {
-    TransmitterManager::storeIPData(ip, gateway, subnet);
-}

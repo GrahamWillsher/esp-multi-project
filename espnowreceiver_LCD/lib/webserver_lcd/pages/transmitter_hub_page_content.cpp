@@ -1,14 +1,27 @@
 #include "transmitter_hub_page_content.h"
+#include "../common/page_generator.h"
 
-String get_transmitter_hub_page_content(
-    const String& device_subtitle,
-    const String& status_color,
-    const String& status_text,
-    const String& ip_text,
-    const String& version_text,
-    const String& build_date
+// ──────────────────────────────────────────────────────────────────────────────
+// HTML is split at the 7 dynamic value insertion points.
+// All static segments live in flash read-only data (zero heap allocation).
+// Dynamic values are tiny const char* pointers from stack buffers in the caller.
+// ──────────────────────────────────────────────────────────────────────────────
+
+#define _SEND_LIT(req, lit) \
+    do { if (send_page_content_chunk((req), "transmitter_hub_content", (lit), sizeof(lit) - 1) != ESP_OK) return ESP_FAIL; } while (0)
+#define _SEND_STR(req, s) \
+    do { const char* _sv = (s); if (_sv && *_sv) { if (send_page_content_chunk((req), "transmitter_hub_dynamic", _sv, strlen(_sv)) != ESP_OK) return ESP_FAIL; } } while (0)
+
+esp_err_t emit_transmitter_hub_page_content(
+    httpd_req_t* req,
+    const char* device_subtitle,
+    const char* status_color,
+    const char* status_text,
+    const char* ip_text,
+    const char* version_text,
+    const char* build_date
 ) {
-    String content = R"rawliteral(
+    _SEND_LIT(req, R"rawliteral(
     <div style='margin-bottom: 20px;'>
         <a href='/' style='display: inline-block; padding: 10px 16px; background: #4CAF50; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;'>
             ← Dashboard
@@ -16,41 +29,48 @@ String get_transmitter_hub_page_content(
     </div>
 
     <h1 style='color: #2196F3;'>📡 Transmitter Management</h1>
-    <p style='color: #888; margin-top: -10px;'>)rawliteral";
-    content += device_subtitle;
-    content += R"rawliteral(</p>
+    <p style='color: #888; margin-top: -10px;'>)rawliteral");
+    _SEND_STR(req, device_subtitle);
+
+    _SEND_LIT(req, R"rawliteral(</p>
 
     <!-- Status Summary -->
-    <div class='info-box' style='margin: 20px 0; border-left: 5px solid )rawliteral";
-    content += status_color;
-    content += R"rawliteral(;'>
+    <div class='info-box' style='margin: 20px 0; border-left: 5px solid )rawliteral");
+    _SEND_STR(req, status_color);
+
+    _SEND_LIT(req, R"rawliteral(;'>
         <h3 style='margin: 0 0 15px 0;'>📊 Status Summary</h3>
         <div style='display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px;'>
             <div>
                 <div style='color: #888; font-size: 13px;'>Connection</div>
-                <div style='font-size: 18px; font-weight: bold; color: )rawliteral";
-    content += status_color;
-    content += R"rawliteral(; margin-top: 5px;'>)rawliteral";
-    content += status_text;
-    content += R"rawliteral(</div>
+                <div style='font-size: 18px; font-weight: bold; color: )rawliteral");
+    _SEND_STR(req, status_color);
+
+    _SEND_LIT(req, R"rawliteral(; margin-top: 5px;'>)rawliteral");
+    _SEND_STR(req, status_text);
+
+    _SEND_LIT(req, R"rawliteral(</div>
             </div>
             <div>
                 <div style='color: #888; font-size: 13px;'>IP Address</div>
-                <div style='font-size: 16px; font-weight: bold; margin-top: 5px; font-family: monospace;'>)rawliteral";
-    content += ip_text;
-    content += R"rawliteral(</div>
+                <div style='font-size: 16px; font-weight: bold; margin-top: 5px; font-family: monospace;'>)rawliteral");
+    _SEND_STR(req, ip_text);
+
+    _SEND_LIT(req, R"rawliteral(</div>
             </div>
             <div>
                 <div style='color: #888; font-size: 13px;'>Firmware</div>
-                <div id='txFirmwareVersion' style='font-size: 16px; font-weight: bold; margin-top: 5px;'>)rawliteral";
-    content += version_text;
-    content += R"rawliteral(</div>
+                <div id='txFirmwareVersion' style='font-size: 16px; font-weight: bold; margin-top: 5px;'>)rawliteral");
+    _SEND_STR(req, version_text);
+
+    _SEND_LIT(req, R"rawliteral(</div>
             </div>
             <div>
                 <div style='color: #888; font-size: 13px;'>Build Date</div>
-                <div id='txFirmwareBuildDate' style='font-size: 13px; margin-top: 5px; color: #888;'>)rawliteral";
-    content += build_date;
-    content += R"rawliteral(</div>
+                <div id='txFirmwareBuildDate' style='font-size: 13px; margin-top: 5px; color: #888;'>)rawliteral");
+    _SEND_STR(req, build_date);
+
+    _SEND_LIT(req, R"rawliteral(</div>
             </div>
         </div>
     </div>
@@ -64,9 +84,9 @@ String get_transmitter_hub_page_content(
                 <div id='txTestDataMode' style='font-size: 16px; font-weight: bold; color: #2196F3; margin-bottom: 15px; min-height: 25px;'>Loading...</div>
                 <div style='color: #888; font-size: 12px;'>
                     <strong>Available Modes:</strong><br>
-                    • <strong>OFF</strong> - Real CAN data only<br>
-                    • <strong>SOC_POWER_ONLY</strong> - Test SOC & power<br>
-                    • <strong>FULL_BATTERY_DATA</strong> - Test all battery data
+                    &bull; <strong>OFF</strong> - Real CAN data only<br>
+                    &bull; <strong>SOC_POWER_ONLY</strong> - Test SOC &amp; power<br>
+                    &bull; <strong>FULL_BATTERY_DATA</strong> - Test all battery data
                 </div>
             </div>
             <div>
@@ -82,7 +102,7 @@ String get_transmitter_hub_page_content(
     </div>
 
     <!-- Navigation Cards -->
-    <h3 style='margin: 30px 0 15px 0;'>⚙️ Functions</h3>
+    <h3 style='margin: 30px 0 15px 0;'>&#9881;&#65039; Functions</h3>
     <div style='display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px;'>
 
         <!-- Configuration -->
@@ -90,7 +110,7 @@ String get_transmitter_hub_page_content(
             <div class='info-box' style='cursor: pointer; text-align: center; transition: transform 0.2s, border-color 0.2s; border: 2px solid #2196F3;'
                  onmouseover='this.style.transform="translateY(-3px)"; this.style.borderColor="#42A5F5"'
                  onmouseout='this.style.transform="translateY(0)"; this.style.borderColor="#2196F3"'>
-                <div style='font-size: 36px; margin: 10px 0;'>⚙️</div>
+                <div style='font-size: 36px; margin: 10px 0;'>&#9881;&#65039;</div>
                 <div style='font-weight: bold; color: #2196F3; font-size: 16px;'>Configuration</div>
                 <div style='font-size: 12px; color: #888; margin-top: 8px;'>Network, MQTT, Settings</div>
             </div>
@@ -101,7 +121,7 @@ String get_transmitter_hub_page_content(
             <div class='info-box' style='cursor: pointer; text-align: center; transition: transform 0.2s, border-color 0.2s; border: 2px solid #2196F3;'
                  onmouseover='this.style.transform="translateY(-3px)"; this.style.borderColor="#42A5F5"'
                  onmouseout='this.style.transform="translateY(0)"; this.style.borderColor="#2196F3"'>
-                <div style='font-size: 36px; margin: 10px 0;'>💡</div>
+                <div style='font-size: 36px; margin: 10px 0;'>&#128161;</div>
                 <div style='font-weight: bold; color: #2196F3; font-size: 16px;'>Hardware Config</div>
                 <div style='font-size: 12px; color: #888; margin-top: 8px;'>Status LED Pattern</div>
             </div>
@@ -112,7 +132,7 @@ String get_transmitter_hub_page_content(
             <div class='info-box' style='cursor: pointer; text-align: center; transition: transform 0.2s, border-color 0.2s; border: 2px solid #2196F3;'
                  onmouseover='this.style.transform="translateY(-3px)"; this.style.borderColor="#42A5F5"'
                  onmouseout='this.style.transform="translateY(0)"; this.style.borderColor="#2196F3"'>
-                <div style='font-size: 36px; margin: 10px 0;'>🔋</div>
+                <div style='font-size: 36px; margin: 10px 0;'>&#128267;</div>
                 <div style='font-weight: bold; color: #2196F3; font-size: 16px;'>Battery Settings</div>
                 <div style='font-size: 12px; color: #888; margin-top: 8px;'>Capacity, Limits, Chemistry</div>
             </div>
@@ -123,7 +143,7 @@ String get_transmitter_hub_page_content(
             <div class='info-box' style='cursor: pointer; text-align: center; transition: transform 0.2s, border-color 0.2s; border: 2px solid #2196F3;'
                  onmouseover='this.style.transform="translateY(-3px)"; this.style.borderColor="#42A5F5"'
                  onmouseout='this.style.transform="translateY(0)"; this.style.borderColor="#2196F3"'>
-                <div style='font-size: 36px; margin: 10px 0;'>⚡</div>
+                <div style='font-size: 36px; margin: 10px 0;'>&#9889;</div>
                 <div style='font-weight: bold; color: #2196F3; font-size: 16px;'>Inverter Settings</div>
                 <div style='font-size: 12px; color: #888; margin-top: 8px;'>Protocol Selection</div>
             </div>
@@ -134,7 +154,7 @@ String get_transmitter_hub_page_content(
             <div class='info-box' style='cursor: pointer; text-align: center; transition: transform 0.2s, border-color 0.2s; border: 2px solid #2196F3;'
                  onmouseover='this.style.transform="translateY(-3px)"; this.style.borderColor="#42A5F5"'
                  onmouseout='this.style.transform="translateY(0)"; this.style.borderColor="#2196F3"'>
-                <div style='font-size: 36px; margin: 10px 0;'>📊</div>
+                <div style='font-size: 36px; margin: 10px 0;'>&#128202;</div>
                 <div style='font-weight: bold; color: #2196F3; font-size: 16px;'>Monitor (Polling)</div>
                 <div style='font-size: 12px; color: #888; margin-top: 8px;'>1-second refresh</div>
             </div>
@@ -145,7 +165,7 @@ String get_transmitter_hub_page_content(
             <div class='info-box' style='cursor: pointer; text-align: center; transition: transform 0.2s, border-color 0.2s; border: 2px solid #2196F3;'
                  onmouseover='this.style.transform="translateY(-3px)"; this.style.borderColor="#42A5F5"'
                  onmouseout='this.style.transform="translateY(0)"; this.style.borderColor="#2196F3"'>
-                <div style='font-size: 36px; margin: 10px 0;'>📈</div>
+                <div style='font-size: 36px; margin: 10px 0;'>&#128200;</div>
                 <div style='font-weight: bold; color: #2196F3; font-size: 16px;'>Monitor (Real-time)</div>
                 <div style='font-size: 12px; color: #888; margin-top: 8px;'>SSE live data</div>
             </div>
@@ -156,15 +176,17 @@ String get_transmitter_hub_page_content(
             <div class='info-box' style='cursor: pointer; text-align: center; transition: transform 0.2s, border-color 0.2s; border: 2px solid #ff6b35;'
                  onmouseover='this.style.transform="translateY(-3px)"; this.style.borderColor="#ff8c5a"'
                  onmouseout='this.style.transform="translateY(0)"; this.style.borderColor="#ff6b35"'>
-                <div style='font-size: 36px; margin: 10px 0;'>🔄</div>
+                <div style='font-size: 36px; margin: 10px 0;'>&#128260;</div>
                 <div style='font-weight: bold; color: #ff6b35; font-size: 16px;'>Reboot Device</div>
                 <div style='font-size: 12px; color: #888; margin-top: 8px;'>Restart transmitter</div>
             </div>
         </a>
 
     </div>
+)rawliteral");
 
-    )rawliteral";
-
-    return content;
+    return ESP_OK;
 }
+
+#undef _SEND_LIT
+#undef _SEND_STR

@@ -92,7 +92,7 @@ const char* get_event_logs_page_script() {
     return R"rawliteral(
 const CLEAR_COUNTDOWN_SECONDS = 5;
 const SNAPSHOT_WAIT_TIMEOUT_MS = 5000;
-const SNAPSHOT_WAIT_POLL_MS = 200;
+const SNAPSHOT_WAIT_POLL_MS = 500;
 const SNAPSHOT_RETRY_ATTEMPTS = 5;
 const SNAPSHOT_RETRY_DELAY_MS = 1000;
 
@@ -255,14 +255,17 @@ function normalizeLevel(evt) {
 }
 
 async function getTransmitterUptimeMs() {
+    // Use /api/dashboard_data (consolidated endpoint) — transmitter health fields
+    // are merged there; avoids a second parallel fetch to /api/transmitter_health.
     try {
-        const res = await fetch('/api/transmitter_health');
+        const res = await fetch('/api/dashboard_data');
         const data = await res.json();
-        if (data && data.success) {
+        if (data && data.transmitter) {
+            const tx = data.transmitter;
             return {
-                uptimeMs: data.uptime_ms !== undefined ? Number(data.uptime_ms) : NaN,
-                unixTimeMs: data.unix_time !== undefined ? Number(data.unix_time) * 1000 : NaN,
-                utcOffsetMin: data.utc_offset_min !== undefined ? Number(data.utc_offset_min) : 0
+                uptimeMs: tx.uptime_ms !== undefined ? Number(tx.uptime_ms) : NaN,
+                unixTimeMs: tx.unix_time !== undefined ? Number(tx.unix_time) * 1000 : NaN,
+                utcOffsetMin: tx.utc_offset_min !== undefined ? Number(tx.utc_offset_min) : 0
             };
         }
     } catch (e) {
@@ -282,7 +285,7 @@ async function loadEvents() {
     list.innerHTML = '';
     try {
         const txHealth = await getTransmitterUptimeMs();
-        const res = await fetch('/api/get_event_logs?limit=500');
+        const res = await fetch('/api/event_logs_page?offset=0&limit=50');
         const data = await res.json();
         if (!data.success) {
             status.textContent = data.error || 'Event logs unavailable';

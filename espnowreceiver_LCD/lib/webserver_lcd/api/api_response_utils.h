@@ -49,12 +49,6 @@ void format_ipv4(char* buf, const uint8_t ip[4]);
 // Copies at most max_len-1 characters (plus null terminator) from src to dst.
 void escape_double_quotes(const char* src, char* dst, size_t max_len);
 
-// Send a standard ESP-NOW send result: success message on ESP_OK, error with
-// esp_err_to_name string otherwise.  success_msg is used on the OK path.
-esp_err_t send_espnow_send_result(httpd_req_t* req,
-                                  esp_err_t espnow_result,
-                                  const char* success_msg);
-
 } // namespace ApiResponseUtils
 
 #endif // API_RESPONSE_UTILS_H

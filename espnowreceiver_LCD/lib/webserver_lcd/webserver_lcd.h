@@ -10,6 +10,12 @@
 namespace WebserverLcd {
 
 /**
+ * Check if webserver startup is currently in backoff window.
+ * Respects deterministic backoff policy per FSM spec (section 7.1).
+ */
+inline bool is_webserver_backoff_active() { return ::is_webserver_backoff_active(); }
+
+/**
  * Start the full ESP-IDF httpd server (all pages, API, SSE).
  * Idempotent: safe to call twice.
  */

@@ -1,8 +1,9 @@
 #ifndef NETWORK_CONFIG_PAGE_CONTENT_H
 #define NETWORK_CONFIG_PAGE_CONTENT_H
 
-#include <Arduino.h>
+#include <esp_err.h>
+#include <esp_http_server.h>
 
-String get_network_config_page_content(bool isAPMode);
+esp_err_t emit_network_config_page_content(httpd_req_t* req, bool isAPMode);
 
 #endif // NETWORK_CONFIG_PAGE_CONTENT_H

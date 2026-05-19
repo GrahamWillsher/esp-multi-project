@@ -1,7 +1,6 @@
 #include "transmitter_state.h"
 
 #include <Preferences.h>
-#include <esp32common/espnow/connection_manager.h>
 #include <freertos/FreeRTOS.h>
 #include <string.h>
 
@@ -99,31 +98,41 @@ void reduce_metadata(bool valid,
     }
 }
 
-void reduce_event_log_summary(const event_log_summary_t& summary) {
+void reduce_event_log_summary(uint32_t seq,
+                              uint32_t total_historical,
+                              uint32_t error_historical,
+                              uint32_t new_since_last_report_total,
+                              uint32_t new_since_last_report_error,
+                              uint32_t uptime_ms) {
     g_state_store.event_log_summary.known = true;
-    g_state_store.event_log_summary.seq = summary.seq;
-    g_state_store.event_log_summary.total_historical = summary.total_historical;
-    g_state_store.event_log_summary.error_historical = summary.error_historical;
-    g_state_store.event_log_summary.new_since_last_report_total = summary.new_since_last_report_total;
-    g_state_store.event_log_summary.new_since_last_report_error = summary.new_since_last_report_error;
-    g_state_store.event_log_summary.uptime_ms = summary.uptime_ms;
+    g_state_store.event_log_summary.seq = seq;
+    g_state_store.event_log_summary.total_historical = total_historical;
+    g_state_store.event_log_summary.error_historical = error_historical;
+    g_state_store.event_log_summary.new_since_last_report_total = new_since_last_report_total;
+    g_state_store.event_log_summary.new_since_last_report_error = new_since_last_report_error;
+    g_state_store.event_log_summary.uptime_ms = uptime_ms;
     g_state_store.event_log_summary.last_update_ms = millis();
 }
 
-void reduce_event_log_clear_ack(const event_logs_clear_ack_t& ack) {
+void reduce_event_log_clear_ack(uint8_t status,
+                                uint32_t summary_seq,
+                                uint32_t uptime_ms) {
     g_state_store.event_log_clear_ack.known = true;
-    g_state_store.event_log_clear_ack.status = ack.status;
-    g_state_store.event_log_clear_ack.summary_seq = ack.summary_seq;
-    g_state_store.event_log_clear_ack.uptime_ms = ack.uptime_ms;
+    g_state_store.event_log_clear_ack.status = status;
+    g_state_store.event_log_clear_ack.summary_seq = summary_seq;
+    g_state_store.event_log_clear_ack.uptime_ms = uptime_ms;
     g_state_store.event_log_clear_ack.last_update_ms = millis();
 }
 
-void reduce_temperature_report(const temperature_report_t& report) {
+void reduce_temperature_report(bool valid,
+                               uint32_t seq,
+                               int16_t temperature_centi_c,
+                               uint32_t uptime_ms) {
     g_state_store.temperature_report.known = true;
-    g_state_store.temperature_report.valid = report.valid != 0;
-    g_state_store.temperature_report.seq = report.seq;
-    g_state_store.temperature_report.temperature_centi_c = report.temperature_centi_c;
-    g_state_store.temperature_report.uptime_ms = report.uptime_ms;
+    g_state_store.temperature_report.valid = valid;
+    g_state_store.temperature_report.seq = seq;
+    g_state_store.temperature_report.temperature_centi_c = temperature_centi_c;
+    g_state_store.temperature_report.uptime_ms = uptime_ms;
     g_state_store.temperature_report.last_update_ms = millis();
 }
 } // namespace
@@ -180,8 +189,8 @@ bool was_last_send_successful() {
 }
 
 bool is_transmitter_connected() {
-    return EspNowConnectionManager::instance().is_connected() &&
-           TransmitterIdentity::get_active_mac() != nullptr;
+    return TransmitterMqttSpecs::is_connected() &&
+           TransmitterIdentity::has_registered_mac();
 }
 
 void update_time_data(uint64_t uptime_ms, uint64_t unix_time, int16_t utc_offset_min, uint8_t time_source) {
@@ -241,7 +250,7 @@ bool is_geolocation_valid() {
     with_state_read_lock([&]() {
         heartbeat_flags = g_state_store.runtime.heartbeat_flags;
     });
-    return (heartbeat_flags & HEARTBEAT_FLAG_GEOLOCATION_VALID) != 0;
+    return (heartbeat_flags & kHeartbeatFlagGeolocationValid) != 0;
 }
 
 void store_metadata(bool valid,
@@ -317,25 +326,31 @@ void load_metadata_from_prefs(void* prefs_ptr) {
     }
 
     Preferences& prefs = *static_cast<Preferences*>(prefs_ptr);
+    // IMPORTANT: Never perform NVS/flash operations while holding a critical
+    // section lock. NVS reads can invoke flash IPC/cache operations that may
+    // block, and doing so under portENTER_CRITICAL can trigger interrupt WDT.
+    MetadataSnapshot loaded{};
+    loaded.received = prefs.getBool(kKeyMetaKnown, false);
+    loaded.valid = prefs.getBool(kKeyMetaValid, false);
+
+    loaded.env[0] = '\0';
+    loaded.device[0] = '\0';
+    loaded.build_date[0] = '\0';
+    prefs.getString(kKeyMetaEnv, loaded.env, sizeof(loaded.env));
+    prefs.getString(kKeyMetaDevice, loaded.device, sizeof(loaded.device));
+    prefs.getString(kKeyMetaBuild, loaded.build_date, sizeof(loaded.build_date));
+
+    loaded.env[sizeof(loaded.env) - 1] = '\0';
+    loaded.device[sizeof(loaded.device) - 1] = '\0';
+    loaded.build_date[sizeof(loaded.build_date) - 1] = '\0';
+
+    loaded.major = prefs.getUChar(kKeyMetaMajor, 0);
+    loaded.minor = prefs.getUChar(kKeyMetaMinor, 0);
+    loaded.patch = prefs.getUChar(kKeyMetaPatch, 0);
+    loaded.version = prefs.getUInt(kKeyMetaVersion, 0);
+
     with_state_write_lock([&]() {
-        g_state_store.metadata.received = prefs.getBool(kKeyMetaKnown, false);
-        g_state_store.metadata.valid = prefs.getBool(kKeyMetaValid, false);
-
-        g_state_store.metadata.env[0] = '\0';
-        g_state_store.metadata.device[0] = '\0';
-        g_state_store.metadata.build_date[0] = '\0';
-        prefs.getString(kKeyMetaEnv, g_state_store.metadata.env, sizeof(g_state_store.metadata.env));
-        prefs.getString(kKeyMetaDevice, g_state_store.metadata.device, sizeof(g_state_store.metadata.device));
-        prefs.getString(kKeyMetaBuild, g_state_store.metadata.build_date, sizeof(g_state_store.metadata.build_date));
-
-        g_state_store.metadata.env[sizeof(g_state_store.metadata.env) - 1] = '\0';
-        g_state_store.metadata.device[sizeof(g_state_store.metadata.device) - 1] = '\0';
-        g_state_store.metadata.build_date[sizeof(g_state_store.metadata.build_date) - 1] = '\0';
-
-        g_state_store.metadata.major = prefs.getUChar(kKeyMetaMajor, 0);
-        g_state_store.metadata.minor = prefs.getUChar(kKeyMetaMinor, 0);
-        g_state_store.metadata.patch = prefs.getUChar(kKeyMetaPatch, 0);
-        g_state_store.metadata.version = prefs.getUInt(kKeyMetaVersion, 0);
+        g_state_store.metadata = loaded;
     });
 }
 
@@ -361,10 +376,20 @@ void save_metadata_to_prefs(void* prefs_ptr) {
     prefs.putUInt(kKeyMetaVersion, metadata_snapshot.version);
 }
 
-void store_event_log_summary(const event_log_summary_t& summary) {
+void store_event_log_summary(uint32_t seq,
+                             uint32_t total_historical,
+                             uint32_t error_historical,
+                             uint32_t new_since_last_report_total,
+                             uint32_t new_since_last_report_error,
+                             uint32_t uptime_ms) {
     EventLogSummarySnapshot snapshot;
     with_state_write_lock([&]() {
-        reduce_event_log_summary(summary);
+        reduce_event_log_summary(seq,
+                                 total_historical,
+                                 error_historical,
+                                 new_since_last_report_total,
+                                 new_since_last_report_error,
+                                 uptime_ms);
         snapshot = g_state_store.event_log_summary;
     });
 
@@ -384,10 +409,12 @@ EventLogSummarySnapshot get_event_log_summary() {
     return snapshot;
 }
 
-void store_event_log_clear_ack(const event_logs_clear_ack_t& ack) {
+void store_event_log_clear_ack(uint8_t status,
+                               uint32_t summary_seq,
+                               uint32_t uptime_ms) {
     EventLogClearAckSnapshot snapshot;
     with_state_write_lock([&]() {
-        reduce_event_log_clear_ack(ack);
+        reduce_event_log_clear_ack(status, summary_seq, uptime_ms);
         snapshot = g_state_store.event_log_clear_ack;
     });
 
@@ -404,10 +431,13 @@ EventLogClearAckSnapshot get_event_log_clear_ack() {
     return snapshot;
 }
 
-void store_temperature_report(const temperature_report_t& report) {
+void store_temperature_report(bool valid,
+                              uint32_t seq,
+                              int16_t temperature_centi_c,
+                              uint32_t uptime_ms) {
     TemperatureReportSnapshot snapshot;
     with_state_write_lock([&]() {
-        reduce_temperature_report(report);
+        reduce_temperature_report(valid, seq, temperature_centi_c, uptime_ms);
         snapshot = g_state_store.temperature_report;
     });
 

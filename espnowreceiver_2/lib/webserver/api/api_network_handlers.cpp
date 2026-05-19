@@ -2,19 +2,25 @@
 
 #include "api_request_utils.h"
 #include "api_response_utils.h"
+#include "../../src/mqtt/mqtt_client.h"
 #include "../utils/transmitter_manager.h"
 #include "../logging.h"
 #include "../../receiver_config/receiver_config_manager.h"
-#include "../../../src/espnow/rx_connection_handler.h"
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
-#include <esp_now.h>
+#include <esp32common/config/timing_config.h>
 #include <esp32common/espnow/common.h>
-#include <esp32common/espnow/packet_utils.h>
-#include <esp32common/espnow/tx_scheduler.h>
+#include <esp32common/mqtt/mqtt_feature_flags.h>
 #include <cstring>
+
+namespace {
+constexpr const char* MQTT_TOPIC_RX_CMD_NETWORK_UPDATE = "batt-emu/mqtt-v1/rx/cmd/network/update";
+constexpr const char* MQTT_TOPIC_TX_ACK_NETWORK_UPDATE = "batt-emu/mqtt-v1/tx/ack/network/update";
+constexpr const char* MQTT_TOPIC_RX_CMD_MQTT_UPDATE = "batt-emu/mqtt-v1/rx/cmd/mqtt/update";
+constexpr const char* MQTT_TOPIC_TX_ACK_MQTT_UPDATE = "batt-emu/mqtt-v1/tx/ack/mqtt/update";
+}
 
 esp_err_t api_get_receiver_network_handler(httpd_req_t *req) {
     String wifi_mac = WiFi.macAddress();
@@ -229,15 +235,6 @@ esp_err_t api_save_network_config_handler(httpd_req_t *req) {
 
     LOG_INFO("API", "Received network config JSON: %s", buf);
 
-    if (!TransmitterManager::isMACKnown()) {
-        return ApiResponseUtils::send_transmitter_mac_unknown(req);
-    }
-
-    if (ReceiverConnectionHandler::instance().quiet_mode_active()) {
-        LOG_WARN("API", "Blocked network config update during reconnect quiet mode");
-        return ApiResponseUtils::send_error_message(req, "ESP-NOW reconnect quiet mode active - try again shortly");
-    }
-
     network_config_update_t msg;
     memset(&msg, 0, sizeof(msg));
     msg.type = msg_network_config_update;
@@ -266,15 +263,73 @@ esp_err_t api_save_network_config_handler(httpd_req_t *req) {
     }
 
     msg.config_version = 0;
-    msg.checksum = EspnowPacketUtils::calculate_message_crc32_zeroed(&msg);
 
-    esp_err_t result = EspnowTxScheduler::send(TransmitterManager::getMAC(), &msg, sizeof(msg), "API_NET_CFG_UPDATE");
-    if (result == ESP_OK) {
-        LOG_INFO("API", "✓ Network config sent to transmitter");
-    } else {
-        LOG_ERROR("API", "✗ ESP-NOW send FAILED: %s", esp_err_to_name(result));
+    bool mqtt_sent = false;
+
+#if MQTT_FEATURE_COMMANDS
+    if (MqttClient::isEnabled() && MqttClient::isConnected()) {
+        char request_id[32];
+        snprintf(request_id, sizeof(request_id), "net-%lu", static_cast<unsigned long>(millis()));
+
+        StaticJsonDocument<320> cmd;
+        cmd["request_id"] = request_id;
+        cmd["use_static_ip"] = (msg.use_static_ip != 0);
+        cmd["origin"] = "receiver_lcd";
+        cmd["schema"] = 1;
+
+        if (msg.use_static_ip) {
+            char ip_str[16], gateway_str[16], subnet_str[16], dns1_str[16], dns2_str[16];
+            ApiResponseUtils::format_ipv4(ip_str, msg.ip);
+            ApiResponseUtils::format_ipv4(gateway_str, msg.gateway);
+            ApiResponseUtils::format_ipv4(subnet_str, msg.subnet);
+            ApiResponseUtils::format_ipv4(dns1_str, msg.dns_primary);
+            ApiResponseUtils::format_ipv4(dns2_str, msg.dns_secondary);
+
+            cmd["ip"] = ip_str;
+            cmd["gateway"] = gateway_str;
+            cmd["subnet"] = subnet_str;
+            cmd["dns_primary"] = dns1_str;
+            cmd["dns_secondary"] = dns2_str;
+        }
+
+        char payload[320];
+        const size_t n = serializeJson(cmd, payload, sizeof(payload));
+        if (n > 0) {
+            char ack_payload[384] = {0};
+            mqtt_sent = MqttClient::publishJsonAndWaitForAck(MQTT_TOPIC_RX_CMD_NETWORK_UPDATE,
+                                                             payload,
+                                                             request_id,
+                                                             MQTT_TOPIC_TX_ACK_NETWORK_UPDATE,
+                                                             TimingConfig::SETTINGS_UPDATE_DELAY_MS,
+                                                             ack_payload,
+                                                             sizeof(ack_payload));
+
+            if (mqtt_sent) {
+                StaticJsonDocument<256> ack_doc;
+                if (deserializeJson(ack_doc, ack_payload) == DeserializationError::Ok) {
+                    const bool success = ack_doc["success"] | false;
+                    const char* message = ack_doc["message"] | "";
+                    if (success) {
+                        LOG_INFO("API", "✓ Network config ACK received");
+                        return ApiResponseUtils::send_success_message(req, "Network config applied via MQTT");
+                    }
+
+                    LOG_WARN("API", "Network config ACK reported failure: %s", message);
+                    return ApiResponseUtils::send_jsonf(req,
+                                                        "{\"success\":false,\"error\":\"%s\"}",
+                                                        message[0] != '\0' ? message : "Network config update failed");
+                }
+
+                LOG_WARN("API", "Network config ACK received but could not be parsed");
+                return ApiResponseUtils::send_success_message(req, "Network config command sent via MQTT");
+            }
+        }
     }
-    return ApiResponseUtils::send_espnow_send_result(req, result, "Network config sent - awaiting transmitter response");
+#endif
+
+    (void)mqtt_sent;
+    LOG_WARN("API", "MQTT command channel unavailable for network config update");
+    return ApiResponseUtils::send_error_message(req, "MQTT command channel unavailable");
 }
 
 esp_err_t api_get_mqtt_config_handler(httpd_req_t *req) {
@@ -316,15 +371,6 @@ esp_err_t api_save_mqtt_config_handler(httpd_req_t *req) {
 
     LOG_INFO("API", "Received MQTT config JSON: %s", buf);
 
-    if (!TransmitterManager::isMACKnown()) {
-        return ApiResponseUtils::send_transmitter_mac_unknown(req);
-    }
-
-    if (ReceiverConnectionHandler::instance().quiet_mode_active()) {
-        LOG_WARN("API", "Blocked MQTT config update during reconnect quiet mode");
-        return ApiResponseUtils::send_error_message(req, "ESP-NOW reconnect quiet mode active - try again shortly");
-    }
-
     mqtt_config_update_t msg;
     memset(&msg, 0, sizeof(msg));
     msg.type = msg_mqtt_config_update;
@@ -351,18 +397,64 @@ esp_err_t api_save_mqtt_config_handler(httpd_req_t *req) {
     strncpy(msg.client_id, client_id, sizeof(msg.client_id) - 1);
 
     msg.config_version = 0;
-    msg.checksum = EspnowPacketUtils::calculate_message_crc32_zeroed(&msg);
 
-    LOG_INFO("API", "Sending MQTT config: %s, %d.%d.%d.%d:%d",
-             msg.enabled ? "ENABLED" : "DISABLED",
-             msg.server[0], msg.server[1], msg.server[2], msg.server[3],
-             msg.port);
+    bool mqtt_sent = false;
 
-    esp_err_t result = EspnowTxScheduler::send(TransmitterManager::getMAC(), &msg, sizeof(msg), "API_MQTT_CFG_UPDATE");
-    if (result == ESP_OK) {
-        LOG_INFO("API", "✓ MQTT config sent to transmitter");
-    } else {
-        LOG_ERROR("API", "✗ ESP-NOW send FAILED: %s", esp_err_to_name(result));
+#if MQTT_FEATURE_COMMANDS
+    if (MqttClient::isEnabled() && MqttClient::isConnected()) {
+        char request_id[32];
+        snprintf(request_id, sizeof(request_id), "mqcfg-%lu", static_cast<unsigned long>(millis()));
+
+        StaticJsonDocument<320> cmd;
+        cmd["request_id"] = request_id;
+        cmd["origin"] = "receiver_lcd";
+        cmd["schema"] = 1;
+        cmd["enabled"] = (msg.enabled != 0);
+        cmd["port"] = msg.port;
+        cmd["username"] = msg.username;
+        cmd["password"] = msg.password;
+        cmd["client_id"] = msg.client_id;
+
+        char server_ip[16];
+        ApiResponseUtils::format_ipv4(server_ip, msg.server);
+        cmd["server"] = server_ip;
+
+        char payload[320];
+        const size_t n = serializeJson(cmd, payload, sizeof(payload));
+        if (n > 0) {
+            char ack_payload[384] = {0};
+            mqtt_sent = MqttClient::publishJsonAndWaitForAck(MQTT_TOPIC_RX_CMD_MQTT_UPDATE,
+                                                             payload,
+                                                             request_id,
+                                                             MQTT_TOPIC_TX_ACK_MQTT_UPDATE,
+                                                             TimingConfig::SETTINGS_UPDATE_DELAY_MS,
+                                                             ack_payload,
+                                                             sizeof(ack_payload));
+
+            if (mqtt_sent) {
+                StaticJsonDocument<256> ack_doc;
+                if (deserializeJson(ack_doc, ack_payload) == DeserializationError::Ok) {
+                    const bool success = ack_doc["success"] | false;
+                    const char* message = ack_doc["message"] | "";
+                    if (success) {
+                        LOG_INFO("API", "✓ MQTT config ACK received");
+                        return ApiResponseUtils::send_success_message(req, "MQTT config applied via MQTT");
+                    }
+
+                    LOG_WARN("API", "MQTT config ACK reported failure: %s", message);
+                    return ApiResponseUtils::send_jsonf(req,
+                                                        "{\"success\":false,\"error\":\"%s\"}",
+                                                        message[0] != '\0' ? message : "MQTT config update failed");
+                }
+
+                LOG_WARN("API", "MQTT config ACK received but could not be parsed");
+                return ApiResponseUtils::send_success_message(req, "MQTT config command sent via MQTT");
+            }
+        }
     }
-    return ApiResponseUtils::send_espnow_send_result(req, result, "MQTT config sent - awaiting transmitter response");
+#endif
+
+    (void)mqtt_sent;
+    LOG_WARN("API", "MQTT command channel unavailable for MQTT config update");
+    return ApiResponseUtils::send_error_message(req, "MQTT command channel unavailable");
 }

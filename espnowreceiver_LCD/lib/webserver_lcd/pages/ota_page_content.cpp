@@ -1,16 +1,13 @@
 #include "ota_page_content.h"
 
-String get_ota_page_content() {
-    String content = R"rawliteral(
+const char* get_ota_page_content() {
+    static const char kContent[] = R"rawliteral(
     <h1>OTA Firmware Update</h1>
     <div style='margin-bottom: 20px;'>
         <a href='/' style='display: inline-block; padding: 10px 16px; background: #4CAF50; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;'>
             ← Dashboard
         </a>
     </div>
-    )rawliteral";
-
-    content += R"rawliteral(
     
     <div class='info-box' style='margin-bottom: 20px;'>
         <h3 style='display: flex; align-items: center; justify-content: space-between; gap: 12px;'>
@@ -36,9 +33,6 @@ String get_ota_page_content() {
         </table>
     </div>
 
-    )rawliteral";
-
-    content += R"rawliteral(
     <!-- Receiver OTA Section -->
     <div class='info-box' style='text-align: center; margin-bottom: 20px;'>
         <h3>📲 Update Receiver (This Device)</h3>
@@ -86,6 +80,5 @@ String get_ota_page_content() {
         
     </div>
 )rawliteral";
-
-    return content;
+    return kContent;
 }

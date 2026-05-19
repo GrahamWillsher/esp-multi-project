@@ -4,7 +4,7 @@
 #include "api_response_utils.h"
 #include "api_schema_contract.h"
 #include "../utils/transmitter_event_log_cache.h"
-#include "../../src/espnow/espnow_send.h"
+#include "../../src/mqtt/control_state_compat.h"
 #include "../../src/mqtt/mqtt_client.h"
 
 #include <ArduinoJson.h>

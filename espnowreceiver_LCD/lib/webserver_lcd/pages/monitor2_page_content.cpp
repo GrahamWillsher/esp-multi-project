@@ -1,8 +1,7 @@
 #include "monitor2_page_content.h"
-#include <Arduino.h>
 
-String get_monitor2_page_content() {
-    String content = R"rawliteral(
+const char* get_monitor2_page_content() {
+    static const char kMonitor2PageContent[] = R"rawliteral(
     <h1>ESP-NOW Receiver</h1>
     <h2>Battery Monitor (SSE - Real-time)</h2>
     <div style='margin-bottom: 20px;'>
@@ -10,9 +9,7 @@ String get_monitor2_page_content() {
             ← Dashboard
         </a>
     </div>
-    )rawliteral";
 
-    content += R"rawliteral(
 
     <div class='mode-indicator' id='mode'>Mode: Loading...</div>
     <div class='connection-status' id='connection'>⚡ Connecting...</div>
@@ -31,5 +28,5 @@ String get_monitor2_page_content() {
 
     <p class='update-note'>📡 Real-time updates via Server-Sent Events</p>
 )rawliteral";
-    return content;
+    return kMonitor2PageContent;
 }

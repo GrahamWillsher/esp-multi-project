@@ -60,14 +60,12 @@ esp_err_t battery_specs_page_handler(httpd_req_t *req) {
         {"/inverter_settings.html", "Inverter Specs &#8594;"},
     };
 
-    const String inline_script = get_battery_specs_page_inline_script();
-
     return WebserverCommonSpecLayout::send_spec_page_response(
         req,
         get_battery_specs_page_params(),
         kNavLinks,
         sizeof(kNavLinks) / sizeof(kNavLinks[0]),
-        inline_script.c_str(),
+        get_battery_specs_page_inline_script(),
         get_battery_specs_section_fmt(),
         2048,
         false,

@@ -1,8 +1,7 @@
 #include "monitor_page_content.h"
-#include <Arduino.h>
 
-String get_monitor_page_content() {
-    String content = R"rawliteral(
+const char* get_monitor_page_content() {
+    static const char kMonitorPageContent[] = R"rawliteral(
     <h1>ESP-NOW Receiver</h1>
     <h2>Battery Monitor</h2>
     <div style='margin-bottom: 20px;'>
@@ -10,9 +9,7 @@ String get_monitor_page_content() {
             ← Dashboard
         </a>
     </div>
-    )rawliteral";
 
-    content += R"rawliteral(
 
     <div class='mode-indicator' id='mode'>Mode: Loading...</div>
 
@@ -28,7 +25,19 @@ String get_monitor_page_content() {
         <div class='data-value' id='voltage'>--</div>
     </div>
 
-    <p class='update-note'>📊 Auto-update every 1 second</p>
+    <div class='info-box' style='margin-top: 30px;'>
+        <h3>System Runtime</h3>
+        <div class='data-label'>Contactor State</div>
+        <div class='data-value' id='contactor' style='font-size: 32px;'>--</div>
+
+        <div class='data-label' style='margin-top: 20px;'>Charger</div>
+        <div class='data-value' id='charger' style='font-size: 28px;'>--</div>
+
+        <div class='data-label' style='margin-top: 20px;'>Inverter</div>
+        <div class='data-value' id='inverter' style='font-size: 28px;'>--</div>
+    </div>
+
+    <p class='update-note'>📊 Snapshot polling: 5s baseline (adaptive backoff under load)</p>
 )rawliteral";
-    return content;
+    return kMonitorPageContent;
 }

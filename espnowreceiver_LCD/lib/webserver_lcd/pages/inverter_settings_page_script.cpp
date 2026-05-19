@@ -1,7 +1,7 @@
 #include "inverter_settings_page_script.h"
 
-String get_inverter_settings_page_script() {
-    return R"rawliteral(
+const char* get_inverter_settings_page_script() {
+    static const char kInverterSettingsPageScript[] = R"rawliteral(
         // Store initial value to detect changes
         let initialInverterType = '';
         let initialInverterInterface = '';
@@ -144,4 +144,6 @@ String get_inverter_settings_page_script() {
             });
         }
     )rawliteral";
+
+    return kInverterSettingsPageScript;
 }

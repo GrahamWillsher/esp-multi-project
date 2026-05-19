@@ -1,6 +1,7 @@
 #include "page_registration_factory.h"
 #include "pages/pages.h"
 #include "pages/network_page.h"
+#include "common/page_generator.h"
 #include "logging.h"
 
 namespace PageRegistrationFactory {
@@ -21,6 +22,9 @@ const PageHandlerDescriptor PAGE_HANDLERS[] = {
     // Landing + hub
     { "/",                      ::register_dashboard_page },
     { "/transmitter",           ::register_transmitter_hub_page },
+
+    // Phase 2: static JS asset — cacheable COMMON_SCRIPT_HELPERS
+    { "/static/helpers.js",     ::register_static_helpers_js },
 
     // Transmitter configuration pages
     { "/transmitter/config",    ::register_settings_page },

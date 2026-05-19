@@ -4,10 +4,15 @@
 #include "../common/page_generator.h"
 
 static esp_err_t cellmonitor_handler(httpd_req_t *req) {
-    const char* content = get_cellmonitor_page_content();
+    auto content_generator = [](httpd_req_t* request) -> esp_err_t {
+        const char* content = get_cellmonitor_page_content();
+        return send_page_content_chunk(request, "cellmonitor_content", content, strlen(content));
+    };
     const char* script  = get_cellmonitor_page_script();
-    // Both title and content are static literals — uses non-allocating const char* overload.
-    return send_rendered_page(req, "Cell Monitor", content, PageRenderOptions("", script));
+    return send_rendered_page_streaming(req,
+                                        "Cell Monitor",
+                                        content_generator,
+                                        PageRenderOptions("", script));
 }
 
 esp_err_t register_cellmonitor_page(httpd_handle_t server) {

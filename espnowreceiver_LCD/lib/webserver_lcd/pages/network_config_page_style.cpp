@@ -1,7 +1,7 @@
 #include "network_config_page_style.h"
 
-String get_network_config_page_style() {
-    return R"rawliteral(
+const char* get_network_config_page_style() {
+    static const char kNetworkConfigPageStyle[] = R"rawliteral(
         .form-control {
             max-width: 250px;
             padding: 0.5rem;
@@ -123,4 +123,6 @@ String get_network_config_page_style() {
             font-weight: 500;
         }
 )rawliteral";
+
+    return kNetworkConfigPageStyle;
 }

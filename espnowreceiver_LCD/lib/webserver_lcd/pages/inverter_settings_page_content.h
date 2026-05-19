@@ -1,7 +1,5 @@
 #pragma once
 
-#include <Arduino.h>
-
 /**
  * @brief Generate the HTML content for the Inverter Settings page.
  *
@@ -9,6 +7,6 @@
  * selector dropdown, interface selector dropdown, and save button.
  * Calls generate_nav_buttons internally.
  *
- * @return String containing the HTML body content (no <script> block).
+ * @return Flash-resident HTML body content (no <script> block).
  */
-String get_inverter_settings_page_content();
+const char* get_inverter_settings_page_content();

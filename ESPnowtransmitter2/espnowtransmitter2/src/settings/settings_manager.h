@@ -34,6 +34,27 @@ public:
      * @param msg ESP-NOW message containing settings update
      */
     void handle_settings_update(const espnow_queue_msg_t& msg);
+
+    /**
+     * @brief Apply a single settings field update (transport-agnostic)
+     * @param category Settings category
+     * @param field_id Field ID within category
+     * @param value_uint32 Integer payload value
+     * @param value_float Floating payload value
+     * @param value_string String payload value (nullable)
+     * @param out_new_version Optional pointer to receive updated category version
+     * @param out_error_msg Optional writable buffer for human-readable error details
+     * @param out_error_msg_len Size of out_error_msg buffer
+     * @return true when update validated and persisted
+     */
+    bool apply_settings_update(uint8_t category,
+                               uint8_t field_id,
+                               uint32_t value_uint32,
+                               float value_float,
+                               const char* value_string,
+                               uint32_t* out_new_version,
+                               char* out_error_msg,
+                               size_t out_error_msg_len);
     
     /**
      * @brief Save a battery setting to NVS

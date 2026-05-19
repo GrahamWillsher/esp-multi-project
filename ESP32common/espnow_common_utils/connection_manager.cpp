@@ -8,6 +8,8 @@
 
 #include "connection_manager.h"
 #include <Arduino.h>
+#include <esp32common/espnow/unified_link_fsm.h>
+#include <esp32common/patterns/numeric_safety.h>
 #include <logging_config.h>
 
 // Global event queue (created on init)
@@ -22,14 +24,13 @@ EspNowConnectionManager::EspNowConnectionManager()
     : current_state_(EspNowConnectionState::IDLE),
       state_enter_time_(0),
       event_queue_(nullptr),
-      auto_reconnect_enabled_(false),
-      connecting_timeout_ms_(0),
             heartbeat_timeout_enabled_(false),
             heartbeat_timeout_ms_(5000),
             heartbeat_timeout_reported_(false),
       heartbeat_monitor_(5000),  // 5-second timeout
       backoff_manager_() {
     memset(peer_mac_, 0, 6);
+        memset(authorized_peer_mac_, 0, 6);
 }
 
 bool EspNowConnectionManager::init() {
@@ -46,11 +47,12 @@ bool EspNowConnectionManager::init() {
     event_queue_ = g_connection_event_queue;
     current_state_ = EspNowConnectionState::IDLE;
     state_enter_time_ = millis();
-    auto_reconnect_enabled_ = false;
-    connecting_timeout_ms_ = 0;
     heartbeat_timeout_enabled_ = false;
     heartbeat_timeout_ms_ = 5000;
     heartbeat_timeout_reported_ = false;
+    peer_registered_transition_authorized_ = false;
+    memset(authorized_peer_mac_, 0, sizeof(authorized_peer_mac_));
+    esp32common::espnow::UnifiedLinkFsm::instance().begin_discovery(state_enter_time_);
     
     LOG_INFO("CONN_MGR", "Connection Manager initialized");
     LOG_INFO("CONN_MGR", "State: IDLE");
@@ -62,16 +64,6 @@ bool EspNowConnectionManager::init() {
 void EspNowConnectionManager::register_state_callback(StateChangeCallback callback) {
     state_callbacks_.push_back(callback);
     LOG_INFO("CONN_MGR", "Registered state change callback (total: %d)", state_callbacks_.size());
-}
-
-void EspNowConnectionManager::set_auto_reconnect(bool enable) {
-    auto_reconnect_enabled_ = enable;
-    LOG_INFO("CONN_MGR", "Auto-reconnect: %s", enable ? "ENABLED" : "DISABLED");
-}
-
-void EspNowConnectionManager::set_connecting_timeout_ms(uint32_t timeout_ms) {
-    connecting_timeout_ms_ = timeout_ms;
-    LOG_INFO("CONN_MGR", "CONNECTING timeout: %ldms", timeout_ms);
 }
 
 void EspNowConnectionManager::set_heartbeat_timeout_enabled(bool enable) {
@@ -99,6 +91,22 @@ bool EspNowConnectionManager::post_event(EspNowEvent event, const uint8_t* mac) 
     return result == pdTRUE;
 }
 
+void EspNowConnectionManager::authorize_peer_registered_transition(const uint8_t* mac) {
+    peer_registered_transition_authorized_ = true;
+    if (mac != nullptr) {
+        memcpy(authorized_peer_mac_, mac, sizeof(authorized_peer_mac_));
+    } else {
+        memset(authorized_peer_mac_, 0, sizeof(authorized_peer_mac_));
+    }
+
+    LOG_INFO("CONN_MGR", "Handshake admission armed for PEER_REGISTERED");
+}
+
+void EspNowConnectionManager::clear_peer_registered_transition_authorization() {
+    peer_registered_transition_authorized_ = false;
+    memset(authorized_peer_mac_, 0, sizeof(authorized_peer_mac_));
+}
+
 void EspNowConnectionManager::process_events() {
     EspNowStateChange event;
     
@@ -111,14 +119,6 @@ void EspNowConnectionManager::process_events() {
         handle_event(event);
     }
     
-    // Check for CONNECTING timeout
-    if (current_state_ == EspNowConnectionState::CONNECTING && 
-        connecting_timeout_ms_ > 0 && 
-        get_state_time_ms() > connecting_timeout_ms_) {
-        LOG_WARN("CONN_MGR", "CONNECTING timeout (%ldms) exceeded -> IDLE", connecting_timeout_ms_);
-        transition_to_state(EspNowConnectionState::IDLE);
-    }
-    
     // Common heartbeat/activity timeout ownership (configurable per device)
     if (heartbeat_timeout_enabled_ &&
         current_state_ == EspNowConnectionState::CONNECTED &&
@@ -126,7 +126,7 @@ void EspNowConnectionManager::process_events() {
         !heartbeat_timeout_reported_) {
         LOG_WARN("CONN_MGR", "Heartbeat/activity timeout (%ldms since last) -> CONNECTION_LOST",
                  heartbeat_monitor_.ms_since_last_heartbeat());
-        heartbeat_timeouts_++;
+        (void)esp32common::numeric::increment_saturating<uint32_t>(heartbeat_timeouts_);
         heartbeat_timeout_reported_ = true;
         post_event(EspNowEvent::CONNECTION_LOST);
     }
@@ -179,17 +179,46 @@ void EspNowConnectionManager::handle_connecting_event(const EspNowStateChange& e
             LOG_INFO("CONN_MGR", "PEER_FOUND -> Waiting for peer registration");
             memcpy(peer_mac_, event.peer_mac, 6);
             break;
+
+        case EspNowEvent::DATA_RECEIVED:
+            // Expected ordering on RX: data can arrive while CONNECTING before the
+            // PEER_REGISTERED event is drained from the queue.
+            // If admission is already armed for this MAC, promote immediately to
+            // avoid getting stuck in CONNECTING when the registration event was
+            // delayed/lost under load.
+            if (is_authorized_peer_registered_event(event)) {
+                LOG_INFO("CONN_MGR", "DATA_RECEIVED (admission armed) -> Transitioning to CONNECTED");
+                memcpy(peer_mac_, event.peer_mac, 6);
+                clear_peer_registered_transition_authorization();
+                transition_to_state(EspNowConnectionState::CONNECTED);
+            } else {
+                LOG_DEBUG("CONN_MGR", "CONNECTING: DATA_RECEIVED before peer registration (waiting)");
+            }
+            break;
             
         case EspNowEvent::PEER_REGISTERED:
+            if (!is_authorized_peer_registered_event(event)) {
+                LOG_WARN("CONN_MGR", "Ignoring unauthorized PEER_REGISTERED while CONNECTING");
+                break;
+            }
             LOG_INFO("CONN_MGR", "PEER_REGISTERED -> Transitioning to CONNECTED");
             memcpy(peer_mac_, event.peer_mac, 6);
+            clear_peer_registered_transition_authorization();
             transition_to_state(EspNowConnectionState::CONNECTED);
             break;
             
         case EspNowEvent::CONNECTION_LOST:
         case EspNowEvent::RESET_CONNECTION:
             LOG_WARN("CONN_MGR", "Connection reset/lost -> Back to IDLE");
+            clear_peer_registered_transition_authorization();
             transition_to_state(EspNowConnectionState::IDLE);
+            break;
+
+        case EspNowEvent::CONNECTION_START:
+            // Expected race: multiple reconnect ingress paths can post
+            // CONNECTION_START while another path has already moved
+            // IDLE -> CONNECTING.
+            LOG_DEBUG("CONN_MGR", "CONNECTING: ignoring duplicate CONNECTION_START");
             break;
             
         default:
@@ -244,26 +273,19 @@ void EspNowConnectionManager::transition_to_state(EspNowConnectionState new_stat
     // PHASE 0: Update metrics on state transitions
     if (old_state == EspNowConnectionState::CONNECTED) {
         total_connected_time_ms_ += state_duration;
-        disconnections_++;
+        (void)esp32common::numeric::increment_saturating<uint32_t>(disconnections_);
     }
     
     // Additional logging for specific transitions
     if (new_state == EspNowConnectionState::IDLE) {
+        clear_peer_registered_transition_authorization();
         memset(peer_mac_, 0, 6);
+        esp32common::espnow::UnifiedLinkFsm::instance().begin_discovery(state_enter_time_);
         LOG_INFO("CONN_MGR", "Peer MAC cleared");
         heartbeat_timeout_reported_ = false;
-        
-        // Auto-reconnect if enabled
-        const bool reconnect_eligible =
-            (old_state == EspNowConnectionState::CONNECTED) ||
-            (old_state == EspNowConnectionState::CONNECTING);
-
-        if (auto_reconnect_enabled_ && reconnect_eligible) {
-            LOG_INFO("CONN_MGR", "Auto-reconnect enabled (%s -> IDLE) -> posting CONNECTION_START",
-                     espnow_state_to_string(old_state));
-            post_event(EspNowEvent::CONNECTION_START);
-        }
     } else if (new_state == EspNowConnectionState::CONNECTED) {
+        clear_peer_registered_transition_authorization();
+        esp32common::espnow::UnifiedLinkFsm::instance().note_link_activity(state_enter_time_);
         LOG_INFO("CONN_MGR", "Peer: %02X:%02X:%02X:%02X:%02X:%02X",
                  peer_mac_[0], peer_mac_[1], peer_mac_[2],
                  peer_mac_[3], peer_mac_[4], peer_mac_[5]);
@@ -272,13 +294,33 @@ void EspNowConnectionManager::transition_to_state(EspNowConnectionState new_stat
         heartbeat_monitor_.on_connection_success();
         heartbeat_timeout_reported_ = false;
         backoff_manager_.on_connection_success();
-        successful_connections_++;
+        (void)esp32common::numeric::increment_saturating<uint32_t>(successful_connections_);
     }
     
     // Invoke registered callbacks
     for (const auto& callback : state_callbacks_) {
         callback(old_state, new_state);
     }
+}
+
+bool EspNowConnectionManager::is_authorized_peer_registered_event(const EspNowStateChange& event) const {
+    if (!peer_registered_transition_authorized_) {
+        return false;
+    }
+
+    bool has_authorized_mac = false;
+    for (uint8_t octet : authorized_peer_mac_) {
+        if (octet != 0) {
+            has_authorized_mac = true;
+            break;
+        }
+    }
+
+    if (!has_authorized_mac) {
+        return true;
+    }
+
+    return std::memcmp(authorized_peer_mac_, event.peer_mac, sizeof(authorized_peer_mac_)) == 0;
 }
 
 uint32_t EspNowConnectionManager::get_connected_time_ms() const {
@@ -297,7 +339,8 @@ uint32_t EspNowConnectionManager::get_state_time_ms() const {
 void EspNowConnectionManager::on_heartbeat_received() {
     heartbeat_monitor_.on_heartbeat_received();
     heartbeat_timeout_reported_ = false;
-    heartbeats_received_++;
+    esp32common::espnow::UnifiedLinkFsm::instance().note_link_activity();
+    (void)esp32common::numeric::increment_saturating<uint32_t>(heartbeats_received_);
 }
 
 bool EspNowConnectionManager::is_heartbeat_timeout() const {
@@ -314,7 +357,7 @@ bool EspNowConnectionManager::should_attempt_reconnect() const {
 
 void EspNowConnectionManager::on_reconnect_attempt() {
     backoff_manager_.on_retry_attempt();
-    reconnect_attempts_++;
+    (void)esp32common::numeric::increment_saturating<uint32_t>(reconnect_attempts_);
 }
 
 EspNowConnectionMetrics EspNowConnectionManager::get_metrics() const {
@@ -332,4 +375,12 @@ EspNowConnectionMetrics EspNowConnectionManager::get_metrics() const {
     }
     
     return metrics;
+}
+
+esp32common::espnow::LinkTruth EspNowConnectionManager::get_link_truth() const {
+    return esp32common::espnow::UnifiedLinkFsm::instance().snapshot();
+}
+
+esp32common::espnow::LinkPhase EspNowConnectionManager::get_link_phase() const {
+    return esp32common::espnow::UnifiedLinkFsm::instance().phase();
 }

@@ -1,7 +1,7 @@
 #include "inverter_specs_display_page_script.h"
 
-String get_inverter_specs_page_inline_script() {
-    return R"(
+const char* get_inverter_specs_page_inline_script() {
+    static const char kScript[] = R"(
 window.addEventListener('load', () => {
     function loadLabel(catalogEndpoint, selectedEndpoint, selectedKey, targetId, fallbackText, unavailableText, replaceIfCurrentIn) {
         const targetEl = document.getElementById(targetId);
@@ -71,4 +71,5 @@ window.addEventListener('load', () => {
     );
 });
 )";
+    return kScript;
 }

@@ -1,4 +1,5 @@
 #include "version_beacon_manager.h"
+#include "heartbeat_manager.h"
 #include "tx_send_guard.h"
 #include <esp_now.h>
 #include <espnow_transmitter.h>
@@ -21,11 +22,17 @@ VersionBeaconManager& VersionBeaconManager::instance() {
     return instance;
 }
 
+bool VersionBeaconManager::can_send_beacon_now() const {
+    return EspNowConnectionManager::instance().is_connected() &&
+           HeartbeatManager::instance().has_stable_heartbeat();
+}
+
 void VersionBeaconManager::init() {
     LOG_INFO("VERSION_BEACON", "Manager initialized");
-    
-    // Send initial beacon immediately
-    send_version_beacon(true);
+
+    // Defer first beacon until the connection path is ready.
+    // TxReconnectManager triggers an initial forced send on connect-confirm ACK.
+    pending_beacon_ = true;
 }
 
 void VersionBeaconManager::notify_mqtt_connected(bool connected) {
@@ -33,7 +40,10 @@ void VersionBeaconManager::notify_mqtt_connected(bool connected) {
         mqtt_connected_ = connected;
         LOG_INFO("VERSION_BEACON", "MQTT state changed: %s", 
                  connected ? "CONNECTED" : "DISCONNECTED");
-        send_version_beacon(true);  // Force immediate beacon
+        pending_beacon_ = true;
+        if (can_send_beacon_now()) {
+            send_version_beacon(true);
+        }
     }
 }
 
@@ -42,17 +52,33 @@ void VersionBeaconManager::notify_ethernet_changed(bool connected) {
         ethernet_connected_ = connected;
         LOG_INFO("VERSION_BEACON", "Ethernet state changed: %s", 
                  connected ? "CONNECTED" : "DISCONNECTED");
-        send_version_beacon(true);
+        pending_beacon_ = true;
+        if (can_send_beacon_now()) {
+            send_version_beacon(true);
+        }
     }
 }
 
 void VersionBeaconManager::notify_config_version_changed(config_section_t section) {
     LOG_INFO("VERSION_BEACON", "Config version changed: section=%d", (int)section);
-    send_version_beacon(true);  // Force immediate beacon
+    pending_beacon_ = true;
+    if (can_send_beacon_now()) {
+        send_version_beacon(true);
+    }
 }
 
 void VersionBeaconManager::update() {
+    if (!EspNowConnectionManager::instance().is_connected()) {
+        return;
+    }
+
     uint32_t now = millis();
+
+    if (pending_beacon_ && can_send_beacon_now() &&
+        (now - last_beacon_ms_ >= MIN_BEACON_INTERVAL_MS)) {
+        send_version_beacon(true);
+        return;
+    }
 
     // Periodic version beacon every 30 seconds — ensures receiver always has
     // fresh runtime status (MQTT connected, Ethernet link) and current config versions.
@@ -105,6 +131,11 @@ bool VersionBeaconManager::send_version_beacon(bool force) {
     // Update current runtime state
     mqtt_connected_ = MqttTask::instance().is_connected();
     ethernet_connected_ = EthernetManager::instance().is_connected();
+
+    if (!can_send_beacon_now()) {
+        pending_beacon_ = true;
+        return false;
+    }
     
     // Check if anything changed (unless forced)
     if (!force && !has_runtime_state_changed()) {
@@ -142,42 +173,49 @@ bool VersionBeaconManager::send_version_beacon(bool force) {
     }
     
     // Send via ESP-NOW to receiver (if connected)
-    if (EspNowConnectionManager::instance().is_connected()) {
-        // Get receiver MAC from connection manager
-        const uint8_t* peer_mac = EspNowConnectionManager::instance().get_peer_mac();
-        
-        esp_err_t result = TxSendGuard::send_to_receiver_guarded(
-            peer_mac,
-            (const uint8_t*)&beacon,
-            sizeof(beacon),
-            "version_beacon"
-        );
-        
-        if (result == ESP_OK) {
-            LOG_DEBUG("VERSION_BEACON", "Sent: MQTT:v%u, Net:v%u, Batt:v%u, Profile:v%u, Meta:v%u (MQTT:%s, ETH:%s)",
-                     beacon.mqtt_config_version,
-                     beacon.network_config_version,
-                     beacon.battery_settings_version,
-                     beacon.power_profile_version,
-                     beacon.metadata_config_version,
-                     beacon.mqtt_connected ? "CONN" : "DISC",
-                     beacon.ethernet_connected ? "UP" : "DOWN");
-            send_success = true;
-        } else {
-            LOG_ERROR("VERSION_BEACON", "Send failed: %s", esp_err_to_name(result));
-            send_success = false;
-        }
+    // Get receiver MAC from connection manager
+    const uint8_t* peer_mac = EspNowConnectionManager::instance().get_peer_mac();
+    
+    esp_err_t result = TxSendGuard::send_to_receiver_guarded(
+        peer_mac,
+        (const uint8_t*)&beacon,
+        sizeof(beacon),
+        "version_beacon"
+    );
+    
+    if (result == ESP_OK) {
+        LOG_DEBUG("VERSION_BEACON", "Sent: MQTT:v%u, Net:v%u, Batt:v%u, Profile:v%u, Meta:v%u (MQTT:%s, ETH:%s)",
+                 beacon.mqtt_config_version,
+                 beacon.network_config_version,
+                 beacon.battery_settings_version,
+                 beacon.power_profile_version,
+                 beacon.metadata_config_version,
+                 beacon.mqtt_connected ? "CONN" : "DISC",
+                 beacon.ethernet_connected ? "UP" : "DOWN");
+        send_success = true;
+        pending_beacon_ = false;
+    } else {
+        LOG_ERROR("VERSION_BEACON", "Send failed: %s", esp_err_to_name(result));
+        send_success = false;
+        pending_beacon_ = true;
     }
     
     // Update previous state
     prev_mqtt_connected_ = mqtt_connected_;
     prev_ethernet_connected_ = ethernet_connected_;
     
-    last_beacon_ms_ = now;
+    if (send_success) {
+        last_beacon_ms_ = now;
+    }
     return send_success;
 }
 
 void VersionBeaconManager::send_config_section(config_section_t section, const uint8_t* receiver_mac) {
+    if (!EspNowConnectionManager::instance().is_connected()) {
+        LOG_WARN("VERSION_BEACON", "send_config_section ignored: not connected");
+        return;
+    }
+
     LOG_INFO("VERSION_BEACON", "Sending config section: %d", (int)section);
     
     // Send the appropriate config message based on section requested

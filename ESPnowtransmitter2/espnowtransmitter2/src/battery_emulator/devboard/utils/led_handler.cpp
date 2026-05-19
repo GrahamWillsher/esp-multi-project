@@ -4,6 +4,7 @@
 #include "../../../espnow/tx_send_guard.h"
 #include "../../../config/logging_config.h"
 #include <esp32common/espnow/connection_manager.h>
+#include <esp32common/config/timing_config.h>
 #ifdef BMS_FAULT
 #pragma push_macro("BMS_FAULT")
 #undef BMS_FAULT
@@ -76,6 +77,12 @@ const char* led_mode_name(uint8_t led_mode) {
 
 esp_err_t led_publish_current_state(bool force, const uint8_t* receiver_mac) {
     if (!EspNowConnectionManager::instance().is_connected()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (!force &&
+        EspNowConnectionManager::instance().ms_since_last_heartbeat() >
+            TimingConfig::HEARTBEAT_TIMEOUT_MS) {
         return ESP_ERR_INVALID_STATE;
     }
 

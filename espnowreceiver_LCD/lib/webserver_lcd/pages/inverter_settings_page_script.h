@@ -1,7 +1,5 @@
 #pragma once
 
-#include <Arduino.h>
-
 /**
  * @brief Generate the JavaScript for the Inverter Settings page.
  *
@@ -9,6 +7,6 @@
  * population (with retry), current selection loading, change tracking,
  * save button state management, and SaveOperation.runComponentApply call.
  *
- * @return String containing the JavaScript (no <script> tags).
+ * @return Flash-resident JavaScript (no <script> tags).
  */
-String get_inverter_settings_page_script();
+const char* get_inverter_settings_page_script();

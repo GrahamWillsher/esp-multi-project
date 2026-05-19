@@ -3,19 +3,18 @@
 #include "api_request_utils.h"
 #include "api_response_utils.h"
 #include "api_schema_contract.h"
+#include "../../src/mqtt/mqtt_command_client.h"
+#include "../../src/mqtt/mqtt_client.h"
 #include "../utils/transmitter_manager.h"
 #include "../logging.h"
 #include "../../receiver_config/receiver_config_manager.h"
-#include "../../../src/espnow/rx_connection_handler.h"
+#include <esp32common/mqtt/mqtt_feature_flags.h>
 #include "common_lcd.h"
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
-#include <esp_now.h>
 #include <esp32common/espnow/common.h>
-#include <esp32common/espnow/packet_utils.h>
-#include <esp32common/espnow/tx_scheduler.h>
 #include <cstring>
 
 namespace UI::Runtime::Backend {
@@ -27,6 +26,10 @@ void set_power_bar_mode(Backend::PowerBarRendererMode mode);
 }
 
 namespace {
+
+constexpr const char* MQTT_TOPIC_RX_CMD_NETWORK_UPDATE = "batt-emu/mqtt-v1/rx/cmd/network/update";
+constexpr const char* MQTT_TOPIC_RX_CMD_MQTT_UPDATE = "batt-emu/mqtt-v1/rx/cmd/mqtt/update";
+constexpr const char* MQTT_TOPIC_RX_CMD_REFRESH_MQTT = "batt-emu/mqtt-v1/rx/cmd/refresh/mqtt";
 
 UI::Runtime::Backend::PowerBarRendererMode to_ui_power_bar_mode(ReceiverNetworkConfig::PowerBarRendererMode mode) {
     return static_cast<UI::Runtime::Backend::PowerBarRendererMode>(static_cast<uint8_t>(mode));
@@ -279,15 +282,6 @@ esp_err_t api_save_network_config_handler(httpd_req_t *req) {
         return ApiResponseUtils::send_error_message(req, schema_error ? schema_error : "Invalid request schema");
     }
 
-    if (!TransmitterManager::isMACKnown()) {
-        return ApiResponseUtils::send_transmitter_mac_unknown(req);
-    }
-
-    if (ReceiverConnectionHandler::instance().quiet_mode_active()) {
-        LOG_WARN("API", "Blocked network config update during reconnect quiet mode");
-        return ApiResponseUtils::send_error_message(req, "ESP-NOW reconnect quiet mode active - try again shortly");
-    }
-
     network_config_update_t msg;
     memset(&msg, 0, sizeof(msg));
     msg.type = msg_network_config_update;
@@ -315,43 +309,54 @@ esp_err_t api_save_network_config_handler(httpd_req_t *req) {
         LOG_INFO("API", "Sending DHCP mode config");
     }
 
-    msg.config_version = 0;
-    msg.checksum = EspnowPacketUtils::calculate_message_crc32_zeroed(&msg);
+#if MQTT_FEATURE_COMMANDS
+    if (MqttClient::isEnabled() && MqttClient::isConnected()) {
+        MqttAckTracker::AckResult ack_result;
+        const bool mqtt_sent = MqttCommandClient::sendNetworkUpdate(msg.use_static_ip != 0,
+                                                                     msg.ip,
+                                                                     msg.gateway,
+                                                                     msg.subnet,
+                                                                     msg.dns_primary,
+                                                                     msg.dns_secondary,
+                                                                     2000,
+                                                                     &ack_result);
 
-    esp_err_t result = EspnowTxScheduler::send(TransmitterManager::getMAC(), &msg, sizeof(msg), "API_NET_CFG_UPDATE");
-    if (result == ESP_OK) {
-        LOG_INFO("API", "✓ Network config sent to transmitter");
-    } else {
-        LOG_ERROR("API", "✗ ESP-NOW send FAILED: %s", esp_err_to_name(result));
+        if (mqtt_sent) {
+            LOG_INFO("API", "✓ Network config ACK via MQTT: success=%d code=%s",
+                     ack_result.success,
+                     ack_result.code);
+            if (ack_result.success) {
+                return ApiResponseUtils::send_success_message(req,
+                                                              ack_result.message[0] != '\0'
+                                                                  ? ack_result.message
+                                                                  : "Network config applied via MQTT");
+            }
+            return ApiResponseUtils::send_error_message(req,
+                                                        ack_result.message[0] != '\0'
+                                                            ? ack_result.message
+                                                            : "Network config rejected by transmitter");
+        }
     }
-    return ApiResponseUtils::send_espnow_send_result(req, result, "Network config sent - awaiting transmitter response");
+#endif
+
+    LOG_WARN("API", "Network config update rejected: MQTT command channel unavailable");
+    return ApiResponseUtils::send_error_message(req, "MQTT command channel unavailable");
 }
 
 esp_err_t api_get_mqtt_config_handler(httpd_req_t *req) {
     if (!TransmitterManager::isMqttConfigKnown()) {
         LOG_INFO("API", "MQTT config not cached");
 
-        // Opportunistic self-heal: ask transmitter for current MQTT section.
-        if (TransmitterManager::isMACKnown() &&
-            !ReceiverConnectionHandler::instance().quiet_mode_active()) {
-            config_section_request_t request{};
-            request.type = msg_config_section_request;
-            request.section = config_section_mqtt;
-            request.requested_version = 0;
+        if (MqttClient::isEnabled() && MqttClient::isConnected()) {
+            StaticJsonDocument<128> refresh_cmd;
+            refresh_cmd["request_id"] = esp_random();
+            refresh_cmd["model"] = "mqtt";
 
-            const esp_err_t send_result =
-                EspnowTxScheduler::send(TransmitterManager::getMAC(),
-                                        &request,
-                                        sizeof(request),
-                                        "API_REQ_MQTT_CFG_SECTION");
-
-            if (send_result == ESP_OK) {
-                LOG_INFO("API", "Requested MQTT config section from transmitter (cache miss)");
-            } else {
-                LOG_WARN("API", "Failed to request MQTT config section: %s", esp_err_to_name(send_result));
+            char payload[192];
+            if (serializeJson(refresh_cmd, payload, sizeof(payload)) > 0 &&
+                MqttClient::publishJson(MQTT_TOPIC_RX_CMD_REFRESH_MQTT, payload, false)) {
+                LOG_INFO("API", "Requested MQTT config refresh from transmitter (cache miss)");
             }
-        } else if (ReceiverConnectionHandler::instance().quiet_mode_active()) {
-            LOG_WARN("API", "Skipped MQTT config section request during reconnect quiet mode");
         }
 
         return ApiResponseUtils::send_error_message(req, "MQTT config not cached yet - refresh in a moment");
@@ -393,15 +398,6 @@ esp_err_t api_save_mqtt_config_handler(httpd_req_t *req) {
         return ApiResponseUtils::send_error_message(req, schema_error ? schema_error : "Invalid request schema");
     }
 
-    if (!TransmitterManager::isMACKnown()) {
-        return ApiResponseUtils::send_transmitter_mac_unknown(req);
-    }
-
-    if (ReceiverConnectionHandler::instance().quiet_mode_active()) {
-        LOG_WARN("API", "Blocked MQTT config update during reconnect quiet mode");
-        return ApiResponseUtils::send_error_message(req, "ESP-NOW reconnect quiet mode active - try again shortly");
-    }
-
     mqtt_config_update_t msg;
     memset(&msg, 0, sizeof(msg));
     msg.type = msg_mqtt_config_update;
@@ -427,19 +423,36 @@ esp_err_t api_save_mqtt_config_handler(httpd_req_t *req) {
     strncpy(msg.password, password, sizeof(msg.password) - 1);
     strncpy(msg.client_id, client_id, sizeof(msg.client_id) - 1);
 
-    msg.config_version = 0;
-    msg.checksum = EspnowPacketUtils::calculate_message_crc32_zeroed(&msg);
+#if MQTT_FEATURE_COMMANDS
+    if (MqttClient::isEnabled() && MqttClient::isConnected()) {
+        MqttAckTracker::AckResult ack_result;
+        const bool mqtt_sent = MqttCommandClient::sendMqttUpdate(msg.enabled != 0,
+                                                                  msg.server,
+                                                                  msg.port,
+                                                                  msg.username,
+                                                                  msg.password,
+                                                                  msg.client_id,
+                                                                  2000,
+                                                                  &ack_result);
 
-    LOG_INFO("API", "Sending MQTT config: %s, %d.%d.%d.%d:%d",
-             msg.enabled ? "ENABLED" : "DISABLED",
-             msg.server[0], msg.server[1], msg.server[2], msg.server[3],
-             msg.port);
-
-    esp_err_t result = EspnowTxScheduler::send(TransmitterManager::getMAC(), &msg, sizeof(msg), "API_MQTT_CFG_UPDATE");
-    if (result == ESP_OK) {
-        LOG_INFO("API", "✓ MQTT config sent to transmitter");
-    } else {
-        LOG_ERROR("API", "✗ ESP-NOW send FAILED: %s", esp_err_to_name(result));
+        if (mqtt_sent) {
+            LOG_INFO("API", "✓ MQTT config ACK via MQTT: success=%d code=%s",
+                     ack_result.success,
+                     ack_result.code);
+            if (ack_result.success) {
+                return ApiResponseUtils::send_success_message(req,
+                                                              ack_result.message[0] != '\0'
+                                                                  ? ack_result.message
+                                                                  : "MQTT config applied via MQTT");
+            }
+            return ApiResponseUtils::send_error_message(req,
+                                                        ack_result.message[0] != '\0'
+                                                            ? ack_result.message
+                                                            : "MQTT config rejected by transmitter");
+        }
     }
-    return ApiResponseUtils::send_espnow_send_result(req, result, "MQTT config sent - awaiting transmitter response");
+#endif
+
+    LOG_WARN("API", "MQTT config update rejected: MQTT command channel unavailable");
+    return ApiResponseUtils::send_error_message(req, "MQTT command channel unavailable");
 }

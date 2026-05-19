@@ -28,6 +28,7 @@
 #include "../../src/mqtt/mqtt_client.h"
 #include <esp_heap_caps.h>
 #include "../../src/memory/memory_sampler.h"
+#include <algorithm>
 
 namespace ESPNow {
 extern QueueHandle_t queue;
@@ -43,6 +44,51 @@ extern volatile int32_t g_test_power;
 extern volatile uint32_t g_test_voltage_mv;
 
 using namespace WebserverMetrics;
+
+namespace {
+constexpr size_t kChunkTargetBytes = 768;
+
+int parse_int_query_param(httpd_req_t* req, const char* key, int default_value) {
+    if (!req || !key) {
+        return default_value;
+    }
+
+    char query[256] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
+        return default_value;
+    }
+
+    char value[24] = {0};
+    if (httpd_query_key_value(query, key, value, sizeof(value)) != ESP_OK) {
+        return default_value;
+    }
+
+    return atoi(value);
+}
+
+esp_err_t send_json_chunked(httpd_req_t* req, const String& json) {
+    if (!req) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+    size_t offset = 0;
+    while (offset < json.length()) {
+        const size_t remaining = json.length() - offset;
+        const size_t part = (remaining > kChunkTargetBytes) ? kChunkTargetBytes : remaining;
+        const esp_err_t rc = httpd_resp_send_chunk(req, json.c_str() + offset, part);
+        if (rc != ESP_OK) {
+            return rc;
+        }
+        offset += part;
+    }
+
+    return httpd_resp_send_chunk(req, nullptr, 0);
+}
+
+} // namespace
 
 esp_err_t api_data_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_DATA);
@@ -97,16 +143,65 @@ esp_err_t api_cell_data_handler(httpd_req_t *req) {
     CellDataCache::CellDataSnapshot snapshot;
     if (CellDataCache::get_cell_data_snapshot(snapshot) && snapshot.known) {
         String json = TelemetrySnapshotUtils::serialize_cell_data(snapshot);
-        return HttpJsonUtils::send_json(req, json.c_str());
+        return send_json_chunked(req, json);
     }
 
     const char* json = "{\"success\":false,\"mode\":\"unavailable\",\"message\":\"No cell data received from transmitter\"}";
     return HttpJsonUtils::send_json(req, json);
 }
 
+esp_err_t api_cell_data_page_handler(httpd_req_t *req) {
+    HttpHandlerTimer handler_timer(HM_CELL_DATA);
+
+    int offset = parse_int_query_param(req, "offset", 0);
+    int limit = parse_int_query_param(req, "limit", 24);
+    if (offset < 0) offset = 0;
+    if (limit < 1) limit = 1;
+    if (limit > 32) limit = 32;
+
+    CellDataCache::CellDataSnapshot snapshot;
+    if (!CellDataCache::get_cell_data_snapshot(snapshot) || !snapshot.known) {
+        return HttpJsonUtils::send_json(req,
+                                        "{\"success\":false,\"mode\":\"unavailable\",\"message\":\"No cell data received from transmitter\"}");
+    }
+
+    const int total_cells = static_cast<int>(snapshot.cell_count);
+    if (offset > total_cells) {
+        offset = total_cells;
+    }
+
+    const int end_index = std::min(total_cells, offset + limit);
+
+    DynamicJsonDocument doc(3072);
+    doc["success"] = true;
+    doc["source"] = "mqtt";
+    doc["offset"] = offset;
+    doc["limit"] = limit;
+    doc["returned"] = end_index - offset;
+    doc["total"] = total_cells;
+    doc["number_of_cells"] = snapshot.cell_count;
+    doc["min_voltage_mV"] = snapshot.min_voltage_mV;
+    doc["max_voltage_mV"] = snapshot.max_voltage_mV;
+    doc["balancing_active"] = snapshot.balancing_active;
+    doc["data_source"] = snapshot.data_source;
+
+    JsonArray cells = doc.createNestedArray("cells");
+    for (int index = offset; index < end_index; ++index) {
+        JsonObject cell = cells.createNestedObject();
+        cell["index"] = index;
+        cell["voltage_mV"] = snapshot.voltages_mV[static_cast<size_t>(index)];
+        cell["balancing"] = snapshot.balancing_status[static_cast<size_t>(index)] ? true : false;
+    }
+
+    String json;
+    serializeJson(doc, json);
+    return send_json_chunked(req, json);
+}
+
 esp_err_t api_dashboard_data_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_DASHBOARD_DATA);
-    StaticJsonDocument<384> doc;
+    // Include merged transmitter health fields so dashboard can poll one endpoint only.
+    StaticJsonDocument<768> doc;
 
     const DeviceTemperature::Reading receiver_temperature = DeviceTemperature::get_latest();
     const auto transmitter_temperature = TransmitterManager::getTemperatureReport();
@@ -117,7 +212,14 @@ esp_err_t api_dashboard_data_handler(httpd_req_t *req) {
     transmitter["ip"] = TransmitterManager::getIPString();
     transmitter["is_static"] = TransmitterManager::isStaticIP();
     transmitter["mac"] = TransmitterManager::getMACString();
-    
+
+    transmitter["uptime_ms"]         = TransmitterManager::getUptimeMs();
+    transmitter["unix_time"]         = TransmitterManager::getUnixTime();
+    transmitter["utc_offset_min"]    = TransmitterManager::getUtcOffsetMin();
+    transmitter["time_source"]       = TransmitterManager::getTimeSource();
+    transmitter["geolocation_valid"] = TransmitterManager::isGeolocationValid();
+    transmitter["mqtt_connected"]    = TransmitterManager::isMqttConnected();
+
     String tx_firmware = "Unknown";
     if (TransmitterManager::hasMetadata()) {
         uint8_t major, minor, patch;
@@ -326,23 +428,15 @@ esp_err_t api_inverter_specs_handler(httpd_req_t *req) {
 
 esp_err_t api_get_event_logs_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_GET_EVENT_LOGS);
-    char query[256] = {0};
-    int limit = 50;
-
-    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
-        char param[32];
-        if (httpd_query_key_value(query, "limit", param, sizeof(param)) == ESP_OK) {
-            limit = atoi(param);
-            if (limit < 1) limit = 1;
-            if (limit > 500) limit = 500;
-        }
-    }
+    int limit = parse_int_query_param(req, "limit", 20);
+    if (limit < 1) limit = 1;
+    if (limit > 50) limit = 50;
 
     std::vector<TransmitterManager::EventLogEntry> logs;
     uint32_t last_update_ms = 0;
     TransmitterManager::getEventLogsSnapshot(logs, &last_update_ms);
 
-    DynamicJsonDocument doc(6144);
+    DynamicJsonDocument doc(4096);
     doc["success"] = true;
     doc["event_count"] = static_cast<uint32_t>(logs.size());
     doc["source"] = "mqtt";
@@ -366,18 +460,66 @@ esp_err_t api_get_event_logs_handler(httpd_req_t *req) {
 
     String json;
     serializeJson(doc, json);
-    return HttpJsonUtils::send_json(req, json.c_str());
+    return send_json_chunked(req, json);
+}
+
+esp_err_t api_event_logs_page_handler(httpd_req_t *req) {
+    HttpHandlerTimer handler_timer(HM_GET_EVENT_LOGS);
+
+    int offset = parse_int_query_param(req, "offset", 0);
+    int limit = parse_int_query_param(req, "limit", 20);
+    if (offset < 0) offset = 0;
+    if (limit < 1) limit = 1;
+    if (limit > 50) limit = 50;
+
+    std::vector<TransmitterManager::EventLogEntry> logs;
+    uint32_t last_update_ms = 0;
+    TransmitterManager::getEventLogsSnapshot(logs, &last_update_ms);
+
+    const int total = static_cast<int>(logs.size());
+    if (offset > total) {
+        offset = total;
+    }
+    const int end_index = std::min(total, offset + limit);
+
+    DynamicJsonDocument doc(4096);
+    doc["success"] = true;
+    doc["source"] = "mqtt";
+    doc["offset"] = offset;
+    doc["limit"] = limit;
+    doc["returned"] = end_index - offset;
+    doc["total"] = total;
+    doc["last_update_ms"] = last_update_ms;
+
+    JsonArray events = doc.createNestedArray("events");
+    for (int index = offset; index < end_index; index++) {
+        const auto& entry = logs[static_cast<size_t>(index)];
+        JsonObject evt = events.createNestedObject();
+        evt["timestamp_ms"] = entry.timestamp_ms;
+        evt["event_unix_ms"] = entry.event_unix_ms;
+        evt["event_utc_offset_min"] = entry.event_utc_offset_min;
+        evt["level"] = entry.level;
+        evt["data"] = entry.data;
+        evt["count"] = entry.count;
+        evt["is_new"] = entry.is_new;
+        evt["type"] = entry.type;
+        evt["message"] = entry.message;
+    }
+
+    String json;
+    serializeJson(doc, json);
+    return send_json_chunked(req, json);
 }
 
 esp_err_t api_get_event_log_summary_handler(httpd_req_t *req) {
-    // Transmitter-driven model: return cached summary pushed over ESP-NOW.
+    // Transmitter-driven model: return cached summary pushed over MQTT.
     // Do not request on every HTTP poll from dashboard.
 
     const auto summary = TransmitterManager::getEventLogSummary();
 
     DynamicJsonDocument doc(256);
     doc["success"] = summary.known;
-    doc["source"] = "espnow";
+    doc["source"] = "mqtt";
     doc["seq"] = summary.seq;
     doc["total_historical"] = summary.total_historical;
     doc["error_historical"] = summary.error_historical;
@@ -414,7 +556,7 @@ esp_err_t api_clear_event_logs_handler(httpd_req_t *req) {
             const auto ack_now = TransmitterManager::getEventLogClearAck();
             if (ack_now.known &&
                 ack_now.last_update_ms > ack_before.last_update_ms &&
-                ack_now.status == EVENT_LOGS_CLEAR_ACK_SUCCESS) {
+                ack_now.status == TransmitterManager::kEventLogsClearAckSuccess) {
                 transmitter_clear_confirmed = true;
                 break;
             }

@@ -11,7 +11,6 @@
 static const uint8_t k_channels[] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 };
 volatile bool g_ack_received = false;
 volatile uint32_t g_ack_seq = 0;
-volatile uint8_t g_lock_channel = 0;
 espnow_payload_t tx_data;
 
 static volatile uint32_t g_discovery_enqueue_attempts = 0;

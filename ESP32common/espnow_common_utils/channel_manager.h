@@ -69,6 +69,9 @@ public:
     
     /**
      * @brief Get current WiFi channel
+        *
+        * Returns the live channel from the WiFi driver when available and
+        * falls back to the cached value if the driver query fails.
      * @return Current channel number (1-13)
      */
     uint8_t get_channel() const;

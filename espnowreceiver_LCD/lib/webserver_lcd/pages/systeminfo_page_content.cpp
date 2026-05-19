@@ -1,19 +1,13 @@
 #include "systeminfo_page_content.h"
 
-String get_systeminfo_page_content() {
-    String content = R"rawliteral(
+const char* get_systeminfo_page_content() {
+    return R"rawliteral(
     <h1>Receiver Configuration</h1>
-    )rawliteral";
-
-    content += R"rawliteral(
     <div style='margin-bottom: 20px;'>
         <a href='/' style='display: inline-block; padding: 10px 16px; background: #4CAF50; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;'>
             ← Dashboard
         </a>
     </div>
-    )rawliteral";
-
-    content += R"rawliteral(
 
     <div class='settings-card'>
         <h3>Device Details</h3>
@@ -181,6 +175,4 @@ String get_systeminfo_page_content() {
         </button>
     </div>
 )rawliteral";
-
-    return content;
 }

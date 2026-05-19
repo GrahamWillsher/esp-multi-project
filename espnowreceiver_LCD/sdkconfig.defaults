@@ -1,6 +1,11 @@
 CONFIG_ESP_WIFI_ESPNOW_MAX_PENDING_LEN=20
-# Increase shared WiFi driver TX buffer pool to give headroom for concurrent
-# ESP-NOW action frames and MQTT TCP packets without pool exhaustion.
-# 64 gives enough for: MQTT TCP window (8-12 bufs) + ESP-NOW pending queue (20)
-# + headroom, while staying within ESP32-S3 WiFi driver limits.
-CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=64
+# WiFi TX buffer pool. With ESP-NOW removed from the receiver, the original
+# rationale for 64 buffers (ESP-NOW pending queue + MQTT TCP) no longer applies.
+# 32 buffers is sufficient for MQTT TCP window (8-12 bufs) + headroom, and
+# saves ~50 KB of internal DRAM compared to the previous 64-buffer setting.
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=32
+
+# Route explicit heap_caps_malloc(MALLOC_CAP_SPIRAM) calls to the 8 MB OPI
+# PSRAM on the Waveshare ESP32-S3 board. Does NOT affect normal malloc() calls,
+# so existing stack/heap behaviour is unchanged. Required for PSRAM chunk buffers.
+CONFIG_SPIRAM_USE_CAPS_ALLOC=y

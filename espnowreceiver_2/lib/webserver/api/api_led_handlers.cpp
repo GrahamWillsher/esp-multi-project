@@ -1,10 +1,14 @@
 #include "api_led_handlers.h"
 
 #include "api_response_utils.h"
+#include "../../src/mqtt/mqtt_client.h"
 #include "../utils/transmitter_manager.h"
 
-#include <esp32common/espnow/common.h>
-#include <esp32common/espnow/tx_scheduler.h>
+#include <ArduinoJson.h>
+
+namespace {
+constexpr const char* kRefreshLedTopic = "batt-emu/mqtt-v1/rx/cmd/refresh/led";
+}
 
 namespace ESPNow {
 extern uint8_t current_led_color;
@@ -56,25 +60,19 @@ esp_err_t api_get_led_runtime_status_handler(httpd_req_t *req) {
 }
 
 esp_err_t api_resync_led_state_handler(httpd_req_t *req) {
-    if (!TransmitterManager::isMACKnown()) {
-        return ApiResponseUtils::send_transmitter_mac_unknown(req);
+    if (!MqttClient::isEnabled() || !MqttClient::isConnected()) {
+        return ApiResponseUtils::send_error_message(req, "MQTT command channel unavailable");
     }
 
-    config_section_request_t request;
-    request.type = msg_config_section_request;
-    request.section = config_section_battery;
-    request.requested_version = 0;
+    StaticJsonDocument<128> cmd;
+    cmd["request_id"] = esp_random();
+    cmd["model"] = "led";
 
-    const esp_err_t result = EspnowTxScheduler::send(
-        TransmitterManager::getMAC(),
-        reinterpret_cast<const uint8_t*>(&request),
-        sizeof(request),
-        "LED_RESYNC_CONFIG_SECTION_REQ"
-    );
-
-    if (result == ESP_OK) {
-        return ApiResponseUtils::send_success_message(req, "Battery section resync requested");
-    } else {
-        return ApiResponseUtils::send_jsonf(req, "{\"success\":false,\"message\":\"ESP-NOW send failed: %s\"}", esp_err_to_name(result));
+    char payload[192];
+    if (serializeJson(cmd, payload, sizeof(payload)) > 0 &&
+        MqttClient::publishJson(kRefreshLedTopic, payload, false)) {
+        return ApiResponseUtils::send_success_message(req, "LED state refresh requested");
     }
+
+    return ApiResponseUtils::send_error_message(req, "Failed to publish LED refresh command");
 }

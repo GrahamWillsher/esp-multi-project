@@ -32,6 +32,11 @@ struct DiscoveryMetrics {
     uint32_t successful_scans        {0};
     uint32_t failed_scans            {0};
     uint32_t channel_mismatches      {0};
+    uint32_t probe_send_attempts     {0};
+    uint32_t probe_send_success      {0};
+    uint32_t probe_send_no_mem_fail  {0};
+    uint32_t probe_send_other_fail   {0};
+    uint32_t ack_frames_received     {0};
     uint32_t last_success_channel    {0};
     uint32_t last_success_timestamp  {0};
     uint32_t longest_scan_ms         {0};
@@ -94,7 +99,8 @@ private:
     bool   scan_channel_for_ack(uint8_t ch,
                                 uint32_t dwell_ms,
                                 const char* phase_label,
-                                uint8_t* out_mac);
+                                uint8_t* out_mac,
+                                uint8_t* out_ack_channel = nullptr);
     void   send_probe_on_channel(uint8_t channel);
     bool   force_and_verify_channel(uint8_t target_channel);
 

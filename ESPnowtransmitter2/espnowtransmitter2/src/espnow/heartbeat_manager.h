@@ -26,6 +26,9 @@ public:
     
     // Call periodically from task (checks if it's time to send)
     void tick();
+
+    // Optional telemetry should only flow once the heartbeat path has proven stable.
+    bool has_stable_heartbeat() const;
     
     // Handle heartbeat ACK from receiver
     void on_heartbeat_ack(const heartbeat_ack_t* ack);
@@ -45,6 +48,7 @@ private:
     
     void send_heartbeat();
     void send_temperature_report(const uint8_t* peer_mac);
+    bool can_send_opportunistic_telemetry() const;
     
     uint32_t m_heartbeat_seq = 0;        // Monotonic sequence counter
     uint32_t m_last_ack_seq = 0;         // Last acknowledged sequence

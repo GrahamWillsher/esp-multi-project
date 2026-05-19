@@ -170,6 +170,12 @@ void ChannelManager::unlock_channel(const char* source) {
 }
 
 uint8_t ChannelManager::get_channel() const {
+    uint8_t live_channel = current_channel_;
+    wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
+    const esp_err_t rc = esp_wifi_get_channel(&live_channel, &second);
+    if (rc == ESP_OK && live_channel >= 1 && live_channel <= 13) {
+        return live_channel;
+    }
     return current_channel_;
 }
 
@@ -189,7 +195,15 @@ bool ChannelManager::save_channel_to_nvs(uint8_t channel) {
 
 uint8_t ChannelManager::load_channel_from_nvs() {
     Preferences prefs;
-    if (!prefs.begin("espnow", true)) {  // Read-only
+    // Open read/write so missing namespace is auto-created by Preferences,
+    // avoiding noisy "nvs_open failed: NOT_FOUND" boot logs on first run.
+    if (!prefs.begin("espnow", false)) {
+        LOG_INFO("CHANNEL_MGR", "No saved channel found in NVS");
+        return 0;
+    }
+
+    if (!prefs.isKey("channel")) {
+        prefs.end();
         LOG_INFO("CHANNEL_MGR", "No saved channel found in NVS");
         return 0;
     }

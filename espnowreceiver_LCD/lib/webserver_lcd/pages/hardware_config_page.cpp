@@ -11,9 +11,15 @@
  * from the receiver cache and saved back via ESP-NOW settings updates.
  */
 static esp_err_t hardware_config_handler(httpd_req_t *req) {
-    const String content = get_hardware_config_page_content();
-    const String script  = get_hardware_config_page_script();
-    return send_rendered_page(req, "Hardware Config", content, PageRenderOptions("", script));
+    auto content_generator = [](httpd_req_t* request) -> esp_err_t {
+        const char* content = get_hardware_config_page_content();
+        return send_page_content_chunk(request, "hardware_config_content", content, strlen(content));
+    };
+    const char* script  = get_hardware_config_page_script();
+    return send_rendered_page_streaming(req,
+                                        "Hardware Config",
+                                        content_generator,
+                                        PageRenderOptions("", script));
 }
 
 esp_err_t register_hardware_config_page(httpd_handle_t server) {

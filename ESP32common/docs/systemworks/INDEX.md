@@ -30,6 +30,10 @@ Most recent documents are at the bottom of each section.
 | 2026-04-21 | [ESPNOW_CONNECTION_FAILURE_ANALYSIS_2026_04_21.md](ESPNOW_CONNECTION_FAILURE_ANALYSIS_2026_04_21.md) | End-to-end reconnect failure analysis (TX↔RX, NO_MEM cycle evidence) |
 | 2026-04-22 | [ESPNOW_END_TO_END_STRUCTURE_RECONNECTION_NO_MEM_ANALYSIS_2026_04_22.md](ESPNOW_END_TO_END_STRUCTURE_RECONNECTION_NO_MEM_ANALYSIS_2026_04_22.md) | Comprehensive ESPNOW structure + reconnection + NO_MEM robustness review |
 | 2026-04-30 | [ESPNOW_WIFI_MQTT_FULL_REANALYSIS_AND_RECTIFICATION_PLAN_2026_04_30.md](ESPNOW_WIFI_MQTT_FULL_REANALYSIS_AND_RECTIFICATION_PLAN_2026_04_30.md) | Full reset analysis of ESP-NOW/Wi-Fi/MQTT coexistence, failed attempts retrospective, and corrective architecture plan |
+| 2026-05-05 | [RECEIVER_HTTP_ESPNOW_COEXISTENCE_FULL_INVESTIGATION_2026_05_05.md](RECEIVER_HTTP_ESPNOW_COEXISTENCE_FULL_INVESTIGATION_2026_05_05.md) | Full investigation of receiver HTTP-triggered ESP-NOW instability with structured, phased resolution plan |
+| 2026-05-05 | [IMPLEMENTATION_STATUS_2026_05_05.md](IMPLEMENTATION_STATUS_2026_05_05.md) | **[IMPLEMENTED]** Phase B1 + Phase C (C1/C2/C3) complete; build verified; validation checkpoints & rollout plan |
+| 2026-05-06 | [RECEIVER_HTTP_WEBSERVER_ACCESS_FAILURE_INVESTIGATION_2026_05_06.md](RECEIVER_HTTP_WEBSERVER_ACCESS_FAILURE_INVESTIGATION_2026_05_06.md) | Full investigation of receiver webserver inaccessibility at LAN IP; root-cause ranking and corrective actions |
+| 2026-05-08 | [RECEIVER_TRANSMITTER_WEBPAGE_FAILURE_FULL_REVIEW_2026_05_08.md](RECEIVER_TRANSMITTER_WEBPAGE_FAILURE_FULL_REVIEW_2026_05_08.md) | Full TX↔RX review of reconnect/channel authority and HTTP page delivery failures with prioritized corrective plan |
 
 ---
 
