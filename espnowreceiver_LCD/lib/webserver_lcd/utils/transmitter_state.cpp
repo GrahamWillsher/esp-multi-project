@@ -26,6 +26,7 @@ struct StateStore {
     TransmitterState::EventLogSummarySnapshot event_log_summary;
     TransmitterState::EventLogClearAckSnapshot event_log_clear_ack;
     TransmitterState::TemperatureReportSnapshot temperature_report;
+    TransmitterState::BatteryTemperatureReportSnapshot battery_temperature_report;
 };
 
 StateStore g_state_store;
@@ -134,6 +135,18 @@ void reduce_temperature_report(bool valid,
     g_state_store.temperature_report.temperature_centi_c = temperature_centi_c;
     g_state_store.temperature_report.uptime_ms = uptime_ms;
     g_state_store.temperature_report.last_update_ms = millis();
+}
+
+void reduce_battery_temperature_report(bool valid,
+                                       uint32_t seq,
+                                       int16_t temperature_centi_c,
+                                       uint32_t uptime_ms) {
+    g_state_store.battery_temperature_report.known = true;
+    g_state_store.battery_temperature_report.valid = valid;
+    g_state_store.battery_temperature_report.seq = seq;
+    g_state_store.battery_temperature_report.temperature_centi_c = temperature_centi_c;
+    g_state_store.battery_temperature_report.uptime_ms = uptime_ms;
+    g_state_store.battery_temperature_report.last_update_ms = millis();
 }
 } // namespace
 
@@ -459,6 +472,34 @@ TemperatureReportSnapshot get_temperature_report() {
     return snapshot;
 }
 
+void store_battery_temperature_report(bool valid,
+                                      uint32_t seq,
+                                      int16_t temperature_centi_c,
+                                      uint32_t uptime_ms) {
+    BatteryTemperatureReportSnapshot snapshot;
+    with_state_write_lock([&]() {
+        reduce_battery_temperature_report(valid, seq, temperature_centi_c, uptime_ms);
+        snapshot = g_state_store.battery_temperature_report;
+    });
+
+    if (snapshot.valid) {
+        LOG_INFO("TX_MGR", "Stored battery temperature seq=%lu value=%.2fC",
+                 static_cast<unsigned long>(snapshot.seq),
+                 static_cast<double>(snapshot.temperature_centi_c) / 100.0);
+    } else {
+        LOG_WARN("TX_MGR", "Stored battery temperature seq=%lu as invalid",
+                 static_cast<unsigned long>(snapshot.seq));
+    }
+}
+
+BatteryTemperatureReportSnapshot get_battery_temperature_report() {
+    BatteryTemperatureReportSnapshot snapshot;
+    with_state_read_lock([&]() {
+        snapshot = g_state_store.battery_temperature_report;
+    });
+    return snapshot;
+}
+
 StateSnapshot get_state_snapshot() {
     StateSnapshot snapshot;
     with_state_read_lock([&]() {
@@ -467,6 +508,7 @@ StateSnapshot get_state_snapshot() {
         snapshot.event_log_summary = g_state_store.event_log_summary;
         snapshot.event_log_clear_ack = g_state_store.event_log_clear_ack;
         snapshot.temperature_report = g_state_store.temperature_report;
+        snapshot.battery_temperature_report = g_state_store.battery_temperature_report;
     });
     return snapshot;
 }

@@ -14,8 +14,9 @@
 #include <cstring>
 
 namespace {
-constexpr const char* MQTT_TOPIC_RX_CMD_SETTINGS_UPDATE = "batt-emu/mqtt-v1/rx/cmd/settings/update";
-constexpr const char* MQTT_TOPIC_TX_ACK_SETTINGS_UPDATE = "batt-emu/mqtt-v1/tx/ack/settings/update";
+constexpr const char* MQTT_TOPIC_RX_CMD_SETTINGS_UPDATE = "batt-emu/mqtt-v1/rx/cmd/update/battery";
+constexpr const char* MQTT_TOPIC_TX_ACK_SETTINGS_UPDATE = "batt-emu/mqtt-v1/tx/ack/battery";
+constexpr const char* MQTT_TOPIC_RX_CMD_REFRESH_SETTINGS = "batt-emu/mqtt-v1/rx/cmd/refresh/settings";
 }
 
 esp_err_t api_get_battery_settings_handler(httpd_req_t *req) {
@@ -26,12 +27,12 @@ esp_err_t api_get_battery_settings_handler(httpd_req_t *req) {
         char request_id[32];
         snprintf(request_id, sizeof(request_id), "refresh-batt-%lu", static_cast<unsigned long>(millis()));
         cmd["request_id"] = request_id;
-        cmd["origin"] = "receiver_tft";
+        cmd["origin"] = "receiver_2";
         cmd["schema"] = 1;
 
         char payload[96];
         if (serializeJson(cmd, payload, sizeof(payload)) > 0) {
-            requested = MqttClient::publishJson("batt-emu/mqtt-v1/rx/cmd/refresh/battery", payload, false);
+            requested = MqttClient::publishJson(MQTT_TOPIC_RX_CMD_REFRESH_SETTINGS, payload, false);
             if (!requested) {
                 LOG_WARN("API", "Failed to publish battery settings refresh command via MQTT");
             }
@@ -214,11 +215,19 @@ esp_err_t api_save_setting_handler(httpd_req_t *req) {
         char request_id[32];
         snprintf(request_id, sizeof(request_id), "set-%lu", static_cast<unsigned long>(millis()));
         cmd["request_id"] = request_id;
-        cmd["origin"] = "receiver_lcd";
+        cmd["origin"] = "receiver_2";
         cmd["schema"] = 1;
         cmd["category"] = category;
         cmd["field"] = field;
-        cmd["value"] = value;
+
+        const bool battery_float_field =
+            (category == SETTINGS_BATTERY) &&
+            (field == BATTERY_MAX_CHARGE_CURRENT_A || field == BATTERY_MAX_DISCHARGE_CURRENT_A);
+        if (battery_float_field) {
+            cmd["value"] = value.as<float>();
+        } else {
+            cmd["value"] = value;
+        }
 
         char payload[256];
         const size_t n = serializeJson(cmd, payload, sizeof(payload));

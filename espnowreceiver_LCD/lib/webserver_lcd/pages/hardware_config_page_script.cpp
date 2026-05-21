@@ -147,7 +147,7 @@ const char* get_hardware_config_page_script() {
             }
         }
 
-        async function loadHardwareSettings() {
+        async function loadHardwareSettings(allowFollowupRefresh = true) {
             try {
                 const response = await fetch('/api/get_battery_settings');
                 const data = await response.json();
@@ -156,8 +156,8 @@ const char* get_hardware_config_page_script() {
                     return;
                 }
 
-                setFieldValue('canFreq', Number.isInteger(data.can_frequency_khz) ? data.can_frequency_khz : 8);
-                setFieldValue('canFdFreq', Number.isInteger(data.can_fd_frequency_mhz) ? data.can_fd_frequency_mhz : 40);
+                setFieldValue('canFreq', (Number.isInteger(data.can_frequency_khz) && data.can_frequency_khz > 0) ? data.can_frequency_khz : 8);
+                setFieldValue('canFdFreq', (Number.isInteger(data.can_fd_frequency_mhz) && data.can_fd_frequency_mhz > 0) ? data.can_fd_frequency_mhz : 40);
                 setFieldValue('canFdAsClassic', !!data.use_canfd_as_classic);
                 setFieldValue('eqStop', String(Number.isInteger(data.equipment_stop_type) ? data.equipment_stop_type : 0));
                 setFieldValue('cntCtrl', !!data.contactor_control_enabled);
@@ -181,6 +181,12 @@ const char* get_hardware_config_page_script() {
 
                 updateConditionalVisibility();
                 updateSaveButton();
+
+                // API may return cached values immediately and trigger refresh asynchronously.
+                // Do one delayed re-fetch to pick up the fresh retained snapshot.
+                if (allowFollowupRefresh && data.requested === true) {
+                    setTimeout(() => { loadHardwareSettings(false); }, 700);
+                }
             } catch (error) {
                 console.error('Failed to load hardware settings:', error);
             }

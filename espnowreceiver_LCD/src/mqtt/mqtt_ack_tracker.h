@@ -4,6 +4,8 @@
 #include <Arduino.h>
 #include <cstddef>
 #include <cstdint>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 class MqttAckTracker {
 public:
@@ -29,6 +31,8 @@ private:
     };
 
     static AckEntry entries_[8];
+    static SemaphoreHandle_t mutex_;
+    static void ensureMutex();
     static void storeAck(const AckResult& result);
     static bool findAck(const char* request_id, AckResult* out_result);
 };

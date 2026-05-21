@@ -16,10 +16,10 @@
 #include <cstring>
 
 namespace {
-constexpr const char* MQTT_TOPIC_RX_CMD_NETWORK_UPDATE = "batt-emu/mqtt-v1/rx/cmd/network/update";
-constexpr const char* MQTT_TOPIC_TX_ACK_NETWORK_UPDATE = "batt-emu/mqtt-v1/tx/ack/network/update";
-constexpr const char* MQTT_TOPIC_RX_CMD_MQTT_UPDATE = "batt-emu/mqtt-v1/rx/cmd/mqtt/update";
-constexpr const char* MQTT_TOPIC_TX_ACK_MQTT_UPDATE = "batt-emu/mqtt-v1/tx/ack/mqtt/update";
+constexpr const char* MQTT_TOPIC_RX_CMD_NETWORK_UPDATE = "batt-emu/mqtt-v1/rx/cmd/update/network";
+constexpr const char* MQTT_TOPIC_TX_ACK_NETWORK_UPDATE = "batt-emu/mqtt-v1/tx/ack/network";
+constexpr const char* MQTT_TOPIC_RX_CMD_MQTT_UPDATE = "batt-emu/mqtt-v1/rx/cmd/update/mqtt";
+constexpr const char* MQTT_TOPIC_TX_ACK_MQTT_UPDATE = "batt-emu/mqtt-v1/tx/ack/mqtt";
 }
 
 esp_err_t api_get_receiver_network_handler(httpd_req_t *req) {
@@ -274,7 +274,7 @@ esp_err_t api_save_network_config_handler(httpd_req_t *req) {
         StaticJsonDocument<320> cmd;
         cmd["request_id"] = request_id;
         cmd["use_static_ip"] = (msg.use_static_ip != 0);
-        cmd["origin"] = "receiver_lcd";
+        cmd["origin"] = "receiver_2";
         cmd["schema"] = 1;
 
         if (msg.use_static_ip) {
@@ -407,7 +407,7 @@ esp_err_t api_save_mqtt_config_handler(httpd_req_t *req) {
 
         StaticJsonDocument<320> cmd;
         cmd["request_id"] = request_id;
-        cmd["origin"] = "receiver_lcd";
+        cmd["origin"] = "receiver_2";
         cmd["schema"] = 1;
         cmd["enabled"] = (msg.enabled != 0);
         cmd["port"] = msg.port;

@@ -4,6 +4,7 @@
 #include "../battery_emulator/communication/can/comm_can.h"
 #include "../battery_emulator/communication/contactorcontrol/comm_contactorcontrol.h"
 #include "../battery_emulator/communication/precharge_control/precharge_control.h"
+#include <cstring>
 // Companion translation units:
 //   settings_persistence.cpp  – NVS blob save/load (all categories)
 //   settings_field_setters.cpp – per-field value validation and dispatch
@@ -15,6 +16,35 @@ SettingsManager& SettingsManager::instance() {
 }
 
 SettingsManager::SettingsManager() {
+}
+
+void SettingsManager::set_apply_context(uint8_t category, uint8_t field_id) {
+    has_apply_context_ = true;
+    current_apply_category_ = category;
+    current_apply_field_id_ = field_id;
+}
+
+void SettingsManager::clear_apply_context() {
+    has_apply_context_ = false;
+}
+
+void SettingsManager::clear_last_apply_failure() {
+    last_apply_failure_ = ApplyFailureInfo{};
+}
+
+void SettingsManager::set_last_apply_failure(uint8_t category,
+                                             uint8_t field_id,
+                                             const char* stage,
+                                             const char* reason_code,
+                                             const char* detail,
+                                             const char* nvs_key) {
+    last_apply_failure_.valid = true;
+    last_apply_failure_.category = has_apply_context_ ? current_apply_category_ : category;
+    last_apply_failure_.field_id = has_apply_context_ ? current_apply_field_id_ : field_id;
+    strlcpy(last_apply_failure_.stage, stage ? stage : "UNKNOWN", sizeof(last_apply_failure_.stage));
+    strlcpy(last_apply_failure_.reason_code, reason_code ? reason_code : "UNKNOWN", sizeof(last_apply_failure_.reason_code));
+    strlcpy(last_apply_failure_.detail, detail ? detail : "", sizeof(last_apply_failure_.detail));
+    strlcpy(last_apply_failure_.nvs_key, nvs_key ? nvs_key : "", sizeof(last_apply_failure_.nvs_key));
 }
 
 void SettingsManager::apply_runtime_static_settings() {

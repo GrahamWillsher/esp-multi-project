@@ -8,7 +8,9 @@ const char* get_event_logs_page_styles() {
 .event-error { color: #ff6b35; }
 
 .events-table-wrap {
+    height: calc(100vh - 220px);
     overflow-x: auto;
+    overflow-y: auto;
     border-radius: 8px;
     border: 1px solid rgba(255,255,255,0.12);
 }
@@ -93,10 +95,15 @@ const char* get_event_logs_page_script() {
 const CLEAR_COUNTDOWN_SECONDS = 5;
 const SNAPSHOT_WAIT_TIMEOUT_MS = 5000;
 const SNAPSHOT_WAIT_POLL_MS = 200;
+const SNAPSHOT_RETRY_ATTEMPTS = 5;
+const SNAPSHOT_RETRY_DELAY_MS = 1000;
+const KEEPALIVE_INTERVAL_MS = 45000;
+const CHUNK_SIZE = 25;
 
 let snapshotSubscriptionClosed = false;
 let clearCountdownTimer = null;
 let clearCountdownRemaining = 0;
+let keepaliveTimer = null;
 
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -283,33 +290,46 @@ async function loadEvents() {
     list.innerHTML = '';
     try {
         const txHealth = await getTransmitterUptimeMs();
-        const res = await fetch('/api/event_logs_page?offset=0&limit=50');
-        const data = await res.json();
-        if (!data.success) {
-            status.textContent = data.error || 'Event logs unavailable';
-            status.className = 'event-meta event-error';
-            return;
-        }
-        const source = data.source ? (' | source: ' + data.source) : '';
-        const eventCount = Number(data.event_count || 0);
-        status.textContent = formatCountLabel(eventCount, 'event', 'events') + source;
-        status.className = 'event-meta';
-        if (data.events && data.events.length) {
-            const wrap = document.createElement('div');
-            wrap.className = 'events-table-wrap';
-            const table = document.createElement('table');
-            table.className = 'events-table';
-            table.innerHTML = '<thead><tr>' +
-                              '<th style="width:17%;">Event Type</th>' +
-                              '<th style="width:12%;">Severity</th>' +
-                              '<th style="width:18%;">Last Event</th>' +
-                              '<th style="width:8%;">Count</th>' +
-                              '<th style="width:10%;">Data</th>' +
-                              '<th>Message</th>' +
-                              '</tr></thead>';
+        let wrap = null;
+        let tbody = null;
+        let offset = 0;
+        let total = 0;
+        let loaded = 0;
+        let lastSource = '';
 
-            const tbody = document.createElement('tbody');
-            data.events.forEach(evt => {
+        while (true) {
+            const res = await fetch('/api/event_logs_page?offset=' + offset + '&limit=' + CHUNK_SIZE);
+            const data = await res.json();
+            if (!data.success) {
+                status.textContent = data.error || 'Event logs unavailable';
+                status.className = 'event-meta event-error';
+                return loaded > 0 ? loaded : -1;
+            }
+
+            total = Number(data.total || 0);
+            lastSource = data.source || '';
+            const events = data.events || [];
+
+            if (events.length > 0 && !wrap) {
+                wrap = document.createElement('div');
+                wrap.className = 'events-table-wrap';
+                const table = document.createElement('table');
+                table.className = 'events-table';
+                table.innerHTML = '<thead><tr>' +
+                                  '<th style="width:17%;">Event Type</th>' +
+                                  '<th style="width:12%;">Severity</th>' +
+                                  '<th style="width:18%;">Last Event</th>' +
+                                  '<th style="width:8%;">Count</th>' +
+                                  '<th style="width:10%;">Data</th>' +
+                                  '<th>Message</th>' +
+                                  '</tr></thead>';
+                tbody = document.createElement('tbody');
+                table.appendChild(tbody);
+                wrap.appendChild(table);
+                list.appendChild(wrap);
+            }
+
+            events.forEach(evt => {
                 const row = document.createElement('tr');
                 const msg = (evt.message !== undefined && evt.message !== null && evt.message !== '') ? evt.message : 'Event';
                 const dataVal = (evt.data !== undefined && evt.data !== null) ? evt.data : '-';
@@ -327,7 +347,6 @@ async function loadEvents() {
                 const eventTypeDisplay = isNew
                     ? (eventType + '<span class="evt-new-marker">*</span>')
                     : eventType;
-
                 row.innerHTML = '<td>' + eventTypeDisplay + '</td>' +
                                 '<td><span class="evt-level ' + level.cls + '">' + level.label + '</span></td>' +
                                 '<td>' + ts + '</td>' +
@@ -337,15 +356,24 @@ async function loadEvents() {
                 tbody.appendChild(row);
             });
 
-            table.appendChild(tbody);
-            wrap.appendChild(table);
-            list.appendChild(wrap);
-        } else if (eventCount === 0) {
-            status.textContent = formatCountLabel(0, 'event', 'events');
+            loaded += events.length;
+            offset += events.length;
+
+            if (events.length === CHUNK_SIZE && offset < total) {
+                status.textContent = 'Loading... (' + loaded + '/' + total + ' events)';
+            } else {
+                break;
+            }
         }
+
+        const source = lastSource ? (' | source: ' + lastSource) : '';
+        status.textContent = formatCountLabel(loaded, 'event', 'events') + source;
+        status.className = 'event-meta';
+        return loaded;
     } catch (e) {
         status.textContent = 'Failed to load events';
         status.className = 'event-meta event-error';
+        return -1;
     }
 }
 
@@ -446,6 +474,11 @@ async function clearEventLogs() {
 window.addEventListener('load', () => {
     snapshotSubscriptionClosed = false;
     fetch('/api/event_logs/subscribe', {method: 'POST'});
+    keepaliveTimer = setInterval(() => {
+        if (!snapshotSubscriptionClosed) {
+            fetch('/api/event_logs/keepalive', {method: 'POST'});
+        }
+    }, KEEPALIVE_INTERVAL_MS);
 
     (async () => {
         const status = document.getElementById('eventStatus');
@@ -456,13 +489,31 @@ window.addEventListener('load', () => {
             status.className = 'event-meta';
         }
 
-        await loadEvents();
-        // Snapshot page behavior: unsubscribe after completion/fallback fetch.
-        closeSnapshotSubscription();
+        let eventCount = await loadEvents();
+
+        // If snapshot metadata has not completed yet and we have no rows, allow a few
+        // short follow-up fetches while keeping subscription active.
+        if (!completed && eventCount === 0) {
+            for (let attempt = 0; attempt < SNAPSHOT_RETRY_ATTEMPTS; attempt++) {
+                await sleep(SNAPSHOT_RETRY_DELAY_MS);
+                const retryCompleted = await waitForSnapshotCompletion();
+                eventCount = await loadEvents();
+                if (retryCompleted || eventCount > 0) {
+                    break;
+                }
+            }
+        }
+
+        // Keep subscription active for the lifetime of the /events page.
+        // Unsubscribe only on unload/navigation.
     })();
 });
 
 window.addEventListener('beforeunload', () => {
+    if (keepaliveTimer) {
+        clearInterval(keepaliveTimer);
+        keepaliveTimer = null;
+    }
     if (clearCountdownTimer) {
         clearTimeout(clearCountdownTimer);
         clearCountdownTimer = null;

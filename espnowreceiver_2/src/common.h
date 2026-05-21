@@ -66,9 +66,18 @@ namespace Display {
 
 // ESP-NOW State
 namespace ESPNow {
+    enum class LedStatus : uint8_t {
+        Unknown = 0,
+        Ok = 1,
+        Warning = 2,
+        Error = 3,
+        Updating = 4,
+    };
+
     // LED indicator state
     extern LEDColor current_led_color;
     extern LEDEffect current_led_effect;
+    extern volatile uint8_t current_led_status;
     extern volatile bool receiver_ota_led_override_active;
     
     // Connection state (managed by RxStateMachine, not volatile flags)

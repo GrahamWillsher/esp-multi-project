@@ -109,6 +109,11 @@ public:
      * @return number of active SSE clients connected to /api/cell_stream
      */
     static int getCellDataSubscriberCount();
+
+    /**
+     * @brief Send cell_data stream keepalive when there are active viewers
+     */
+    static void refreshCellDataSubscription();
     
     /**
      * @brief Check if cell data subscription is currently active
@@ -253,6 +258,7 @@ public:
      * @return number of active SSE clients connected to /events
      */
     static int getEventLogSubscriberCount();
+    static void refreshEventLogSubscription();
 
 private:
     /**
@@ -291,6 +297,11 @@ private:
     static void handleStaticLed(const char* json_payload, size_t length);
 
     /**
+     * @brief Handle batt-emu/mqtt-v1/tx/state/static/settings retained message
+     */
+    static void handleStaticSettings(const char* json_payload, size_t length);
+
+    /**
      * @brief Handle batt-emu/mqtt-v1/tx/meta/version retained message
      */
     static void handleMetaVersion(const char* json_payload, size_t length);
@@ -304,6 +315,11 @@ private:
      * @brief Handle batt-emu/mqtt-v1/tx/meta/runtime retained message
      */
     static void handleMetaRuntime(const char* json_payload, size_t length);
+
+    /**
+     * @brief Handle batt-emu/mqtt-v1/tx/state/heartbeat periodic liveness message
+     */
+    static void handleHeartbeat(const char* json_payload, size_t length);
 
     /**
      * @brief Publish receiver identity/version metadata on connect

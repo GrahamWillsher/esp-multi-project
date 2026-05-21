@@ -361,7 +361,23 @@ static esp_err_t api_get_battery_interfaces_handler(httpd_req_t *req) {
 }
 
 static esp_err_t api_get_inverter_interfaces_handler(httpd_req_t *req) {
-    return serve_cached_type_catalog(req, TypeCatalogCache::copy_inverter_interface_entries, request_inverter_types_over_mqtt);
+    TypeCatalogCache::TypeEntry cached_entries[kMaxTypeEntries];
+    const size_t cached_count = TypeCatalogCache::copy_inverter_interface_entries(cached_entries, kMaxTypeEntries);
+
+    if (cached_count > 0) {
+        TypeEntry entries[kMaxTypeEntries];
+        for (size_t i = 0; i < cached_count; ++i) {
+            entries[i].id = cached_entries[i].id;
+            entries[i].name = cached_entries[i].name;
+        }
+        return serve_type_catalog_json(req, entries, cached_count);
+    }
+
+    // MQTT v1 currently publishes battery/inverter type catalogs, but no dedicated
+    // inverter-interface catalog topic. Keep UI functional by serving the canonical
+    // interface list while still nudging TX for latest catalog state.
+    (void)request_inverter_types_over_mqtt();
+    return serve_type_catalog_json(req, battery_interfaces, sizeof(battery_interfaces) / sizeof(TypeEntry));
 }
 
 static esp_err_t api_get_selected_interfaces_handler(httpd_req_t *req) {

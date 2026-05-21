@@ -8,6 +8,7 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <esp32common/config/timing_config.h>
 #include <cstdio>
 #include <esp32common/mqtt/mqtt_feature_flags.h>
 
@@ -41,7 +42,11 @@ esp_err_t api_set_debug_level_handler(httpd_req_t *req) {
 #if MQTT_FEATURE_COMMANDS
             if (MqttClient::isEnabled() && MqttClient::isConnected()) {
                 MqttAckTracker::AckResult ack_result;
-                const bool command_sent = MqttCommandClient::sendDebugLevel(level, 1500, &ack_result);
+                MqttCommandClient::CommandResult command_result = MqttCommandClient::CommandResult::ChannelUnavailable;
+                const bool command_sent = MqttCommandClient::sendDebugLevel(level,
+                                                                            TimingConfig::MQTT_COMMAND_ACK_WAIT_TIMEOUT_MS,
+                                                                            &ack_result,
+                                                                            &command_result);
                 if (command_sent && !ack_result.success) {
                     return ApiResponseUtils::send_error_message(req,
                                                                 ack_result.message[0] != '\0'
@@ -56,6 +61,13 @@ esp_err_t api_set_debug_level_handler(httpd_req_t *req) {
                                                         level,
                                                         level_names[level],
                                                         level);
+                }
+
+                if (command_result == MqttCommandClient::CommandResult::AckTimeout) {
+                    return ApiResponseUtils::send_error_message(req, "Timed out waiting for transmitter ACK");
+                }
+                if (command_result == MqttCommandClient::CommandResult::PublishFailed) {
+                    return ApiResponseUtils::send_error_message(req, "Failed to publish MQTT command");
                 }
             }
 #endif

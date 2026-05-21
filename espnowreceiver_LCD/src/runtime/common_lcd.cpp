@@ -27,6 +27,8 @@ std::atomic<uint32_t> rx_queue_high_watermark{0};
 
 std::atomic<uint8_t> current_led_color{0};
 std::atomic<uint8_t> current_led_effect{0};
+std::atomic<uint8_t> current_led_status{static_cast<uint8_t>(LedStatus::Unknown)};
+std::atomic<bool> current_led_state_valid{false};
 std::atomic<bool> receiver_ota_led_override_active{false};
 
 }  // namespace ESPNow

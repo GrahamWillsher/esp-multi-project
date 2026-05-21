@@ -205,6 +205,7 @@ esp_err_t api_dashboard_data_handler(httpd_req_t *req) {
 
     const DeviceTemperature::Reading receiver_temperature = DeviceTemperature::get_latest();
     const auto transmitter_temperature = TransmitterManager::getTemperatureReport();
+    const auto battery_temperature = TransmitterManager::getBatteryTemperatureReport();
 
     JsonObject transmitter = ApiFieldBuilders::addTransmitterObject(doc);
     transmitter["connected"] = TransmitterManager::isTransmitterConnected();
@@ -219,20 +220,36 @@ esp_err_t api_dashboard_data_handler(httpd_req_t *req) {
     transmitter["time_source"]       = TransmitterManager::getTimeSource();
     transmitter["geolocation_valid"] = TransmitterManager::isGeolocationValid();
     transmitter["mqtt_connected"]    = TransmitterManager::isMqttConnected();
+    transmitter["last_update_ms"]    = TransmitterManager::getUptimeMs();
+    transmitter["temperature_c"]     = nullptr;
 
     String tx_firmware = "Unknown";
+    String tx_name = "Unknown";
     if (TransmitterManager::hasMetadata()) {
         uint8_t major, minor, patch;
         TransmitterManager::getMetadataVersion(major, minor, patch);
         char version_str[12];
         ApiFieldBuilders::formatVersionString(version_str, sizeof(version_str), major, minor, patch);
         tx_firmware = String(version_str);
+        const char* env = TransmitterManager::getMetadataEnv();
+        const char* device = TransmitterManager::getMetadataDevice();
+        if (env && env[0] != '\0') {
+            tx_name = String(env);
+        } else if (device && device[0] != '\0') {
+            tx_name = String(device);
+        }
     }
+    transmitter["name"] = tx_name;
     transmitter["firmware"] = tx_firmware;
     if (transmitter_temperature.known && transmitter_temperature.valid) {
         transmitter["temperature_c"] = DeviceTemperature::to_celsius(transmitter_temperature.temperature_centi_c);
     } else {
         transmitter["temperature_c"] = nullptr;
+    }
+    if (battery_temperature.known && battery_temperature.valid) {
+        transmitter["battery_temp_c"] = DeviceTemperature::to_celsius(battery_temperature.temperature_centi_c);
+    } else {
+        transmitter["battery_temp_c"] = nullptr;
     }
 
     JsonObject receiver = ApiFieldBuilders::addReceiverObject(doc);
@@ -372,7 +389,7 @@ esp_err_t api_transmitter_metadata_handler(httpd_req_t *req) {
 
 esp_err_t api_transmitter_health_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_TRANSMITTER_HEALTH);
-    StaticJsonDocument<256> doc;
+    StaticJsonDocument<320> doc;
 
     doc["success"]            = true;
     doc["uptime_ms"]          = TransmitterManager::getUptimeMs();
@@ -388,6 +405,13 @@ esp_err_t api_transmitter_health_handler(httpd_req_t *req) {
         doc["temperature_c"] = DeviceTemperature::to_celsius(transmitter_temperature.temperature_centi_c);
     } else {
         doc["temperature_c"] = nullptr;
+    }
+
+    const auto battery_temperature = TransmitterManager::getBatteryTemperatureReport();
+    if (battery_temperature.known && battery_temperature.valid) {
+        doc["battery_temp_c"] = DeviceTemperature::to_celsius(battery_temperature.temperature_centi_c);
+    } else {
+        doc["battery_temp_c"] = nullptr;
     }
 
     String json;
@@ -428,7 +452,7 @@ esp_err_t api_inverter_specs_handler(httpd_req_t *req) {
 
 esp_err_t api_get_event_logs_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_GET_EVENT_LOGS);
-    int limit = parse_int_query_param(req, "limit", 20);
+    int limit = parse_int_query_param(req, "limit", 50);
     if (limit < 1) limit = 1;
     if (limit > 50) limit = 50;
 
@@ -436,41 +460,62 @@ esp_err_t api_get_event_logs_handler(httpd_req_t *req) {
     uint32_t last_update_ms = 0;
     TransmitterManager::getEventLogsSnapshot(logs, &last_update_ms);
 
-    DynamicJsonDocument doc(4096);
-    doc["success"] = true;
-    doc["event_count"] = static_cast<uint32_t>(logs.size());
-    doc["source"] = "mqtt";
-    doc["last_update_ms"] = last_update_ms;
-    JsonArray events = doc.createNestedArray("events");
-
     const int max_events = (limit < (int)logs.size()) ? limit : (int)logs.size();
-    for (int i = 0; i < max_events; i++) {
-        const auto& entry = logs[i];
-        JsonObject evt = events.createNestedObject();
-        evt["timestamp_ms"] = entry.timestamp_ms;
-        evt["event_unix_ms"] = entry.event_unix_ms;
-        evt["event_utc_offset_min"] = entry.event_utc_offset_min;
-        evt["level"] = entry.level;
-        evt["data"] = entry.data;
-        evt["count"] = entry.count;
-        evt["is_new"] = entry.is_new;
-        evt["type"] = entry.type;
-        evt["message"] = entry.message;
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+    // Send header
+    char header[256];
+    const int header_len = snprintf(header, sizeof(header),
+                                    "{\"success\":true,\"event_count\":%d,"
+                                    "\"source\":\"mqtt\",\"last_update_ms\":%u,\"events\":[",
+                                    max_events, last_update_ms);
+    if (header_len <= 0 || httpd_resp_send_chunk(req, header, header_len) != ESP_OK) {
+        return ESP_FAIL;
     }
 
-    String json;
-    serializeJson(doc, json);
-    return send_json_chunked(req, json);
+    // Send per-event chunks
+    for (int i = 0; i < max_events; i++) {
+        if (i > 0) {
+            if (httpd_resp_send_chunk(req, ",", 1) != ESP_OK) {
+                return ESP_FAIL;
+            }
+        }
+
+        const auto& entry = logs[i];
+        StaticJsonDocument<512> evt_doc;
+        evt_doc["timestamp_ms"] = entry.timestamp_ms;
+        evt_doc["event_unix_ms"] = entry.event_unix_ms;
+        evt_doc["event_utc_offset_min"] = entry.event_utc_offset_min;
+        evt_doc["level"] = entry.level;
+        evt_doc["data"] = entry.data;
+        evt_doc["count"] = entry.count;
+        evt_doc["is_new"] = entry.is_new;
+        evt_doc["type"] = entry.type;
+        evt_doc["message"] = entry.message;
+
+        char evt_json[640];
+        const size_t evt_len = serializeJson(evt_doc, evt_json, sizeof(evt_json));
+        if (evt_len == 0 || httpd_resp_send_chunk(req, evt_json, evt_len) != ESP_OK) {
+            return ESP_FAIL;
+        }
+    }
+
+    // Send footer and finalize
+    if (httpd_resp_send_chunk(req, "]}", 2) != ESP_OK) { return ESP_FAIL; }
+    if (httpd_resp_send_chunk(req, nullptr, 0) != ESP_OK) { return ESP_FAIL; }
+    return ESP_OK;
 }
 
 esp_err_t api_event_logs_page_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_GET_EVENT_LOGS);
 
     int offset = parse_int_query_param(req, "offset", 0);
-    int limit = parse_int_query_param(req, "limit", 20);
+    int limit = parse_int_query_param(req, "limit", 25);
     if (offset < 0) offset = 0;
     if (limit < 1) limit = 1;
-    if (limit > 50) limit = 50;
+    if (limit > 25) limit = 25;
 
     std::vector<TransmitterManager::EventLogEntry> logs;
     uint32_t last_update_ms = 0;
@@ -481,34 +526,53 @@ esp_err_t api_event_logs_page_handler(httpd_req_t *req) {
         offset = total;
     }
     const int end_index = std::min(total, offset + limit);
+    const int returned = end_index - offset;
 
-    DynamicJsonDocument doc(4096);
-    doc["success"] = true;
-    doc["source"] = "mqtt";
-    doc["offset"] = offset;
-    doc["limit"] = limit;
-    doc["returned"] = end_index - offset;
-    doc["total"] = total;
-    doc["last_update_ms"] = last_update_ms;
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
 
-    JsonArray events = doc.createNestedArray("events");
-    for (int index = offset; index < end_index; index++) {
-        const auto& entry = logs[static_cast<size_t>(index)];
-        JsonObject evt = events.createNestedObject();
-        evt["timestamp_ms"] = entry.timestamp_ms;
-        evt["event_unix_ms"] = entry.event_unix_ms;
-        evt["event_utc_offset_min"] = entry.event_utc_offset_min;
-        evt["level"] = entry.level;
-        evt["data"] = entry.data;
-        evt["count"] = entry.count;
-        evt["is_new"] = entry.is_new;
-        evt["type"] = entry.type;
-        evt["message"] = entry.message;
+    // Send header with pagination metadata
+    char header[320];
+    const int header_len = snprintf(header, sizeof(header),
+                                    "{\"success\":true,\"source\":\"mqtt\","
+                                    "\"offset\":%d,\"limit\":%d,\"returned\":%d,"
+                                    "\"total\":%d,\"last_update_ms\":%u,\"events\":[",
+                                    offset, limit, returned, total, last_update_ms);
+    if (header_len <= 0 || httpd_resp_send_chunk(req, header, header_len) != ESP_OK) {
+        return ESP_FAIL;
     }
 
-    String json;
-    serializeJson(doc, json);
-    return send_json_chunked(req, json);
+    // Send per-event chunks
+    for (int index = offset; index < end_index; index++) {
+        if (index > offset) {
+            if (httpd_resp_send_chunk(req, ",", 1) != ESP_OK) {
+                return ESP_FAIL;
+            }
+        }
+
+        const auto& entry = logs[static_cast<size_t>(index)];
+        StaticJsonDocument<512> evt_doc;
+        evt_doc["timestamp_ms"] = entry.timestamp_ms;
+        evt_doc["event_unix_ms"] = entry.event_unix_ms;
+        evt_doc["event_utc_offset_min"] = entry.event_utc_offset_min;
+        evt_doc["level"] = entry.level;
+        evt_doc["data"] = entry.data;
+        evt_doc["count"] = entry.count;
+        evt_doc["is_new"] = entry.is_new;
+        evt_doc["type"] = entry.type;
+        evt_doc["message"] = entry.message;
+
+        char evt_json[640];
+        const size_t evt_len = serializeJson(evt_doc, evt_json, sizeof(evt_json));
+        if (evt_len == 0 || httpd_resp_send_chunk(req, evt_json, evt_len) != ESP_OK) {
+            return ESP_FAIL;
+        }
+    }
+
+    // Send footer and finalize
+    if (httpd_resp_send_chunk(req, "]}", 2) != ESP_OK) { return ESP_FAIL; }
+    if (httpd_resp_send_chunk(req, nullptr, 0) != ESP_OK) { return ESP_FAIL; }
+    return ESP_OK;
 }
 
 esp_err_t api_get_event_log_summary_handler(httpd_req_t *req) {

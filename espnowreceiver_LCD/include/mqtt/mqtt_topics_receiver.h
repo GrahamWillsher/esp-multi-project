@@ -75,7 +75,7 @@ namespace TxMeta {
  */
 namespace TxAck {
   constexpr const char* PREFIX         = "batt-emu/mqtt-v1/tx/ack";
-  constexpr const char* SETTINGS       = "batt-emu/mqtt-v1/tx/ack/settings";
+  constexpr const char* BATTERY        = "batt-emu/mqtt-v1/tx/ack/battery";  // was SETTINGS — renamed to match TX publish topic
   constexpr const char* NETWORK        = "batt-emu/mqtt-v1/tx/ack/network";
   constexpr const char* MQTT_CONFIG    = "batt-emu/mqtt-v1/tx/ack/mqtt";
   constexpr const char* CONTROL        = "batt-emu/mqtt-v1/tx/ack/control";
@@ -124,6 +124,7 @@ namespace RxCmd {
   
   // Stream control (subscription/unsubscription)
   constexpr const char* STREAM_EVENT_LOGS = "batt-emu/mqtt-v1/rx/cmd/stream/event_logs";
+  constexpr const char* STREAM_CELL_DATA  = "batt-emu/mqtt-v1/rx/cmd/stream/cell_data";
   
   // Refresh requests (ask transmitter to republish)
   constexpr const char* REFRESH_BATTERY           = "batt-emu/mqtt-v1/rx/cmd/refresh/battery";

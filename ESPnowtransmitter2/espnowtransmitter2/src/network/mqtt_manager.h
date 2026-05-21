@@ -158,6 +158,16 @@ public:
         bool publish_static_led();
 
         /**
+         * @brief Publish retained full settings snapshot to batt-emu/mqtt-v1/tx/state/static/settings
+         *
+         * Includes battery, battery-emulator, power, can, and contactor sections so
+         * receivers can hydrate typed settings caches in MQTT-only mode.
+         *
+         * @return true if published successfully, false otherwise
+         */
+        bool publish_static_settings();
+
+        /**
          * @brief Publish retained firmware/protocol metadata to batt-emu/mqtt-v1/tx/meta/version
          * @return true if published successfully, false otherwise
          */
@@ -226,6 +236,22 @@ public:
      * @return number of active subscribers
      */
     int get_event_log_subscribers() const { return static_cast<int>(event_log_subscriptions_.size()); }
+
+    /**
+     * @brief Increment cell data stream subscriber count (called when receiver opens cell monitor)
+     */
+    void increment_cell_data_subscribers();
+
+    /**
+     * @brief Decrement cell data stream subscriber count (called when receiver closes cell monitor)
+     */
+    void decrement_cell_data_subscribers();
+
+    /**
+     * @brief Get current cell-data stream subscriber count
+     * @return number of active subscribers
+     */
+    int get_cell_data_subscribers() const { return static_cast<int>(cell_data_subscriptions_.size()); }
     
     /**
      * @brief Process MQTT messages (must be called regularly from task)
@@ -465,6 +491,16 @@ private:
     uint32_t next_event_log_subscription_id_{1};
     uint32_t event_log_ttl_reap_count_{0};
 
+    struct CellDataSubscription {
+        uint32_t id;
+        uint64_t created_ms;
+        uint64_t last_activity_ms;
+    };
+
+    std::vector<CellDataSubscription> cell_data_subscriptions_;
+    uint32_t next_cell_data_subscription_id_{1};
+    uint32_t cell_data_ttl_reap_count_{0};
+
     struct AckCacheEntry {
         char request_id[48];
         char topic[64];
@@ -481,4 +517,5 @@ private:
     std::vector<int> event_snapshot_order_;
 
     void reap_expired_event_log_subscriptions(uint64_t now_ms);
+    void reap_expired_cell_data_subscriptions(uint64_t now_ms);
 };

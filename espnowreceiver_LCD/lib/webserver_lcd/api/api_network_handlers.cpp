@@ -14,6 +14,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
+#include <esp32common/config/timing_config.h>
 #include <esp32common/espnow/common.h>
 #include <cstring>
 
@@ -26,10 +27,63 @@ void set_power_bar_mode(Backend::PowerBarRendererMode mode);
 }
 
 namespace {
-
-constexpr const char* MQTT_TOPIC_RX_CMD_NETWORK_UPDATE = "batt-emu/mqtt-v1/rx/cmd/network/update";
-constexpr const char* MQTT_TOPIC_RX_CMD_MQTT_UPDATE = "batt-emu/mqtt-v1/rx/cmd/mqtt/update";
 constexpr const char* MQTT_TOPIC_RX_CMD_REFRESH_MQTT = "batt-emu/mqtt-v1/rx/cmd/refresh/mqtt";
+constexpr uint32_t kMqttCommandAckWaitTimeoutMs = TimingConfig::MQTT_COMMAND_ACK_WAIT_TIMEOUT_MS;
+
+esp_err_t send_mqtt_command_failure(httpd_req_t* req,
+                                    const char* log_context,
+                                    MqttCommandClient::CommandResult command_result) {
+    switch (command_result) {
+        case MqttCommandClient::CommandResult::AckTimeout:
+            LOG_WARN("API", "%s timed out waiting for transmitter ACK", log_context);
+            return ApiResponseUtils::send_error_message(req, "Timed out waiting for transmitter ACK");
+        case MqttCommandClient::CommandResult::PublishFailed:
+            LOG_WARN("API", "%s publish failed", log_context);
+            return ApiResponseUtils::send_error_message(req, "Failed to publish MQTT command");
+        case MqttCommandClient::CommandResult::ChannelUnavailable:
+        default:
+            LOG_WARN("API", "%s rejected: MQTT command channel unavailable", log_context);
+            return ApiResponseUtils::send_error_message(req, "MQTT command channel unavailable");
+    }
+}
+
+void refresh_cached_mqtt_config_from_ack(const MqttAckTracker::AckResult& ack_result,
+                                         const mqtt_config_update_t& request_msg) {
+    if (ack_result.payload[0] == '\0') {
+        return;
+    }
+
+    StaticJsonDocument<512> ack_doc;
+    if (deserializeJson(ack_doc, ack_result.payload) != DeserializationError::Ok) {
+        LOG_WARN("API", "MQTT config ACK could not be parsed for cache refresh");
+        return;
+    }
+
+    uint8_t server[4] = {request_msg.server[0], request_msg.server[1], request_msg.server[2], request_msg.server[3]};
+    const char* server_str = ack_doc["server"] | "";
+    if (server_str[0] != '\0') {
+        (void)ApiRequestUtils::parse_ipv4(server_str, server);
+    }
+
+    const bool enabled = ack_doc["enabled"].is<bool>()
+        ? ack_doc["enabled"].as<bool>()
+        : (request_msg.enabled != 0);
+    const uint16_t port = ack_doc["port"] | request_msg.port;
+    const char* username = ack_doc["username"] | request_msg.username;
+    const char* client_id = ack_doc["client_id"] | request_msg.client_id;
+    const bool connected = ack_doc["connected"] | false;
+    const uint32_t version = ack_doc["config_version"] | ack_result.version;
+
+    TransmitterManager::storeMqttConfig(enabled,
+                                        server,
+                                        port,
+                                        username,
+                                        request_msg.password,
+                                        client_id,
+                                        connected,
+                                        version);
+    TransmitterManager::updateMqttRuntimeConnection(connected);
+}
 
 UI::Runtime::Backend::PowerBarRendererMode to_ui_power_bar_mode(ReceiverNetworkConfig::PowerBarRendererMode mode) {
     return static_cast<UI::Runtime::Backend::PowerBarRendererMode>(static_cast<uint8_t>(mode));
@@ -312,14 +366,16 @@ esp_err_t api_save_network_config_handler(httpd_req_t *req) {
 #if MQTT_FEATURE_COMMANDS
     if (MqttClient::isEnabled() && MqttClient::isConnected()) {
         MqttAckTracker::AckResult ack_result;
+        MqttCommandClient::CommandResult command_result = MqttCommandClient::CommandResult::ChannelUnavailable;
         const bool mqtt_sent = MqttCommandClient::sendNetworkUpdate(msg.use_static_ip != 0,
                                                                      msg.ip,
                                                                      msg.gateway,
                                                                      msg.subnet,
                                                                      msg.dns_primary,
                                                                      msg.dns_secondary,
-                                                                     2000,
-                                                                     &ack_result);
+                                                                     kMqttCommandAckWaitTimeoutMs,
+                                                                     &ack_result,
+                                                                     &command_result);
 
         if (mqtt_sent) {
             LOG_INFO("API", "✓ Network config ACK via MQTT: success=%d code=%s",
@@ -336,11 +392,12 @@ esp_err_t api_save_network_config_handler(httpd_req_t *req) {
                                                             ? ack_result.message
                                                             : "Network config rejected by transmitter");
         }
+
+        return send_mqtt_command_failure(req, "Network config update", command_result);
     }
 #endif
 
-    LOG_WARN("API", "Network config update rejected: MQTT command channel unavailable");
-    return ApiResponseUtils::send_error_message(req, "MQTT command channel unavailable");
+    return send_mqtt_command_failure(req, "Network config update", MqttCommandClient::CommandResult::ChannelUnavailable);
 }
 
 esp_err_t api_get_mqtt_config_handler(httpd_req_t *req) {
@@ -426,33 +483,37 @@ esp_err_t api_save_mqtt_config_handler(httpd_req_t *req) {
 #if MQTT_FEATURE_COMMANDS
     if (MqttClient::isEnabled() && MqttClient::isConnected()) {
         MqttAckTracker::AckResult ack_result;
+        MqttCommandClient::CommandResult command_result = MqttCommandClient::CommandResult::ChannelUnavailable;
         const bool mqtt_sent = MqttCommandClient::sendMqttUpdate(msg.enabled != 0,
                                                                   msg.server,
                                                                   msg.port,
                                                                   msg.username,
                                                                   msg.password,
                                                                   msg.client_id,
-                                                                  2000,
-                                                                  &ack_result);
+                                                                  kMqttCommandAckWaitTimeoutMs,
+                                                                  &ack_result,
+                                                                  &command_result);
 
         if (mqtt_sent) {
             LOG_INFO("API", "✓ MQTT config ACK via MQTT: success=%d code=%s",
                      ack_result.success,
                      ack_result.code);
             if (ack_result.success) {
+                refresh_cached_mqtt_config_from_ack(ack_result, msg);
                 return ApiResponseUtils::send_success_message(req,
                                                               ack_result.message[0] != '\0'
                                                                   ? ack_result.message
-                                                                  : "MQTT config applied via MQTT");
+                                                                  : "MQTT config saved on transmitter; reboot required");
             }
             return ApiResponseUtils::send_error_message(req,
                                                         ack_result.message[0] != '\0'
                                                             ? ack_result.message
                                                             : "MQTT config rejected by transmitter");
         }
+
+        return send_mqtt_command_failure(req, "MQTT config update", command_result);
     }
 #endif
 
-    LOG_WARN("API", "MQTT config update rejected: MQTT command channel unavailable");
-    return ApiResponseUtils::send_error_message(req, "MQTT command channel unavailable");
+    return send_mqtt_command_failure(req, "MQTT config update", MqttCommandClient::CommandResult::ChannelUnavailable);
 }

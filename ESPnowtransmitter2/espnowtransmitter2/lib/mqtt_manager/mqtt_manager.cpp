@@ -131,7 +131,7 @@ void MqttConfigManager::applyConfig() {
     //   2. Add MqttManager::reconfigure() method to disconnect and reconnect with new settings
     //   3. Call MqttManager::instance().reconfigure() here
     
-    LOG_INFO("MQTT_CFG", "Configuration saved - reboot transmitter to apply");
+    LOG_INFO("MQTT_CFG", "Configuration saved to NVS - reboot transmitter to apply");
 }
 
 bool MqttConfigManager::isConnected() {

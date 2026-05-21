@@ -22,6 +22,16 @@ public:
         bool is_valid{true};
         String error_message;
     };
+
+    struct ApplyFailureInfo {
+        bool valid{false};
+        uint8_t category{0};
+        uint8_t field_id{0};
+        char stage[32]{};
+        char reason_code[32]{};
+        char detail[96]{};
+        char nvs_key[32]{};
+    };
     
     /**
      * @brief Initialize settings manager and load from NVS
@@ -140,6 +150,7 @@ public:
     bool is_initialized() const { return initialized_; }
 
     ValidationResult get_last_validation() const { return last_validation_; }
+    ApplyFailureInfo get_last_apply_failure() const { return last_apply_failure_; }
     
 private:
     SettingsManager();
@@ -212,6 +223,15 @@ private:
     ValidationResult validate_contactor_settings() const;
     ValidationResult validate_all_settings() const;
     void apply_runtime_static_settings();
+    void clear_last_apply_failure();
+    void set_last_apply_failure(uint8_t category,
+                                uint8_t field_id,
+                                const char* stage,
+                                const char* reason_code,
+                                const char* detail,
+                                const char* nvs_key = nullptr);
+    void set_apply_context(uint8_t category, uint8_t field_id);
+    void clear_apply_context();
 
     // Battery settings storage
     uint32_t battery_capacity_wh_{30000};              // 30kWh default
@@ -273,6 +293,10 @@ private:
     uint32_t contactor_settings_version_{0};
 
     ValidationResult last_validation_;
+    ApplyFailureInfo last_apply_failure_;
+    bool has_apply_context_{false};
+    uint8_t current_apply_category_{0};
+    uint8_t current_apply_field_id_{0};
     
     bool initialized_{false};
 };

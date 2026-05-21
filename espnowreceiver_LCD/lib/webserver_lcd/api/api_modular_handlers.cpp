@@ -76,6 +76,26 @@ esp_err_t api_event_logs_unsubscribe_handler(httpd_req_t *req) {
     return ApiResponseUtils::send_success(req);
 }
 
+esp_err_t api_event_logs_keepalive_handler(httpd_req_t *req) {
+    MqttClient::refreshEventLogSubscription();
+    return ApiResponseUtils::send_success(req);
+}
+
+esp_err_t api_cell_data_subscribe_handler(httpd_req_t *req) {
+    MqttClient::incrementCellDataSubscribers();
+    return ApiResponseUtils::send_success(req);
+}
+
+esp_err_t api_cell_data_unsubscribe_handler(httpd_req_t *req) {
+    MqttClient::decrementCellDataSubscribers();
+    return ApiResponseUtils::send_success(req);
+}
+
+esp_err_t api_cell_data_keepalive_handler(httpd_req_t *req) {
+    MqttClient::refreshCellDataSubscription();
+    return ApiResponseUtils::send_success(req);
+}
+
 esp_err_t api_event_logs_snapshot_status_handler(httpd_req_t *req) {
     const auto status = TransmitterEventLogCache::get_snapshot_status();
 

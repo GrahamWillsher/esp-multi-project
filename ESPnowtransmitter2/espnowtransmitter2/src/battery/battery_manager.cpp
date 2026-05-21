@@ -67,6 +67,8 @@ BatteryManager::~BatteryManager() {
 
 bool BatteryManager::init_primary_battery(BatteryType battery_type) {
   if (battery) {
+    battery_primary_ = battery;
+    primary_battery_type_ = battery_type;
     LOG_WARN("BATTERY_MGR", "Battery already initialized!");
     return false;
   }
@@ -86,6 +88,8 @@ bool BatteryManager::init_primary_battery(BatteryType battery_type) {
     LOG_ERROR("BATTERY_MGR", "Battery setup failed!");
     return false;
   }
+
+  battery_primary_ = battery;
   
   LOG_INFO("BATTERY_MGR", "✓ Primary battery initialized");
   return true;
@@ -93,6 +97,8 @@ bool BatteryManager::init_primary_battery(BatteryType battery_type) {
 
 bool BatteryManager::init_secondary_battery(BatteryType battery_type) {
   if (battery2) {
+    battery_secondary_ = battery2;
+    secondary_battery_type_ = battery_type;
     LOG_WARN("BATTERY_MGR", "Secondary battery already initialized!");
     return false;
   }
@@ -112,6 +118,8 @@ bool BatteryManager::init_secondary_battery(BatteryType battery_type) {
     LOG_ERROR("BATTERY_MGR", "Secondary battery setup failed!");
     return false;
   }
+
+  battery_secondary_ = battery2;
   
   LOG_INFO("BATTERY_MGR", "✓ Secondary battery initialized");
   return true;
@@ -119,6 +127,8 @@ bool BatteryManager::init_secondary_battery(BatteryType battery_type) {
 
 bool BatteryManager::init_inverter(InverterProtocolType inverter_type) {
   if (inverter) {
+    inverter_ = inverter;
+    inverter_type_ = inverter_type;
     LOG_WARN("BATTERY_MGR", "Inverter already initialized!");
     return false;
   }
@@ -147,6 +157,8 @@ bool BatteryManager::init_inverter(InverterProtocolType inverter_type) {
     LOG_ERROR("BATTERY_MGR", "Inverter not created!");
     return false;
   }
+
+  inverter_ = inverter;
   
   LOG_INFO("BATTERY_MGR", "✓ Inverter initialized");
   return true;
@@ -154,6 +166,8 @@ bool BatteryManager::init_inverter(InverterProtocolType inverter_type) {
 
 bool BatteryManager::init_charger(ChargerType charger_type) {
   if (charger) {
+    charger_ = charger;
+    charger_type_ = charger_type;
     LOG_WARN("BATTERY_MGR", "Charger already initialized!");
     return false;
   }
@@ -174,6 +188,8 @@ bool BatteryManager::init_charger(ChargerType charger_type) {
     LOG_ERROR("BATTERY_MGR", "Charger setup failed!");
     return false;
   }
+
+  charger_ = charger;
   
   LOG_INFO("BATTERY_MGR", "✓ Charger initialized");
   return true;
@@ -181,6 +197,8 @@ bool BatteryManager::init_charger(ChargerType charger_type) {
 
 bool BatteryManager::init_shunt(ShuntType shunt_type) {
   if (shunt) {
+    shunt_ = shunt;
+    shunt_type_ = shunt_type;
     LOG_WARN("BATTERY_MGR", "Shunt already initialized!");
     return false;
   }
@@ -201,6 +219,8 @@ bool BatteryManager::init_shunt(ShuntType shunt_type) {
     LOG_ERROR("BATTERY_MGR", "Shunt setup failed!");
     return false;
   }
+
+  shunt_ = shunt;
   
   LOG_INFO("BATTERY_MGR", "✓ Shunt initialized");
   return true;

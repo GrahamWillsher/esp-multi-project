@@ -230,10 +230,10 @@ String get_dashboard_page_content(const String& tx_status,
                     <div style='font-size: 12px; color: #888; margin-top: 5px;'>Update firmware</div>
                 </div>
             </a>
-            <a id='eventLogLink' href='/events' style='text-decoration: none;'>
+            <a id='eventLogLink' href='/events' onclick='window.location="/events"; return false;' style='text-decoration: none; display: block; cursor: pointer;'>
                 <div id='eventLogCard' style='padding: 15px; background: rgba(255,152,0,0.1); border: 2px solid #FF9800; border-radius: 8px; text-align: center; cursor: pointer; transition: all 0.2s;'
-                     onmouseover='if(!this.classList.contains("disabled")) this.style.background="rgba(255,152,0,0.2)"'
-                     onmouseout='if(!this.classList.contains("disabled")) this.style.background="rgba(255,152,0,0.1)"'>
+                     onmouseover='this.style.background="rgba(255,152,0,0.2)"'
+                     onmouseout='this.style.background="rgba(255,152,0,0.1)"'>
                     <span style='font-size: 24px;'>📋</span>
                     <div style='margin-top: 10px; color: #FF9800; font-weight: bold;'>Event Logs</div>
                     <div id='eventLogStatus' style='font-size: 12px; color: #888; margin-top: 5px;'>View system events</div>

@@ -31,6 +31,15 @@ public:
         uint32_t last_update_ms = 0;
     };
 
+    struct BatteryTemperatureReport {
+        bool known = false;
+        bool valid = false;
+        uint32_t seq = 0;
+        int16_t temperature_centi_c = 0;
+        uint32_t uptime_ms = 0;
+        uint32_t last_update_ms = 0;
+    };
+
     static constexpr uint8_t kEventLogsClearAckFailed = 0;
     static constexpr uint8_t kEventLogsClearAckSuccess = 1;
 
@@ -195,6 +204,13 @@ public:
                                        int16_t temperature_centi_c,
                                        uint32_t uptime_ms);
     static TemperatureReport getTemperatureReport();
+
+    // Battery pack temperature (from battery_live topic)
+    static void storeBatteryTemperatureReport(bool valid,
+                                              uint32_t seq,
+                                              int16_t temperature_centi_c,
+                                              uint32_t uptime_ms);
+    static BatteryTemperatureReport getBatteryTemperatureReport();
 };
 
 #endif

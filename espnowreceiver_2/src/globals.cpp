@@ -32,6 +32,7 @@ namespace Display {
 namespace ESPNow {
     LEDColor current_led_color = LED_TEAL;  // Startup initializing state
     LEDEffect current_led_effect = LED_EFFECT_HEARTBEAT;
+    volatile uint8_t current_led_status = static_cast<uint8_t>(LedStatus::Unknown);
     volatile bool receiver_ota_led_override_active = false;
 
     int wifi_channel = 1;

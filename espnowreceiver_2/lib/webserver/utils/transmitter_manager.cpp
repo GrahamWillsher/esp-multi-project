@@ -12,6 +12,7 @@ namespace {
 TransmitterManager::EventLogSummary g_event_log_summary;
 TransmitterManager::EventLogClearAck g_event_log_clear_ack;
 TransmitterManager::TemperatureReport g_temperature_report;
+TransmitterManager::BatteryTemperatureReport g_battery_temperature_report;
 }
 
 void TransmitterManager::init() {
@@ -441,4 +442,29 @@ void TransmitterManager::storeTemperatureReport(bool valid,
 
 TransmitterManager::TemperatureReport TransmitterManager::getTemperatureReport() {
     return g_temperature_report;
+}
+
+void TransmitterManager::storeBatteryTemperatureReport(bool valid,
+                                                       uint32_t seq,
+                                                       int16_t temperature_centi_c,
+                                                       uint32_t uptime_ms) {
+    g_battery_temperature_report.known = true;
+    g_battery_temperature_report.valid = valid;
+    g_battery_temperature_report.seq = seq;
+    g_battery_temperature_report.temperature_centi_c = temperature_centi_c;
+    g_battery_temperature_report.uptime_ms = uptime_ms;
+    g_battery_temperature_report.last_update_ms = millis();
+
+    if (g_battery_temperature_report.valid) {
+        LOG_INFO("TX_MGR", "Stored battery temperature seq=%lu value=%.2fC",
+                 static_cast<unsigned long>(g_battery_temperature_report.seq),
+                 static_cast<double>(g_battery_temperature_report.temperature_centi_c) / 100.0);
+    } else {
+        LOG_WARN("TX_MGR", "Stored battery temperature seq=%lu as invalid",
+                 static_cast<unsigned long>(g_battery_temperature_report.seq));
+    }
+}
+
+TransmitterManager::BatteryTemperatureReport TransmitterManager::getBatteryTemperatureReport() {
+    return g_battery_temperature_report;
 }

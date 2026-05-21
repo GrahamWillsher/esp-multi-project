@@ -5,7 +5,6 @@
 #include <freertos/semphr.h>
 #include "../logging.h"
 #include "sse_notifier.h"
-#include "transmitter_peer_registry.h"
 
 namespace {
     uint8_t registered_mac[6] = {0};
@@ -53,7 +52,6 @@ void register_mac(const uint8_t* transmitter_mac) {
     LOG_INFO("TX_MGR", "MAC registered: %s", mac_str);
 
     SSENotifier::notifyDataUpdated();
-    (void)TransmitterPeerRegistry::ensure_peer_registered(cached);
 }
 
 // ===== Cache Management =====

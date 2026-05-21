@@ -92,7 +92,7 @@ const char* get_battery_settings_page_script() {
             return FormChangeTracker.countChanges(initialValues, trackedFieldIds);
         }
         
-        function loadBatterySettings() {
+        function loadBatterySettings(allowFollowupRefresh = true) {
             console.log('Loading battery settings from transmitter...');
             
             fetch('/api/get_battery_settings')
@@ -129,6 +129,12 @@ const char* get_battery_settings_page_script() {
                         storeInitialValues();
                         attachChangeListeners();
                         updateButtonText(getChangedCount());
+
+                        // API may return cached values immediately and trigger refresh asynchronously.
+                        // Do one delayed re-fetch to pick up a fresh snapshot.
+                        if (allowFollowupRefresh && data.requested === true) {
+                            setTimeout(() => { loadBatterySettings(false); }, 700);
+                        }
                         
                         console.log('Battery settings loaded and populated');
                     } else {

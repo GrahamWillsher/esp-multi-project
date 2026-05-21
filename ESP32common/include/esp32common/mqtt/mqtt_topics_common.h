@@ -74,6 +74,10 @@ inline constexpr std::string_view STATE_STATIC_MQTT = "batt-emu/mqtt-v1/tx/state
 /// Payload: { current_state, brightness, mode, ... }
 inline constexpr std::string_view STATE_STATIC_LED = "batt-emu/mqtt-v1/tx/state/static/led";
 
+/// Static unified settings snapshot (QoS1, retained)
+/// Payload: { battery, battery_emulator, power, can, contactor }
+inline constexpr std::string_view STATE_STATIC_SETTINGS = "batt-emu/mqtt-v1/tx/state/static/settings";
+
 /// Battery type catalog (QoS1, retained)
 /// Payload: array of { id, name, chemistry, capacity, ... }
 inline constexpr std::string_view STATE_STATIC_CATALOG_BATTERY = "batt-emu/mqtt-v1/tx/state/static/catalog_battery";
@@ -212,6 +216,7 @@ inline constexpr std::string_view CMD_REFRESH_BATTERY = "batt-emu/mqtt-v1/rx/cmd
 inline constexpr std::string_view CMD_REFRESH_POWER = "batt-emu/mqtt-v1/rx/cmd/refresh/power";
 inline constexpr std::string_view CMD_REFRESH_NETWORK = "batt-emu/mqtt-v1/rx/cmd/refresh/network";
 inline constexpr std::string_view CMD_REFRESH_MQTT = "batt-emu/mqtt-v1/rx/cmd/refresh/mqtt";
+inline constexpr std::string_view CMD_REFRESH_SETTINGS = "batt-emu/mqtt-v1/rx/cmd/refresh/settings";
 inline constexpr std::string_view CMD_REFRESH_LED = "batt-emu/mqtt-v1/rx/cmd/refresh/led";
 inline constexpr std::string_view CMD_REFRESH_CATALOG_BATTERY = "batt-emu/mqtt-v1/rx/cmd/refresh/catalog_battery";
 inline constexpr std::string_view CMD_REFRESH_CATALOG_INVERTER = "batt-emu/mqtt-v1/rx/cmd/refresh/catalog_inverter";

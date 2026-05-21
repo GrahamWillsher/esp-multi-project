@@ -8,6 +8,12 @@ const char* get_ota_page_script() {
             return spaced.replace(/\b\w/g, c => c.toUpperCase());
         }
 
+        function formatQuotedName(name) {
+            const v = String(name || '').trim();
+            if (!v) return '"Unknown Device"';
+            return '"' + v + '"';
+        }
+
         function displayDeviceName(meta) {
             const env = formatEnvName(meta.env || '');
             const type = meta.device || '';
@@ -20,6 +26,44 @@ const char* get_ota_page_script() {
             const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(v || '');
             if (!m) return null;
             return { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3]) };
+        }
+
+        function formatQuotedVersion(version) {
+            const v = String(version || '').trim();
+            if (!v) return '"Unknown"';
+            return '"v' + v.replace(/^v/i, '') + '"';
+        }
+
+        function formatBuildDateTime(value) {
+            const raw = String(value || '').trim();
+            if (!raw) return '"Build info unavailable"';
+
+            // Already ISO-like date only: YYYY-MM-DD
+            if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+                return '"' + raw + ' 00:00:00"';
+            }
+
+            // Already date-time with optional seconds: YYYY-MM-DD HH:MM(:SS)
+            const isoMatch = /^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})(?::(\d{2}))?$/.exec(raw);
+            if (isoMatch) {
+                const seconds = isoMatch[3] || '00';
+                return '"' + isoMatch[1] + ' ' + isoMatch[2] + ':' + seconds + '"';
+            }
+
+            // C/C++ __DATE__ __TIME__ style: "May 21 2026 17:25:29"
+            const cDateTime = /^(\w{3})\s+(\d{1,2})\s+(\d{4})\s+(\d{2}:\d{2}:\d{2})$/.exec(raw);
+            if (cDateTime) {
+                const monthMap = {
+                    Jan: '01', Feb: '02', Mar: '03', Apr: '04', May: '05', Jun: '06',
+                    Jul: '07', Aug: '08', Sep: '09', Oct: '10', Nov: '11', Dec: '12'
+                };
+                const mm = monthMap[cDateTime[1]] || '01';
+                const dd = String(Number(cDateTime[2])).padStart(2, '0');
+                return '"' + cDateTime[3] + '-' + mm + '-' + dd + ' ' + cDateTime[4] + '"';
+            }
+
+            // Unknown format - preserve as-is but still quote for consistency.
+            return '"' + raw + '"';
         }
 
         function normalizeDeviceType(value) {
@@ -731,10 +775,11 @@ const char* get_ota_page_script() {
                     .then(data => {
                         const versionEl = document.getElementById('receiverVersion');
                         const buildEl = document.getElementById('receiverBuild');
+                        const name = formatEnvName(data.device || 'Receiver');
                         const v = data.version || 'Unknown';
-                        const d = data.build_date || 'Build info unavailable';
-                        versionEl.innerHTML = 'Receiver v' + v + ' <span style="color: #FFD700;">*</span>';
-                        buildEl.innerText = d;
+                        const d = (data.build_date && data.build_time) ? (data.build_date + ' ' + data.build_time) : (data.build_date || 'Build info unavailable');
+                        versionEl.innerHTML = formatQuotedName(name) + ' ' + formatQuotedVersion(v) + ' <span style="color: #FFD700;">*</span>';
+                        buildEl.innerText = formatBuildDateTime(d);
                         receiverVersionForCompat = v;
                         updateCompatibilityStatus();
                     });
@@ -746,10 +791,13 @@ const char* get_ota_page_script() {
                     .then(data => {
                         const versionEl = document.getElementById('transmitterVersion');
                         const buildEl = document.getElementById('transmitterBuild');
+                        const name = 'Transmitter';
                         const v = data.transmitter_version || 'Unknown';
-                        const d = data.transmitter_build_date || 'Build info unavailable';
-                        versionEl.innerHTML = 'Transmitter v' + v + ' <span style="color: #FFD700;">*</span>';
-                        buildEl.innerText = d;
+                        const d = (data.transmitter_build_date && data.transmitter_build_time)
+                            ? (data.transmitter_build_date + ' ' + data.transmitter_build_time)
+                            : (data.transmitter_build_date || 'Build info unavailable');
+                        versionEl.innerHTML = formatQuotedName(name) + ' ' + formatQuotedVersion(v) + ' <span style="color: #FFD700;">*</span>';
+                        buildEl.innerText = formatBuildDateTime(d);
                         transmitterVersionForCompat = (v && v !== 'Unknown') ? v : null;
                         updateCompatibilityStatus();
                     });
@@ -764,12 +812,12 @@ const char* get_ota_page_script() {
                     
                     if (data.valid) {
                         const name = displayDeviceName(data);
-                        versionEl.innerHTML = name + ' v' + data.version + ' <span style="color: #4CAF50;">●</span>';
-                        buildEl.innerText = data.build_date;
+                        versionEl.innerHTML = formatQuotedName(name) + ' ' + formatQuotedVersion(data.version) + ' <span style="color: #4CAF50;">●</span>';
+                        buildEl.innerText = formatBuildDateTime(data.build_date);
                         receiverVersionForCompat = data.version;
                     } else {
                         versionEl.innerHTML = 'Metadata unavailable <span style="color: #FFD700;">*</span>';
-                        buildEl.innerText = data.message || 'No embedded metadata';
+                        buildEl.innerText = formatBuildDateTime(data.message || 'No embedded metadata');
                         receiverVersionForCompat = null;
                     }
                     updateCompatibilityStatus();
@@ -838,13 +886,13 @@ const char* get_ota_page_script() {
                                 indicator = '<span style="color: #FFD700;">*</span>';
                             }
                             const name = displayDeviceName(data);
-                            versionEl.innerHTML = name + ' v' + data.version + ' ' + indicator;
+                            versionEl.innerHTML = formatQuotedName(name) + ' ' + formatQuotedVersion(data.version) + ' ' + indicator;
                             const buildDate = data.build_date || data.buildDate || data.build || '';
                             if (buildDate) {
-                                buildEl.innerText = buildDate;
+                                buildEl.innerText = formatBuildDateTime(buildDate);
                             } else {
                                 fallbackTransmitterFromVersionApi().catch(() => {
-                                    buildEl.innerText = 'Build info unavailable';
+                                    buildEl.innerText = formatBuildDateTime('Build info unavailable');
                                 });
                             }
                             transmitterVersionForCompat = data.version;

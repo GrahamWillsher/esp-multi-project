@@ -509,7 +509,7 @@ bool SettingsManager::load_power_settings() {
     if (!loaded_from_blob) {
         power_charge_w_              = prefs.getUShort("charge_w", kPowerLegacyDefaults.charge_w);
         power_discharge_w_           = prefs.getUShort("discharge_w", kPowerLegacyDefaults.discharge_w);
-        power_max_precharge_ms_      = prefs.getUShort("max_precharge_ms", kPowerLegacyDefaults.max_precharge_ms);
+        power_max_precharge_ms_      = prefs.getUShort("max_pre_ms", kPowerLegacyDefaults.max_precharge_ms);
         power_precharge_duration_ms_ = prefs.getUShort("precharge_ms", kPowerLegacyDefaults.precharge_duration_ms);
         power_equipment_stop_type_   = prefs.getUChar("eq_stop_type", kPowerLegacyDefaults.equipment_stop_type);
         power_external_precharge_enabled_ = prefs.getBool("ext_precharge", kPowerLegacyDefaults.external_precharge_enabled);
@@ -521,9 +521,26 @@ bool SettingsManager::load_power_settings() {
 
     last_validation_ = validate_power_settings();
     if (!last_validation_.is_valid) {
-        LOG_ERROR("SETTINGS", "Power settings validation failed: %s",
-                  last_validation_.error_message.c_str());
-        return false;
+        // Self-heal: if precharge values are invalid/zero, apply defaults
+        if (power_max_precharge_ms_ == 0) {
+            LOG_WARN("SETTINGS", "Power max_precharge_ms is 0 (NVS invalid) - applying default (%u)",
+                     static_cast<unsigned>(kPowerLegacyDefaults.max_precharge_ms));
+            power_max_precharge_ms_ = kPowerLegacyDefaults.max_precharge_ms;
+        }
+        if (power_precharge_duration_ms_ == 0 || power_precharge_duration_ms_ > power_max_precharge_ms_) {
+            LOG_WARN("SETTINGS", "Power precharge_duration_ms invalid (0 or > max %u) - applying default (%u)",
+                     static_cast<unsigned>(power_max_precharge_ms_),
+                     static_cast<unsigned>(kPowerLegacyDefaults.precharge_duration_ms));
+            power_precharge_duration_ms_ = kPowerLegacyDefaults.precharge_duration_ms;
+        }
+        last_validation_ = validate_power_settings();
+        if (!last_validation_.is_valid) {
+            LOG_ERROR("SETTINGS", "Power settings validation failed after defaults: %s",
+                      last_validation_.error_message.c_str());
+            return false;
+        }
+        LOG_INFO("SETTINGS", "Power settings self-healed with defaults");
+        return true;
     }
     return true;
 }
@@ -531,27 +548,81 @@ bool SettingsManager::load_power_settings() {
 bool SettingsManager::save_power_settings() {
     Preferences prefs;
 
+    // Self-heal: if precharge values are invalid/zero, apply defaults before validation
+    if (power_max_precharge_ms_ == 0) {
+        LOG_WARN("SETTINGS", "save_power_settings: max_precharge_ms 0 -> applying default %u",
+                 static_cast<unsigned>(kPowerLegacyDefaults.max_precharge_ms));
+        power_max_precharge_ms_ = kPowerLegacyDefaults.max_precharge_ms;
+    }
+    if (power_precharge_duration_ms_ == 0 || power_precharge_duration_ms_ > power_max_precharge_ms_) {
+        LOG_WARN("SETTINGS", "save_power_settings: precharge_duration_ms invalid -> applying default %u",
+                 static_cast<unsigned>(kPowerLegacyDefaults.precharge_duration_ms));
+        power_precharge_duration_ms_ = kPowerLegacyDefaults.precharge_duration_ms;
+    }
+
     last_validation_ = validate_power_settings();
     if (!last_validation_.is_valid) {
+        set_last_apply_failure(SETTINGS_POWER,
+                               POWER_EQUIPMENT_STOP_TYPE,
+                               "CATEGORY_VALIDATE_PRE_SAVE",
+                               "VALIDATION_FAILED",
+                               last_validation_.error_message.c_str());
         LOG_ERROR("SETTINGS", "Power settings save aborted: %s",
                   last_validation_.error_message.c_str());
         return false;
     }
 
     if (!prefs.begin("power", false)) {
+        set_last_apply_failure(SETTINGS_POWER,
+                               POWER_EQUIPMENT_STOP_TYPE,
+                               "NVS_OPEN",
+                               "NVS_OPEN_FAILED",
+                               "Failed to open power namespace for writing",
+                               "power");
         LOG_ERROR("SETTINGS", "Failed to open power namespace for writing");
         return false;
     }
 
-    bool writes_ok = true;
-    writes_ok &= write_u16_checked(prefs, "power", "charge_w", power_charge_w_);
-    writes_ok &= write_u16_checked(prefs, "power", "discharge_w", power_discharge_w_);
-    writes_ok &= write_u16_checked(prefs, "power", "max_precharge_ms", power_max_precharge_ms_);
-    writes_ok &= write_u16_checked(prefs, "power", "precharge_ms", power_precharge_duration_ms_);
-    writes_ok &= write_u8_checked(prefs, "power", "eq_stop_type", power_equipment_stop_type_);
-    writes_ok &= write_bool_checked(prefs, "power", "ext_precharge", power_external_precharge_enabled_);
-    writes_ok &= write_bool_checked(prefs, "power", "no_inv_disc", power_no_inverter_disconnect_contactor_);
-    writes_ok &= write_u32_checked(prefs, "power", "version", power_settings_version_);
+    if (!write_u16_checked(prefs, "power", "charge_w", power_charge_w_)) {
+        set_last_apply_failure(SETTINGS_POWER, POWER_CHARGE_W, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing power key", "charge_w");
+        prefs.end();
+        return false;
+    }
+    if (!write_u16_checked(prefs, "power", "discharge_w", power_discharge_w_)) {
+        set_last_apply_failure(SETTINGS_POWER, POWER_DISCHARGE_W, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing power key", "discharge_w");
+        prefs.end();
+        return false;
+    }
+    if (!write_u16_checked(prefs, "power", "max_pre_ms", power_max_precharge_ms_)) {
+        set_last_apply_failure(SETTINGS_POWER, POWER_MAX_PRECHARGE_MS, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing power key", "max_pre_ms");
+        prefs.end();
+        return false;
+    }
+    if (!write_u16_checked(prefs, "power", "precharge_ms", power_precharge_duration_ms_)) {
+        set_last_apply_failure(SETTINGS_POWER, POWER_PRECHARGE_DURATION_MS, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing power key", "precharge_ms");
+        prefs.end();
+        return false;
+    }
+    if (!write_u8_checked(prefs, "power", "eq_stop_type", power_equipment_stop_type_)) {
+        set_last_apply_failure(SETTINGS_POWER, POWER_EQUIPMENT_STOP_TYPE, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing power key", "eq_stop_type");
+        prefs.end();
+        return false;
+    }
+    if (!write_bool_checked(prefs, "power", "ext_precharge", power_external_precharge_enabled_)) {
+        set_last_apply_failure(SETTINGS_POWER, POWER_EXTERNAL_PRECHARGE_ENABLED, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing power key", "ext_precharge");
+        prefs.end();
+        return false;
+    }
+    if (!write_bool_checked(prefs, "power", "no_inv_disc", power_no_inverter_disconnect_contactor_)) {
+        set_last_apply_failure(SETTINGS_POWER, POWER_NO_INVERTER_DISCONNECT_CONTACTOR, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing power key", "no_inv_disc");
+        prefs.end();
+        return false;
+    }
+    if (!write_u32_checked(prefs, "power", "version", power_settings_version_)) {
+        set_last_apply_failure(SETTINGS_POWER, POWER_EQUIPMENT_STOP_TYPE, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing power version", "version");
+        prefs.end();
+        return false;
+    }
 
     PowerSettingsBlob blob{};
     blob.schema_version       = kPowerBlobSchemaVersion;
@@ -564,10 +635,18 @@ bool SettingsManager::save_power_settings() {
     blob.no_inverter_disconnect_contactor = power_no_inverter_disconnect_contactor_;
     blob.version               = power_settings_version_;
     blob.crc32 = EspnowPacketUtils::calculate_message_crc32_zeroed(&blob);
-    writes_ok &= write_blob_checked(prefs, "power", &blob, sizeof(blob));
+    if (!write_blob_checked(prefs, "power", &blob, sizeof(blob))) {
+        set_last_apply_failure(SETTINGS_POWER,
+                               POWER_EQUIPMENT_STOP_TYPE,
+                               "NVS_WRITE_BLOB",
+                               "NVS_BLOB_WRITE_FAILED",
+                               "Failed writing power blob",
+                               "blob_v1");
+        prefs.end();
+        return false;
+    }
     prefs.end();
-
-    return writes_ok;
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -606,7 +685,7 @@ bool SettingsManager::load_inverter_settings() {
     if (!loaded_from_blob) {
         inverter_cells_            = prefs.getUChar("cells", kInverterLegacyDefaults.cells);
         inverter_modules_          = prefs.getUChar("modules", kInverterLegacyDefaults.modules);
-        inverter_cells_per_module_ = prefs.getUChar("cells_per_module", kInverterLegacyDefaults.cells_per_module);
+        inverter_cells_per_module_ = prefs.getUChar("cells_per_mod", kInverterLegacyDefaults.cells_per_module);
         inverter_voltage_level_    = prefs.getUShort("voltage_level", kInverterLegacyDefaults.voltage_level);
         inverter_capacity_ah_      = prefs.getUShort("capacity_ah", kInverterLegacyDefaults.capacity_ah);
         inverter_battery_type_     = prefs.getUChar("battery_type", kInverterLegacyDefaults.battery_type);
@@ -617,9 +696,40 @@ bool SettingsManager::load_inverter_settings() {
 
     last_validation_ = validate_inverter_settings();
     if (!last_validation_.is_valid) {
-        LOG_ERROR("SETTINGS", "Inverter settings validation failed: %s",
-                  last_validation_.error_message.c_str());
-        return false;
+        // Self-heal: if critical fields are 0 or invalid, apply defaults
+        if (inverter_cells_ == 0) {
+            LOG_WARN("SETTINGS", "Inverter cells is 0 (NVS invalid) - applying default (%u)",
+                     static_cast<unsigned>(kInverterLegacyDefaults.cells));
+            inverter_cells_ = kInverterLegacyDefaults.cells;
+        }
+        if (inverter_modules_ == 0) {
+            LOG_WARN("SETTINGS", "Inverter modules is 0 (NVS invalid) - applying default (%u)",
+                     static_cast<unsigned>(kInverterLegacyDefaults.modules));
+            inverter_modules_ = kInverterLegacyDefaults.modules;
+        }
+        if (inverter_cells_per_module_ == 0) {
+            LOG_WARN("SETTINGS", "Inverter cells_per_module is 0 (NVS invalid) - applying default (%u)",
+                     static_cast<unsigned>(kInverterLegacyDefaults.cells_per_module));
+            inverter_cells_per_module_ = kInverterLegacyDefaults.cells_per_module;
+        }
+        if (inverter_voltage_level_ == 0) {
+            LOG_WARN("SETTINGS", "Inverter voltage_level is 0 (NVS invalid) - applying default (%u)",
+                     static_cast<unsigned>(kInverterLegacyDefaults.voltage_level));
+            inverter_voltage_level_ = kInverterLegacyDefaults.voltage_level;
+        }
+        if (inverter_capacity_ah_ == 0) {
+            LOG_WARN("SETTINGS", "Inverter capacity_ah is 0 (NVS invalid) - applying default (%u)",
+                     static_cast<unsigned>(kInverterLegacyDefaults.capacity_ah));
+            inverter_capacity_ah_ = kInverterLegacyDefaults.capacity_ah;
+        }
+        last_validation_ = validate_inverter_settings();
+        if (!last_validation_.is_valid) {
+            LOG_ERROR("SETTINGS", "Inverter settings validation failed after defaults: %s",
+                      last_validation_.error_message.c_str());
+            return false;
+        }
+        LOG_INFO("SETTINGS", "Inverter settings self-healed with defaults");
+        return true;
     }
     return true;
 }
@@ -627,26 +737,91 @@ bool SettingsManager::load_inverter_settings() {
 bool SettingsManager::save_inverter_settings() {
     Preferences prefs;
 
+    // Self-heal before validation: apply defaults if critical fields are 0
+    if (inverter_cells_ == 0) {
+        LOG_WARN("SETTINGS", "Inverter cells is 0 - applying default (%u)",
+                 static_cast<unsigned>(kInverterLegacyDefaults.cells));
+        inverter_cells_ = kInverterLegacyDefaults.cells;
+    }
+    if (inverter_modules_ == 0) {
+        LOG_WARN("SETTINGS", "Inverter modules is 0 - applying default (%u)",
+                 static_cast<unsigned>(kInverterLegacyDefaults.modules));
+        inverter_modules_ = kInverterLegacyDefaults.modules;
+    }
+    if (inverter_cells_per_module_ == 0) {
+        LOG_WARN("SETTINGS", "Inverter cells_per_module is 0 - applying default (%u)",
+                 static_cast<unsigned>(kInverterLegacyDefaults.cells_per_module));
+        inverter_cells_per_module_ = kInverterLegacyDefaults.cells_per_module;
+    }
+    if (inverter_voltage_level_ == 0) {
+        LOG_WARN("SETTINGS", "Inverter voltage_level is 0 - applying default (%u)",
+                 static_cast<unsigned>(kInverterLegacyDefaults.voltage_level));
+        inverter_voltage_level_ = kInverterLegacyDefaults.voltage_level;
+    }
+    if (inverter_capacity_ah_ == 0) {
+        LOG_WARN("SETTINGS", "Inverter capacity_ah is 0 - applying default (%u)",
+                 static_cast<unsigned>(kInverterLegacyDefaults.capacity_ah));
+        inverter_capacity_ah_ = kInverterLegacyDefaults.capacity_ah;
+    }
+
     last_validation_ = validate_inverter_settings();
     if (!last_validation_.is_valid) {
+        set_last_apply_failure(SETTINGS_INVERTER,
+                               INVERTER_BATTERY_TYPE,
+                               "CATEGORY_VALIDATE_PRE_SAVE",
+                               "VALIDATION_FAILED",
+                               last_validation_.error_message.c_str());
         LOG_ERROR("SETTINGS", "Inverter settings save aborted: %s",
                   last_validation_.error_message.c_str());
         return false;
     }
 
     if (!prefs.begin("inverter", false)) {
+        set_last_apply_failure(SETTINGS_INVERTER,
+                               INVERTER_BATTERY_TYPE,
+                               "NVS_OPEN",
+                               "NVS_OPEN_FAILED",
+                               "Failed to open inverter namespace for writing",
+                               "inverter");
         LOG_ERROR("SETTINGS", "Failed to open inverter namespace for writing");
         return false;
     }
 
-    bool writes_ok = true;
-    writes_ok &= write_u8_checked(prefs, "inverter", "cells", inverter_cells_);
-    writes_ok &= write_u8_checked(prefs, "inverter", "modules", inverter_modules_);
-    writes_ok &= write_u8_checked(prefs, "inverter", "cells_per_module", inverter_cells_per_module_);
-    writes_ok &= write_u16_checked(prefs, "inverter", "voltage_level", inverter_voltage_level_);
-    writes_ok &= write_u16_checked(prefs, "inverter", "capacity_ah", inverter_capacity_ah_);
-    writes_ok &= write_u8_checked(prefs, "inverter", "battery_type", inverter_battery_type_);
-    writes_ok &= write_u32_checked(prefs, "inverter", "version", inverter_settings_version_);
+    if (!write_u8_checked(prefs, "inverter", "cells", inverter_cells_)) {
+        set_last_apply_failure(SETTINGS_INVERTER, INVERTER_CELLS, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing inverter key", "cells");
+        prefs.end();
+        return false;
+    }
+    if (!write_u8_checked(prefs, "inverter", "modules", inverter_modules_)) {
+        set_last_apply_failure(SETTINGS_INVERTER, INVERTER_MODULES, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing inverter key", "modules");
+        prefs.end();
+        return false;
+    }
+    if (!write_u8_checked(prefs, "inverter", "cells_per_mod", inverter_cells_per_module_)) {
+        set_last_apply_failure(SETTINGS_INVERTER, INVERTER_CELLS_PER_MODULE, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing inverter key", "cells_per_mod");
+        prefs.end();
+        return false;
+    }
+    if (!write_u16_checked(prefs, "inverter", "voltage_level", inverter_voltage_level_)) {
+        set_last_apply_failure(SETTINGS_INVERTER, INVERTER_VOLTAGE_LEVEL, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing inverter key", "voltage_level");
+        prefs.end();
+        return false;
+    }
+    if (!write_u16_checked(prefs, "inverter", "capacity_ah", inverter_capacity_ah_)) {
+        set_last_apply_failure(SETTINGS_INVERTER, INVERTER_CAPACITY_AH, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing inverter key", "capacity_ah");
+        prefs.end();
+        return false;
+    }
+    if (!write_u8_checked(prefs, "inverter", "battery_type", inverter_battery_type_)) {
+        set_last_apply_failure(SETTINGS_INVERTER, INVERTER_BATTERY_TYPE, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing inverter key", "battery_type");
+        prefs.end();
+        return false;
+    }
+    if (!write_u32_checked(prefs, "inverter", "version", inverter_settings_version_)) {
+        set_last_apply_failure(SETTINGS_INVERTER, INVERTER_BATTERY_TYPE, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing inverter version", "version");
+        prefs.end();
+        return false;
+    }
 
     InverterSettingsBlob blob{};
     blob.schema_version   = kInverterBlobSchemaVersion;
@@ -658,9 +833,18 @@ bool SettingsManager::save_inverter_settings() {
     blob.battery_type     = inverter_battery_type_;
     blob.version          = inverter_settings_version_;
     blob.crc32 = EspnowPacketUtils::calculate_message_crc32_zeroed(&blob);
-    writes_ok &= write_blob_checked(prefs, "inverter", &blob, sizeof(blob));
+    if (!write_blob_checked(prefs, "inverter", &blob, sizeof(blob))) {
+        set_last_apply_failure(SETTINGS_INVERTER,
+                               INVERTER_BATTERY_TYPE,
+                               "NVS_WRITE_BLOB",
+                               "NVS_BLOB_WRITE_FAILED",
+                               "Failed writing inverter blob",
+                               "blob_v1");
+        prefs.end();
+        return false;
+    }
     prefs.end();
-    return writes_ok;
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -708,9 +892,25 @@ bool SettingsManager::load_can_settings() {
 
     last_validation_ = validate_can_settings();
     if (!last_validation_.is_valid) {
-        LOG_ERROR("SETTINGS", "CAN settings validation failed: %s",
-                  last_validation_.error_message.c_str());
-        return false;
+        // Attempt self-healing: apply defaults for invalid/zero frequency values
+        if (can_frequency_khz_ == 0) {
+            LOG_WARN("SETTINGS", "CAN frequency is 0 (NVS invalid) - applying default (%u)",
+                     static_cast<unsigned>(kCanLegacyDefaults.frequency_khz));
+            can_frequency_khz_ = kCanLegacyDefaults.frequency_khz;
+        }
+        if (can_fd_frequency_mhz_ == 0) {
+            LOG_WARN("SETTINGS", "CAN-FD frequency is 0 (NVS invalid) - applying default (%u)",
+                     static_cast<unsigned>(kCanLegacyDefaults.fd_frequency_mhz));
+            can_fd_frequency_mhz_ = kCanLegacyDefaults.fd_frequency_mhz;
+        }
+        last_validation_ = validate_can_settings();
+        if (!last_validation_.is_valid) {
+            LOG_ERROR("SETTINGS", "CAN settings validation failed after defaults: %s",
+                      last_validation_.error_message.c_str());
+            return false;
+        }
+        LOG_INFO("SETTINGS", "CAN settings self-healed with defaults");
+        return true;
     }
     return true;
 }
@@ -718,25 +918,70 @@ bool SettingsManager::load_can_settings() {
 bool SettingsManager::save_can_settings() {
     Preferences prefs;
 
+    // Self-heal: if frequency fields are 0 (NVS corruption / never set), apply defaults
+    if (can_frequency_khz_ == 0) {
+        LOG_WARN("SETTINGS", "save_can_settings: CAN frequency 0 -> applying default %u",
+                 static_cast<unsigned>(kCanLegacyDefaults.frequency_khz));
+        can_frequency_khz_ = kCanLegacyDefaults.frequency_khz;
+    }
+    if (can_fd_frequency_mhz_ == 0) {
+        LOG_WARN("SETTINGS", "save_can_settings: CAN-FD frequency 0 -> applying default %u",
+                 static_cast<unsigned>(kCanLegacyDefaults.fd_frequency_mhz));
+        can_fd_frequency_mhz_ = kCanLegacyDefaults.fd_frequency_mhz;
+    }
     last_validation_ = validate_can_settings();
     if (!last_validation_.is_valid) {
+        set_last_apply_failure(SETTINGS_CAN,
+                               CAN_USE_CANFD_AS_CLASSIC,
+                               "CATEGORY_VALIDATE_PRE_SAVE",
+                               "VALIDATION_FAILED",
+                               last_validation_.error_message.c_str());
         LOG_ERROR("SETTINGS", "CAN settings save aborted: %s",
                   last_validation_.error_message.c_str());
         return false;
     }
 
     if (!prefs.begin("can", false)) {
+        set_last_apply_failure(SETTINGS_CAN,
+                               CAN_USE_CANFD_AS_CLASSIC,
+                               "NVS_OPEN",
+                               "NVS_OPEN_FAILED",
+                               "Failed to open CAN namespace for writing",
+                               "can");
         LOG_ERROR("SETTINGS", "Failed to open CAN namespace for writing");
         return false;
     }
 
-    bool writes_ok = true;
-    writes_ok &= write_u16_checked(prefs, "can", "freq_khz", can_frequency_khz_);
-    writes_ok &= write_u16_checked(prefs, "can", "fd_freq_mhz", can_fd_frequency_mhz_);
-    writes_ok &= write_u16_checked(prefs, "can", "sofar_id", can_sofar_id_);
-    writes_ok &= write_u16_checked(prefs, "can", "pylon_send_ms", can_pylon_send_interval_ms_);
-    writes_ok &= write_bool_checked(prefs, "can", "canfd_classic", can_use_canfd_as_classic_);
-    writes_ok &= write_u32_checked(prefs, "can", "version", can_settings_version_);
+    if (!write_u16_checked(prefs, "can", "freq_khz", can_frequency_khz_)) {
+        set_last_apply_failure(SETTINGS_CAN, CAN_FREQUENCY_KHZ, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing CAN key", "freq_khz");
+        prefs.end();
+        return false;
+    }
+    if (!write_u16_checked(prefs, "can", "fd_freq_mhz", can_fd_frequency_mhz_)) {
+        set_last_apply_failure(SETTINGS_CAN, CAN_FD_FREQUENCY_MHZ, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing CAN key", "fd_freq_mhz");
+        prefs.end();
+        return false;
+    }
+    if (!write_u16_checked(prefs, "can", "sofar_id", can_sofar_id_)) {
+        set_last_apply_failure(SETTINGS_CAN, CAN_SOFAR_ID, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing CAN key", "sofar_id");
+        prefs.end();
+        return false;
+    }
+    if (!write_u16_checked(prefs, "can", "pylon_send_ms", can_pylon_send_interval_ms_)) {
+        set_last_apply_failure(SETTINGS_CAN, CAN_PYLON_SEND_INTERVAL_MS, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing CAN key", "pylon_send_ms");
+        prefs.end();
+        return false;
+    }
+    if (!write_bool_checked(prefs, "can", "canfd_classic", can_use_canfd_as_classic_)) {
+        set_last_apply_failure(SETTINGS_CAN, CAN_USE_CANFD_AS_CLASSIC, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing CAN key", "canfd_classic");
+        prefs.end();
+        return false;
+    }
+    if (!write_u32_checked(prefs, "can", "version", can_settings_version_)) {
+        set_last_apply_failure(SETTINGS_CAN, CAN_USE_CANFD_AS_CLASSIC, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing CAN version", "version");
+        prefs.end();
+        return false;
+    }
 
     CanSettingsBlob blob{};
     blob.schema_version        = kCanBlobSchemaVersion;
@@ -747,9 +992,18 @@ bool SettingsManager::save_can_settings() {
     blob.use_canfd_as_classic   = can_use_canfd_as_classic_;
     blob.version                = can_settings_version_;
     blob.crc32 = EspnowPacketUtils::calculate_message_crc32_zeroed(&blob);
-    writes_ok &= write_blob_checked(prefs, "can", &blob, sizeof(blob));
+    if (!write_blob_checked(prefs, "can", &blob, sizeof(blob))) {
+        set_last_apply_failure(SETTINGS_CAN,
+                               CAN_USE_CANFD_AS_CLASSIC,
+                               "NVS_WRITE_BLOB",
+                               "NVS_BLOB_WRITE_FAILED",
+                               "Failed writing CAN blob",
+                               "blob_v1");
+        prefs.end();
+        return false;
+    }
     prefs.end();
-    return writes_ok;
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -793,8 +1047,7 @@ bool SettingsManager::load_contactor_settings() {
         contactor_pwm_frequency_hz_     = prefs.getUShort("pwm_hz", kContactorLegacyDefaults.pwm_frequency_hz);
         contactor_pwm_control_enabled_  = prefs.getBool("pwm_ctrl", kContactorLegacyDefaults.pwm_control_enabled);
         contactor_pwm_hold_duty_        = prefs.getUShort("pwm_hold", kContactorLegacyDefaults.pwm_hold_duty);
-        // Prefer short key for NVS key-length safety, fallback to legacy long key
-        contactor_periodic_bms_reset_   = prefs.getBool("per_bms", prefs.getBool("periodic_bms_reset", kContactorLegacyDefaults.periodic_bms_reset));
+        contactor_periodic_bms_reset_   = prefs.getBool("per_bms_reset", kContactorLegacyDefaults.periodic_bms_reset);
         contactor_bms_first_align_enabled_ = prefs.getBool("bms1st_en", kContactorLegacyDefaults.bms_first_align_enabled);
         contactor_bms_first_align_target_minutes_ = prefs.getUShort("bms1st_min", kContactorLegacyDefaults.bms_first_align_target_minutes);
         contactor_settings_version_     = prefs.getUInt("version", kContactorLegacyDefaults.version);
@@ -804,9 +1057,27 @@ bool SettingsManager::load_contactor_settings() {
 
     last_validation_ = validate_contactor_settings();
     if (!last_validation_.is_valid) {
-        LOG_ERROR("SETTINGS", "Contactor settings validation failed: %s",
-                  last_validation_.error_message.c_str());
-        return false;
+        // Self-heal: if PWM values are invalid/zero, apply defaults
+        if (contactor_pwm_frequency_hz_ == 0 || contactor_pwm_frequency_hz_ < 100) {
+            LOG_WARN("SETTINGS", "Contactor PWM frequency invalid (%u) - applying default (%u)",
+                     static_cast<unsigned>(contactor_pwm_frequency_hz_),
+                     static_cast<unsigned>(kContactorLegacyDefaults.pwm_frequency_hz));
+            contactor_pwm_frequency_hz_ = kContactorLegacyDefaults.pwm_frequency_hz;
+        }
+        if (contactor_pwm_hold_duty_ == 0 || contactor_pwm_hold_duty_ < 1) {
+            LOG_WARN("SETTINGS", "Contactor PWM hold duty invalid (%u) - applying default (%u)",
+                     static_cast<unsigned>(contactor_pwm_hold_duty_),
+                     static_cast<unsigned>(kContactorLegacyDefaults.pwm_hold_duty));
+            contactor_pwm_hold_duty_ = kContactorLegacyDefaults.pwm_hold_duty;
+        }
+        last_validation_ = validate_contactor_settings();
+        if (!last_validation_.is_valid) {
+            LOG_ERROR("SETTINGS", "Contactor settings validation failed after defaults: %s",
+                      last_validation_.error_message.c_str());
+            return false;
+        }
+        LOG_INFO("SETTINGS", "Contactor settings self-healed with defaults");
+        return true;
     }
     return true;
 }
@@ -814,29 +1085,88 @@ bool SettingsManager::load_contactor_settings() {
 bool SettingsManager::save_contactor_settings() {
     Preferences prefs;
 
+    // Self-heal: if PWM values are invalid/zero, apply defaults before validation
+    if (contactor_pwm_frequency_hz_ == 0 || contactor_pwm_frequency_hz_ < 100) {
+        LOG_WARN("SETTINGS", "Contactor PWM frequency invalid (%u) - applying default (%u)",
+                 static_cast<unsigned>(contactor_pwm_frequency_hz_),
+                 static_cast<unsigned>(kContactorLegacyDefaults.pwm_frequency_hz));
+        contactor_pwm_frequency_hz_ = kContactorLegacyDefaults.pwm_frequency_hz;
+    }
+    if (contactor_pwm_hold_duty_ == 0 || contactor_pwm_hold_duty_ < 1) {
+        LOG_WARN("SETTINGS", "Contactor PWM hold duty invalid (%u) - applying default (%u)",
+                 static_cast<unsigned>(contactor_pwm_hold_duty_),
+                 static_cast<unsigned>(kContactorLegacyDefaults.pwm_hold_duty));
+        contactor_pwm_hold_duty_ = kContactorLegacyDefaults.pwm_hold_duty;
+    }
+
     last_validation_ = validate_contactor_settings();
     if (!last_validation_.is_valid) {
+        set_last_apply_failure(SETTINGS_CONTACTOR,
+                               CONTACTOR_PWM_HOLD_DUTY,
+                               "CATEGORY_VALIDATE_PRE_SAVE",
+                               "VALIDATION_FAILED",
+                               last_validation_.error_message.c_str());
         LOG_ERROR("SETTINGS", "Contactor settings save aborted: %s",
                   last_validation_.error_message.c_str());
         return false;
     }
 
     if (!prefs.begin("contactor", false)) {
+        set_last_apply_failure(SETTINGS_CONTACTOR,
+                               CONTACTOR_PWM_HOLD_DUTY,
+                               "NVS_OPEN",
+                               "NVS_OPEN_FAILED",
+                               "Failed to open contactor namespace for writing",
+                               "contactor");
         LOG_ERROR("SETTINGS", "Failed to open contactor namespace for writing");
         return false;
     }
 
-    bool writes_ok = true;
-    writes_ok &= write_bool_checked(prefs, "contactor", "control_enabled", contactor_control_enabled_);
-    writes_ok &= write_bool_checked(prefs, "contactor", "nc_mode", contactor_nc_mode_);
-    writes_ok &= write_u16_checked(prefs, "contactor", "pwm_hz", contactor_pwm_frequency_hz_);
-    writes_ok &= write_bool_checked(prefs, "contactor", "pwm_ctrl", contactor_pwm_control_enabled_);
-    writes_ok &= write_u16_checked(prefs, "contactor", "pwm_hold", contactor_pwm_hold_duty_);
-    // Keep key short to avoid KEY_TOO_LONG on ESP32 NVS
-    writes_ok &= write_bool_checked(prefs, "contactor", "per_bms", contactor_periodic_bms_reset_);
-    writes_ok &= write_bool_checked(prefs, "contactor", "bms1st_en", contactor_bms_first_align_enabled_);
-    writes_ok &= write_u16_checked(prefs, "contactor", "bms1st_min", contactor_bms_first_align_target_minutes_);
-    writes_ok &= write_u32_checked(prefs, "contactor", "version", contactor_settings_version_);
+    if (!write_bool_checked(prefs, "contactor", "control_enabled", contactor_control_enabled_)) {
+        set_last_apply_failure(SETTINGS_CONTACTOR, CONTACTOR_CONTROL_ENABLED, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing contactor key", "control_enabled");
+        prefs.end();
+        return false;
+    }
+    if (!write_bool_checked(prefs, "contactor", "nc_mode", contactor_nc_mode_)) {
+        set_last_apply_failure(SETTINGS_CONTACTOR, CONTACTOR_NC_MODE, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing contactor key", "nc_mode");
+        prefs.end();
+        return false;
+    }
+    if (!write_u16_checked(prefs, "contactor", "pwm_hz", contactor_pwm_frequency_hz_)) {
+        set_last_apply_failure(SETTINGS_CONTACTOR, CONTACTOR_PWM_FREQUENCY_HZ, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing contactor key", "pwm_hz");
+        prefs.end();
+        return false;
+    }
+    if (!write_bool_checked(prefs, "contactor", "pwm_ctrl", contactor_pwm_control_enabled_)) {
+        set_last_apply_failure(SETTINGS_CONTACTOR, CONTACTOR_PWM_ENABLED, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing contactor key", "pwm_ctrl");
+        prefs.end();
+        return false;
+    }
+    if (!write_u16_checked(prefs, "contactor", "pwm_hold", contactor_pwm_hold_duty_)) {
+        set_last_apply_failure(SETTINGS_CONTACTOR, CONTACTOR_PWM_HOLD_DUTY, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing contactor key", "pwm_hold");
+        prefs.end();
+        return false;
+    }
+    if (!write_bool_checked(prefs, "contactor", "per_bms_reset", contactor_periodic_bms_reset_)) {
+        set_last_apply_failure(SETTINGS_CONTACTOR, CONTACTOR_PERIODIC_BMS_RESET, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing contactor key", "per_bms_reset");
+        prefs.end();
+        return false;
+    }
+    if (!write_bool_checked(prefs, "contactor", "bms1st_en", contactor_bms_first_align_enabled_)) {
+        set_last_apply_failure(SETTINGS_CONTACTOR, CONTACTOR_BMS_FIRST_ALIGN_ENABLED, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing contactor key", "bms1st_en");
+        prefs.end();
+        return false;
+    }
+    if (!write_u16_checked(prefs, "contactor", "bms1st_min", contactor_bms_first_align_target_minutes_)) {
+        set_last_apply_failure(SETTINGS_CONTACTOR, CONTACTOR_BMS_FIRST_ALIGN_TARGET_MINUTES, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing contactor key", "bms1st_min");
+        prefs.end();
+        return false;
+    }
+    if (!write_u32_checked(prefs, "contactor", "version", contactor_settings_version_)) {
+        set_last_apply_failure(SETTINGS_CONTACTOR, CONTACTOR_PWM_HOLD_DUTY, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing contactor version", "version");
+        prefs.end();
+        return false;
+    }
 
     ContactorSettingsBlob blob{};
     blob.schema_version       = kContactorBlobSchemaVersion;
@@ -850,7 +1180,16 @@ bool SettingsManager::save_contactor_settings() {
     blob.bms_first_align_target_minutes = contactor_bms_first_align_target_minutes_;
     blob.version              = contactor_settings_version_;
     blob.crc32 = EspnowPacketUtils::calculate_message_crc32_zeroed(&blob);
-    writes_ok &= write_blob_checked(prefs, "contactor", &blob, sizeof(blob));
+    if (!write_blob_checked(prefs, "contactor", &blob, sizeof(blob))) {
+        set_last_apply_failure(SETTINGS_CONTACTOR,
+                               CONTACTOR_PWM_HOLD_DUTY,
+                               "NVS_WRITE_BLOB",
+                               "NVS_BLOB_WRITE_FAILED",
+                               "Failed writing contactor blob",
+                               "blob_v1");
+        prefs.end();
+        return false;
+    }
     prefs.end();
-    return writes_ok;
+    return true;
 }

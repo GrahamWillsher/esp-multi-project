@@ -344,12 +344,24 @@ bool SettingsManager::save_battery_setting(uint8_t field_id,
 
         default:
             LOG_ERROR("SETTINGS", "Unknown battery field ID: %d", field_id);
+            set_last_apply_failure(SETTINGS_BATTERY,
+                                   field_id,
+                                   "FIELD_VALIDATE",
+                                   "UNSUPPORTED_FIELD",
+                                   "Unknown battery field ID");
             return false;
     }
 
     if (changed) {
         increment_battery_version();
         const bool saved = save_battery_settings();
+        if (!saved && !get_last_apply_failure().valid) {
+            set_last_apply_failure(SETTINGS_BATTERY,
+                                   field_id,
+                                   "CATEGORY_VALIDATE_PRE_SAVE",
+                                   "VALIDATION_FAILED",
+                                   last_validation_.error_message.c_str());
+        }
         if (saved) {
             send_settings_changed_notification(SETTINGS_BATTERY,
                                                battery_settings_version_);
@@ -441,12 +453,24 @@ bool SettingsManager::save_power_setting(uint8_t field_id,
             break;
         default:
             LOG_ERROR("SETTINGS", "Unknown power field ID: %d", field_id);
+            set_last_apply_failure(SETTINGS_POWER,
+                                   field_id,
+                                   "FIELD_VALIDATE",
+                                   "UNSUPPORTED_FIELD",
+                                   "Unknown power field ID");
             return false;
     }
 
     if (changed) {
         increment_power_version();
         const bool saved = save_power_settings();
+        if (!saved && !get_last_apply_failure().valid) {
+            set_last_apply_failure(SETTINGS_POWER,
+                                   field_id,
+                                   "CATEGORY_VALIDATE_PRE_SAVE",
+                                   "VALIDATION_FAILED",
+                                   last_validation_.error_message.c_str());
+        }
         if (saved) {
             apply_runtime_static_settings();
             send_settings_changed_notification(SETTINGS_POWER,
@@ -523,12 +547,24 @@ bool SettingsManager::save_inverter_setting(uint8_t field_id,
             break;
         default:
             LOG_ERROR("SETTINGS", "Unknown inverter field ID: %d", field_id);
+            set_last_apply_failure(SETTINGS_INVERTER,
+                                   field_id,
+                                   "FIELD_VALIDATE",
+                                   "UNSUPPORTED_FIELD",
+                                   "Unknown inverter field ID");
             return false;
     }
 
     if (changed) {
         increment_inverter_version();
         const bool saved = save_inverter_settings();
+        if (!saved && !get_last_apply_failure().valid) {
+            set_last_apply_failure(SETTINGS_INVERTER,
+                                   field_id,
+                                   "CATEGORY_VALIDATE_PRE_SAVE",
+                                   "VALIDATION_FAILED",
+                                   last_validation_.error_message.c_str());
+        }
         if (saved) {
             send_settings_changed_notification(SETTINGS_INVERTER,
                                                inverter_settings_version_);
@@ -592,12 +628,24 @@ bool SettingsManager::save_can_setting(uint8_t field_id,
             break;
         default:
             LOG_ERROR("SETTINGS", "Unknown CAN field ID: %d", field_id);
+            set_last_apply_failure(SETTINGS_CAN,
+                                   field_id,
+                                   "FIELD_VALIDATE",
+                                   "UNSUPPORTED_FIELD",
+                                   "Unknown CAN field ID");
             return false;
     }
 
     if (changed) {
         increment_can_version();
         const bool saved = save_can_settings();
+        if (!saved && !get_last_apply_failure().valid) {
+            set_last_apply_failure(SETTINGS_CAN,
+                                   field_id,
+                                   "CATEGORY_VALIDATE_PRE_SAVE",
+                                   "VALIDATION_FAILED",
+                                   last_validation_.error_message.c_str());
+        }
         if (saved) {
             apply_runtime_static_settings();
             send_settings_changed_notification(SETTINGS_CAN,
@@ -678,12 +726,24 @@ bool SettingsManager::save_contactor_setting(uint8_t field_id,
             break;
         default:
             LOG_ERROR("SETTINGS", "Unknown contactor field ID: %d", field_id);
+            set_last_apply_failure(SETTINGS_CONTACTOR,
+                                   field_id,
+                                   "FIELD_VALIDATE",
+                                   "UNSUPPORTED_FIELD",
+                                   "Unknown contactor field ID");
             return false;
     }
 
     if (changed) {
         increment_contactor_version();
         const bool saved = save_contactor_settings();
+        if (!saved && !get_last_apply_failure().valid) {
+            set_last_apply_failure(SETTINGS_CONTACTOR,
+                                   field_id,
+                                   "CATEGORY_VALIDATE_PRE_SAVE",
+                                   "VALIDATION_FAILED",
+                                   last_validation_.error_message.c_str());
+        }
         if (saved) {
             apply_runtime_static_settings();
             send_settings_changed_notification(SETTINGS_CONTACTOR,

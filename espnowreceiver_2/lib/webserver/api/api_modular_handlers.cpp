@@ -95,6 +95,11 @@ esp_err_t api_event_logs_unsubscribe_handler(httpd_req_t *req) {
     return ApiResponseUtils::send_success(req);
 }
 
+esp_err_t api_event_logs_keepalive_handler(httpd_req_t *req) {
+    MqttClient::refreshEventLogSubscription();
+    return ApiResponseUtils::send_success(req);
+}
+
 esp_err_t api_event_logs_snapshot_status_handler(httpd_req_t *req) {
     const auto status = TransmitterEventLogCache::get_snapshot_status();
 

@@ -260,6 +260,10 @@ uint32_t TransmitterManager::getMqttConfigVersion() {
     return TransmitterMqttSpecs::get_config_version();
 }
 
+void TransmitterManager::updateMqttRuntimeConnection(bool mqtt_conn) {
+    (void)TransmitterMqttSpecs::update_runtime_connection(mqtt_conn);
+}
+
 void TransmitterManager::updateRuntimeStatus(bool mqtt_conn, bool eth_conn) {
     TransmitterState::update_runtime_status(mqtt_conn, eth_conn);
 }
@@ -425,6 +429,26 @@ TransmitterManager::TemperatureReport TransmitterManager::getTemperatureReport()
     const auto snapshot = TransmitterState::get_temperature_report();
 
     TemperatureReport report;
+    report.known = snapshot.known;
+    report.valid = snapshot.valid;
+    report.seq = snapshot.seq;
+    report.temperature_centi_c = snapshot.temperature_centi_c;
+    report.uptime_ms = snapshot.uptime_ms;
+    report.last_update_ms = snapshot.last_update_ms;
+    return report;
+}
+
+void TransmitterManager::storeBatteryTemperatureReport(bool valid,
+                                                       uint32_t seq,
+                                                       int16_t temperature_centi_c,
+                                                       uint32_t uptime_ms) {
+    TransmitterState::store_battery_temperature_report(valid, seq, temperature_centi_c, uptime_ms);
+}
+
+TransmitterManager::BatteryTemperatureReport TransmitterManager::getBatteryTemperatureReport() {
+    const auto snapshot = TransmitterState::get_battery_temperature_report();
+
+    BatteryTemperatureReport report;
     report.known = snapshot.known;
     report.valid = snapshot.valid;
     report.seq = snapshot.seq;

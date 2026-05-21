@@ -17,7 +17,7 @@
 // MINIMAL FEATURES (ALWAYS ENABLED - DO NOT MODIFY)
 // ============================================================================
 
-/// Always on: Heartbeat publishing (1s interval, QoS0)
+/// Always on: Heartbeat publishing (10s interval, QoS0)
 #define MQTT_FEATURE_HEARTBEAT 1
 
 /// Always on: Retained static configuration snapshots (battery, power, etc.)
@@ -44,9 +44,10 @@
  * Enabled in Phase M4+ after checkpoint M3 validates viability.
  * During M1-M3: battery state delivered via retained snapshots only.
  * Remains gated for now because TFT receiver parity for `battery_live`
- * handling has not yet been completed.
+ * Both receivers subscribe to battery_live and runtime/* topics.
+ * Enabled 2026-05-19 — receiver parity confirmed on both LCD and receiver_2.
  */
-#define MQTT_FEATURE_LIVE_BATTERY_TELEMETRY 0
+#define MQTT_FEATURE_LIVE_BATTERY_TELEMETRY 1
 
 /**
  * @brief Cell voltage and temperature detail telemetry (chunked)
@@ -141,9 +142,9 @@
  * @brief Heartbeat publish interval (milliseconds)
  * 
  * Transmitter publishes to tx/state/heartbeat every N ms.
- * Receiver considers transmitter "alive" if age < 5000 ms.
+ * Receiver considers transmitter "alive" based on transmitter timeout policy.
  */
-#define MQTT_HEARTBEAT_INTERVAL_MS 1000
+#define MQTT_HEARTBEAT_INTERVAL_MS 10000
 
 /**
  * @brief Broker reconnection retry backoff base (milliseconds)

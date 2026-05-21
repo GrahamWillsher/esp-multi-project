@@ -84,6 +84,7 @@ struct MqttTiming {
     uint32_t event_publish_interval_ms;
     uint32_t task_startup_delay_ms;
     uint32_t task_poll_ms;
+    uint32_t command_ack_timeout_ms;
 };
 
 struct TimeSyncTiming {
@@ -184,6 +185,7 @@ constexpr MqttTiming MQTT{
     5000,
     2000,
     100,
+    4000,
 };
 
 constexpr TimeSyncTiming TIME_SYNC{
@@ -299,6 +301,8 @@ constexpr uint32_t MQTT_EVENT_PUBLISH_INTERVAL_MS = MQTT.event_publish_interval_
 constexpr uint32_t MQTT_TASK_STARTUP_DELAY_MS = MQTT.task_startup_delay_ms;
 /// FreeRTOS loop poll interval for the receiver MQTT task (10 times/second).
 constexpr uint32_t MQTT_TASK_POLL_MS = MQTT.task_poll_ms;
+/// Shared command/ACK timeout for receiver-issued MQTT control/config requests.
+constexpr uint32_t MQTT_COMMAND_ACK_WAIT_TIMEOUT_MS = MQTT.command_ack_timeout_ms;
 
 // ============================================================================
 // NETWORK - NTP / OTA

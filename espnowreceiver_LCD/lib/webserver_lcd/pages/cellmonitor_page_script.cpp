@@ -5,9 +5,33 @@ const char* get_cellmonitor_page_script() {
         let selectedCellIdx = -1;
         let selectedBarIdx = -1;
         let pollTimer = null;
+        let cellKeepaliveTimer = null;
         const CELL_POLL_BASE_MS = 5000;
         const CELL_POLL_MAX_MS = 30000;
+        const CELL_STREAM_KEEPALIVE_MS = 45000;
         let cellPollDelayMs = CELL_POLL_BASE_MS;
+
+        function subscribeCellDataStream() {
+            fetch('/api/cell_data/subscribe', { method: 'POST' }).catch(() => {});
+        }
+
+        function unsubscribeCellDataStream() {
+            if (navigator.sendBeacon) {
+                const blob = new Blob(['{}'], { type: 'application/json' });
+                navigator.sendBeacon('/api/cell_data/unsubscribe', blob);
+            } else {
+                fetch('/api/cell_data/unsubscribe', { method: 'POST', keepalive: true }).catch(() => {});
+            }
+        }
+
+        function startCellDataKeepalive() {
+            if (cellKeepaliveTimer) {
+                clearInterval(cellKeepaliveTimer);
+            }
+            cellKeepaliveTimer = setInterval(() => {
+                fetch('/api/cell_data/keepalive', { method: 'POST' }).catch(() => {});
+            }, CELL_STREAM_KEEPALIVE_MS);
+        }
 
         function renderCells(cells, balancing, minV, maxV) {
             const grid = document.getElementById('cellGrid');
@@ -240,12 +264,20 @@ const char* get_cellmonitor_page_script() {
             }
         }
 
-        pollCellData();
+        document.addEventListener('DOMContentLoaded', function() {
+            subscribeCellDataStream();
+            startCellDataKeepalive();
+            pollCellData();
+        });
 
         window.addEventListener('beforeunload', function() {
             if (pollTimer) {
                 clearTimeout(pollTimer);
             }
+            if (cellKeepaliveTimer) {
+                clearInterval(cellKeepaliveTimer);
+            }
+            unsubscribeCellDataStream();
         });
     )rawliteral";
 }

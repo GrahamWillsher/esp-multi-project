@@ -10,12 +10,31 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <esp32common/config/timing_config.h>
 #include <esp32common/espnow/common.h>
 #include <esp32common/mqtt/mqtt_feature_flags.h>
 #include <cstring>
 
 namespace {
-constexpr const char* MQTT_TOPIC_RX_CMD_REFRESH_BATTERY = "batt-emu/mqtt-v1/rx/cmd/refresh/battery";
+constexpr const char* MQTT_TOPIC_RX_CMD_REFRESH_SETTINGS = "batt-emu/mqtt-v1/rx/cmd/refresh/settings";
+constexpr uint32_t kMqttCommandAckWaitTimeoutMs = TimingConfig::MQTT_COMMAND_ACK_WAIT_TIMEOUT_MS;
+
+esp_err_t send_mqtt_command_failure(httpd_req_t* req,
+                                    const char* log_context,
+                                    MqttCommandClient::CommandResult command_result) {
+    switch (command_result) {
+        case MqttCommandClient::CommandResult::AckTimeout:
+            LOG_WARN("API", "%s timed out waiting for transmitter ACK", log_context);
+            return ApiResponseUtils::send_error_message(req, "Timed out waiting for transmitter ACK");
+        case MqttCommandClient::CommandResult::PublishFailed:
+            LOG_WARN("API", "%s publish failed", log_context);
+            return ApiResponseUtils::send_error_message(req, "Failed to publish MQTT command");
+        case MqttCommandClient::CommandResult::ChannelUnavailable:
+        default:
+            LOG_WARN("API", "%s rejected: MQTT command channel unavailable", log_context);
+            return ApiResponseUtils::send_error_message(req, "MQTT command channel unavailable");
+    }
+}
 }
 
 esp_err_t api_get_battery_settings_handler(httpd_req_t *req) {
@@ -27,7 +46,7 @@ esp_err_t api_get_battery_settings_handler(httpd_req_t *req) {
 
         char payload[192];
         if (serializeJson(refresh_cmd, payload, sizeof(payload)) > 0) {
-            requested = MqttClient::publishJson(MQTT_TOPIC_RX_CMD_REFRESH_BATTERY, payload, false);
+            requested = MqttClient::publishJson(MQTT_TOPIC_RX_CMD_REFRESH_SETTINGS, payload, false);
             if (requested) {
                 LOG_DEBUG("API", "Requested battery settings refresh via MQTT");
             }
@@ -204,7 +223,13 @@ esp_err_t api_save_setting_handler(httpd_req_t *req) {
 #if MQTT_FEATURE_COMMANDS
     if (MqttClient::isEnabled() && MqttClient::isConnected()) {
         MqttAckTracker::AckResult ack_result;
-        const bool mqtt_sent = MqttCommandClient::sendSettingsUpdate(category, field, value, 2000, &ack_result);
+        MqttCommandClient::CommandResult command_result = MqttCommandClient::CommandResult::ChannelUnavailable;
+        const bool mqtt_sent = MqttCommandClient::sendSettingsUpdate(category,
+                                                                     field,
+                                                                     value,
+                                                                     kMqttCommandAckWaitTimeoutMs,
+                                                                     &ack_result,
+                                                                     &command_result);
 
         if (mqtt_sent) {
             LOG_INFO("API", "✓ MQTT settings ACK received (category=%d, field=%d success=%d code=%s)",
@@ -226,9 +251,10 @@ esp_err_t api_save_setting_handler(httpd_req_t *req) {
                                                             ? ack_result.message
                                                             : "Setting rejected by transmitter");
         }
+
+        return send_mqtt_command_failure(req, "Settings update", command_result);
     }
 #endif
 
-    LOG_WARN("API", "Settings update rejected: MQTT command channel unavailable");
-    return ApiResponseUtils::send_error_message(req, "MQTT command channel unavailable");
+    return send_mqtt_command_failure(req, "Settings update", MqttCommandClient::CommandResult::ChannelUnavailable);
 }

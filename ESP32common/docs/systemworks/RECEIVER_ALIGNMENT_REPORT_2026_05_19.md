@@ -21,6 +21,32 @@ This report prescribes specific code changes required to achieve full parity.
 
 ---
 
+## Addendum (2026-05-19): Transmitter MQTT output vs receiver intake
+
+This table compares what the transmitter currently sends/subscribes via MQTT against what each receiver currently consumes.
+
+| Topic / flow | Transmitter side | `espnowreceiver_2` | `espnowreceiver_LCD` | Difference highlighted |
+|---|---|---|---|---|
+| `batt-emu/mqtt-v1/tx/state/heartbeat` | Published (`publish_heartbeat`) | No subscription in `subscribeToTopics()` | No subscription in `subscribeToTopics()` | **TX publishes, both RX variants ignore.** |
+| `batt-emu/mqtt-v1/tx/state/battery_live` | Periodic publish path exists but is gated by `MQTT_FEATURE_LIVE_BATTERY_TELEMETRY` (currently `0`) | Subscribed | Subscribed | **Both receivers expect stream; TX periodic stream currently gated off.** |
+| `batt-emu/mqtt-v1/tx/state/runtime/led` + `.../runtime/system` | Published on connect bundle; periodic path also under live-telemetry gate | Subscribed | Subscribed | Aligned topic coverage, but periodic cadence still controlled by TX feature gate. |
+| `batt-emu/mqtt-v1/tx/state/runtime/charger` + `.../runtime/inverter` | Published on connect bundle; periodic path also under live-telemetry gate | Subscribed | Handler exists but no base subscription in `subscribeToTopics()` | **LCD mismatch: handler exists, topic not subscribed.** |
+| `batt-emu/mqtt-v1/tx/state/cell_data/chunk` | Published when `MQTT_FEATURE_CELL_DATA_TELEMETRY=1` (currently enabled) | Subscribed only when not paused | Subscribed only when not paused | Aligned demand-gated behavior. |
+| `batt-emu/mqtt-v1/tx/state/event_logs/chunk` | Published only when event-log streaming enabled and subscriber count > 0 | Callback handler exists; base subscription list omits this topic | Dynamically subscribes/unsubscribes with viewer count | **receiver_2 coverage gap vs LCD dynamic subscription model.** |
+| `batt-emu/mqtt-v1/tx/ack/*` | TX emits concrete ACK topics (`control`, `battery`, `network`, `mqtt`, `event_logs_clear`) | Subscribes wildcard `tx/ack/#` | Subscribes specific ACK topics | Functionally aligned, different subscription strategy. |
+| `batt-emu/mqtt-v1/rx/cmd/*` command intake | TX subscribes to selected update/control/refresh/stream topics | Sends supported commands through API gates | Sends supported commands through API gates | Mostly aligned for active command set. |
+| Legacy broker status topic (`config::topics.status`) | TX publishes retained `online/offline` | Not consumed | Not consumed | Non-blocking drift (unused by receivers). |
+
+Reference files checked:
+- `ESPnowtransmitter2/espnowtransmitter2/src/network/mqtt_manager.cpp`
+- `ESPnowtransmitter2/espnowtransmitter2/src/network/mqtt_task.cpp`
+- `esp32common/include/esp32common/mqtt/mqtt_feature_flags.h`
+- `espnowreceiver_2/src/mqtt/mqtt_client.cpp`
+- `espnowreceiver_LCD/src/mqtt/mqtt_client.cpp`
+- `espnowreceiver_LCD/include/mqtt/mqtt_topics_receiver.h`
+
+---
+
 ## Part 1: Current State Analysis
 
 ### 1.1 MQTT Client Handler Comparison

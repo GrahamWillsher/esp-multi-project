@@ -24,12 +24,15 @@ bool SettingsManager::apply_settings_update(uint8_t category,
     uint32_t new_version = 0;
     const char* error_msg = "";
 
+    clear_last_apply_failure();
+    set_apply_context(category, field_id);
+
     switch (category) {
         case SETTINGS_BATTERY:
             success = save_battery_setting(field_id, value_uint32, value_float, safe_value_string);
             new_version = battery_settings_version_;
             if (!success) {
-                error_msg = "Invalid value or NVS write failed";
+                error_msg = "Battery setting rejected";
             }
             break;
 
@@ -37,7 +40,7 @@ bool SettingsManager::apply_settings_update(uint8_t category,
             success = save_power_setting(field_id, value_uint32);
             new_version = power_settings_version_;
             if (!success) {
-                error_msg = "Invalid value or NVS write failed";
+                error_msg = "Power setting rejected";
             }
             break;
 
@@ -45,7 +48,7 @@ bool SettingsManager::apply_settings_update(uint8_t category,
             success = save_inverter_setting(field_id, value_uint32);
             new_version = inverter_settings_version_;
             if (!success) {
-                error_msg = "Invalid value or NVS write failed";
+                error_msg = "Inverter setting rejected";
             }
             break;
 
@@ -53,7 +56,7 @@ bool SettingsManager::apply_settings_update(uint8_t category,
             success = save_can_setting(field_id, value_uint32);
             new_version = can_settings_version_;
             if (!success) {
-                error_msg = "Invalid value or NVS write failed";
+                error_msg = "CAN setting rejected";
             }
             break;
 
@@ -61,7 +64,7 @@ bool SettingsManager::apply_settings_update(uint8_t category,
             success = save_contactor_setting(field_id, value_uint32);
             new_version = contactor_settings_version_;
             if (!success) {
-                error_msg = "Invalid value or NVS write failed";
+                error_msg = "Contactor setting rejected";
             }
             break;
 
@@ -85,10 +88,42 @@ bool SettingsManager::apply_settings_update(uint8_t category,
 
     if (out_error_msg != nullptr && out_error_msg_len > 0) {
         out_error_msg[0] = '\0';
-        if (error_msg[0] != '\0') {
-            strlcpy(out_error_msg, error_msg, out_error_msg_len);
+        if (!success) {
+            ApplyFailureInfo failure = get_last_apply_failure();
+            if (!failure.valid) {
+                set_last_apply_failure(category,
+                                       field_id,
+                                       "FIELD_VALIDATE",
+                                       "VALIDATION_FAILED",
+                                       error_msg[0] != '\0' ? error_msg : "Field validation rejected update");
+                failure = get_last_apply_failure();
+            }
+            if (failure.valid) {
+                if (failure.nvs_key[0] != '\0') {
+                    snprintf(out_error_msg,
+                             out_error_msg_len,
+                             "stage=%s;reason=%s;detail=%s;key=%s",
+                             failure.stage,
+                             failure.reason_code,
+                             failure.detail,
+                             failure.nvs_key);
+                } else {
+                    snprintf(out_error_msg,
+                             out_error_msg_len,
+                             "stage=%s;reason=%s;detail=%s",
+                             failure.stage,
+                             failure.reason_code,
+                             failure.detail);
+                }
+            } else if (error_msg[0] != '\0') {
+                strlcpy(out_error_msg, error_msg, out_error_msg_len);
+            } else {
+                strlcpy(out_error_msg, "settings apply failed", out_error_msg_len);
+            }
         }
     }
+
+    clear_apply_context();
 
     return success;
 }
@@ -122,10 +157,14 @@ void SettingsManager::send_settings_changed_notification(uint8_t category,
     bool model_ok = true;
     switch (category) {
         case SETTINGS_BATTERY:
-            model_ok = mqtt.publish_battery_specs() && mqtt.publish_static_power();
+            model_ok = mqtt.publish_battery_specs() && mqtt.publish_static_power() && mqtt.publish_static_settings();
             break;
         case SETTINGS_POWER:
-            model_ok = mqtt.publish_static_power();
+            model_ok = mqtt.publish_static_power() && mqtt.publish_static_settings();
+            break;
+        case SETTINGS_CAN:
+        case SETTINGS_CONTACTOR:
+            model_ok = mqtt.publish_static_settings();
             break;
         case SETTINGS_INVERTER:
             model_ok = mqtt.publish_inverter_specs();

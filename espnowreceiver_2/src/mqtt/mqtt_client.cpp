@@ -44,7 +44,44 @@ bool parse_ip_string(const char* s, uint8_t out[4]) {
     return true;
 }
 
+// Parse "AA:BB:CC:DD:EE:FF" MAC string into 6-byte array. Returns false on failure.
+bool parse_mac_string(const char* s, uint8_t out[6]) {
+    if (!s || !out) return false;
+    unsigned int parts[6] = {};
+    int n = sscanf(s, "%2x:%2x:%2x:%2x:%2x:%2x",
+                   &parts[0], &parts[1], &parts[2],
+                   &parts[3], &parts[4], &parts[5]);
+    if (n != 6) return false;
+    for (int i = 0; i < 6; i++) {
+        if (parts[i] > 0xFFu) return false;
+        out[i] = static_cast<uint8_t>(parts[i]);
+    }
+    return true;
+}
+
+uint8_t parse_led_status_code(const char* status_text) {
+    if (!status_text || status_text[0] == '\0') {
+        return static_cast<uint8_t>(ESPNow::LedStatus::Unknown);
+    }
+
+    if (strcmp(status_text, "OK") == 0) {
+        return static_cast<uint8_t>(ESPNow::LedStatus::Ok);
+    }
+    if (strcmp(status_text, "WARNING") == 0) {
+        return static_cast<uint8_t>(ESPNow::LedStatus::Warning);
+    }
+    if (strcmp(status_text, "ERROR") == 0) {
+        return static_cast<uint8_t>(ESPNow::LedStatus::Error);
+    }
+    if (strcmp(status_text, "UPDATING") == 0) {
+        return static_cast<uint8_t>(ESPNow::LedStatus::Updating);
+    }
+
+    return static_cast<uint8_t>(ESPNow::LedStatus::Unknown);
+}
+
 constexpr const char* MQTT_TOPIC_RX_CMD_STREAM_EVENT_LOGS = "batt-emu/mqtt-v1/rx/cmd/stream/event_logs";
+constexpr const char* MQTT_TOPIC_RX_CMD_STREAM_CELL_DATA = "batt-emu/mqtt-v1/rx/cmd/stream/cell_data";
 
 bool publish_event_logs_stream_control(bool subscribe) {
     if (!MqttClient::isEnabled() || !MqttClient::isConnected()) {
@@ -63,6 +100,28 @@ bool publish_event_logs_stream_control(bool subscribe) {
 
     const bool ok = MqttClient::publishJson(MQTT_TOPIC_RX_CMD_STREAM_EVENT_LOGS, payload, false);
     LOG_INFO("MQTT", "stream/event_logs %s command %s",
+             subscribe ? "subscribe" : "unsubscribe",
+             ok ? "published" : "failed");
+    return ok;
+}
+
+bool publish_cell_data_stream_control(bool subscribe) {
+    if (!MqttClient::isEnabled() || !MqttClient::isConnected()) {
+        LOG_WARN("MQTT", "Skipping stream/cell_data %s command: MQTT not connected",
+                 subscribe ? "subscribe" : "unsubscribe");
+        return false;
+    }
+
+    char payload[192];
+    snprintf(payload,
+             sizeof(payload),
+             "{\"request_id\":\"rx-%08lx-%08lx\",\"stream\":\"cell_data\",\"action\":\"%s\"}",
+             static_cast<unsigned long>(millis()),
+             static_cast<unsigned long>(esp_random()),
+             subscribe ? "subscribe" : "unsubscribe");
+
+    const bool ok = MqttClient::publishJson(MQTT_TOPIC_RX_CMD_STREAM_CELL_DATA, payload, false);
+    LOG_INFO("MQTT", "stream/cell_data %s command %s",
              subscribe ? "subscribe" : "unsubscribe",
              ok ? "published" : "failed");
     return ok;
@@ -379,6 +438,12 @@ void MqttClient::messageCallback(char* topic, uint8_t* payload, unsigned int len
                 return;
             }
             break;
+        case fnv1a_const("batt-emu/mqtt-v1/tx/state/static/settings"):
+            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/static/settings") == 0) {
+                handleStaticSettings(json_payload, length);
+                return;
+            }
+            break;
         case fnv1a_const("batt-emu/mqtt-v1/tx/meta/version"):
             if (strcmp(topic, "batt-emu/mqtt-v1/tx/meta/version") == 0) {
                 handleMetaVersion(json_payload, length);
@@ -394,6 +459,12 @@ void MqttClient::messageCallback(char* topic, uint8_t* payload, unsigned int len
         case fnv1a_const("batt-emu/mqtt-v1/tx/meta/runtime"):
             if (strcmp(topic, "batt-emu/mqtt-v1/tx/meta/runtime") == 0) {
                 handleMetaRuntime(json_payload, length);
+                return;
+            }
+            break;
+        case fnv1a_const("batt-emu/mqtt-v1/tx/state/heartbeat"):
+            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/heartbeat") == 0) {
+                handleHeartbeat(json_payload, length);
                 return;
             }
             break;
@@ -414,6 +485,7 @@ void MqttClient::subscribeToTopics() {
     mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/static/mqtt");
     mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/static/power");
     mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/static/led");
+    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/static/settings");
     mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/meta/version");
     mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/meta/schema_versions");
     mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/meta/runtime");
@@ -424,13 +496,27 @@ void MqttClient::subscribeToTopics() {
     mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/runtime/inverter");
     mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/summary/event_logs");
     mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/ack/#");
-    
+    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/heartbeat");
+
     // Only subscribe to cell_data if not paused (subscription optimization)
     if (cell_data_state_ != PAUSED) {
         mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/cell_data/chunk");
         LOG_INFO("SUBSCRIPTION", "Subscribed to all topics including cell_data");
+
+        if (cell_data_subscribers_ > 0) {
+            (void)publish_cell_data_stream_control(true);
+            LOG_INFO("SUBSCRIPTION", "Re-notified TX of cell_data stream after MQTT reconnect");
+        }
     } else {
         LOG_INFO("SUBSCRIPTION", "Subscribed to spec topics only (cell_data paused)");
+    }
+
+    // Always subscribe to event_logs/chunk so chunks arrive when stream is active
+    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/event_logs/chunk");
+    LOG_INFO("SUBSCRIPTION", "Subscribed to event_logs/chunk");
+    if (event_log_subscribers_ > 0) {
+        publish_event_logs_stream_control(true);
+        LOG_INFO("SUBSCRIPTION", "Re-notified TX of event_log stream after MQTT reconnect");
     }
 }
 
@@ -715,7 +801,11 @@ void MqttClient::handleBatteryLive(const char* json_payload, size_t length) {
     int16_t temperature_centi_c = 0;
     bool has_temperature = false;
 
-    if (doc.containsKey("temperature_centi_c")) {
+    if (doc.containsKey("battery_temp_centi_c")) {
+        temperature_centi_c = doc["battery_temp_centi_c"].as<int16_t>();
+        has_temperature = true;
+    } else if (doc.containsKey("temperature_centi_c")) {
+        // Legacy field name fallback
         temperature_centi_c = doc["temperature_centi_c"].as<int16_t>();
         has_temperature = true;
     } else if (doc.containsKey("temperature_c")) {
@@ -751,7 +841,7 @@ void MqttClient::handleBatteryLive(const char* json_payload, size_t length) {
     if (has_temperature) {
         const uint32_t seq = doc["seq"] | static_cast<uint32_t>(millis());
         const uint32_t uptime_ms = doc["uptime_ms"] | static_cast<uint32_t>(millis());
-        TransmitterManager::storeTemperatureReport(true, seq, temperature_centi_c, uptime_ms);
+        TransmitterManager::storeBatteryTemperatureReport(true, seq, temperature_centi_c, uptime_ms);
     }
 }
 
@@ -767,6 +857,7 @@ void MqttClient::handleRuntimeLed(const char* json_payload, size_t length) {
 
     const uint8_t color = doc["color"] | static_cast<uint8_t>(LED_WIRE_ORANGE);
     const uint8_t effect = doc["effect"] | static_cast<uint8_t>(LED_WIRE_CONTINUOUS);
+    const char* status_text = doc["status"] | "";
 
     if (color > LED_WIRE_BLUE || effect > LED_WIRE_HEARTBEAT) {
         LOG_WARN("MQTT", "runtime/led out-of-range payload ignored (color=%u effect=%u)",
@@ -777,6 +868,7 @@ void MqttClient::handleRuntimeLed(const char* json_payload, size_t length) {
 
     ESPNow::current_led_color = static_cast<LEDColor>(color);
     ESPNow::current_led_effect = static_cast<LEDEffect>(effect);
+    ESPNow::current_led_status = parse_led_status_code(status_text);
 }
 
 void MqttClient::handleRuntimeSystem(const char* json_payload, size_t length) {
@@ -936,7 +1028,7 @@ void MqttClient::handleStaticNetwork(const char* json_payload, size_t length) {
 void MqttClient::handleStaticMqtt(const char* json_payload, size_t length) {
     LOG_DEBUG("MQTT", "Processing batt-emu/mqtt-v1/tx/state/static/mqtt");
 
-    DynamicJsonDocument doc(256);
+    DynamicJsonDocument doc(768);
     DeserializationError error = deserializeJson(doc, json_payload, length);
     if (error) {
         LOG_ERROR("MQTT", "Failed to parse static/mqtt: %s", error.c_str());
@@ -980,15 +1072,101 @@ void MqttClient::handleStaticPower(const char* json_payload, size_t length) {
 void MqttClient::handleStaticLed(const char* json_payload, size_t length) {
     LOG_DEBUG("MQTT", "Processing batt-emu/mqtt-v1/tx/state/static/led");
 
-    DynamicJsonDocument doc(512);
+    // Use payload-driven capacity to avoid NoMemory on larger retained payloads.
+    // Keep a sane floor for ArduinoJson metadata and cap to avoid runaway allocation.
+    const size_t doc_capacity = std::min<size_t>(4096, std::max<size_t>(1024, length * 3));
+    DynamicJsonDocument doc(doc_capacity);
     DeserializationError error = deserializeJson(doc, json_payload, length);
     if (error) {
-        LOG_ERROR("MQTT", "Failed to parse static/led: %s", error.c_str());
+        LOG_ERROR("MQTT", "Failed to parse static/led: %s (len=%u cap=%u)",
+                  error.c_str(),
+                  static_cast<unsigned>(length),
+                  static_cast<unsigned>(doc_capacity));
         return;
     }
 
     TransmitterManager::storeSystemSpecs(doc.as<JsonObject>());
     LOG_INFO("MQTT", "Updated transmitter LED/system specs from static/led retained topic");
+}
+
+void MqttClient::handleStaticSettings(const char* json_payload, size_t length) {
+    LOG_DEBUG("MQTT", "Processing batt-emu/mqtt-v1/tx/state/static/settings");
+
+    DynamicJsonDocument doc(2048);
+    DeserializationError error = deserializeJson(doc, json_payload, length);
+    if (error) {
+        LOG_ERROR("MQTT", "Failed to parse static/settings: %s", error.c_str());
+        return;
+    }
+
+    if (doc.containsKey("battery") && doc["battery"].is<JsonObject>()) {
+        auto battery = TransmitterManager::getBatterySettings();
+        const JsonObject b = doc["battery"].as<JsonObject>();
+        battery.capacity_wh = b["capacity_wh"] | battery.capacity_wh;
+        battery.max_voltage_mv = b["max_voltage_mv"] | battery.max_voltage_mv;
+        battery.min_voltage_mv = b["min_voltage_mv"] | battery.min_voltage_mv;
+        battery.max_charge_current_a = b["max_charge_current_a"] | battery.max_charge_current_a;
+        battery.max_discharge_current_a = b["max_discharge_current_a"] | battery.max_discharge_current_a;
+        battery.soc_high_limit = b["soc_high_limit"] | battery.soc_high_limit;
+        battery.soc_low_limit = b["soc_low_limit"] | battery.soc_low_limit;
+        battery.cell_count = b["cell_count"] | battery.cell_count;
+        battery.chemistry = b["chemistry"] | battery.chemistry;
+        battery.version = b["version"] | battery.version;
+        TransmitterManager::storeBatterySettings(battery);
+    }
+
+    if (doc.containsKey("battery_emulator") && doc["battery_emulator"].is<JsonObject>()) {
+        auto emu = TransmitterManager::getBatteryEmulatorSettings();
+        const JsonObject e = doc["battery_emulator"].as<JsonObject>();
+        emu.double_battery = e["double_battery"] | emu.double_battery;
+        emu.pack_max_voltage_dV = e["pack_max_voltage_dV"] | emu.pack_max_voltage_dV;
+        emu.pack_min_voltage_dV = e["pack_min_voltage_dV"] | emu.pack_min_voltage_dV;
+        emu.cell_max_voltage_mV = e["cell_max_voltage_mV"] | emu.cell_max_voltage_mV;
+        emu.cell_min_voltage_mV = e["cell_min_voltage_mV"] | emu.cell_min_voltage_mV;
+        emu.soc_estimated = e["soc_estimated"] | emu.soc_estimated;
+        emu.led_mode = e["led_mode"] | emu.led_mode;
+        TransmitterManager::storeBatteryEmulatorSettings(emu);
+    }
+
+    if (doc.containsKey("power") && doc["power"].is<JsonObject>()) {
+        auto power = TransmitterManager::getPowerSettings();
+        const JsonObject p = doc["power"].as<JsonObject>();
+        power.charge_w = p["charge_w"] | power.charge_w;
+        power.discharge_w = p["discharge_w"] | power.discharge_w;
+        power.max_precharge_ms = p["max_precharge_ms"] | power.max_precharge_ms;
+        power.precharge_duration_ms = p["precharge_duration_ms"] | power.precharge_duration_ms;
+        power.equipment_stop_type = p["equipment_stop_type"] | power.equipment_stop_type;
+        power.external_precharge_enabled = p["external_precharge_enabled"] | power.external_precharge_enabled;
+        power.no_inverter_disconnect_contactor = p["no_inverter_disconnect_contactor"] | power.no_inverter_disconnect_contactor;
+        TransmitterManager::storePowerSettings(power);
+    }
+
+    if (doc.containsKey("can") && doc["can"].is<JsonObject>()) {
+        auto can = TransmitterManager::getCanSettings();
+        const JsonObject c = doc["can"].as<JsonObject>();
+        can.frequency_khz = c["frequency_khz"] | can.frequency_khz;
+        can.fd_frequency_mhz = c["fd_frequency_mhz"] | can.fd_frequency_mhz;
+        can.sofar_id = c["sofar_id"] | can.sofar_id;
+        can.pylon_send_interval_ms = c["pylon_send_interval_ms"] | can.pylon_send_interval_ms;
+        can.use_canfd_as_classic = c["use_canfd_as_classic"] | can.use_canfd_as_classic;
+        TransmitterManager::storeCanSettings(can);
+    }
+
+    if (doc.containsKey("contactor") && doc["contactor"].is<JsonObject>()) {
+        auto contactor = TransmitterManager::getContactorSettings();
+        const JsonObject c = doc["contactor"].as<JsonObject>();
+        contactor.control_enabled = c["control_enabled"] | contactor.control_enabled;
+        contactor.nc_contactor = c["nc_contactor"] | contactor.nc_contactor;
+        contactor.pwm_frequency_hz = c["pwm_frequency_hz"] | contactor.pwm_frequency_hz;
+        contactor.pwm_control_enabled = c["pwm_control_enabled"] | contactor.pwm_control_enabled;
+        contactor.pwm_hold_duty = c["pwm_hold_duty"] | contactor.pwm_hold_duty;
+        contactor.periodic_bms_reset = c["periodic_bms_reset"] | contactor.periodic_bms_reset;
+        contactor.bms_first_align_enabled = c["bms_first_align_enabled"] | contactor.bms_first_align_enabled;
+        contactor.bms_first_align_target_minutes = c["bms_first_align_target_minutes"] | contactor.bms_first_align_target_minutes;
+        TransmitterManager::storeContactorSettings(contactor);
+    }
+
+    LOG_INFO("MQTT", "Updated transmitter typed settings caches from static/settings retained topic");
 }
 
 void MqttClient::handleMetaVersion(const char* json_payload, size_t length) {
@@ -1009,7 +1187,7 @@ void MqttClient::handleMetaVersion(const char* json_payload, size_t length) {
 
     TransmitterManager::storeMetadata(
         true,
-        "mqtt",
+        "",
         doc["device"] | "TRANSMITTER",
         major,
         minor,
@@ -1053,7 +1231,7 @@ void MqttClient::handleMetaSchemaVersions(const char* json_payload, size_t lengt
 void MqttClient::handleMetaRuntime(const char* json_payload, size_t length) {
     LOG_DEBUG("MQTT", "Processing batt-emu/mqtt-v1/tx/meta/runtime");
 
-    DynamicJsonDocument doc(256);
+    DynamicJsonDocument doc(768);
     DeserializationError error = deserializeJson(doc, json_payload, length);
     if (error) {
         LOG_ERROR("MQTT", "Failed to parse meta/runtime: %s", error.c_str());
@@ -1062,13 +1240,88 @@ void MqttClient::handleMetaRuntime(const char* json_payload, size_t length) {
 
     const bool mqtt_connected = doc["mqtt_connected"] | false;
     const bool ethernet_connected = doc["ethernet_connected"] | false;
+    const uint64_t uptime_ms = doc["uptime_ms"] | doc["ts_ms"] | static_cast<uint64_t>(TransmitterManager::getUptimeMs());
+    const uint64_t unix_time = doc["unix_time"] | static_cast<uint64_t>(TransmitterManager::getUnixTime());
+    const int16_t utc_offset_min = doc["utc_offset_min"] | static_cast<int16_t>(TransmitterManager::getUtcOffsetMin());
+    const uint8_t time_source = doc["time_source"] | static_cast<uint8_t>(TransmitterManager::getTimeSource());
+
+    if (doc.containsKey("heartbeat_flags")) {
+        const uint8_t heartbeat_flags = doc["heartbeat_flags"] | static_cast<uint8_t>(0);
+        TransmitterManager::updateHeartbeatFlags(heartbeat_flags);
+    }
+
+    if (doc.containsKey("tx_mac")) {
+        const char* tx_mac_str = doc["tx_mac"] | "";
+        uint8_t tx_mac[6] = {0};
+        if (parse_mac_string(tx_mac_str, tx_mac)) {
+            TransmitterManager::registerMAC(tx_mac);
+        }
+    }
 
     TransmitterManager::updateRuntimeStatus(mqtt_connected, ethernet_connected);
+    TransmitterManager::updateTimeData(uptime_ms, unix_time, utc_offset_min, time_source);
     (void)TransmitterMqttSpecs::update_runtime_connection(mqtt_connected);
 
     LOG_INFO("MQTT", "Updated runtime state from meta/runtime (mqtt=%d eth=%d)",
              static_cast<int>(mqtt_connected),
              static_cast<int>(ethernet_connected));
+}
+
+void MqttClient::handleHeartbeat(const char* json_payload, size_t length) {
+    LOG_DEBUG("MQTT", "Processing batt-emu/mqtt-v1/tx/state/heartbeat");
+
+    DynamicJsonDocument doc(768);
+    DeserializationError error = deserializeJson(doc, json_payload, length);
+    if (error) {
+        LOG_ERROR("MQTT", "Failed to parse heartbeat: %s", error.c_str());
+        return;
+    }
+
+    const bool mqtt_connected = doc["mqtt_connected"] | true;
+    const bool ethernet_connected = doc["ethernet_connected"] | false;
+    const uint32_t seq = doc["seq"] | static_cast<uint32_t>(0);
+    uint64_t uptime_ms = doc["uptime_ms"] | doc["ts_ms"] | static_cast<uint64_t>(0);
+    const uint64_t unix_time = doc["unix_time"] | static_cast<uint64_t>(TransmitterManager::getUnixTime());
+    const int16_t utc_offset_min = doc["utc_offset_min"] | static_cast<int16_t>(TransmitterManager::getUtcOffsetMin());
+    const uint8_t time_source = doc["time_source"] | static_cast<uint8_t>(TransmitterManager::getTimeSource());
+
+    if (uptime_ms == 0) {
+        uptime_ms = TransmitterManager::getUptimeMs();
+    }
+
+    TransmitterManager::updateRuntimeStatus(mqtt_connected, ethernet_connected);
+    (void)TransmitterMqttSpecs::update_runtime_connection(mqtt_connected);
+    TransmitterManager::updateTimeData(uptime_ms, unix_time, utc_offset_min, time_source);
+
+    if (doc.containsKey("heartbeat_flags")) {
+        const uint8_t heartbeat_flags = doc["heartbeat_flags"] | static_cast<uint8_t>(0);
+        TransmitterManager::updateHeartbeatFlags(heartbeat_flags);
+    }
+
+    if (doc.containsKey("tx_mac")) {
+        const char* tx_mac_str = doc["tx_mac"] | "";
+        uint8_t tx_mac[6] = {0};
+        if (parse_mac_string(tx_mac_str, tx_mac)) {
+            TransmitterManager::registerMAC(tx_mac);
+        }
+    }
+
+    if (doc.containsKey("temperature_centi_c") || doc.containsKey("temperature_c")) {
+        int16_t temperature_centi_c = 0;
+        if (doc.containsKey("temperature_centi_c")) {
+            temperature_centi_c = doc["temperature_centi_c"].as<int16_t>();
+        } else {
+            temperature_centi_c = static_cast<int16_t>(doc["temperature_c"].as<float>() * 100.0f);
+        }
+        TransmitterManager::storeTemperatureReport(true, seq, temperature_centi_c, static_cast<uint32_t>(uptime_ms));
+    }
+
+    LOG_DEBUG("MQTT", "Heartbeat received: seq=%lu uptime_ms=%lu mqtt=%d eth=%d src=%u",
+              static_cast<unsigned long>(seq),
+              static_cast<unsigned long>(uptime_ms),
+              static_cast<int>(mqtt_connected),
+              static_cast<int>(ethernet_connected),
+              static_cast<unsigned>(time_source));
 }
 
 void MqttClient::ensureAckMutex() {
@@ -1206,13 +1459,18 @@ void MqttClient::incrementCellDataSubscribers() {
                 // Set state BEFORE calling subscribeToTopics() so it knows to subscribe to cell_data
                 cell_data_state_ = SUBSCRIBED;
                 subscribeToTopics();
+                (void)publish_cell_data_stream_control(true);
                 LOG_INFO("SUBSCRIPTION", "Resumed cell_data subscription (subscriber count: 1→%d)", 
                          cell_data_subscribers_);
             } else {
+                cell_data_state_ = SUBSCRIBED;
                 LOG_WARN("SUBSCRIPTION", "Cannot resume cell_data - MQTT not connected");
             }
         } else if (cell_data_state_ == PAUSING) {
             cell_data_state_ = SUBSCRIBED;
+            if (mqtt_client_.connected()) {
+                (void)publish_cell_data_stream_control(true);
+            }
             LOG_INFO("SUBSCRIPTION", "Aborted pending pause - SSE client reconnected");
         } else {
             LOG_INFO("SUBSCRIPTION", "First SSE client connected (count: 0→%d, state: %s)", 
@@ -1244,6 +1502,10 @@ void MqttClient::decrementCellDataSubscribers() {
         // If timer already exists (shouldn't happen), delete it
         if (cell_data_pause_timer_ != nullptr) {
             xTimerDelete(cell_data_pause_timer_, pdMS_TO_TICKS(100));
+        }
+
+        if (mqtt_client_.connected()) {
+            (void)publish_cell_data_stream_control(false);
         }
         
         // Create timer for grace period
@@ -1327,6 +1589,13 @@ int MqttClient::getEventLogSubscriberCount() {
     return event_log_subscribers_;
 }
 
+void MqttClient::refreshEventLogSubscription() {
+    if (event_log_subscribers_ > 0) {
+        publish_event_logs_stream_control(true);
+        LOG_DEBUG("MQTT", "Event log keepalive sent (active viewers: %d)", event_log_subscribers_);
+    }
+}
+
 /**
  * @brief Timer callback: Pause cell_data subscription after grace period
  * 
@@ -1374,6 +1643,7 @@ void MqttClient::processDeferredSubscriptionActions() {
 
     const bool unsubscribed = mqtt_client_.unsubscribe("batt-emu/mqtt-v1/tx/state/cell_data/chunk");
     if (unsubscribed) {
+        (void)publish_cell_data_stream_control(false);
         cell_data_state_ = PAUSED;
         LOG_INFO("SUBSCRIPTION", "Paused cell_data subscription after grace period");
         LOG_INFO("SUBSCRIPTION", "Expected savings: ~30MB/month bandwidth, 43,200 JSON ops/day");

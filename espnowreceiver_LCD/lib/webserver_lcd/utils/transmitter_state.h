@@ -61,12 +61,22 @@ struct TemperatureReportSnapshot {
     uint32_t last_update_ms = 0;
 };
 
+struct BatteryTemperatureReportSnapshot {
+    bool known = false;
+    bool valid = false;
+    uint32_t seq = 0;
+    int16_t temperature_centi_c = 0;
+    uint32_t uptime_ms = 0;
+    uint32_t last_update_ms = 0;
+};
+
 struct StateSnapshot {
     RuntimeSnapshot runtime;
     MetadataSnapshot metadata;
     EventLogSummarySnapshot event_log_summary;
     EventLogClearAckSnapshot event_log_clear_ack;
     TemperatureReportSnapshot temperature_report;
+    BatteryTemperatureReportSnapshot battery_temperature_report;
 };
 
 void update_runtime_status(bool mqtt_conn, bool eth_conn);
@@ -123,6 +133,12 @@ void store_temperature_report(bool valid,
                               int16_t temperature_centi_c,
                               uint32_t uptime_ms);
 TemperatureReportSnapshot get_temperature_report();
+
+void store_battery_temperature_report(bool valid,
+                                      uint32_t seq,
+                                      int16_t temperature_centi_c,
+                                      uint32_t uptime_ms);
+BatteryTemperatureReportSnapshot get_battery_temperature_report();
 
 StateSnapshot get_state_snapshot();
 

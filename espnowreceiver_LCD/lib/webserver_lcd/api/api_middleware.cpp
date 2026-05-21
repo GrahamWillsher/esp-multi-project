@@ -94,10 +94,7 @@ bool is_heavy_read_endpoint(const char* uri) {
         return false;
     }
 
-    return strcmp(uri, "/api/cell_data") == 0 ||
-           strcmp(uri, "/api/cell_data_page") == 0 ||
-           strcmp(uri, "/api/get_event_logs") == 0 ||
-           strcmp(uri, "/api/event_logs_page") == 0;
+    return strcmp(uri, "/api/get_event_logs") == 0;
 }
 
 bool get_rate_limit_policy(const char* uri, RateLimitPolicy& out) {

@@ -113,9 +113,12 @@ const char* get_dashboard_page_script() {
         }
 
         function formatEnvName(env) {
-            if (!env) return 'Unknown Device';
-            const spaced = String(env).replace(/[-_]+/g, ' ').trim();
-            return spaced.replace(/\b\w/g, c => c.toUpperCase());
+            if (!env) return '"Unknown Device"';
+            // Strip any leading/trailing quotes embedded via build flags (e.g. from TOSTRING macro)
+            const stripped = String(env).replace(/^"|"$/g, '').trim();
+            const spaced = stripped.replace(/[-_]+/g, ' ').trim();
+            const formatted = spaced.replace(/\b\w/g, c => c.toUpperCase());
+            return `"${formatted}"`;
         }
 
         function formatCountLabel(count, singular, plural) {
@@ -189,6 +192,7 @@ const char* get_dashboard_page_script() {
                 // Update transmitter status (dynamic - can change)
                 if (data.transmitter) {
                     const tx = data.transmitter;
+                    const txNameEl = document.getElementById('txDeviceName');
                     const statusEl = document.getElementById('txStatus');
                     const statusDotEl = document.getElementById('txStatusDot');
                     const txIPEl = document.getElementById('txIP');
@@ -201,6 +205,11 @@ const char* get_dashboard_page_script() {
                     if (txTemperatureEl) {
                         txTemperatureEl.textContent = formatTemperature(tx.temperature_c);
                         txTemperatureEl.style.color = Number.isFinite(Number(tx.temperature_c)) ? '#fff' : '#888';
+                    }
+
+                    if (txNameEl) {
+                        const txName = (tx.name && tx.name !== 'Unknown') ? tx.name : 'Transmitter';
+                        txNameEl.textContent = formatEnvName(txName);
                     }
 
                     // Update cached transmitter identity/network details independently of link state
@@ -216,6 +225,8 @@ const char* get_dashboard_page_script() {
                     }
                     if (tx.mac && tx.mac !== 'Unknown') {
                         txMACEl.textContent = tx.mac;
+                    } else {
+                        txMACEl.textContent = 'Not available';
                     }
                     
                     if (ethernetConnected) {
@@ -300,7 +311,7 @@ const char* get_dashboard_page_script() {
             statusEl.style.color = '#FFD700';
             
             try {
-                // Dashboard card uses cached ESP-NOW summary counters pushed from transmitter.
+                // Dashboard card uses cached MQTT summary counters pushed from transmitter.
                 let summary = await fetch('/api/get_event_log_summary').then(r => r.json());
 
                 if (summary && summary.success) {
@@ -324,19 +335,19 @@ const char* get_dashboard_page_script() {
                     linkEl.style.pointerEvents = 'auto';
                     cardEl.style.opacity = '1';
                 } else {
-                    cardEl.classList.add('disabled');
-                    linkEl.style.pointerEvents = 'none';
-                    cardEl.style.opacity = '0.5';
-                    cardEl.style.cursor = 'not-allowed';
+                    cardEl.classList.remove('disabled');
+                    linkEl.style.pointerEvents = 'auto';
+                    cardEl.style.opacity = '1';
+                    cardEl.style.cursor = 'pointer';
                     statusEl.textContent = 'Waiting for summary';
                     statusEl.style.color = '#888';
                 }
             } catch (e) {
-                // Connection error - disable card
-                cardEl.classList.add('disabled');
-                linkEl.style.pointerEvents = 'none';
-                cardEl.style.opacity = '0.5';
-                cardEl.style.cursor = 'not-allowed';
+                // Connection error - keep card clickable so user can still open /events.
+                cardEl.classList.remove('disabled');
+                linkEl.style.pointerEvents = 'auto';
+                cardEl.style.opacity = '1';
+                cardEl.style.cursor = 'pointer';
                 statusEl.textContent = 'Connection error';
                 statusEl.style.color = '#ff6b35';
                 console.error('Event logs fetch failed:', e);

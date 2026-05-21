@@ -12,6 +12,7 @@
 #include <mqtt_logger.h>
 #include <esp32common/config/timing_config.h>
 #include <esp32common/mqtt/mqtt_feature_flags.h>
+#include <espnow_transmitter/espnow_transmitter.h>
 
 namespace {
 
@@ -73,6 +74,9 @@ void publish_on_connect_bundle(MqttManager& mqtt,
     }
     if (mqtt.publish_static_led()) {
         LOG_INFO("MQTT", "✓ Static LED config published");
+    }
+    if (mqtt.publish_static_settings()) {
+        LOG_INFO("MQTT", "✓ Static settings snapshot published");
     }
     if (mqtt.publish_runtime_led()) {
         LOG_INFO("MQTT", "✓ Runtime LED state published");
@@ -179,7 +183,6 @@ void publish_periodic_runtime_data(MqttManager& mqtt,
 
 #if MQTT_FEATURE_EVENT_LOG_STREAMING
     if (is_connected_now &&
-        mqtt.get_event_log_subscribers() > 0 &&
         (now - last_event_publish > TimingConfig::MQTT_EVENT_PUBLISH_INTERVAL_MS)) {
         last_event_publish = now;
         mqtt.publish_event_logs();

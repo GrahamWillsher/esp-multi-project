@@ -3,12 +3,20 @@
 #include "mqtt_client.h"
 #include "../../include/mqtt/mqtt_topics_receiver.h"
 #include "logging_config.h"
+#include <esp32common/espnow/common.h>
 #include <ArduinoJson.h>
 #include <cstdio>
 
 namespace {
 void format_ipv4(char* out, size_t out_len, const uint8_t ip[4]) {
     snprintf(out, out_len, "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+}
+
+void set_command_result(MqttCommandClient::CommandResult* out_result,
+                        MqttCommandClient::CommandResult result) {
+    if (out_result != nullptr) {
+        *out_result = result;
+    }
 }
 }
 
@@ -23,8 +31,10 @@ bool MqttCommandClient::sendNetworkUpdate(bool use_static_ip,
                                           const uint8_t dns_primary[4],
                                           const uint8_t dns_secondary[4],
                                           uint32_t timeout_ms,
-                                          MqttAckTracker::AckResult* out_ack) {
+                                          MqttAckTracker::AckResult* out_ack,
+                                          CommandResult* out_result) {
     if (!MqttClient::isEnabled() || !MqttClient::isConnected()) {
+        set_command_result(out_result, CommandResult::ChannelUnavailable);
         return false;
     }
 
@@ -54,10 +64,13 @@ bool MqttCommandClient::sendNetworkUpdate(bool use_static_ip,
     char payload[384];
     const size_t n = serializeJson(cmd, payload, sizeof(payload));
     if (n == 0 || !MqttClient::publishJson(MqttTopicsReceiver::RxCmd::UPDATE_NETWORK, payload, false)) {
+        set_command_result(out_result, CommandResult::PublishFailed);
         return false;
     }
 
-    return MqttAckTracker::waitForAck(request_id, timeout_ms, out_ack);
+    const bool ack_received = MqttAckTracker::waitForAck(request_id, timeout_ms, out_ack);
+    set_command_result(out_result, ack_received ? CommandResult::AckReceived : CommandResult::AckTimeout);
+    return ack_received;
 }
 
 bool MqttCommandClient::sendMqttUpdate(bool enabled,
@@ -67,8 +80,10 @@ bool MqttCommandClient::sendMqttUpdate(bool enabled,
                                        const char* password,
                                        const char* client_id,
                                        uint32_t timeout_ms,
-                                       MqttAckTracker::AckResult* out_ack) {
+                                       MqttAckTracker::AckResult* out_ack,
+                                       CommandResult* out_result) {
     if (!MqttClient::isEnabled() || !MqttClient::isConnected()) {
+        set_command_result(out_result, CommandResult::ChannelUnavailable);
         return false;
     }
 
@@ -92,18 +107,23 @@ bool MqttCommandClient::sendMqttUpdate(bool enabled,
     char payload[384];
     const size_t n = serializeJson(cmd, payload, sizeof(payload));
     if (n == 0 || !MqttClient::publishJson(MqttTopicsReceiver::RxCmd::UPDATE_MQTT, payload, false)) {
+        set_command_result(out_result, CommandResult::PublishFailed);
         return false;
     }
 
-    return MqttAckTracker::waitForAck(request_id, timeout_ms, out_ack);
+    const bool ack_received = MqttAckTracker::waitForAck(request_id, timeout_ms, out_ack);
+    set_command_result(out_result, ack_received ? CommandResult::AckReceived : CommandResult::AckTimeout);
+    return ack_received;
 }
 
 bool MqttCommandClient::sendSettingsUpdate(uint8_t category,
                                            uint8_t field,
                                            JsonVariantConst value,
                                            uint32_t timeout_ms,
-                                           MqttAckTracker::AckResult* out_ack) {
+                                           MqttAckTracker::AckResult* out_ack,
+                                           CommandResult* out_result) {
     if (!MqttClient::isEnabled() || !MqttClient::isConnected()) {
+        set_command_result(out_result, CommandResult::ChannelUnavailable);
         return false;
     }
 
@@ -116,21 +136,34 @@ bool MqttCommandClient::sendSettingsUpdate(uint8_t category,
     cmd["schema"] = 1;
     cmd["category"] = category;
     cmd["field"] = field;
-    cmd["value"] = value;
+
+    const bool battery_float_field =
+        (category == SETTINGS_BATTERY) &&
+        (field == BATTERY_MAX_CHARGE_CURRENT_A || field == BATTERY_MAX_DISCHARGE_CURRENT_A);
+    if (battery_float_field) {
+        cmd["value"] = value.as<float>();
+    } else {
+        cmd["value"] = value;
+    }
 
     char payload[256];
     const size_t n = serializeJson(cmd, payload, sizeof(payload));
     if (n == 0 || !MqttClient::publishJson(MqttTopicsReceiver::RxCmd::UPDATE_BATTERY, payload, false)) {
+        set_command_result(out_result, CommandResult::PublishFailed);
         return false;
     }
 
-    return MqttAckTracker::waitForAck(request_id, timeout_ms, out_ack);
+    const bool ack_received = MqttAckTracker::waitForAck(request_id, timeout_ms, out_ack);
+    set_command_result(out_result, ack_received ? CommandResult::AckReceived : CommandResult::AckTimeout);
+    return ack_received;
 }
 
 bool MqttCommandClient::sendDebugLevel(int level,
                                        uint32_t timeout_ms,
-                                       MqttAckTracker::AckResult* out_ack) {
+                                       MqttAckTracker::AckResult* out_ack,
+                                       CommandResult* out_result) {
     if (!MqttClient::isEnabled() || !MqttClient::isConnected()) {
+        set_command_result(out_result, CommandResult::ChannelUnavailable);
         return false;
     }
 
@@ -146,10 +179,13 @@ bool MqttCommandClient::sendDebugLevel(int level,
     char payload[160];
     const size_t n = serializeJson(cmd, payload, sizeof(payload));
     if (n == 0 || !MqttClient::publishJson(MqttTopicsReceiver::RxCmd::CONTROL_DEBUG_LEVEL, payload, false)) {
+        set_command_result(out_result, CommandResult::PublishFailed);
         return false;
     }
 
-    return MqttAckTracker::waitForAck(request_id, timeout_ms, out_ack);
+    const bool ack_received = MqttAckTracker::waitForAck(request_id, timeout_ms, out_ack);
+    set_command_result(out_result, ack_received ? CommandResult::AckReceived : CommandResult::AckTimeout);
+    return ack_received;
 }
 
 bool MqttCommandClient::sendTestDataMode(uint8_t mode) {
@@ -200,8 +236,10 @@ bool MqttCommandClient::sendEventLogsClear() {
 
 bool MqttCommandClient::sendReboot(bool confirm,
                                    uint32_t timeout_ms,
-                                   MqttAckTracker::AckResult* out_ack) {
+                                   MqttAckTracker::AckResult* out_ack,
+                                   CommandResult* out_result) {
     if (!MqttClient::isEnabled() || !MqttClient::isConnected()) {
+        set_command_result(out_result, CommandResult::ChannelUnavailable);
         return false;
     }
 
@@ -217,10 +255,13 @@ bool MqttCommandClient::sendReboot(bool confirm,
     char payload[160];
     const size_t n = serializeJson(cmd, payload, sizeof(payload));
     if (n == 0 || !MqttClient::publishJson(MqttTopicsReceiver::RxCmd::CONTROL_REBOOT, payload, false)) {
+        set_command_result(out_result, CommandResult::PublishFailed);
         return false;
     }
 
-    return MqttAckTracker::waitForAck(request_id, timeout_ms, out_ack);
+    const bool ack_received = MqttAckTracker::waitForAck(request_id, timeout_ms, out_ack);
+    set_command_result(out_result, ack_received ? CommandResult::AckReceived : CommandResult::AckTimeout);
+    return ack_received;
 }
 
 bool MqttCommandClient::sendComponentApply(uint32_t numeric_request_id,
@@ -230,8 +271,10 @@ bool MqttCommandClient::sendComponentApply(uint32_t numeric_request_id,
                                            uint8_t battery_interface,
                                            uint8_t inverter_interface,
                                            uint32_t timeout_ms,
-                                           MqttAckTracker::AckResult* out_ack) {
+                                           MqttAckTracker::AckResult* out_ack,
+                                           CommandResult* out_result) {
     if (!MqttClient::isEnabled() || !MqttClient::isConnected()) {
+        set_command_result(out_result, CommandResult::ChannelUnavailable);
         return false;
     }
 
@@ -252,8 +295,11 @@ bool MqttCommandClient::sendComponentApply(uint32_t numeric_request_id,
     char payload[256];
     const size_t n = serializeJson(cmd, payload, sizeof(payload));
     if (n == 0 || !MqttClient::publishJson(MqttTopicsReceiver::RxCmd::CONTROL_COMPONENT_APPLY, payload, false)) {
+        set_command_result(out_result, CommandResult::PublishFailed);
         return false;
     }
 
-    return MqttAckTracker::waitForAck(request_id, timeout_ms, out_ack);
+    const bool ack_received = MqttAckTracker::waitForAck(request_id, timeout_ms, out_ack);
+    set_command_result(out_result, ack_received ? CommandResult::AckReceived : CommandResult::AckTimeout);
+    return ack_received;
 }

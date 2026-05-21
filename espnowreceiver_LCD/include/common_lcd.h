@@ -36,6 +36,14 @@ namespace RTOS {
 
 namespace ESPNow {
 
+    enum class LedStatus : uint8_t {
+        Unknown = 0,
+        Ok = 1,
+        Warning = 2,
+        Error = 3,
+        Updating = 4,
+    };
+
     // Transmitter MAC address of the active peer.
     // Kept as fixed-size array for _2 ABI compatibility.
     extern uint8_t transmitter_mac[6];
@@ -58,6 +66,8 @@ namespace ESPNow {
     // LED state (display-rendered status indicator). LCD stub — no physical LED.
     extern std::atomic<uint8_t> current_led_color;
     extern std::atomic<uint8_t> current_led_effect;
+    extern std::atomic<uint8_t> current_led_status;
+    extern std::atomic<bool> current_led_state_valid;
     extern std::atomic<bool>    receiver_ota_led_override_active;
 
 }  // namespace ESPNow

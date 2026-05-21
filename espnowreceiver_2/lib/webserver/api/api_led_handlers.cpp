@@ -8,11 +8,20 @@
 
 namespace {
 constexpr const char* kRefreshLedTopic = "batt-emu/mqtt-v1/rx/cmd/refresh/led";
+
+namespace LedStatusCode {
+constexpr uint8_t kUnknown = 0;
+constexpr uint8_t kOk = 1;
+constexpr uint8_t kWarning = 2;
+constexpr uint8_t kError = 3;
+constexpr uint8_t kUpdating = 4;
+}  // namespace LedStatusCode
 }
 
 namespace ESPNow {
-extern uint8_t current_led_color;
-extern uint8_t current_led_effect;
+extern int current_led_color;
+extern int current_led_effect;
+extern volatile uint8_t current_led_status;
 }
 
 static const char* led_color_name(uint8_t color) {
@@ -34,9 +43,20 @@ static const char* led_effect_name(uint8_t effect) {
     }
 }
 
+static const char* led_status_name(uint8_t status) {
+    switch (status) {
+        case LedStatusCode::kOk: return "OK";
+        case LedStatusCode::kWarning: return "WARNING";
+        case LedStatusCode::kError: return "ERROR";
+        case LedStatusCode::kUpdating: return "UPDATING";
+        default: return "UNKNOWN";
+    }
+}
+
 esp_err_t api_get_led_runtime_status_handler(httpd_req_t *req) {
-    const uint8_t current_color = ESPNow::current_led_color;
-    const uint8_t current_effect = ESPNow::current_led_effect;
+    const uint8_t current_color = static_cast<uint8_t>(ESPNow::current_led_color);
+    const uint8_t current_effect = static_cast<uint8_t>(ESPNow::current_led_effect);
+    const uint8_t current_status = ESPNow::current_led_status;
 
     const bool has_policy = TransmitterManager::hasBatteryEmulatorSettings();
     const uint8_t led_mode = has_policy ? TransmitterManager::getBatteryEmulatorSettings().led_mode : 0;
@@ -52,6 +72,8 @@ esp_err_t api_get_led_runtime_status_handler(httpd_req_t *req) {
     doc["current_color_name"] = led_color_name(current_color);
     doc["current_effect"] = static_cast<uint8_t>(current_effect);
     doc["current_effect_name"] = led_effect_name(current_effect);
+    doc["current_status"] = static_cast<uint8_t>(current_status);
+    doc["current_status_name"] = led_status_name(current_status);
     doc["expected_effect"] = expected_effect;
     doc["expected_effect_name"] = led_effect_name(expected_effect);
     doc["effect_synced"] = synced;
