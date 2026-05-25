@@ -1,4 +1,5 @@
 #include "api_type_selection_handlers.h"
+#include <esp32common/mqtt/mqtt_topics_common.h>
 
 #include "api_request_utils.h"
 #include "api_response_utils.h"
@@ -6,8 +7,8 @@
 
 #include <esp32common/logging/logging_config.h>
 #include "../../receiver_config/receiver_config_manager.h"
-#include "../../src/espnow/component_apply_tracker.h"
-#include "../../src/espnow/type_catalog_cache.h"
+#include "../../src/runtime/component_apply_tracker.h"
+#include "../../src/runtime/type_catalog_cache.h"
 #include "../../src/mqtt/mqtt_client.h"
 #include <ArduinoJson.h>
 #include <esp_heap_caps.h>
@@ -18,10 +19,10 @@
 namespace {
 
 // MQTT topics for component apply
-static const char* kComponentApplyCommandTopic = "batt-emu/mqtt-v1/rx/cmd/control/component_apply";
-static const char* kComponentApplyAckTopic = "batt-emu/mqtt-v1/tx/ack/control";
-static const char* kRefreshBatteryCatalogTopic = "batt-emu/mqtt-v1/rx/cmd/refresh/catalog_battery";
-static const char* kRefreshInverterCatalogTopic = "batt-emu/mqtt-v1/rx/cmd/refresh/catalog_inverter";
+static const char* kComponentApplyCommandTopic = mqtt::topics::rx::CMD_CONTROL_COMPONENT_APPLY;
+static const char* kComponentApplyAckTopic = mqtt::topics::tx::ACK_CONTROL;
+static const char* kRefreshBatteryCatalogTopic = mqtt::topics::rx::CMD_REFRESH_CATALOG_BATTERY;
+static const char* kRefreshInverterCatalogTopic = mqtt::topics::rx::CMD_REFRESH_CATALOG_INVERTER;
 
 struct TypeEntry {
     uint8_t id;

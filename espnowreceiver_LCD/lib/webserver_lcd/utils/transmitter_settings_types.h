@@ -35,6 +35,7 @@ struct PowerSettings {
     uint8_t  equipment_stop_type;  // 0=Not connected, 1=Latching, 2=Momentary
     bool external_precharge_enabled;
     bool no_inverter_disconnect_contactor;
+    uint32_t version;  // Version tracking for synchronization
 };
 
 struct InverterSettings {
@@ -52,6 +53,7 @@ struct CanSettings {
     uint16_t sofar_id;
     uint16_t pylon_send_interval_ms;
     bool use_canfd_as_classic;
+    uint32_t version;  // Version tracking for synchronization
 };
 
 struct ContactorSettings {
@@ -63,6 +65,7 @@ struct ContactorSettings {
     bool periodic_bms_reset;
     bool bms_first_align_enabled;
     uint16_t bms_first_align_target_minutes;
+    uint32_t version;  // Version tracking for synchronization
 };
 
 #endif // TRANSMITTER_SETTINGS_TYPES_H

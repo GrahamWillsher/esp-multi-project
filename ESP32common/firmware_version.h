@@ -20,11 +20,16 @@
 // String representation (dynamically constructed from version macros)
 #define _STRINGIFY(x) #x
 #define STRINGIFY(x) _STRINGIFY(x)
-#define FW_VERSION_STRING STRINGIFY(FW_VERSION_MAJOR) "." STRINGIFY(FW_VERSION_MINOR) "." STRINGIFY(FW_VERSION_PATCH)
+#define FW_VERSION_STRING "v" STRINGIFY(FW_VERSION_MAJOR) "." STRINGIFY(FW_VERSION_MINOR) "." STRINGIFY(FW_VERSION_PATCH)
 
-// Build date/time (automatically set by compiler)
-#define FW_BUILD_DATE __DATE__
-#define FW_BUILD_TIME __TIME__
+// Build date/time (prefer canonical BUILD_DATE injected by pre-build script)
+#ifdef BUILD_DATE
+    #define FW_BUILD_DATE BUILD_DATE
+    #define FW_BUILD_TIME ""
+#else
+    #define FW_BUILD_DATE __DATE__
+    #define FW_BUILD_TIME __TIME__
+#endif
 
 // Protocol version (increment when ESP-NOW protocol changes)
 #define PROTOCOL_VERSION 1
@@ -56,7 +61,13 @@ struct VersionCompatibility {
 
 // Helper function to format version string
 inline String getFirmwareVersionString() {
-    return String(FW_VERSION_STRING) + " (" + FW_BUILD_DATE + " " + FW_BUILD_TIME + ")";
+    String build = String(FW_BUILD_DATE);
+    const String build_time = String(FW_BUILD_TIME);
+    if (build_time.length() > 0) {
+        build += " ";
+        build += build_time;
+    }
+    return String(FW_VERSION_STRING) + " (" + build + ")";
 }
 
 // Helper to check compatibility (dynamic major version matching)

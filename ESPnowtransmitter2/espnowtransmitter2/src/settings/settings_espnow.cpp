@@ -128,7 +128,7 @@ bool SettingsManager::apply_settings_update(uint8_t category,
     return success;
 }
 
-void SettingsManager::handle_settings_update(const espnow_queue_msg_t& msg) {
+void SettingsManager::handle_settings_update(const incoming_msg_t& msg) {
     (void)msg;
     LOG_WARN("SETTINGS", "ESP-NOW settings update ignored (MQTT transport mode)");
 }

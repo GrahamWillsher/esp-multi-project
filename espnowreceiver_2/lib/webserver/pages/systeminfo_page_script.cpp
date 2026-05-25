@@ -42,18 +42,55 @@ String get_systeminfo_page_script() {
             return changes;
         }
 
+        function normalizeDisplayName(raw) {
+            if (!raw) return '';
+            const stripped = String(raw).replace(/^"+|"+$/g, '').trim();
+            const spaced = stripped.replace(/[-_]+/g, ' ').trim();
+            return spaced.replace(/\b\w/g, c => c.toUpperCase());
+        }
+
+        function formatVersionWithV(version) {
+            const value = String(version || '').trim();
+            if (!value || value.toLowerCase() === 'n/a' || value.toLowerCase() === 'unknown') {
+                return 'N/A';
+            }
+            return value.toLowerCase().startsWith('v') ? value : `v${value}`;
+        }
+
+        function formatBuildDateCanonical(buildDate) {
+            const value = String(buildDate || '').trim();
+            if (!value) return 'N/A';
+            return value.replace(/-/g, ' ');
+        }
+
         // Load receiver network info
         fetch('/api/get_receiver_network')
             .then(response => response.json())
             .then(data => {
-                document.getElementById('wifiMac').value = data.wifi_mac || 'N/A';
                 document.getElementById('hostname').value = data.hostname || '';
                 document.getElementById('ssid').value = data.ssid || '';
                 document.getElementById('password').value = data.password || '';
                 document.getElementById('wifiChannel').value = data.channel || 'N/A';
 
-                document.getElementById('chipModel').value = data.chip_model || 'N/A';
-                document.getElementById('chipRevision').value = data.chip_revision || 'N/A';
+                const connectionTextEl = document.getElementById('receiverConnectionText');
+                const statusSummaryEl = document.getElementById('receiverStatusSummary');
+                const isApMode = !!data.is_ap_mode;
+                const connectionText = isApMode ? 'AP Mode' : 'Online';
+                const connectionColor = isApMode ? '#FF9800' : '#4CAF50';
+                if (connectionTextEl) {
+                    connectionTextEl.textContent = connectionText;
+                    connectionTextEl.style.color = connectionColor;
+                }
+                if (statusSummaryEl) {
+                    statusSummaryEl.style.borderLeftColor = connectionColor;
+                }
+
+                const ipEl = document.getElementById('receiverStatusIp');
+                if (ipEl) {
+                    const configuredIp = data.use_static_ip ? (data.static_ip || '') : '';
+                    const runtimeIp = (window.location && window.location.hostname) ? window.location.hostname : '';
+                    ipEl.textContent = configuredIp || runtimeIp || 'N/A';
+                }
 
                 const useStatic = data.use_static_ip || false;
                 document.getElementById('useStaticIP').checked = useStatic;
@@ -110,34 +147,36 @@ String get_systeminfo_page_script() {
                 console.error('Failed to load receiver network info:', err);
             });
 
-        // Load receiver firmware metadata for authoritative device naming
+        // Load receiver firmware metadata for header + status summary
         fetch('/api/firmware_info')
             .then(response => response.json())
             .then(data => {
-                const deviceEl = document.getElementById('deviceName');
-                if (!deviceEl) return;
+                const deviceEl = document.getElementById('receiverDeviceName');
+                const firmwareEl = document.getElementById('receiverStatusFirmware');
+                const buildDateEl = document.getElementById('receiverStatusBuildDate');
 
-                if (data.valid) {
-                    const env = (data.env || '').replace(/[-_]+/g, ' ').trim();
-                    const prettyEnv = env.replace(/\b\w/g, c => c.toUpperCase());
-                    if (prettyEnv && data.device) {
-                        deviceEl.value = `${prettyEnv} (${data.device})`;
-                    } else if (prettyEnv) {
-                        deviceEl.value = prettyEnv;
-                    } else if (data.device) {
-                        deviceEl.value = data.device;
-                    } else {
-                        deviceEl.value = 'Unknown';
-                    }
-                } else {
-                    deviceEl.value = 'Metadata unavailable';
+                if (!data.valid) {
+                    if (deviceEl) deviceEl.textContent = 'Unknown';
+                    if (firmwareEl) firmwareEl.textContent = 'N/A';
+                    if (buildDateEl) buildDateEl.textContent = 'N/A';
+                    return;
                 }
+
+                const displayName = normalizeDisplayName(data.env) ||
+                                    normalizeDisplayName(data.device) ||
+                                    'Unknown';
+
+                if (deviceEl) deviceEl.textContent = displayName;
+                if (firmwareEl) firmwareEl.textContent = formatVersionWithV(data.version);
+                if (buildDateEl) buildDateEl.textContent = formatBuildDateCanonical(data.build_date);
             })
             .catch(() => {
-                const deviceEl = document.getElementById('deviceName');
-                if (deviceEl) {
-                    deviceEl.value = 'Failed to load';
-                }
+                const deviceEl = document.getElementById('receiverDeviceName');
+                const firmwareEl = document.getElementById('receiverStatusFirmware');
+                const buildDateEl = document.getElementById('receiverStatusBuildDate');
+                if (deviceEl) deviceEl.textContent = 'Failed to load';
+                if (firmwareEl) firmwareEl.textContent = 'N/A';
+                if (buildDateEl) buildDateEl.textContent = 'N/A';
             });
 
         async function saveReceiverConfig() {

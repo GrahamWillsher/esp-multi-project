@@ -10,7 +10,7 @@ Project reviewed: espnowreceiver_LCD
 > **Touch screen now available:** The GT911 touch controller on this board can be connected to the LVGL
 > input device stack via `lv_indev_drv_t` (type `LV_INDEV_TYPE_POINTER`). The I2C bus (GPIO8/9) and
 > reset line (CH422G EXIO1) are already initialised. No touch input device driver has been registered yet —
-> this is the next capability available. See `ESPNOWRECEIVER_LCD_PORT_ANALYSIS_2026_04_14.md` section 3.6.
+> this is the next capability available. See `espnowreceiver_LCD/README.md` for current implementation status.
 
 ---
 

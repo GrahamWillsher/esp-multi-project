@@ -64,6 +64,12 @@ bool has_contactor_settings();
 
 void update_battery_cell_count(uint16_t cell_count);
 
+// Version getters for cache validation
+uint32_t get_battery_settings_version();
+uint32_t get_power_settings_version();
+uint32_t get_can_settings_version();
+uint32_t get_contactor_settings_version();
+
 } // namespace TransmitterSettingsCache
 
 #endif // TRANSMITTER_SETTINGS_CACHE_H

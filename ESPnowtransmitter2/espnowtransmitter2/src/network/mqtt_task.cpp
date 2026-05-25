@@ -12,7 +12,7 @@
 #include <mqtt_logger.h>
 #include <esp32common/config/timing_config.h>
 #include <esp32common/mqtt/mqtt_feature_flags.h>
-#include <espnow_transmitter/espnow_transmitter.h>
+#include "../battery_emulator/datalayer/datalayer.h"
 
 namespace {
 
@@ -148,10 +148,13 @@ void publish_periodic_runtime_data(MqttManager& mqtt,
         char timestamp_str[64];
         get_formatted_time(timestamp_str, sizeof(timestamp_str));
 
+        const int soc = static_cast<int>(datalayer.battery.status.reported_soc / 100U);
+        const long power = static_cast<long>(datalayer.battery.status.active_power_W);
+
         // Publish current data
         mqtt.publish_data(
-            tx_data.soc,
-            tx_data.power,
+            soc,
+            power,
             timestamp_str,
             ethernet.is_connected()
         );
@@ -161,7 +164,7 @@ void publish_periodic_runtime_data(MqttManager& mqtt,
         (void)mqtt.publish_runtime_inverter();
 
         log_routed(LogSink::Mqtt, RoutedLevel::Info,
-                   "TELEMETRY", "Data published: SOC=%d%%, Power=%ldW", tx_data.soc, tx_data.power);
+                   "TELEMETRY", "Data published: SOC=%d%%, Power=%ldW", soc, power);
     }
 #else
     (void)last_publish;

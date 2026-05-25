@@ -15,6 +15,23 @@
  * and system tools (Debug, OTA) at the bottom.
  */
 static esp_err_t dashboard_handler(httpd_req_t *req) {
+    auto format_display_name = [](const String& raw) -> String {
+        String stripped = raw;
+        stripped.trim();
+        while (stripped.length() > 1 && stripped[0] == '"' && stripped[stripped.length() - 1] == '"') {
+            stripped = stripped.substring(1, stripped.length() - 1);
+            stripped.trim();
+        }
+        stripped.replace("-", " ");
+        stripped.replace("_", " ");
+        for (int i = 0; i < stripped.length(); ++i) {
+            if (i == 0 || stripped[i - 1] == ' ') {
+                stripped.setCharAt(i, static_cast<char>(toupper(stripped[i])));
+            }
+        }
+        return stripped;
+    };
+
     // Get transmitter Ethernet status for dashboard indicator
     bool tx_connected = TransmitterManager::isEthernetConnected();
     String tx_status = "Disconnected";
@@ -39,12 +56,12 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
         uint8_t major, minor, patch;
         TransmitterManager::getMetadataVersion(major, minor, patch);
         char version_str[16];
-        snprintf(version_str, sizeof(version_str), "%d.%d.%d", major, minor, patch);
+        snprintf(version_str, sizeof(version_str), "v%d.%d.%d", major, minor, patch);
         tx_version = String(version_str);
 
         const char* env = TransmitterManager::getMetadataEnv();
         if (env && strlen(env) > 0) {
-            tx_device_name = String(env);
+            tx_device_name = format_display_name(String(env));
         }
     }
     
@@ -56,9 +73,9 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
     // Get receiver device name from metadata
     String rx_device_name = "Unknown Device";
     if (FirmwareMetadata::isValid(FirmwareMetadata::metadata)) {
-        rx_device_name = String(FirmwareMetadata::metadata.env_name);
+        rx_device_name = format_display_name(String(FirmwareMetadata::metadata.env_name));
         char rx_version_str[16];
-        snprintf(rx_version_str, sizeof(rx_version_str), "%d.%d.%d",
+        snprintf(rx_version_str, sizeof(rx_version_str), "v%d.%d.%d",
                  FirmwareMetadata::metadata.version_major,
                  FirmwareMetadata::metadata.version_minor,
                  FirmwareMetadata::metadata.version_patch);

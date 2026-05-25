@@ -17,15 +17,6 @@ static esp_err_t root_handler(httpd_req_t *req) {
 
     content += R"rawliteral(
     <div class='settings-card'>
-        <h3>Transmitter Details</h3>
-        <div class='settings-row'><label>Status:</label><input type='text' id='txStatus' value='Loading...' disabled class='readonly-field' /></div>
-        <div class='settings-row'><label>Environment:</label><input type='text' id='txEnvironment' value='Loading...' disabled class='readonly-field' /></div>
-        <div class='settings-row'><label>Device:</label><input type='text' id='txDevice' value='Loading...' disabled class='readonly-field' /></div>
-        <div class='settings-row'><label>Firmware Version:</label><input type='text' id='txVersion' value='Loading...' disabled class='readonly-field' /></div>
-        <div class='settings-row'><label>Build Date:</label><input type='text' id='txBuildDate' value='Loading...' disabled class='readonly-field' /></div>
-    </div>
-
-    <div class='settings-card'>
         <h3>IP Configuration <span id='networkModeBadge' class='network-mode-badge badge-dhcp'>Loading...</span></h3>
         <div class='settings-row'>
             <label>Use Static IP:</label>
@@ -270,7 +261,7 @@ static esp_err_t root_handler(httpd_req_t *req) {
                     setField('txStatus', data.valid ? 'Connected' : 'Metadata received (invalid)');
                     setField('txEnvironment', formatEnv(data.env));
                     setField('txDevice', data.device || 'N/A');
-                    setField('txVersion', data.version || 'N/A');
+                    setField('txVersion', data.version ? `v${String(data.version).replace(/^v/i, '')}` : 'N/A');
                     setField('txBuildDate', data.build_date || 'N/A');
                     return true;
                 }
@@ -290,7 +281,7 @@ static esp_err_t root_handler(httpd_req_t *req) {
                 setField('txStatus', 'Connected (version fallback)');
                 setField('txEnvironment', 'N/A');
                 setField('txDevice', 'Transmitter');
-                setField('txVersion', v.transmitter_version || 'Unknown');
+                setField('txVersion', v.transmitter_version ? `v${String(v.transmitter_version).replace(/^v/i, '')}` : 'Unknown');
                 setField('txBuildDate', v.transmitter_build_date || 'Unknown');
                 return true;
             } catch (e2) {

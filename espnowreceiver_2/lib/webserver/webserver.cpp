@@ -7,8 +7,7 @@
 #include "logging.h"
 #include <esp_netif.h>
 #include <ESP.h>
-#include <esp_now.h>
-#include <esp32common/espnow/common.h>
+#include <esp32common/contracts/shared_contracts.h>
 #include <WiFiClient.h>
 #include <HTTPClient.h>
 #include <PubSubClient.h>

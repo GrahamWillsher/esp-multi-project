@@ -1,4 +1,5 @@
 #include "api_network_handlers.h"
+#include <esp32common/mqtt/mqtt_topics_common.h>
 
 #include "api_request_utils.h"
 #include "api_response_utils.h"
@@ -11,15 +12,15 @@
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <esp32common/config/timing_config.h>
-#include <esp32common/espnow/common.h>
+#include <esp32common/contracts/shared_contracts.h>
 #include <esp32common/mqtt/mqtt_feature_flags.h>
 #include <cstring>
 
 namespace {
-constexpr const char* MQTT_TOPIC_RX_CMD_NETWORK_UPDATE = "batt-emu/mqtt-v1/rx/cmd/update/network";
-constexpr const char* MQTT_TOPIC_TX_ACK_NETWORK_UPDATE = "batt-emu/mqtt-v1/tx/ack/network";
-constexpr const char* MQTT_TOPIC_RX_CMD_MQTT_UPDATE = "batt-emu/mqtt-v1/rx/cmd/update/mqtt";
-constexpr const char* MQTT_TOPIC_TX_ACK_MQTT_UPDATE = "batt-emu/mqtt-v1/tx/ack/mqtt";
+constexpr const char* MQTT_TOPIC_RX_CMD_NETWORK_UPDATE = mqtt::topics::rx::CMD_UPDATE_NETWORK;
+constexpr const char* MQTT_TOPIC_TX_ACK_NETWORK_UPDATE = mqtt::topics::tx::ACK_NETWORK;
+constexpr const char* MQTT_TOPIC_RX_CMD_MQTT_UPDATE = mqtt::topics::rx::CMD_UPDATE_MQTT;
+constexpr const char* MQTT_TOPIC_TX_ACK_MQTT_UPDATE = mqtt::topics::tx::ACK_MQTT;
 }
 
 esp_err_t api_get_receiver_network_handler(httpd_req_t *req) {

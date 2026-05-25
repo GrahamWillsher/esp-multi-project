@@ -1,20 +1,9 @@
 #include "led_handler.h"
 #include "../../datalayer/datalayer.h"
 #include "events.h"
-#include "../../../espnow/tx_send_guard.h"
 #include "../../../config/logging_config.h"
-#include <esp32common/espnow/connection_manager.h>
-#include <esp32common/config/timing_config.h>
-#ifdef BMS_FAULT
-#pragma push_macro("BMS_FAULT")
-#undef BMS_FAULT
-#define LED_HANDLER_RESTORE_BMS_FAULT_MACRO
-#endif
-#include <esp32common/espnow/common.h>
-#ifdef LED_HANDLER_RESTORE_BMS_FAULT_MACRO
-#pragma pop_macro("BMS_FAULT")
-#undef LED_HANDLER_RESTORE_BMS_FAULT_MACRO
-#endif
+#include "../../../network/mqtt_manager.h"
+#include <esp32common/contracts/shared_contracts.h>
 
 /*
  * LED Handler - Simplified Implementation
@@ -76,24 +65,6 @@ const char* led_mode_name(uint8_t led_mode) {
 } // namespace
 
 esp_err_t led_publish_current_state(bool force, const uint8_t* receiver_mac) {
-    if (!EspNowConnectionManager::instance().is_connected()) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    if (!force &&
-        EspNowConnectionManager::instance().ms_since_last_heartbeat() >
-            TimingConfig::HEARTBEAT_TIMEOUT_MS) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    const uint8_t* peer_mac = receiver_mac;
-    if (peer_mac == nullptr) {
-        peer_mac = EspNowConnectionManager::instance().get_peer_mac();
-    }
-    if (peer_mac == nullptr) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
     const EMULATOR_STATUS status = get_emulator_status();
     const uint8_t color = wire_color_from_status(status);
     const uint8_t led_mode = static_cast<uint8_t>(datalayer.battery.status.led_mode);
@@ -115,17 +86,8 @@ esp_err_t led_publish_current_state(bool force, const uint8_t* receiver_mac) {
         return ESP_OK;
     }
 
-    flash_led_t led_msg;
-    led_msg.type = msg_flash_led;
-    led_msg.color = color;
-    led_msg.effect = effect;
-
-    esp_err_t result = TxSendGuard::send_to_receiver_guarded(
-        peer_mac,
-        reinterpret_cast<const uint8_t*>(&led_msg),
-        sizeof(led_msg),
-        force ? "status_led_replay" : "status_led"
-    );
+    const bool ok = MqttManager::instance().publish_runtime_led();
+    const esp_err_t result = ok ? ESP_OK : ESP_FAIL;
 
     if (result == ESP_OK) {
         s_last_color = color;

@@ -5,6 +5,7 @@
 #include "../webserver.h"
 #include "api_field_builders.h"
 #include "api_middleware.h"
+#include "../../include/common_lcd.h"
 
 #include "../utils/transmitter_event_log_cache.h"
 #include "../utils/transmitter_manager.h"
@@ -20,24 +21,15 @@
 #include <firmware_version.h>
 #include <firmware_metadata.h>
 #include <ArduinoJson.h>
-#include <esp_now.h>
-#include <esp32common/espnow/common.h>
+#include <esp32common/contracts/shared_contracts.h>
 #include <esp32common/config/event_log_config.h>
 #include <runtime_common_utils/device_temperature.h>
-#include <freertos/queue.h>
 #include "../../src/mqtt/control_state_compat.h"
 #include "../../src/mqtt/mqtt_client.h"
 #include <esp_heap_caps.h>
 #include "../../src/memory/memory_sampler.h"
 
 // LCD receiver has no test-mode globals — always live data.
-
-namespace ESPNow {
-extern QueueHandle_t queue;
-extern volatile uint32_t rx_callback_count;
-extern volatile uint32_t rx_queue_drop_count;
-extern volatile uint32_t rx_queue_high_watermark;
-}
 
 using namespace WebserverMetrics;
 
@@ -394,7 +386,6 @@ esp_err_t api_version_handler(httpd_req_t *req) {
     String receiver_version = "Unknown";
     uint32_t receiver_version_number = 0;
     String receiver_build_date = "";
-    String receiver_build_time = "";
 
     if (receiver_metadata_valid) {
         receiver_device = String(FirmwareMetadata::metadata.env_name);
@@ -410,7 +401,6 @@ esp_err_t api_version_handler(httpd_req_t *req) {
     uint32_t transmitter_version_number = 0;
     bool version_compatible = false;
     String transmitter_build_date = "";
-    String transmitter_build_time = "";
     bool has_metadata = TransmitterManager::hasMetadata();
     bool metadata_valid = TransmitterManager::isMetadataValid();
 
@@ -428,12 +418,10 @@ esp_err_t api_version_handler(httpd_req_t *req) {
     doc["version"] = receiver_version;
     doc["version_number"] = receiver_version_number;
     doc["build_date"] = receiver_build_date;
-    doc["build_time"] = receiver_build_time;
     doc["metadata_valid"] = receiver_metadata_valid;
     doc["transmitter_version"] = transmitter_version;
     doc["transmitter_version_number"] = transmitter_version_number;
     doc["transmitter_build_date"] = transmitter_build_date;
-    doc["transmitter_build_time"] = transmitter_build_time;
     doc["transmitter_compatible"] = version_compatible;
     doc["transmitter_metadata_valid"] = metadata_valid;
     doc["uptime"] = millis() / 1000;
@@ -781,13 +769,11 @@ esp_err_t api_system_metrics_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_SYSTEM_METRICS);
     DynamicJsonDocument doc(2560);
 
-    const uint32_t callback_count = ESPNow::rx_callback_count;
-    const uint32_t drop_count = ESPNow::rx_queue_drop_count;
-    const uint32_t high_watermark = ESPNow::rx_queue_high_watermark;
-    const uint32_t queue_depth = (ESPNow::queue != nullptr) ? static_cast<uint32_t>(uxQueueMessagesWaiting(ESPNow::queue)) : 0;
-    const uint32_t queue_size = (ESPNow::queue != nullptr)
-                                    ? static_cast<uint32_t>(uxQueueMessagesWaiting(ESPNow::queue) + uxQueueSpacesAvailable(ESPNow::queue))
-                                    : 0;
+    const uint32_t callback_count = RuntimeState::rx_callback_count.load();
+    const uint32_t drop_count = RuntimeState::rx_queue_drop_count.load();
+    const uint32_t high_watermark = RuntimeState::rx_queue_high_watermark.load();
+    const uint32_t queue_depth = 0;
+    const uint32_t queue_size = 0;
 
     doc["success"] = true;
     doc["uptime_s"] = millis() / 1000;

@@ -56,7 +56,8 @@ namespace {
             .precharge_duration_ms = 100,
             .equipment_stop_type = 0,
             .external_precharge_enabled = false,
-            .no_inverter_disconnect_contactor = false
+            .no_inverter_disconnect_contactor = false,
+            .version = 0
         };
         bool power_settings_known = false;
 
@@ -75,7 +76,8 @@ namespace {
             .fd_frequency_mhz = 40,
             .sofar_id = 0,
             .pylon_send_interval_ms = 0,
-            .use_canfd_as_classic = false
+            .use_canfd_as_classic = false,
+            .version = 0
         };
         bool can_settings_known = false;
 
@@ -87,7 +89,8 @@ namespace {
             .pwm_hold_duty = 250,
             .periodic_bms_reset = false,
             .bms_first_align_enabled = false,
-            .bms_first_align_target_minutes = 120
+            .bms_first_align_target_minutes = 120,
+            .version = 0
         };
         bool contactor_settings_known = false;
     };
@@ -284,6 +287,30 @@ void update_battery_cell_count(uint16_t cell_count) {
         ScopedMutex lock(cache_mutex);
         settings_cache.battery_settings.cell_count = static_cast<uint8_t>(cell_count);
     }
+}
+
+uint32_t get_battery_settings_version() {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
+    return settings_cache.battery_settings.version;
+}
+
+uint32_t get_power_settings_version() {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
+    return settings_cache.power_settings.version;
+}
+
+uint32_t get_can_settings_version() {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
+    return settings_cache.can_settings.version;
+}
+
+uint32_t get_contactor_settings_version() {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
+    return settings_cache.contactor_settings.version;
 }
 
 } // namespace TransmitterSettingsCache

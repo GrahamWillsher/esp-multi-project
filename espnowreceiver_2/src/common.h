@@ -8,11 +8,10 @@
 #include <Arduino.h>
 #include <TFT_eSPI.h>
 #include <WiFi.h>
-#include <esp_now.h>
 #include <esp_wifi.h>
 #include <LittleFS.h>
 #include <JPEGDecoder.h>
-#include <esp32common/espnow/common.h>
+#include <esp32common/contracts/shared_contracts.h>
 #include "config/led_config.h"
 #include "config/logging_config.h"
 #include "state/connection_state.h"
@@ -64,8 +63,8 @@ namespace Display {
     constexpr unsigned long DISPLAY_UPDATE_INTERVAL = 500;
 }
 
-// ESP-NOW State
-namespace ESPNow {
+// Transport-neutral runtime state (used by MQTT/UI paths)
+namespace RuntimeState {
     enum class LedStatus : uint8_t {
         Unknown = 0,
         Ok = 1,
@@ -74,21 +73,13 @@ namespace ESPNow {
         Updating = 4,
     };
 
-    // LED indicator state
     extern LEDColor current_led_color;
     extern LEDEffect current_led_effect;
     extern volatile uint8_t current_led_status;
     extern volatile bool receiver_ota_led_override_active;
-    
-    // Connection state (managed by RxStateMachine, not volatile flags)
-    extern int wifi_channel;                // Managed by ChannelManager
-    extern uint8_t transmitter_mac[6];      // Transmitter MAC address for sending commands
-    
-    // Message queue
-    constexpr int QUEUE_SIZE = 24;
-    extern QueueHandle_t queue;
 
-    // Queue telemetry
+    // Legacy telemetry compatibility counters for web API shape.
+    // Receiver_2 is MQTT-only; these remain zeroed unless explicitly updated.
     extern volatile uint32_t rx_callback_count;
     extern volatile uint32_t rx_queue_drop_count;
     extern volatile uint32_t rx_queue_high_watermark;
@@ -97,9 +88,7 @@ namespace ESPNow {
 // FreeRTOS Resources
 namespace RTOS {
     extern TaskHandle_t task_indicator;
-    extern TaskHandle_t task_espnow_worker;
     extern TaskHandle_t task_display_renderer;
-    extern TaskHandle_t task_announcement;
     extern SemaphoreHandle_t tft_mutex;
 }
 

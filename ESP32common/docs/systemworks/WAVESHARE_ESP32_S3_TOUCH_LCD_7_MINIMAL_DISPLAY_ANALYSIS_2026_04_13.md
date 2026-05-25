@@ -283,7 +283,7 @@ Touch was optional for the original display-only goal.
 > pointer input device driver (`lv_indev_drv_t`, type `LV_INDEV_TYPE_POINTER`). The HAL needs an
 > `lgfx::Touch_GT911` object added and `panel_.touch()` called; the LVGL backend needs a `read_cb`
 > registered via `lv_indev_drv_register`. Neither has been implemented yet — it is the next available
-> hardware capability. See `ESPNOWRECEIVER_LCD_PORT_ANALYSIS_2026_04_14.md` section 3.6 for the full
+> hardware capability. See `espnowreceiver_LCD/README.md` and this document's touch section for the current
 > implementation plan.
 
 #### Board control signals

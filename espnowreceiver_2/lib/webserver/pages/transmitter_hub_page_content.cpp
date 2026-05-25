@@ -15,10 +15,9 @@ String get_transmitter_hub_page_content(
         </a>
     </div>
 
-    <h1 style='color: #2196F3;'>📡 Transmitter Management</h1>
-    <p style='color: #888; margin-top: -10px;'>)rawliteral";
+    <h1 style='color: #2196F3;'>📡 Transmitter <span style='font-size: 0.5em; font-weight: 600;'>()rawliteral";
     content += device_subtitle;
-    content += R"rawliteral(</p>
+    content += R"rawliteral()</span></h1>
 
     <!-- Status Summary -->
     <div class='info-box' style='margin: 20px 0; border-left: 5px solid )rawliteral";

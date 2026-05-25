@@ -1,9 +1,9 @@
 #include "mqtt_command_client.h"
 
 #include "mqtt_client.h"
-#include "../../include/mqtt/mqtt_topics_receiver.h"
+#include <esp32common/mqtt/mqtt_topics_common.h>
 #include "logging_config.h"
-#include <esp32common/espnow/common.h>
+#include <esp32common/contracts/shared_contracts.h>
 #include <ArduinoJson.h>
 #include <cstdio>
 
@@ -63,7 +63,7 @@ bool MqttCommandClient::sendNetworkUpdate(bool use_static_ip,
 
     char payload[384];
     const size_t n = serializeJson(cmd, payload, sizeof(payload));
-    if (n == 0 || !MqttClient::publishJson(MqttTopicsReceiver::RxCmd::UPDATE_NETWORK, payload, false)) {
+    if (n == 0 || !MqttClient::publishJson(mqtt::topics::rx::CMD_UPDATE_NETWORK, payload, false)) {
         set_command_result(out_result, CommandResult::PublishFailed);
         return false;
     }
@@ -106,7 +106,7 @@ bool MqttCommandClient::sendMqttUpdate(bool enabled,
 
     char payload[384];
     const size_t n = serializeJson(cmd, payload, sizeof(payload));
-    if (n == 0 || !MqttClient::publishJson(MqttTopicsReceiver::RxCmd::UPDATE_MQTT, payload, false)) {
+    if (n == 0 || !MqttClient::publishJson(mqtt::topics::rx::CMD_UPDATE_MQTT, payload, false)) {
         set_command_result(out_result, CommandResult::PublishFailed);
         return false;
     }
@@ -148,7 +148,7 @@ bool MqttCommandClient::sendSettingsUpdate(uint8_t category,
 
     char payload[256];
     const size_t n = serializeJson(cmd, payload, sizeof(payload));
-    if (n == 0 || !MqttClient::publishJson(MqttTopicsReceiver::RxCmd::UPDATE_BATTERY, payload, false)) {
+    if (n == 0 || !MqttClient::publishJson(mqtt::topics::rx::CMD_UPDATE_BATTERY, payload, false)) {
         set_command_result(out_result, CommandResult::PublishFailed);
         return false;
     }
@@ -178,7 +178,7 @@ bool MqttCommandClient::sendDebugLevel(int level,
 
     char payload[160];
     const size_t n = serializeJson(cmd, payload, sizeof(payload));
-    if (n == 0 || !MqttClient::publishJson(MqttTopicsReceiver::RxCmd::CONTROL_DEBUG_LEVEL, payload, false)) {
+    if (n == 0 || !MqttClient::publishJson(mqtt::topics::rx::CMD_CONTROL_DEBUG_LEVEL, payload, false)) {
         set_command_result(out_result, CommandResult::PublishFailed);
         return false;
     }
@@ -208,7 +208,7 @@ bool MqttCommandClient::sendTestDataMode(uint8_t mode) {
         return false;
     }
 
-    return MqttClient::publishJson(MqttTopicsReceiver::RxCmd::CONTROL_TEST_DATA_MODE, payload, false);
+    return MqttClient::publishJson(mqtt::topics::rx::CMD_CONTROL_TEST_DATA_MODE, payload, false);
 }
 
 bool MqttCommandClient::sendEventLogsClear() {
@@ -231,7 +231,7 @@ bool MqttCommandClient::sendEventLogsClear() {
         return false;
     }
 
-    return MqttClient::publishJson(MqttTopicsReceiver::RxCmd::CONTROL_EVENT_LOGS_CLEAR, payload, false);
+    return MqttClient::publishJson(mqtt::topics::rx::CMD_CONTROL_EVENT_LOGS_CLEAR, payload, false);
 }
 
 bool MqttCommandClient::sendReboot(bool confirm,
@@ -254,7 +254,7 @@ bool MqttCommandClient::sendReboot(bool confirm,
 
     char payload[160];
     const size_t n = serializeJson(cmd, payload, sizeof(payload));
-    if (n == 0 || !MqttClient::publishJson(MqttTopicsReceiver::RxCmd::CONTROL_REBOOT, payload, false)) {
+    if (n == 0 || !MqttClient::publishJson(mqtt::topics::rx::CMD_CONTROL_REBOOT, payload, false)) {
         set_command_result(out_result, CommandResult::PublishFailed);
         return false;
     }
@@ -294,7 +294,7 @@ bool MqttCommandClient::sendComponentApply(uint32_t numeric_request_id,
 
     char payload[256];
     const size_t n = serializeJson(cmd, payload, sizeof(payload));
-    if (n == 0 || !MqttClient::publishJson(MqttTopicsReceiver::RxCmd::CONTROL_COMPONENT_APPLY, payload, false)) {
+    if (n == 0 || !MqttClient::publishJson(mqtt::topics::rx::CMD_CONTROL_COMPONENT_APPLY, payload, false)) {
         set_command_result(out_result, CommandResult::PublishFailed);
         return false;
     }

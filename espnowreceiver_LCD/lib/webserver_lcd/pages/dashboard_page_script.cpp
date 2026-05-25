@@ -113,12 +113,18 @@ const char* get_dashboard_page_script() {
         }
 
         function formatEnvName(env) {
-            if (!env) return '"Unknown Device"';
-            // Strip any leading/trailing quotes embedded via build flags (e.g. from TOSTRING macro)
-            const stripped = String(env).replace(/^"|"$/g, '').trim();
+            if (!env) return 'Unknown Device';
+            const stripped = String(env).replace(/^"+|"+$/g, '').trim();
             const spaced = stripped.replace(/[-_]+/g, ' ').trim();
-            const formatted = spaced.replace(/\b\w/g, c => c.toUpperCase());
-            return `"${formatted}"`;
+            return spaced.replace(/\b\w/g, c => c.toUpperCase());
+        }
+
+        function formatVersionWithV(version) {
+            const value = String(version || '').trim();
+            if (!value || value.toLowerCase() === 'unknown' || value.toLowerCase() === 'n/a') {
+                return 'Unknown';
+            }
+            return value.toLowerCase().startsWith('v') ? value : `v${value}`;
         }
 
         function formatCountLabel(count, singular, plural) {
@@ -221,7 +227,7 @@ const char* get_dashboard_page_script() {
                         txIPModeEl.textContent = '';
                     }
                     if (tx.firmware && tx.firmware !== 'Unknown') {
-                        txVersionEl.textContent = tx.firmware;
+                        txVersionEl.textContent = formatVersionWithV(tx.firmware);
                     }
                     if (tx.mac && tx.mac !== 'Unknown') {
                         txMACEl.textContent = tx.mac;

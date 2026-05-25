@@ -16,14 +16,11 @@
   "platforms": "espressif32",
   "build": {
     "srcFilter": [
-      "+<src/espnow/>",
-      "+<espnow_common_utils/>",
-      "+<espnow_phase0/>",
-      "+<espnow_transmitter/>",
       "+<firmware_metadata/>",
       "+<hal/>",
       "+<logging_utilities/>",
-      "+<config_sync/>"
+      "+<config_sync/>",
+      "+<runtime_common_utils/>"
     ],
     "includeDir": "include",
     "flags": "-I include"

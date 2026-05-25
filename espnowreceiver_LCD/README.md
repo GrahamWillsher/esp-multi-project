@@ -1,19 +1,21 @@
 # espnowreceiver_LCD
 
-ESP-NOW battery telemetry receiver with Waveshare 7-inch LVGL display.
+MQTT-based battery telemetry receiver with Waveshare 7-inch LVGL display.
+
+> **Design note:** ESP-NOW was the original inter-device transport, chosen for its broker-free simplicity during early development. It was replaced by MQTT once the Ethernet path was stable — see `esp32common/docs/ESP-NOW_Communication_Architecture.md`.
 
 **Hardware:** Waveshare ESP32-S3-Touch-LCD-7 (16 MB flash, 8 MB PSRAM)  
 **Framework:** Arduino + LVGL 8.4.0 (LVGL-only render path, no TFT_eSPI)  
-**Connectivity:** WiFi (station + AP fallback), ESP-NOW peer, MQTT client, OTA
+**Connectivity:** WiFi (station + AP fallback), MQTT client, OTA
 
 ---
 
 ## What it does
 
-- Receives battery telemetry from an ESP-NOW transmitter (ESPnowtransmitter2)
+- Receives battery telemetry from the transmitter via MQTT (ESPnowtransmitter2)
 - Displays SOC%, bidirectional power bar, and link state on a 7-inch LVGL UI
 - Hosts a web dashboard (webserver_lcd) for configuration and live monitoring
-- Forwards MQTT topics to a broker when configured
+- Uses MQTT topics as the primary telemetry + command/control plane
 - Supports OTA firmware updates over WiFi
 
 ---
@@ -43,7 +45,7 @@ pio run --target uploadfs --environment waveshare_esp32s3_lcd7_lvgl
 - **GPIO conflict:** Ethernet (W5500) and CAN share SPI bus pins — only one active at compile time. See `CAN_ETHERNET_GPIO_CONFLICT_ANALYSIS.md` in ESPnowtransmitter2 if porting.
 - **Touch:** GT911 controller present (GPIO4=IRQ, GPIO8/9=I2C, CH422G EXIO1=RST) but not yet wired to LVGL input device driver. Available for future implementation.
 - **LVGL mutex:** All UI access must be guarded by `xSemaphoreTake(RTOS::lvgl_mutex, ...)`.
-- **Dual-core layout:** ESP-NOW worker and MQTT task on APP_CPU (core 1); LVGL render task pinned to the same core to avoid GL race.
+- **Dual-core layout:** MQTT and UI/runtime tasks are pinned and isolated to avoid rendering/race contention.
 
 ---
 
@@ -52,7 +54,7 @@ pio run --target uploadfs --environment waveshare_esp32s3_lcd7_lvgl
 | Phase | Item | Status |
 |---|---|---|
 | 1–5 | Scaffold → LVGL render pipeline | ✅ Complete |
-| 6 | Receiver stack port (ESP-NOW, WiFi, MQTT, OTA) | ✅ Complete |
+| 6 | Receiver stack port (WiFi, MQTT, OTA) | ✅ Complete |
 | 7 | Codebase review + concurrency hardening | ✅ Complete 2026-04-21 |
 
 ---
@@ -77,4 +79,4 @@ Root cause: HTTP page renders collapsed internal heap to ~5.5 KB during `common_
 
 ## Docs
 
-- `docs/systemworks/ESPNOWRECEIVER_LCD_FULL_CODEBASE_REVIEW_2026_04_21.md` — full review and implementation log
+- `docs/systemworks/TRANSMITTER_HARDWARE_SETTINGS_END_TO_END_INVESTIGATION_2026_05_24.md` — current transmitter settings sync and hardware page validation notes

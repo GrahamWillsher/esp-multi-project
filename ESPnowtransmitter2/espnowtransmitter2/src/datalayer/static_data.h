@@ -2,6 +2,7 @@
 #define STATIC_DATA_H
 
 #include <Arduino.h>
+#include <firmware_version.h>
 
 /**
  * @brief Static configuration data that doesn't change during runtime
@@ -71,9 +72,8 @@ struct ChargerSpecs {
 struct SystemSpecs {
     const char* hardware_model = "ESP32-POE2";         // Hardware platform
     const char* can_interface = "MCP2515_SPI";         // CAN controller type
-    const char* firmware_version = "2.0.0";            // Current firmware version
-    const char* build_date = __DATE__;                 // Compilation date
-    const char* build_time = __TIME__;                 // Compilation time
+    const char* firmware_version = FW_VERSION_STRING;  // Current firmware version
+    const char* build_date = FW_BUILD_DATE;            // Canonical build timestamp
     uint32_t can_bitrate = 500000;                     // CAN bus speed in bps
     bool has_contactor_control = false;                 // Main contactor control
     bool has_precharge_control = false;                 // Precharge circuit control

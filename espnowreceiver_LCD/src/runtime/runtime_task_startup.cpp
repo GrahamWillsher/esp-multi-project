@@ -103,10 +103,10 @@ void task_lvgl(void* /*param*/) {
                 UI::Runtime::set_network_status(net_buf, sta_mode || ap_mode);
             }
 
-            if (ESPNow::current_led_state_valid.load()) {
+                if (RuntimeState::current_led_state_valid.load()) {
                 UI::Runtime::set_led_state(
-                    ESPNow::current_led_color.load(),
-                    ESPNow::current_led_effect.load());
+                    RuntimeState::current_led_color.load(),
+                    RuntimeState::current_led_effect.load());
             }
 
             UI::Runtime::set_link_connected(MqttClient::isConnected());

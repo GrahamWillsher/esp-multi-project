@@ -1,4 +1,5 @@
 #include "api_control_handlers.h"
+#include <esp32common/mqtt/mqtt_topics_common.h>
 
 #include "api_response_utils.h"
 #include "../utils/transmitter_manager.h"
@@ -17,16 +18,16 @@
 #include <mbedtls/sha256.h>
 #include <esp32common/mqtt/mqtt_feature_flags.h>
 
-namespace ESPNow {
+namespace RuntimeState {
     extern uint8_t current_led_color;
     extern uint8_t current_led_effect;
     extern volatile bool receiver_ota_led_override_active;
 }
 
 namespace {
-constexpr const char* MQTT_TOPIC_RX_CMD_CONTROL_REBOOT = "batt-emu/mqtt-v1/rx/cmd/control/reboot";
-constexpr const char* MQTT_TOPIC_TX_ACK_CONTROL = "batt-emu/mqtt-v1/tx/ack/control";
-constexpr const char* MQTT_TOPIC_RX_CMD_REFRESH_LED = "batt-emu/mqtt-v1/rx/cmd/refresh/led";
+constexpr const char* MQTT_TOPIC_RX_CMD_CONTROL_REBOOT = mqtt::topics::rx::CMD_CONTROL_REBOOT;
+constexpr const char* MQTT_TOPIC_TX_ACK_CONTROL = mqtt::topics::tx::ACK_CONTROL;
+constexpr const char* MQTT_TOPIC_RX_CMD_REFRESH_LED = mqtt::topics::rx::CMD_REFRESH_LED;
 constexpr size_t OTA_IMAGE_SHA256_HEX_LEN = 64;
 constexpr size_t OTA_RESPONSE_BODY_MAX_LEN = 512;
 constexpr uint8_t OTA_CHALLENGE_FETCH_ATTEMPTS = 6;
@@ -66,14 +67,14 @@ struct ReceiverOtaLedOverrideGuard {
     ReceiverOtaLedOverrideGuard() {
         constexpr uint8_t kLedBlue = 3;
         constexpr uint8_t kEffectEnergyFlow = 1;
-        ESPNow::receiver_ota_led_override_active = true;
-        ESPNow::current_led_color = kLedBlue;
-        ESPNow::current_led_effect = kEffectEnergyFlow;
+        RuntimeState::receiver_ota_led_override_active = true;
+        RuntimeState::current_led_color = kLedBlue;
+        RuntimeState::current_led_effect = kEffectEnergyFlow;
         LOG_INFO("OTA_RX", "Receiver self-OTA LED override enabled: BLUE + ENERGY FLOW");
     }
 
     ~ReceiverOtaLedOverrideGuard() {
-        ESPNow::receiver_ota_led_override_active = false;
+        RuntimeState::receiver_ota_led_override_active = false;
         const bool requested = request_led_state_refresh_mqtt();
         LOG_INFO("OTA_RX", "Receiver self-OTA LED override disabled; requested transmitter LED sync=%s",
                  requested ? "yes" : "no");

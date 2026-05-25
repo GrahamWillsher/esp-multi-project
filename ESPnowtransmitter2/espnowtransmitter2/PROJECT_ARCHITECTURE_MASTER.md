@@ -1,12 +1,14 @@
-# ESP-NOW Transmitter: Project Architecture Master Document
+# MQTT Transmitter: Project Architecture Master Document
 
 **Attribution**: This work is completely based on Dala the Great’s Battery Emulator: https://github.com/dalathegreat/Battery-Emulator
 **Scope**: The goal is to split that project into two devices — one for control and one for display — with communication between them. If the display device stops working, it does not interfere with the main control device.
 
-**Version**: 1.5 (Codebase Sync Refresh)  
-**Date**: April 5, 2026  
+**Version**: 2.0 (MQTT migration refresh)  
+**Date**: May 25, 2026  
 **Device**: Olimex ESP32-POE2 (Transmitter)  
-**Status**: Active development — OTA hardening complete through Phase D; architecture links and runtime map verified against current workspace
+**Status**: Active development — MQTT-only runtime baseline
+
+> **Design note:** ESP-NOW was the original inter-device transport. It was replaced by MQTT (Ethernet) once the wired path was stable — see `esp32common/docs/ESP-NOW_Communication_Architecture.md` for the rationale.
 
 ---
 
@@ -29,19 +31,19 @@
 
 ### Mission
 
-Build a **real-time battery monitoring and control system** that transmits CAN bus data from a battery management system (BMS) via wireless ESP-NOW protocol while maintaining Ethernet connectivity for telemetry, NTP time synchronization, and OTA firmware updates.
+Build a **real-time battery monitoring and control system** that publishes CAN/BMS data and accepts control/configuration via MQTT while maintaining robust IP networking, NTP time synchronization, and OTA firmware updates.
 
 ### Hardware
 
 - **Transmitter**: Olimex ESP32-POE2
   - Wired Ethernet (RMII interface with LAN8720 PHY)
-  - Wireless ESP-NOW (IEEE 802.11 vendor action frames on the Wi-Fi radio)
+  - MQTT telemetry and command/control transport
   - Connected to a Waveshare RS485 CAN HAT(B) to provide RS485/Modbus and CAN connectivity (GPIO allocation is documented in [CAN_ETHERNET_GPIO_CONFLICT_ANALYSIS.md](CAN_ETHERNET_GPIO_CONFLICT_ANALYSIS.md) and in the Hardware & GPIO Allocation section below)
-  - Relay/contactors command authority remains on transmitter logic, but physical relay actuation is offloaded to receiver GPIO via ESP-NOW command frames
+  - Relay/contactors command authority remains on transmitter logic, with receiver-side actuation coordinated through MQTT command topics
   - Built-in PoE (Power over Ethernet) for field deployment
   
 - **Receiver**: LilyGo T-Display-S3
-  - Wireless ESP-NOW receiver
+  - MQTT subscriber/command endpoint
   - TFT display (status visualization)
   - WiFi connectivity
 
@@ -50,22 +52,22 @@ Build a **real-time battery monitoring and control system** that transmits CAN b
 | Feature | Purpose | Status |
 |---------|---------|--------|
 | **Real-time CAN data** | Monitor battery SOC, voltage, current, temperature | ✅ Phase 4a |
-| **ESP-NOW transmission** | Low-power wireless to receiver | ✅ Section 11 |
+| **MQTT telemetry + commands** | Primary transmitter↔receiver control/data plane | ✅ Active |
 | **Cable detection** | Physical Ethernet presence verification | ✅ New |
 | **MQTT telemetry** | Cloud reporting (if Ethernet available) | ✅ Phase 3 |
 | **OTA firmware updates** | Remote code deployment, anti-brick boot guard + rollback | ✅ Phase D |
 | **NTP time sync** | Accurate timestamps via Ethernet | ✅ Phase 2 |
-| **Heartbeat protocol** | Connection health monitoring (10s interval) | ✅ Section 11 |
+| **MQTT connectivity health** | Connection and data-path health monitoring | ✅ Active |
 | **State machine control** | Deterministic system behavior | ✅ New |
 
 ### Current Codebase Snapshot (Apr 2026)
 
 Primary active modules now align to this structure:
 
-- `src/espnow/tx_state_machine.*` + `src/espnow/tx_connection_handler.*` for transmitter-side ESP-NOW state and transitions.
 - `src/network/ethernet_manager.*` for Ethernet lifecycle and readiness gating.
 - `src/network/mqtt_manager.*`, `src/network/mqtt_task.*`, `src/network/time_manager.*`, `src/network/ota_manager.*` for network services.
-- `src/espnow/component_catalog_handlers.*`, `src/espnow/config_handler_common.*`, and `src/espnow/control_handlers.*` for runtime configuration/control exchange with the receiver.
+- `src/catalog/*`, `src/control/*`, and `src/transport/*` for runtime configuration/control exchange with the receiver.
+- `src/battery/*`, `src/battery_emulator/*`, and `src/communication/can/*` for CAN/battery integration.
 
 Receiver companion architecture reference: `../../espnowreceiver_2/PROJECT_ARCHITECTURE_MASTER.md`.
 
@@ -73,22 +75,21 @@ Receiver companion architecture reference: `../../espnowreceiver_2/PROJECT_ARCHI
 
 This addendum is the current authoritative map for structure and operation.
 
-1. **ESP-NOW communications and state machines**
-  - `src/espnow/tx_state_machine.cpp`
-  - `src/espnow/tx_connection_handler.cpp`
-  - `src/espnow/discovery_task.cpp`
-  - `src/espnow/transmission_task.cpp`
-  - `src/espnow/heartbeat_manager.cpp`
-  - shared transport/protocol plumbing: `../../esp32common/espnow_common_utils/*`
-
-2. **MQTT communications**
+1. **MQTT communications and command orchestration**
   - `src/network/mqtt_manager.cpp`
   - `src/network/mqtt_task.cpp`
+  - `src/catalog/*`
+  - `src/control/*`
+  - `src/transport/*`
+
+2. **Ethernet/service lifecycle**
+  - `src/network/ethernet_manager.cpp`
+  - `src/network/service_supervisor.cpp`
   - shared logging behavior: `../../esp32common/docs/MQTT_LOGGER_IMPLEMENTATION.md`
 
-3. **Inter-device compatibility (versioning, heartbeat, OTA auth)**
+3. **Inter-device compatibility (versioning, MQTT health, OTA auth)**
   - version/protocol constants: `../../esp32common/firmware_version.h`
-  - heartbeat protocol reference: `../../esp32common/docs/ESPNOW_HEARTBEAT.md`
+  - heartbeat design decision record: `../../esp32common/docs/ESPNOW_HEARTBEAT.md`
   - OTA auth/session utilities: `../../esp32common/webserver_common_utils/include/webserver_common_utils/ota_auth_utils.h`, `../../esp32common/webserver_common_utils/include/webserver_common_utils/ota_session_utils.h`
   - OTA boot guard (shared): `../../esp32common/runtime_common_utils/include/runtime_common_utils/ota_boot_guard.h`
   - firmware compatibility policy (shared): `../../esp32common/firmware_metadata/firmware_compatibility_policy.h`
@@ -127,55 +128,55 @@ This addendum is the current authoritative map for structure and operation.
 ### System Diagram
 
 Each physical interface feeds only its own dedicated subsystem.
-WiFi → ESP-NOW only. Ethernet → IP networking only. CAN → battery data only.
+CAN → battery data only. Ethernet/WiFi IP networking → MQTT/OTA/NTP services.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
 │                       ESP32-POE2 (Transmitter)                       │
 ├──────────────────────────────────────────────────────────────────────┤
 │                                                                      │
-│  ┌──────────────┐  ┌───────────────────────┐  ┌──────────────────┐  │
-│  │   CAN Bus    │  │      WiFi Radio       │  │    Ethernet      │  │
-│  │  (HS-SPI /   │  │   *** ESP-NOW ONLY    │  │   (MII /         │  │
-│  │   MCP2515)   │  │   No IP · No DHCP     │  │   LAN8720 PHY)   │  │
-│  └──────┬───────┘  └──────────┬────────────┘  └────────┬─────────┘  │
-│         │                     │                         │            │
-│         ▼                     ▼                         ▼            │
-│  ┌──────────────┐  ┌───────────────────────┐  ┌──────────────────┐  │
-│  │  CANDriver   │  │      RadioInit        │  │ EthernetManager  │  │
-│  │  (battery    │  │  STA mode · no IP     │  │  (9-state FSM ·  │  │
-│  │  emulator    │  │  ESP-NOW only         │  │  cable/IP/ready) │  │
-│  │  parsing)    │  └──────────┬────────────┘  └────────┬─────────┘  │
-│  └──────┬───────┘             │                         │            │
-│         │                     ▼                         ▼            │
-│         │          ┌───────────────────────┐  ┌──────────────────┐  │
-│         │          │    ESP-NOW Layer      │  │   IP Services    │  │
-│         │          │  tx_connection_       │  │  MQTT · NTP      │  │
-│         │          │  handler.cpp /        │  │  OTA · HTTP      │  │
-│         │          │  tx_state_machine.cpp │  │  (Ethernet only) │  │
-│         │          └──────────┬────────────┘  └────────┬─────────┘  │
-│         │                     │                         │            │
-│         ▼                     ▼                         ▼            │
-│  ┌──────────────────────────────────────────────────────────────┐    │
-│  │                       EnhancedCache                          │    │
-│  │                (Dual storage · PSRAM-backed)                 │    │
-│  └───────────────────────────┬──────────────────────────────────┘    │
-│                              │                                       │
-│  ┌───────────────────────────▼────────────────────────────────────┐  │
-│  │                   FreeRTOS Task Scheduler                      │  │
-│  │        Core 0: Main loop / CAN processing / Health checks      │  │
-│  │        Core 1: TX / ESP-NOW dispatch                           │  │
-│  └────────────────────────────────────────────────────────────────┘  │
+│  ┌──────────────────────────┐        ┌──────────────────────────┐   │
+│  │         CAN Bus          │        │         Ethernet         │   │
+│  │   (HS-SPI / MCP2515)     │        │   (RMII / LAN8720 PHY)   │   │
+│  └─────────────┬────────────┘        └────────────┬─────────────┘   │
+│                │                                   │                 │
+│                ▼                                   ▼                 │
+│  ┌──────────────────────────┐        ┌──────────────────────────┐   │
+│  │        CANDriver         │        │      EthernetManager     │   │
+│  │  (battery emulator /     │        │   (9-state FSM ·         │   │
+│  │   BMS parsing)           │        │    cable/IP/ready)       │   │
+│  └─────────────┬────────────┘        └────────────┬─────────────┘   │
+│                │                                   │                 │
+│                │                                   ▼                 │
+│                │                    ┌──────────────────────────┐   │
+│                │                    │       IP Services        │   │
+│                │                    │  MQTT · NTP · OTA · HTTP │   │
+│                │                    └────────────┬─────────────┘   │
+│                │                                 │                  │
+│                ▼                                 ▼                  │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │                       EnhancedCache                          │   │
+│  │                (Dual storage · PSRAM-backed)                 │   │
+│  └───────────────────────────┬──────────────────────────────────┘   │
+│                              │                                      │
+│  ┌───────────────────────────▼────────────────────────────────────┐ │
+│  │                   FreeRTOS Task Scheduler                      │ │
+│  │        Core 0: Main loop / CAN processing / Health checks      │ │
+│  │        Core 1: MQTT dispatch / Service tasks                   │ │
+│  └────────────────────────────────────────────────────────────────┘ │
 │                                                                      │
 └──────────────────────────────────────────────────────────────────────┘
-            │                                           │
-            ▼                                           ▼
-      [LilyGo Receiver]                           [MQTT Broker]
-      (via ESP-NOW · WiFi radio)                   (via Ethernet · IP)
+                                           │
+                                           ▼
+                                     [MQTT Broker]
+                                   (via Ethernet · IP)
+                                           │
+                          ┌────────────────┴──────────────────┐
+                          ▼                                   ▼
+                  [LilyGo Receiver]               [Waveshare LCD Receiver]
 ```
 
-> **WiFi** is configured in STA mode with no IP address and is used **exclusively** for ESP-NOW radio.
-> **Ethernet** (LAN8720 PHY, RMII) is the sole IP networking path for MQTT, NTP, OTA, and HTTP.
+**Ethernet** (LAN8720 PHY, RMII) is the sole networking path for MQTT, NTP, OTA, and HTTP.
 
 ### Layered Architecture
 
@@ -183,27 +184,24 @@ WiFi → ESP-NOW only. Ethernet → IP networking only. CAN → battery data onl
 ┌───────────────────────────────────────────────────────────┐
 │ Application Layer                                         │
 │ ├─ Main loop (CAN processing, health checks)              │
-│ ├─ Discovery (channel hopping, peer discovery)            │
-│ ├─ Data sender (battery data → cache → wireless)          │
+│ ├─ Data sender (battery data → cache → MQTT publish)      │
 │ └─ Version beacon (periodic status announcements)         │
 ├───────────────────────────────────────────────────────────┤
 │ Service Layer                                             │
 │ ├─ NTP Manager (time sync when Ethernet ready)            │
-│ ├─ MQTT Manager (telemetry when Ethernet ready)           │
+│ ├─ MQTT Manager (telemetry + commands when Ethernet ready)│
 │ ├─ OTA Manager (firmware updates when Ethernet ready)     │
-│ ├─ Heartbeat Manager (connection health, Eth + ESP-NOW)   │
+│ ├─ Heartbeat Manager (MQTT session + data freshness)      │
 │ ├─ Ethernet Manager (9-state machine, cable detection)    │
 │ └─ BatteryManager (CAN data processing)                   │
 ├───────────────────────────────────────────────────────────┤
 │ State Machine Layer                                       │
 │ ├─ EthernetConnectionState (9 states: cable/IP/ready)     │
-│ ├─ EspNowConnectionState (10+ states: discovery/locked)   │
 │ └─ FreeRTOS Task Scheduling (priority-based execution)    │
 ├───────────────────────────────────────────────────────────┤
 │ Hardware Interface Layer                                  │
 │ ├─ CAN Driver (MCP2515 or built-in, HSPI)                │
 │ ├─ Ethernet Driver (LAN8720 PHY, RMII)                   │
-│ ├─ WiFi Radio (ESP32 built-in, STA mode)                 │
 │ └─ NVRAM (NVS for config persistence)                    │
 └───────────────────────────────────────────────────────────┘
 ```
@@ -244,26 +242,25 @@ if (EthernetManager::instance().is_link_present()) {
 
 ---
 
-### 2. ESP-NOW Wireless Protocol
+### 2. MQTT Transport and Command Protocol
 
-**Purpose**: Low-power wireless mesh for battery data transmission
+**Purpose**: Unified inter-device telemetry and command/control transport
 
-**States**: 10+ connection states (discovery, channel locking, connected)
+**States**: Network readiness + MQTT broker connection lifecycle
 
 **Architecture**:
-- Transmitter (active role): Scans channels, broadcasts PROBE messages
-- Receiver (passive role): Listens, responds with ACK
-- Discovery: 1s per channel, 13s max (6x faster than previous design)
+- Transmitter publishes telemetry/state topics
+- Receiver subscribes and maintains runtime/display/web caches
+- Receiver/transmitter command paths use MQTT request/action topics
 
-**Reference**: [TRANSMITTER_STATE_MACHINE_IMPLEMENTATION.md](TRANSMITTER_STATE_MACHINE_IMPLEMENTATION.md)
+**Reference**: [TASK_ARCHITECTURE_AND_SERVICE_ISOLATION.md](TASK_ARCHITECTURE_AND_SERVICE_ISOLATION.md)
 
 **Implementation**:
-- Files: `src/espnow/tx_connection_handler.cpp`, `src/espnow/tx_state_machine.cpp`, `src/espnow/discovery_task.cpp`
-- Transmitter states: 17 (channel locking requires state granularity)
-- Receiver states: 10 (passive role, simplified)
-- Cache: EnhancedCache (dual storage: transient + state)
+- Files: `src/network/mqtt_manager.cpp`, `src/network/mqtt_task.cpp`, `src/network/service_supervisor.cpp`
+- Transport-neutral handlers in `src/catalog/*`, `src/control/*`, `src/transport/*`
+- Cache/state integration remains runtime-backed and task-isolated
 
-**Key Difference**: Transmitter cannot be simplified due to channel locking race conditions
+**Key Difference**: No channel-hopping/discovery state machine is required in active transport path
 
 ---
 
@@ -273,13 +270,13 @@ if (EthernetManager::instance().is_link_present()) {
 
 **Gating Hierarchy**:
 1. **Ethernet-Only Services**: NTP, MQTT, OTA (start when CONNECTED state)
-2. **Dual-Gated Services**: Heartbeat (requires CONNECTED Ethernet + CONNECTED ESP-NOW)
-3. **Always-Active**: CAN processing, data caching, discovery
+2. **MQTT-Gated Services**: Publish/subscribe and command flow (requires broker session)
+3. **Always-Active**: CAN processing and core runtime state management
 
 **Implementation**:
 - Ethernet callbacks: `on_connected()` / `on_disconnected()`
 - Service checks: `is_fully_ready()` before network operations
-- Dual gating: Heartbeat checks both states
+- MQTT gating: broker session + runtime connectivity checks
 
 **Reference**: [OTA & Service Integration Status](#ota--service-integration-status)
 
@@ -293,13 +290,11 @@ if (EthernetManager::instance().is_link_present()) {
 | Task | Core | Priority | Role |
 |------|------|----------|------|
 | Main Loop | 0 | N/A | CAN/BMS processing (non-blocking) |
-| RX Handler | Auto | Default | ESP-NOW packet reception |
-| TX Background | 1 | 2 (LOW) | Transmission from cache |
-| Discovery | Auto | Variable | Channel hopping |
 | MQTT | Auto | 1 (LOW) | Cloud telemetry |
 | NTP | Auto | 1 (LOW) | Time synchronization |
+| Service Supervisor | Auto | 1 (LOW) | Ethernet-driven service lifecycle |
 
-**Key Design**: TX task pinned to Core 1 (no CPU contention with main loop)
+**Key Design**: Network tasks are isolated from main control loop to prevent I/O stalls from impacting battery/CAN runtime
 
 **Reference**: [TASK_ARCHITECTURE_AND_SERVICE_ISOLATION.md](TASK_ARCHITECTURE_AND_SERVICE_ISOLATION.md)
 
@@ -323,9 +318,7 @@ DataSender (cache reading)
     ↓
 EnhancedCache (dual storage)
     ↓
-ESP-NOW TX Task (wireless)
-    ↓
-MQTT Task (if Ethernet ready)
+MQTT Task (Ethernet)
 ```
 
 **Update Rate**: ~5 Hz from CAN, batched for wireless transmission
@@ -423,8 +416,8 @@ Waveshare RS485/CAN HAT(B) `_0`/`_1` vendor interface tables and diagram referen
 - **External relay power**: use 5V and GND from the Waveshare yellow 12-pin connector.
 - **Separate-bus design**: CAN and RS485 data buses are isolated (no shared data lines in selected mapping).
 - **Transmitter local relay GPIOs**: insufficient after Ethernet + CAN + RS485 allocation.
-- **Project solution**: contactor/relay outputs are physically driven on receiver (LilyGo T-Display-S3 non-touch), commanded by transmitter via ESP-NOW.
-- **Transmitter HAL compatibility**: pseudo/virtual **semantic** GPIO IDs map to ESP-NOW relay bitmask commands (`GPIO_NEGATIVE_CONTACTOR_VIRTUAL`, `GPIO_PRECHARGE_VIRTUAL`, `GPIO_POSITIVE_CONTACTOR_VIRTUAL`, `GPIO_BMS_POWER_VIRTUAL`; optional `GPIO_SECOND_BATTERY_CONTACTORS_VIRTUAL`) as documented in systemworks reference above.
+- **Project solution**: contactor/relay outputs are physically driven on receiver (LilyGo T-Display-S3 non-touch), commanded by transmitter via MQTT relay command topics.
+- **Transmitter HAL compatibility**: pseudo/virtual **semantic** GPIO IDs map to MQTT relay command payloads (`GPIO_NEGATIVE_CONTACTOR_VIRTUAL`, `GPIO_PRECHARGE_VIRTUAL`, `GPIO_POSITIVE_CONTACTOR_VIRTUAL`, `GPIO_BMS_POWER_VIRTUAL`; optional `GPIO_SECOND_BATTERY_CONTACTORS_VIRTUAL`) as documented in systemworks reference above.
 - **Critical**: GPIO 4 (MISO) chosen to avoid Ethernet conflicts with GPIO 19
 - **Power**: GPIO 12 controls LAN8720 PHY power enable
 - **Safety**: Contactors fail-safe (spring-open when de-energized)
@@ -436,16 +429,16 @@ This project now uses a two-device relay architecture:
 
 1. **Transmitter (Olimex)** runs battery/control state machine and decides relay states.
 2. Relay writes are represented as **virtual HAL GPIO outputs** in transmitter code.
-3. Virtual writes emit ESP-NOW `RELAY_CMD` frames to receiver.
+3. Virtual writes publish MQTT relay command messages to the receiver command topic.
 4. **Receiver (T-Display-S3 non-touch)** applies semantic outputs and returns ACK/status:
   - `NEGATIVE_CONTACTOR_PIN` → GPIO10
   - `PRECHARGE_PIN` → GPIO16
   - `POSITIVE_CONTACTOR_PIN` → GPIO21
   - `BMS_POWER` → GPIO43
 
-This preserves early-stage control sequencing on the transmitter while removing hard GPIO constraints from the Olimex board.
+This preserves control sequencing on the transmitter while removing hard GPIO constraints from the Olimex board.
 
-Timing and immediate-vs-delayed ESP-NOW send policy details are defined in:
+Relay GPIO availability reference:
 - [../../esp32common/docs/systemworks/LILYGO_T_DISPLAY_S3_RELAY_GPIO_AVAILABILITY.md](../../esp32common/docs/systemworks/LILYGO_T_DISPLAY_S3_RELAY_GPIO_AVAILABILITY.md)
 
 ---
@@ -460,14 +453,8 @@ Timing and immediate-vs-delayed ESP-NOW send policy details are defined in:
 - Timeout values, edge cases, state metrics
 - Implementation code examples
 
-**ESP-NOW / Transmitter State Machine** - [TRANSMITTER_STATE_MACHINE_IMPLEMENTATION.md](TRANSMITTER_STATE_MACHINE_IMPLEMENTATION.md)
-- Transmitter-side states and transition behavior
-- Channel locking and reconnect behavior
-- Discovery + ACK/heartbeat interaction
-
-**ESP-NOW Protocol (Shared)** - [../../esp32common/docs/ESP-NOW_Communication_Architecture.md](../../esp32common/docs/ESP-NOW_Communication_Architecture.md)
-- Shared packet-level communication architecture
-- Inter-device message flow context used by both transmitter and receiver
+**ESP-NOW design decision record** - [../../esp32common/docs/ESP-NOW_Communication_Architecture.md](../../esp32common/docs/ESP-NOW_Communication_Architecture.md)
+- Why ESP-NOW was used initially and why it was replaced with MQTT
 
 ### Service Integration (Merged)
 

@@ -1,0 +1,761 @@
+#pragma once
+
+#include <stddef.h>
+#include <stdint.h>
+
+// Transport-neutral contracts facade.
+//
+// Phase 1 safety note:
+// We intentionally re-export canonical shared wire/data contracts from the
+// existing public protocol header to avoid symbol drift and keep all projects
+// compiling while MQTT callers migrate away from direct espnow include paths.
+//
+// This file is the stable include for MQTT/runtime code:
+//   <esp32common/contracts/shared_contracts.h>
+//
+// Phase 8 cleanup: espnow_transmitter library was deleted after decoupling
+// transmitter source from ESPNOW internals. Wire protocol contracts are now
+// defined locally in this file instead of being forwarded from
+// espnow_transmitter/espnow_common.h.
+
+#ifdef BMS_FAULT
+#pragma push_macro("BMS_FAULT")
+#undef BMS_FAULT
+#define ESP32COMMON_SHARED_CONTRACTS_RESTORE_BMS_FAULT
+#endif
+
+// Transport-neutral wire protocol contracts (formerly in espnow_common.h)
+// Phase 8 cleanup: enabled locally after deleting espnow_transmitter library
+
+// ============================================================================
+// Message Type IDs (shared across all transports)
+// ============================================================================
+// Note: These are NOT radio-specific; they represent the logical message
+// types that can be sent via MQTT, ESPNOW, HTTP, or any other transport.
+
+enum msg_type : uint8_t {
+    // ========== Battery Data Messages ==========
+    msg_battery_status,         // Real-time battery status (SOC, V, I, temp, power)
+    msg_battery_info,           // Static battery info (capacity, chemistry, cell count)
+    
+    // ========== Charger Data Messages ==========
+    msg_charger_status,         // Real-time charger status (HV/LV voltage, current, power)
+    
+    // ========== Inverter Data Messages ==========
+    msg_inverter_status,        // Real-time inverter status (AC voltage, freq, power)
+    
+    // ========== System Data Messages ==========
+    msg_system_status,          // System status (contactors, BMS state, errors)
+    
+    // ========== Component Configuration Messages ==========
+    msg_component_config,       // Component type selections (BMS, inverter, charger, shunt)
+    msg_component_interface,    // Component interface selections (battery/inverter comm)
+    msg_component_apply_request, // Batched component apply request
+    
+    // ========== Settings Messages ==========
+    msg_battery_settings_update,    // Update battery settings
+    msg_settings_update_ack,        // Settings update acknowledgment
+    msg_settings_changed,           // Settings version change notification
+    
+    // ========== Network Configuration Messages ==========
+    msg_network_config_request,     // Request current network configuration
+    msg_network_config_update,      // Update network configuration
+    msg_network_config_ack,         // Network config update ACK
+    
+    // ========== MQTT Configuration Messages ==========
+    msg_mqtt_config_request,        // Request current MQTT configuration
+    msg_mqtt_config_update,         // Update MQTT configuration
+    msg_mqtt_config_ack,            // MQTT config update ACK
+    
+    // ========== Version and Metadata Messages ==========
+    msg_version_beacon,             // Periodic version sync beacon
+    msg_config_section_request,     // Request specific config section
+    msg_time_transitions_snapshot,  // Timezone/DST transition snapshot
+    msg_version_announce,           // Periodic version announcement
+    msg_version_request,            // Request version from peer
+    msg_version_response,           // Version response to request
+    msg_metadata_response,          // Firmware metadata response
+    
+    // ========== Keep-Alive Messages ==========
+    msg_heartbeat,                  // Heartbeat message (bidirectional keep-alive)
+    msg_heartbeat_ack,              // Heartbeat acknowledgment
+    
+    // ========== Event Log Messages ==========
+    msg_event_logs_control,         // Subscribe/unsubscribe event logs publishing
+    msg_event_log_summary_request,  // Request latest event summary counters
+    msg_event_log_summary,          // Event summary counters
+    msg_event_logs_clear_ack,       // Clear command acknowledgment
+    
+    // ========== Type Catalog Messages ==========
+    msg_request_battery_types,      // Request battery type catalog
+    msg_battery_types_fragment,     // Battery type catalog fragment response
+    msg_request_inverter_types,     // Request inverter type catalog
+    msg_inverter_types_fragment,    // Inverter type catalog fragment response
+    msg_request_inverter_interfaces, // Request inverter interface catalog
+    msg_inverter_interfaces_fragment, // Inverter interface catalog fragment response
+    msg_request_type_catalog_versions, // Request current battery/inverter catalog versions
+    msg_type_catalog_versions,         // Current battery/inverter catalog versions
+    
+    // ========== Control/Misc Messages ==========
+    msg_flash_led,                  // Flash LED indicator on receiver
+    msg_debug_control,              // Debug level control (receiver → transmitter)
+    msg_debug_ack,                  // Debug level acknowledgment (transmitter → receiver)
+    msg_reboot,                     // Reboot command
+    msg_ota_start,                  // OTA update start command
+    msg_led_state_request,          // Request current LED color/effect snapshot
+    msg_temperature_report,         // Periodic transmitter temperature report
+    msg_component_apply_ack,        // Apply result + persisted status
+};
+
+// ============================================================================
+// Message Subtypes (additional classification for certain message types)
+// ============================================================================
+
+enum msg_subtype : uint8_t {
+    subtype_none,                   // No subtype / default
+    subtype_battery_config,         // Battery configuration subtype
+    subtype_inverter_config,        // Inverter configuration subtype
+    subtype_power_profile,          // Power profile subtype
+    subtype_systeminfo,             // System info subtype
+    subtype_network_config,         // Network configuration subtype
+    subtype_cell_info,              // Cell monitor information subtype
+    subtype_events,                 // Event logs subtype
+};
+
+// ============================================================================
+// LED Wire Protocol (shared enums for LED state)
+// ============================================================================
+
+enum LedColorWire : uint8_t {
+    LED_WIRE_RED = 0,
+    LED_WIRE_GREEN = 1,
+    LED_WIRE_ORANGE = 2,
+    LED_WIRE_BLUE = 3
+};
+
+enum LedEffectWire : uint8_t {
+    LED_WIRE_CONTINUOUS = 0,
+    LED_WIRE_FLASH = 1,
+    LED_WIRE_HEARTBEAT = 2
+};
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;       // msg_flash_led
+    uint8_t color;      // LED color code (LedColorWire)
+    uint8_t effect;     // LED effect code (LedEffectWire)
+} flash_led_t;
+
+// ============================================================================
+// Battery Status (shared data structures)
+// ============================================================================
+
+enum bms_status_t : uint8_t {
+    BMS_OK = 0,
+    BMS_WARNING = 1,
+    BMS_FAULT = 2,
+    BMS_OFFLINE = 3
+};
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                    // msg_battery_status
+    uint16_t soc_percent_100;        // SOC in 0.01% (e.g., 8050 = 80.50%)
+    uint32_t voltage_mV;             // Voltage in mV
+    int32_t current_mA;              // Current in mA (signed: + = charging, - = discharging)
+    int16_t temperature_dC;          // Temperature in 0.1°C
+    int32_t power_W;                 // Power in W (signed)
+    uint16_t max_charge_power_W;     // Maximum charge power limit
+    uint16_t max_discharge_power_W;  // Maximum discharge power limit
+    uint8_t bms_status;              // BMS status (bms_status_t enum)
+    uint32_t checksum;               // Message checksum
+} battery_status_msg_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                        // msg_battery_info
+    uint32_t total_capacity_Wh;          // Total energy capacity in Wh
+    uint32_t reported_capacity_Wh;       // Capacity reported to inverter
+    uint16_t max_design_voltage_dV;      // Maximum pack voltage in dV (0.1V)
+    uint16_t min_design_voltage_dV;      // Minimum pack voltage in dV
+    uint16_t max_cell_voltage_mV;        // Max cell voltage limit in mV
+    uint16_t min_cell_voltage_mV;        // Min cell voltage limit in mV
+    uint16_t max_cell_deviation_mV;      // Max allowed cell deviation
+    uint8_t number_of_cells;             // Total cells in pack
+    uint8_t chemistry;                   // Battery chemistry (0=NCA, 1=NMC, 2=LFP, 3=LTO)
+    uint32_t checksum;                   // Message checksum
+} battery_info_msg_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                        // msg_battery_info (reuses same message type)
+    uint32_t capacity_wh;                // Battery capacity in Wh
+    uint32_t max_voltage_mv;             // Max pack voltage in mV
+    uint32_t min_voltage_mv;             // Min pack voltage in mV
+    float max_charge_current_a;          // Max charge current in A
+    float max_discharge_current_a;       // Max discharge current in A
+    uint8_t soc_high_limit;              // SOC high limit (50-100%)
+    uint8_t soc_low_limit;               // SOC low limit (0-50%)
+    uint8_t cell_count;                  // Number of cells in series
+    uint8_t chemistry;                   // Battery chemistry (0=NCA, 1=NMC, 2=LFP, 3=LTO)
+    uint8_t led_mode;                    // LED policy mode (0=Classic, 1=Energy Flow, 2=Heartbeat)
+    uint32_t checksum;                   // Message checksum
+} battery_settings_full_msg_t;
+
+// ============================================================================
+// Charger Status
+// ============================================================================
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                    // msg_charger_status
+    uint16_t hv_voltage_dV;          // HV voltage in dV (0.1V)
+    int16_t hv_current_dA;           // HV current in dA (0.1A, signed)
+    uint16_t lv_voltage_dV;          // LV voltage in dV
+    int16_t lv_current_dA;           // LV current in dA (signed)
+    uint16_t ac_voltage_V;           // AC input voltage in V
+    int16_t ac_current_dA;           // AC current in dA (signed)
+    uint16_t power_W;                // Charger power in W
+    uint8_t charger_status;          // Charger state (0=off, 1=charging, 2=fault)
+    uint32_t checksum;               // Message checksum
+} charger_status_msg_t;
+
+// ============================================================================
+// Inverter Status
+// ============================================================================
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                    // msg_inverter_status
+    uint16_t ac_voltage_V;           // AC output voltage in V
+    uint16_t ac_frequency_dHz;       // AC frequency in dHz (0.1Hz)
+    int16_t ac_current_dA;           // AC current in dA (signed)
+    int32_t power_W;                 // Inverter power in W (signed)
+    uint8_t inverter_status;         // Inverter state (0=off, 1=on, 2=fault)
+    uint32_t checksum;               // Message checksum
+} inverter_status_msg_t;
+
+// ============================================================================
+// System Status
+// ============================================================================
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                    // msg_system_status
+    uint8_t contactor_state;         // Bit flags: 0=positive, 1=negative, 2=precharge
+    uint8_t error_flags;             // Error flags (bit mask)
+    uint8_t warning_flags;           // Warning flags (bit mask)
+    uint32_t uptime_seconds;         // System uptime in seconds
+    uint32_t checksum;               // Message checksum
+} system_status_msg_t;
+
+// ============================================================================
+// Component Configuration and Apply
+// ============================================================================
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                    // msg_component_config
+    uint8_t bms_type;                // Primary BMS type (0-45)
+    uint8_t secondary_bms_type;      // Secondary BMS type (0=disabled)
+    uint8_t battery_type;            // Battery profile type (0-31, 29=PYLON_BATTERY)
+    uint8_t inverter_type;           // Inverter type (0-21, 0=disabled)
+    uint8_t charger_type;            // Charger type (0-2, 0=disabled)
+    uint8_t shunt_type;              // Shunt type (0-2, 0=disabled)
+    uint8_t multi_battery_enabled;   // Multi-battery mode (0=off, 1=on)
+    uint32_t config_version;         // Configuration version for change tracking
+    uint32_t checksum;               // Message checksum
+} component_config_msg_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                    // msg_component_interface
+    uint8_t battery_interface;       // comm_interface enum (0-5)
+    uint8_t inverter_interface;      // comm_interface enum (0-5)
+    uint32_t checksum;               // Message checksum
+} component_interface_msg_t;
+
+enum component_apply_mask_t : uint8_t {
+    component_apply_battery_type = 0x01,
+    component_apply_inverter_type = 0x02,
+    component_apply_battery_interface = 0x04,
+    component_apply_inverter_interface = 0x08
+};
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                    // msg_component_apply_request
+    uint32_t request_id;             // Correlation ID generated by receiver
+    uint8_t apply_mask;              // component_apply_mask_t bits
+    uint8_t battery_type;            // Desired battery profile type
+    uint8_t inverter_type;           // Desired inverter type
+    uint8_t battery_interface;       // Desired battery comm interface
+    uint8_t inverter_interface;      // Desired inverter comm interface
+    uint32_t checksum;               // Message checksum
+} component_apply_request_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                    // msg_component_apply_ack
+    uint32_t request_id;             // Echoed request ID
+    uint8_t success;                 // 1 if apply + persist succeeded
+    uint8_t reboot_required;         // 1 when reboot needed for changes to take effect
+    uint8_t ready_for_reboot;        // 1 when transmitter safely persisted and waiting for receiver reboot command
+    uint8_t apply_mask;              // Requested mask echo
+    uint8_t persisted_mask;          // Fields successfully persisted
+    uint8_t battery_type;            // Persisted battery profile type
+    uint8_t inverter_type;           // Persisted inverter type
+    uint8_t battery_interface;       // Persisted battery interface
+    uint8_t inverter_interface;      // Persisted inverter interface
+    uint32_t settings_version;       // Optional transmitter-side settings/config version snapshot
+    char message[48];                // Human-readable status
+    uint32_t checksum;               // Message checksum
+} component_apply_ack_t;
+
+// ============================================================================
+// Type Catalog Structures
+// ============================================================================
+
+constexpr uint8_t TYPE_CATALOG_NAME_MAX = 48;
+constexpr uint8_t TYPE_CATALOG_MAX_ENTRIES_PER_FRAGMENT = 4;
+
+typedef struct __attribute__((packed)) {
+    uint8_t id;                                  // BatteryType or InverterProtocolType numeric ID
+    char name[TYPE_CATALOG_NAME_MAX];            // Null-terminated display name
+} type_catalog_entry_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                                // msg_request_battery_types / msg_request_inverter_types / msg_request_inverter_interfaces
+} type_catalog_request_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                                // msg_battery_types_fragment / msg_inverter_types_fragment / msg_inverter_interfaces_fragment
+    uint16_t sequence;                           // Correlates fragments belonging to same snapshot
+    uint8_t fragment_index;                      // 0-based index
+    uint8_t fragment_total;                      // Total fragments in snapshot
+    uint8_t entry_count;                         // Number of valid entries in entries[]
+    type_catalog_entry_t entries[TYPE_CATALOG_MAX_ENTRIES_PER_FRAGMENT];
+} type_catalog_fragment_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                                // msg_request_type_catalog_versions
+} type_catalog_versions_request_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                                // msg_type_catalog_versions
+    uint16_t battery_catalog_version;            // Monotonic battery catalog version
+    uint16_t inverter_catalog_version;           // Monotonic inverter catalog version
+} type_catalog_versions_t;
+
+// ============================================================================
+// Settings Structures
+// ============================================================================
+
+enum SettingsCategory : uint8_t {
+    SETTINGS_BATTERY = 0,
+    SETTINGS_CHARGER = 1,
+    SETTINGS_INVERTER = 2,
+    SETTINGS_SYSTEM = 3,
+    SETTINGS_MQTT = 4,
+    SETTINGS_NETWORK = 5,
+    SETTINGS_POWER = 6,
+    SETTINGS_CAN = 7,
+    SETTINGS_CONTACTOR = 8
+};
+
+enum BatterySettingsField : uint8_t {
+    BATTERY_CAPACITY_WH = 0,
+    BATTERY_MAX_VOLTAGE_MV = 1,
+    BATTERY_MIN_VOLTAGE_MV = 2,
+    BATTERY_MAX_CHARGE_CURRENT_A = 3,
+    BATTERY_MAX_DISCHARGE_CURRENT_A = 4,
+    BATTERY_SOC_HIGH_LIMIT = 5,
+    BATTERY_SOC_LOW_LIMIT = 6,
+    BATTERY_CELL_COUNT = 7,
+    BATTERY_CHEMISTRY = 8,
+    BATTERY_DOUBLE_ENABLED = 9,
+    BATTERY_PACK_MAX_VOLTAGE_DV = 10,
+    BATTERY_PACK_MIN_VOLTAGE_DV = 11,
+    BATTERY_CELL_MAX_VOLTAGE_MV = 12,
+    BATTERY_CELL_MIN_VOLTAGE_MV = 13,
+    BATTERY_SOC_ESTIMATED = 14,
+    BATTERY_LED_MODE = 15
+};
+
+enum PowerSettingsField : uint8_t {
+    POWER_CHARGE_W = 0,
+    POWER_DISCHARGE_W = 1,
+    POWER_MAX_PRECHARGE_MS = 2,
+    POWER_PRECHARGE_DURATION_MS = 3,
+    POWER_EQUIPMENT_STOP_TYPE = 4,
+    POWER_EXTERNAL_PRECHARGE_ENABLED = 5,
+    POWER_NO_INVERTER_DISCONNECT_CONTACTOR = 6
+};
+
+enum InverterSettingsField : uint8_t {
+    INVERTER_CELLS = 0,
+    INVERTER_MODULES = 1,
+    INVERTER_CELLS_PER_MODULE = 2,
+    INVERTER_VOLTAGE_LEVEL = 3,
+    INVERTER_CAPACITY_AH = 4,
+    INVERTER_BATTERY_TYPE = 5
+};
+
+enum CanSettingsField : uint8_t {
+    CAN_FREQUENCY_KHZ = 0,
+    CAN_FD_FREQUENCY_MHZ = 1,
+    CAN_SOFAR_ID = 2,
+    CAN_PYLON_SEND_INTERVAL_MS = 3,
+    CAN_USE_CANFD_AS_CLASSIC = 4
+};
+
+enum ContactorSettingsField : uint8_t {
+    CONTACTOR_CONTROL_ENABLED = 0,
+    CONTACTOR_NC_MODE = 1,
+    CONTACTOR_PWM_FREQUENCY_HZ = 2,
+    CONTACTOR_PWM_ENABLED = 3,
+    CONTACTOR_PWM_HOLD_DUTY = 4,
+    CONTACTOR_PERIODIC_BMS_RESET = 5,
+    CONTACTOR_BMS_FIRST_ALIGN_ENABLED = 6,
+    CONTACTOR_BMS_FIRST_ALIGN_TARGET_MINUTES = 7
+};
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                // msg_battery_settings_update
+    uint8_t category;            // Settings category (SettingsCategory)
+    uint8_t field_id;            // Field within category
+    uint32_t value_uint32;       // Integer value
+    float value_float;           // Float value (use appropriate field based on setting type)
+    char value_string[32];       // String value (for text settings like MQTT server)
+    uint32_t checksum;           // Message checksum
+} settings_update_msg_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                // msg_settings_update_ack
+    uint8_t category;            // Echo: category that was updated
+    uint8_t field_id;            // Echo: field that was updated
+    bool success;                // True if setting was saved successfully
+    uint32_t new_version;        // New version number after update
+    char error_msg[44];          // Error description if failed
+    uint32_t checksum;           // Message checksum
+} settings_update_ack_msg_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                // msg_settings_changed
+    uint8_t category;            // Which settings section changed
+    uint32_t new_version;        // New version number
+    uint32_t checksum;           // Message checksum
+} settings_changed_msg_t;
+
+// ============================================================================
+// Network Configuration
+// ============================================================================
+
+typedef struct __attribute__((packed)) {
+    uint32_t ip;
+    uint32_t gateway;
+    uint32_t subnet;
+    uint8_t use_dhcp;
+} network_config_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                // msg_network_config_request
+} network_config_request_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                // msg_network_config_update
+    uint8_t use_static_ip;       // 0 = DHCP, 1 = Static
+    uint8_t ip[4];               // Static IP octets
+    uint8_t gateway[4];          // Gateway octets
+    uint8_t subnet[4];           // Subnet mask octets
+    uint8_t dns_primary[4];      // Primary DNS server octets
+    uint8_t dns_secondary[4];    // Secondary DNS server octets
+    uint32_t config_version;     // Version number for tracking
+    uint32_t checksum;           // CRC32 checksum for integrity
+} network_config_update_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                // msg_network_config_ack
+    uint8_t success;             // 0 = failed, 1 = success
+    uint8_t use_static_ip;       // Current mode (0=DHCP, 1=Static)
+    
+    // Current network configuration (active IP - DHCP or Static)
+    uint8_t current_ip[4];       // Current IP address
+    uint8_t current_gateway[4];  // Current gateway
+    uint8_t current_subnet[4];   // Current subnet mask
+    
+    // Saved static configuration (from NVS - used when static mode is enabled)
+    uint8_t static_ip[4];        // Static IP address
+    uint8_t static_gateway[4];   // Static gateway
+    uint8_t static_subnet[4];    // Static subnet mask
+    uint8_t static_dns_primary[4];    // Static DNS primary
+    uint8_t static_dns_secondary[4];  // Static DNS secondary
+    
+    uint32_t config_version;     // Configuration version
+    char message[32];            // Status message
+} network_config_ack_t;
+
+// ============================================================================
+// MQTT Configuration
+// ============================================================================
+
+typedef struct __attribute__((packed)) {
+    char server[64];
+    uint16_t port;
+    char username[32];
+    char password[32];
+    uint8_t enabled;
+} mqtt_config_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                // msg_mqtt_config_request
+} mqtt_config_request_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                // msg_mqtt_config_update
+    uint8_t enabled;             // 0 = disabled, 1 = enabled
+    uint8_t server[4];           // MQTT broker IP (4 octets)
+    uint16_t port;               // MQTT broker port
+    char username[32];           // Username (empty string if none)
+    char password[32];           // Password (empty string if none)
+    char client_id[32];          // Client ID
+    uint32_t config_version;     // Version for tracking
+    uint32_t checksum;           // CRC32 integrity check
+} mqtt_config_update_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                // msg_mqtt_config_ack
+    uint8_t success;             // 0 = failed, 1 = success
+    uint8_t enabled;             // Current MQTT enabled state
+    uint8_t server[4];           // Current MQTT broker IP
+    uint16_t port;               // Current MQTT port
+    char username[32];           // Current username
+    char password[32];           // Current password (masked as "********" in UI)
+    char client_id[32];          // Current client ID
+    uint8_t connected;           // MQTT connection status (0 = disconnected, 1 = connected)
+    uint32_t config_version;     // Configuration version
+    char message[64];            // Status message
+    uint32_t checksum;           // CRC32 integrity check
+} mqtt_config_ack_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;           // msg_config_changed
+    uint8_t config_type;    // 1=network, 2=mqtt, 3=battery
+    uint32_t version;       // Configuration version number
+    uint32_t timestamp;     // Change timestamp (millis)
+    uint8_t data[160];      // Configuration payload (union of network/mqtt/battery)
+} config_changed_t;
+
+// ============================================================================
+// Heartbeat and Keep-Alive
+// ============================================================================
+
+constexpr uint8_t HEARTBEAT_FLAG_GEOLOCATION_VALID = 0x01;
+
+typedef struct __attribute__((packed)) {
+    uint8_t  type;          // msg_heartbeat
+    uint32_t seq;           // Monotonic sequence number
+    uint64_t uptime_ms;     // Sender uptime in milliseconds
+    uint64_t unix_time;     // Unix timestamp in seconds
+    int16_t  utc_offset_min; // UTC offset in whole minutes
+    uint8_t  time_source;   // 0=unsynced, 1=NTP, 2=manual, 3=GPS
+    uint8_t  state;         // Connection state enum
+    uint8_t  rssi;          // Last RX RSSI (if known, 0 if N/A)
+    uint8_t  flags;         // Status flags (e.g., low_batt, degraded)
+    uint32_t checksum;      // CRC32 checksum
+} heartbeat_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t  type;          // msg_heartbeat_ack
+    uint32_t ack_seq;       // Sequence number being acknowledged
+    uint64_t uptime_ms;     // Receiver uptime in milliseconds
+    uint8_t  state;         // Receiver connection state
+    uint32_t checksum;      // CRC32 checksum
+} heartbeat_ack_t;
+
+// ============================================================================
+// Version and Metadata
+// ============================================================================
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                   // msg_version_announce
+    uint32_t firmware_version;      // Version number (e.g., 10000 for 1.0.0)
+    uint8_t protocol_version;       // ESP-NOW protocol version
+    uint32_t min_compatible_version; // Minimum compatible firmware version
+    char device_type[16];           // "RECEIVER" or "TRANSMITTER"
+    char build_date[12];            // Build date string
+    char build_time[9];             // Build time string
+    uint32_t uptime_seconds;        // Device uptime in seconds
+} version_announce_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;             // msg_version_request
+    uint32_t request_id;      // For tracking responses
+} version_request_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                   // msg_version_response
+    uint32_t request_id;            // Echoed from request
+    uint32_t firmware_version;      // Version number
+    uint8_t protocol_version;       // ESP-NOW protocol version
+    uint32_t min_compatible_version; // Minimum compatible version
+    char device_type[16];           // Device type string
+    char build_date[12];            // Build date
+    char build_time[9];             // Build time
+    uint32_t uptime_seconds;        // Device uptime
+} version_response_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                // msg_metadata_response
+    uint32_t request_id;         // Echoed from request
+    bool valid;                  // Metadata is valid (from .rodata)
+    char env_name[32];           // Environment name
+    char device_type[16];        // Device type
+    uint8_t version_major;       // Major version
+    uint8_t version_minor;       // Minor version
+    uint8_t version_patch;       // Patch version
+    char build_date[48];         // Build timestamp
+} metadata_response_t;
+
+// ============================================================================
+// Version Beacon and Config Sections
+// ============================================================================
+
+enum config_section_t : uint8_t {
+    config_section_mqtt = 0x01,
+    config_section_network = 0x02,
+    config_section_battery = 0x03,
+    config_section_power_profile = 0x04,
+    config_section_metadata = 0x05
+};
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                       // msg_version_beacon
+    uint32_t mqtt_config_version;       // MQTT config version number
+    uint32_t network_config_version;    // Network config version number
+    uint32_t battery_settings_version;  // Battery settings version number
+    uint32_t power_profile_version;     // Power profile version number
+    uint32_t metadata_config_version;   // Metadata version number
+    bool mqtt_connected;                // Runtime MQTT connection status
+    bool ethernet_connected;            // Runtime Ethernet link status
+    
+    // Firmware metadata
+    char env_name[32];                  // Environment name
+    uint8_t version_major;              // Major version
+    uint8_t version_minor;              // Minor version
+    uint8_t version_patch;              // Patch version
+    char build_date[48];                // Build timestamp
+} version_beacon_t;
+
+// ============================================================================
+// Time Transitions (Timezone/DST Support)
+// ============================================================================
+
+constexpr uint8_t TIME_TRANSITION_MAX = 4;
+constexpr uint8_t TIME_TRANSITIONS_FLAG_GEOLOCATION_VALID = 0x01;
+
+typedef struct __attribute__((packed)) {
+    uint32_t transition_unix_utc;       // UTC epoch seconds where offset changes
+    int16_t offset_before_min;          // UTC offset in minutes before transition
+    int16_t offset_after_min;           // UTC offset in minutes after transition
+} time_transition_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                       // msg_time_transitions_snapshot
+    uint8_t flags;                      // TIME_TRANSITIONS_FLAG_* bitmask
+    uint8_t transition_count;           // 0..TIME_TRANSITION_MAX
+    uint16_t revision;                  // Monotonic revision
+    uint32_t generated_unix_utc;        // UTC epoch when this snapshot was generated
+    char timezone_name[40];             // e.g. "Europe/London"
+    char timezone_abbrev[8];            // e.g. "BST" / "GMT"
+    int16_t current_utc_offset_min;     // Current UTC offset in minutes
+    time_transition_t transitions[TIME_TRANSITION_MAX];
+    uint32_t checksum;                  // CRC32 over all fields except this checksum
+} time_transitions_snapshot_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                       // msg_config_section_request
+    config_section_t section;           // Which config section to send
+    uint32_t requested_version;         // Version number receiver wants
+    uint8_t reserved[10];               // Padding/future expansion
+} config_section_request_t;
+
+// ============================================================================
+// Event Log Messages
+// ============================================================================
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;        // msg_event_logs_control
+    uint8_t action;      // 0 = unsubscribe, 1 = subscribe, 2 = clear
+} event_logs_control_t;
+
+constexpr uint8_t EVENT_LOGS_ACTION_UNSUBSCRIBE = 0;
+constexpr uint8_t EVENT_LOGS_ACTION_SUBSCRIBE   = 1;
+constexpr uint8_t EVENT_LOGS_ACTION_CLEAR       = 2;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;        // msg_event_log_summary_request
+} event_log_summary_request_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;                        // msg_event_log_summary
+    uint32_t seq;                        // Monotonic summary sequence
+    uint32_t total_historical;           // Slots with occurences > 0
+    uint32_t error_historical;           // Historical error-count slots
+    uint32_t new_since_last_report_total; // New occurrences since last summary report
+    uint32_t new_since_last_report_error; // New error occurrences since last summary report
+    uint32_t uptime_ms;                  // Sender uptime millis() at report time
+} event_log_summary_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;            // msg_event_logs_clear_ack
+    uint8_t status;          // 0 = failed, 1 = success
+    uint32_t summary_seq;    // Latest summary sequence after clear processing
+    uint32_t uptime_ms;      // Sender uptime at ack time
+} event_logs_clear_ack_t;
+
+constexpr uint8_t EVENT_LOGS_CLEAR_ACK_FAILED  = 0;
+constexpr uint8_t EVENT_LOGS_CLEAR_ACK_SUCCESS = 1;
+
+// ============================================================================
+// Temperature Report
+// ============================================================================
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;              // msg_temperature_report
+    uint32_t seq;              // Monotonic temperature report sequence
+    int16_t temperature_centi_c; // Chip temperature in centi-degrees Celsius
+    uint8_t valid;             // 0 = unavailable/invalid, 1 = valid sample
+    uint32_t uptime_ms;        // Sender uptime millis() at sample/report time
+} temperature_report_t;
+
+// ============================================================================
+// Control/Misc Messages
+// ============================================================================
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;       // msg_reboot
+} reboot_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;       // msg_ota_start
+    uint32_t size;      // Firmware size in bytes
+} ota_start_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;       // msg_debug_control
+    uint8_t level;      // Debug level: 0-7
+    uint8_t flags;      // Reserved for future use
+    uint8_t checksum;   // Simple checksum validation
+} debug_control_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;       // msg_debug_ack
+    uint8_t applied;    // Level that was applied
+    uint8_t previous;   // Previous level before change
+    uint8_t status;     // 0=success, 1=invalid level, 2=error
+} debug_ack_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;       // msg_abort_data
+    uint8_t subtype;    // msg_subtype (which data stream to stop)
+} abort_data_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;       // msg_led_state_request
+} led_state_request_t;
+
+#ifdef ESP32COMMON_SHARED_CONTRACTS_RESTORE_BMS_FAULT
+#pragma pop_macro("BMS_FAULT")
+#undef ESP32COMMON_SHARED_CONTRACTS_RESTORE_BMS_FAULT
+#endif
+

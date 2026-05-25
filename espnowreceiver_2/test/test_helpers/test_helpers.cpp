@@ -2,7 +2,7 @@
 #include <unity.h>
 
 #include "../../src/helpers.h"
-#include <esp32common/espnow/packet_utils.h>
+#include <runtime_common_utils/crc_utils.h>
 
 void test_gradient_endpoints_match_start_and_end() {
     uint16_t gradient[11] = {0};
@@ -20,9 +20,9 @@ void test_payload_crc32_round_trip() {
     payload.type = msg_data;
     payload.soc = 80;
     payload.power = -100;
-    payload.checksum = EspnowPacketUtils::calculate_message_crc32_zeroed(&payload);
+    payload.checksum = RuntimeCrcUtils::calculate_message_crc32_zeroed(&payload);
 
-    TEST_ASSERT_TRUE(EspnowPacketUtils::verify_message_crc32(&payload));
+    TEST_ASSERT_TRUE(RuntimeCrcUtils::verify_message_crc32(&payload));
 }
 
 void setup() {

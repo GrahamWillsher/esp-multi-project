@@ -286,7 +286,7 @@ This section is the concrete webserver work needed so receiver remains stable af
 
 4. **Note: `X-Radio-Pressure` header is deprecated and will not be implemented**
     - `X-Radio-Pressure` was a design artefact from the ESP-NOW coexistence investigations
-       (`RECEIVER_HTTP_ESPNOW_COEXISTENCE_FULL_INVESTIGATION_2026_05_05.md`).
+       (legacy coexistence analysis, now superseded by MQTT-only transport docs).
     - It depended on `RadioPressureState` / `get_radio_pressure_state()`, which is derived from
        `RxRadioArbiterFsm` and `EspnowTxScheduler` — both of which are removed in the MQTT-only design.
     - In the MQTT-only architecture the radio contention signal no longer exists.

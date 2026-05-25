@@ -5,7 +5,6 @@
 
 #include <cstring>
 #include <esp_heap_caps.h>
-#include <esp32common/espnow/radio_pressure_state.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <WiFi.h>
@@ -13,10 +12,7 @@
 namespace {
 constexpr uint32_t kHttpLongResponseWarnMs = 2000;
 constexpr uint32_t kMinInternalHeapMidRenderBytesCritical = 4U * 1024U;
-constexpr uint32_t kMinInternalHeapMidRenderBytesConstrained = 12U * 1024U;
 constexpr uint32_t kMinInternalHeapMidRenderBytesNormalWarn = 8U * 1024U;
-constexpr uint32_t kMinInternalLargestBlockConstrained = 2U * 1024U;
-constexpr uint8_t kConstrainedAbortConsecutiveSamples = 3;
 
 struct ChunkSendPolicy {
     size_t chunk_bytes = 512;
@@ -37,18 +33,12 @@ struct ActiveRenderContext {
 
 ActiveRenderContext* g_active_render_context = nullptr;
 
-ChunkSendPolicy policy_for_sample(RadioPressureState pressure,
-                                  uint32_t free_heap,
+ChunkSendPolicy policy_for_sample(uint32_t free_heap,
                                   uint32_t largest_block) {
     ChunkSendPolicy policy{};
 
-    if (pressure == RadioPressureState::CONSTRAINED) {
-        policy.chunk_bytes = 256;
-        policy.inter_chunk_delay_ms = 4;
-    } else {
-        policy.chunk_bytes = 512;
-        policy.inter_chunk_delay_ms = 1;
-    }
+    policy.chunk_bytes = 512;
+    policy.inter_chunk_delay_ms = 1;
 
     // Additional guard under low internal heap or small largest block.
     if ((free_heap < 16U * 1024U) || (largest_block < 4U * 1024U)) {
@@ -101,12 +91,11 @@ void log_page_send_summary(httpd_req_t* req,
     const uint32_t largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     const wifi_mode_t wifi_mode = WiFi.getMode();
     const int wifi_channel = static_cast<int>(WiFi.channel());
-    const RadioPressureState pressure = get_radio_pressure_state();
 
     if (final_rc == ESP_OK) {
         if (elapsed_ms >= kHttpLongResponseWarnMs) {
             LOG_WARN("HTTP_PAGE",
-                     "render slow uri=%s method=%s title=%s dur=%lu ms bytes=%lu chunks=%lu wifi_mode=%s sta=%s ch=%d pressure=%s heap=%lu min_heap=%lu largest=%lu",
+                     "render slow uri=%s method=%s title=%s dur=%lu ms bytes=%lu chunks=%lu wifi_mode=%s sta=%s ch=%d heap=%lu min_heap=%lu largest=%lu",
                      req && req->uri ? req->uri : "<unknown>",
                      req ? method_to_string(req->method) : "UNKNOWN",
                      title ? title : "<unknown>",
@@ -116,13 +105,12 @@ void log_page_send_summary(httpd_req_t* req,
                      wifi_mode_to_string(wifi_mode),
                      (WiFi.status() == WL_CONNECTED) ? "up" : "down",
                      wifi_channel,
-                     radio_pressure_state_to_string(pressure),
                      static_cast<unsigned long>(free_heap),
                      static_cast<unsigned long>(min_heap),
                      static_cast<unsigned long>(largest_block));
         } else {
             LOG_INFO("HTTP_PAGE",
-                     "render ok uri=%s method=%s title=%s dur=%lu ms bytes=%lu chunks=%lu wifi_mode=%s sta=%s ch=%d pressure=%s heap=%lu min_heap=%lu largest=%lu",
+                     "render ok uri=%s method=%s title=%s dur=%lu ms bytes=%lu chunks=%lu wifi_mode=%s sta=%s ch=%d heap=%lu min_heap=%lu largest=%lu",
                      req && req->uri ? req->uri : "<unknown>",
                      req ? method_to_string(req->method) : "UNKNOWN",
                      title ? title : "<unknown>",
@@ -132,7 +120,6 @@ void log_page_send_summary(httpd_req_t* req,
                      wifi_mode_to_string(wifi_mode),
                      (WiFi.status() == WL_CONNECTED) ? "up" : "down",
                      wifi_channel,
-                     radio_pressure_state_to_string(pressure),
                      static_cast<unsigned long>(free_heap),
                      static_cast<unsigned long>(min_heap),
                      static_cast<unsigned long>(largest_block));
@@ -141,7 +128,7 @@ void log_page_send_summary(httpd_req_t* req,
     }
 
     LOG_ERROR("HTTP_PAGE",
-              "render fail uri=%s method=%s title=%s rc=%d (%s) stage=%s chunk=%lu off=%lu len=%lu dur=%lu ms bytes=%lu chunks=%lu wifi_mode=%s sta=%s ch=%d pressure=%s heap=%lu min_heap=%lu largest=%lu",
+              "render fail uri=%s method=%s title=%s rc=%d (%s) stage=%s chunk=%lu off=%lu len=%lu dur=%lu ms bytes=%lu chunks=%lu wifi_mode=%s sta=%s ch=%d heap=%lu min_heap=%lu largest=%lu",
               req && req->uri ? req->uri : "<unknown>",
               req ? method_to_string(req->method) : "UNKNOWN",
               title ? title : "<unknown>",
@@ -157,7 +144,6 @@ void log_page_send_summary(httpd_req_t* req,
               wifi_mode_to_string(wifi_mode),
               (WiFi.status() == WL_CONNECTED) ? "up" : "down",
               wifi_channel,
-              radio_pressure_state_to_string(pressure),
               static_cast<unsigned long>(free_heap),
               static_cast<unsigned long>(min_heap),
               static_cast<unsigned long>(largest_block));
@@ -181,35 +167,16 @@ esp_err_t send_chunk_stage(httpd_req_t* req,
 
     size_t offset = 0;
     size_t chunk_index = 0;
-    uint8_t constrained_starvation_streak = 0;
     while (offset < len) {
-        const RadioPressureState pressure = get_radio_pressure_state();
         const uint32_t free_heap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
         const uint32_t min_heap = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
         const uint32_t largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 
-        const bool critical_pressure = (pressure == RadioPressureState::CRITICAL);
         const bool critically_low_internal_heap = free_heap < kMinInternalHeapMidRenderBytesCritical;
-        const bool constrained_internal_starvation_sample =
-            (pressure == RadioPressureState::CONSTRAINED)
-            && (free_heap < kMinInternalHeapMidRenderBytesConstrained)
-            && (largest_block < kMinInternalLargestBlockConstrained);
 
-        if (constrained_internal_starvation_sample) {
-            if (constrained_starvation_streak < 255) {
-                ++constrained_starvation_streak;
-            }
-        } else {
-            constrained_starvation_streak = 0;
-        }
-
-        const bool constrained_internal_starvation =
-            constrained_starvation_streak >= kConstrainedAbortConsecutiveSamples;
-
-        if (pressure == RadioPressureState::NORMAL &&
-            free_heap < kMinInternalHeapMidRenderBytesNormalWarn) {
+        if (free_heap < kMinInternalHeapMidRenderBytesNormalWarn) {
             LOG_WARN("HTTP_PAGE",
-                     "render low heap sample (normal pressure) uri=%s title=%s stage=%s heap=%lu min_heap=%lu largest=%lu floor_warn_normal=%lu",
+                     "render low heap sample uri=%s title=%s stage=%s heap=%lu min_heap=%lu largest=%lu floor_warn_normal=%lu",
                      req && req->uri ? req->uri : "<unknown>",
                      title ? title : "<unknown>",
                      stage ? stage : "<unknown>",
@@ -219,32 +186,21 @@ esp_err_t send_chunk_stage(httpd_req_t* req,
                      static_cast<unsigned long>(kMinInternalHeapMidRenderBytesNormalWarn));
         }
 
-        if (critical_pressure || critically_low_internal_heap || constrained_internal_starvation) {
+        if (critically_low_internal_heap) {
             failure_stage = stage;
             failed_chunk_index = chunk_index;
             failed_chunk_offset = offset;
             failed_chunk_len = 0;
 
-            const char* reason = "low_internal_heap";
-            if (critical_pressure) {
-                reason = "critical_pressure";
-            } else if (constrained_internal_starvation) {
-                reason = "constrained_internal_starvation";
-            }
-
             LOG_WARN("HTTP_PAGE",
-                     "render abort uri=%s title=%s stage=%s reason=%s heap=%lu min_heap=%lu largest=%lu floor_critical=%lu floor_constrained=%lu streak=%u/%u",
+                     "render abort uri=%s title=%s stage=%s reason=low_internal_heap heap=%lu min_heap=%lu largest=%lu floor_critical=%lu",
                      req && req->uri ? req->uri : "<unknown>",
                      title ? title : "<unknown>",
                      stage ? stage : "<unknown>",
-                     reason,
                      static_cast<unsigned long>(free_heap),
                      static_cast<unsigned long>(min_heap),
                      static_cast<unsigned long>(largest_block),
-                     static_cast<unsigned long>(kMinInternalHeapMidRenderBytesCritical),
-                     static_cast<unsigned long>(kMinInternalHeapMidRenderBytesConstrained),
-                     static_cast<unsigned>(constrained_starvation_streak),
-                     static_cast<unsigned>(kConstrainedAbortConsecutiveSamples));
+                     static_cast<unsigned long>(kMinInternalHeapMidRenderBytesCritical));
 
             if (total_chunks_sent == 0) {
                 httpd_resp_set_status(req, "503 Service Unavailable");
@@ -264,7 +220,7 @@ esp_err_t send_chunk_stage(httpd_req_t* req,
             return ESP_ERR_NO_MEM;
         }
 
-        const ChunkSendPolicy chunk_policy = policy_for_sample(pressure, free_heap, largest_block);
+        const ChunkSendPolicy chunk_policy = policy_for_sample(free_heap, largest_block);
         const size_t part_len = (len - offset > chunk_policy.chunk_bytes)
                                     ? chunk_policy.chunk_bytes
                                     : (len - offset);
@@ -972,20 +928,16 @@ esp_err_t send_rendered_page_streaming(httpd_req_t* req,
     // Phase 3: Preflight heap check — pressure-aware policy per design Section 6
     // Section 6 Remediation (2026-05-14):
     //   - NORMAL pressure: Allow requests (logging warnings is handled in mid-render)
-    //   - CONSTRAINED pressure: Allow requests (constrained abort only after sustained low samples mid-render)
-    //   - CRITICAL pressure: Refuse immediately (true starvation condition)
     //   - Critically low internal heap (< 4KB): Refuse immediately (genuine memory exhaustion)
     {
         constexpr uint32_t kCriticalHeapThreshold = 4U * 1024U;
         const uint32_t free_heap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-        const RadioPressureState pressure = get_radio_pressure_state();
 
-        // Only reject if CRITICAL pressure or genuinely critically low heap
-        if ((pressure == RadioPressureState::CRITICAL) || (free_heap < kCriticalHeapThreshold)) {
+        // Only reject if heap is critically low
+        if (free_heap < kCriticalHeapThreshold) {
             LOG_WARN("HTTP_PAGE",
-                     "preflight_reject uri=%s pressure=%s heap=%lu critical_threshold=%lu",
+                     "preflight_reject uri=%s heap=%lu critical_threshold=%lu",
                      req->uri ? req->uri : "<unknown>",
-                     radio_pressure_state_to_string(pressure),
                      static_cast<unsigned long>(free_heap),
                      static_cast<unsigned long>(kCriticalHeapThreshold));
             httpd_resp_set_status(req, "503 Service Unavailable");

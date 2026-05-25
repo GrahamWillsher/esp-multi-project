@@ -2,8 +2,9 @@
 
 #include <Arduino.h>
 #include <Preferences.h>
-#include <esp32common/espnow/common.h>
-#include <version_utils.h>
+#include <esp32common/contracts/shared_contracts.h>
+#include <esp32common/contracts/incoming_message.h>
+#include <runtime_common_utils/version_utils.h>
 
 /**
  * @brief Settings Manager - Handles settings storage and ESP-NOW updates
@@ -40,10 +41,10 @@ public:
     bool init();
     
     /**
-     * @brief Handle settings update message from receiver
-     * @param msg ESP-NOW message containing settings update
+    * @brief Handle settings update message from receiver
+    * @param msg Incoming message envelope containing settings update
      */
-    void handle_settings_update(const espnow_queue_msg_t& msg);
+    void handle_settings_update(const incoming_msg_t& msg);
 
     /**
      * @brief Apply a single settings field update (transport-agnostic)

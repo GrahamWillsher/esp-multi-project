@@ -228,7 +228,7 @@ Minimum build checks:
 - `esp32common/docs/MQTT_LOGGER_IMPLEMENTATION.md`
 - `espnowreceiver_2/PROJECT_ARCHITECTURE_MASTER.md`
 - `ESPnowtransmitter2/espnowtransmitter2/PROJECT_ARCHITECTURE_MASTER.md`
-- `esp32common/docs/systemworks/ESPNOWRECEIVER_LCD_PORT_ANALYSIS_2026_04_14.md` — port plan (Phases A–H)
+- `esp32common/docs/systemworks/TRANSMITTER_HARDWARE_SETTINGS_END_TO_END_INVESTIGATION_2026_05_24.md` — transmitter hardware settings E2E validation and findings
 
 ## Hardware inventory
 

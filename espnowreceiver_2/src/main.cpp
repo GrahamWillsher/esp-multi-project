@@ -106,8 +106,8 @@ static void task_led_renderer(void* parameter) {
 
     for (;;) {
         const uint32_t now_ms = millis();
-        const LEDColor color = ESPNow::current_led_color;
-        const LEDEffect effect = ESPNow::current_led_effect;
+        const LEDColor color = RuntimeState::current_led_color;
+        const LEDEffect effect = RuntimeState::current_led_effect;
 
         // Reset animation state on mode/color change
         if (first_frame || color != last_color || effect != last_effect) {
@@ -294,7 +294,7 @@ static void bootstrap_hardware() {
         LOG_INFO("MAIN", "Built: %s", FirmwareMetadata::metadata.build_date);
     }
 
-    LOG_INFO("MAIN", "Build: %s %s", __DATE__, __TIME__);
+    LOG_INFO("MAIN", "Build: %s", FW_BUILD_DATE);
     log_timing_policy();
     LOG_INFO("MAIN", "========================================");
     Serial.flush();

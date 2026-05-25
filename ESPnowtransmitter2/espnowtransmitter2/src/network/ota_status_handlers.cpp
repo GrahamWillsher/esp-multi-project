@@ -10,7 +10,6 @@
 #include "time_manager.h"
 #include "../config/logging_config.h"
 #include "../test_data/test_data_config.h"
-#include <esp32common/espnow/connection_manager.h>
 #include <runtime_common_utils/ota_boot_guard.h>
 #include <firmware_metadata.h>
 #include <firmware_version.h>
@@ -100,7 +99,7 @@ esp_err_t OtaManager::health_handler(httpd_req_t *req) {
     const bool eth_connected    = EthernetManager::instance().is_connected();
     const bool eth_ready        = EthernetManager::instance().is_fully_ready();
     const bool mqtt_connected   = MqttManager::instance().is_connected();
-    const bool espnow_connected = EspNowConnectionManager::instance().is_connected();
+    const bool receiver_mac_known = false;
     bool ota_psk_provisioned    = false;
     char psk_tmp[96]            = {0};
     const bool ota_psk_available =
@@ -116,7 +115,7 @@ esp_err_t OtaManager::health_handler(httpd_req_t *req) {
     doc["eth_connected"]         = eth_connected;
     doc["eth_ready"]             = eth_ready;
     doc["mqtt_connected"]        = mqtt_connected;
-    doc["espnow_connected"]      = espnow_connected;
+    doc["receiver_mac_known"]    = receiver_mac_known;
     doc["ota_in_progress"]       = ota.ota_in_progress_;
     doc["ota_ready_for_reboot"]  = ota.ota_ready_for_reboot_;
     doc["ota_commit_state"]      = ota.ota_commit_state_;
@@ -426,7 +425,7 @@ esp_err_t OtaManager::firmware_info_handler(httpd_req_t *req) {
 
     if (FirmwareMetadata::isValid(FirmwareMetadata::metadata)) {
         char version_str[16];
-        (void)snprintf(version_str, sizeof(version_str), "%d.%d.%d",
+        (void)snprintf(version_str, sizeof(version_str), "v%d.%d.%d",
                        FirmwareMetadata::metadata.version_major,
                        FirmwareMetadata::metadata.version_minor,
                        FirmwareMetadata::metadata.version_patch);
@@ -436,15 +435,9 @@ esp_err_t OtaManager::firmware_info_handler(httpd_req_t *req) {
         doc["version"]     = version_str;
         doc["build_date"]  = FirmwareMetadata::metadata.build_date;
     } else {
-        char version_str[16];
-        (void)snprintf(version_str, sizeof(version_str), "%d.%d.%d",
-                       FW_VERSION_MAJOR, FW_VERSION_MINOR, FW_VERSION_PATCH);
-        char build_date_str[32];
-        (void)snprintf(build_date_str, sizeof(build_date_str), "%s %s",
-                       __DATE__, __TIME__);
         doc["valid"]       = false;
-        doc["version"]     = version_str;
-        doc["build_date"]  = build_date_str;
+        doc["version"]     = FW_VERSION_STRING;
+        doc["build_date"]  = FW_BUILD_DATE;
     }
 
     char json[kFirmwareInfoJsonBytes];

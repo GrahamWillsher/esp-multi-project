@@ -6,10 +6,7 @@
 #include "../utils/transmitter_manager.h"
 
 #include <ArduinoJson.h>
-
-namespace {
-constexpr const char* kRefreshLedTopic = "batt-emu/mqtt-v1/rx/cmd/refresh/led";
-}
+#include <esp32common/mqtt/mqtt_topics_common.h>
 
 static const char* led_color_name(uint8_t color) {
     switch (color) {
@@ -32,18 +29,18 @@ static const char* led_effect_name(uint8_t effect) {
 
 static const char* led_status_name(uint8_t status) {
     switch (status) {
-        case static_cast<uint8_t>(ESPNow::LedStatus::Ok): return "OK";
-        case static_cast<uint8_t>(ESPNow::LedStatus::Warning): return "WARNING";
-        case static_cast<uint8_t>(ESPNow::LedStatus::Error): return "ERROR";
-        case static_cast<uint8_t>(ESPNow::LedStatus::Updating): return "UPDATING";
+        case 1: return "OK";
+        case 2: return "WARNING";
+        case 3: return "ERROR";
+        case 4: return "UPDATING";
         default: return "UNKNOWN";
     }
 }
 
 esp_err_t api_get_led_runtime_status_handler(httpd_req_t *req) {
-    const uint8_t current_color = ESPNow::current_led_color.load();
-    const uint8_t current_effect = ESPNow::current_led_effect.load();
-    const uint8_t current_status = ESPNow::current_led_status.load();
+    const uint8_t current_color = RuntimeState::current_led_color.load();
+    const uint8_t current_effect = RuntimeState::current_led_effect.load();
+    const uint8_t current_status = RuntimeState::current_led_status.load();
 
     const bool has_policy = TransmitterManager::hasBatteryEmulatorSettings();
     const uint8_t led_mode = has_policy ? TransmitterManager::getBatteryEmulatorSettings().led_mode : 0;
@@ -79,7 +76,7 @@ esp_err_t api_resync_led_state_handler(httpd_req_t *req) {
 
     char payload[192];
     if (serializeJson(cmd, payload, sizeof(payload)) > 0 &&
-        MqttClient::publishJson(kRefreshLedTopic, payload, false)) {
+        MqttClient::publishJson(mqtt::topics::rx::CMD_REFRESH_LED, payload, false)) {
         return ApiResponseUtils::send_success_message(req, "LED state refresh requested");
     }
 

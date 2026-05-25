@@ -1,6 +1,7 @@
 #include "api_control_handlers.h"
 
 #include "api_response_utils.h"
+#include "../../include/common_lcd.h"
 #include "../../src/mqtt/mqtt_command_client.h"
 #include "../utils/transmitter_manager.h"
 #include "../logging.h"
@@ -17,16 +18,10 @@
 #include <firmware_compatibility_policy.h>
 #include <mbedtls/sha256.h>
 #include <esp32common/mqtt/mqtt_feature_flags.h>
-
-namespace ESPNow {
-    extern uint8_t current_led_color;
-    extern uint8_t current_led_effect;
-    extern volatile bool receiver_ota_led_override_active;
-}
+#include <esp32common/mqtt/mqtt_topics_common.h>
 
 namespace {
 constexpr const char* MQTT_TOPIC_RX_CMD_CONTROL_REBOOT = "batt-emu/mqtt-v1/rx/cmd/control/reboot";
-constexpr const char* MQTT_TOPIC_RX_CMD_REFRESH_LED = "batt-emu/mqtt-v1/rx/cmd/refresh/led";
 constexpr size_t OTA_IMAGE_SHA256_HEX_LEN = 64;
 constexpr size_t OTA_RESPONSE_BODY_MAX_LEN = 512;
 constexpr uint8_t OTA_CHALLENGE_FETCH_ATTEMPTS = 2;         // Reduced from 6: LAN should succeed first attempt
@@ -62,7 +57,7 @@ bool publish_led_refresh_request() {
 
     char payload[192];
     return serializeJson(cmd, payload, sizeof(payload)) > 0 &&
-           MqttClient::publishJson(MQTT_TOPIC_RX_CMD_REFRESH_LED, payload, false);
+            MqttClient::publishJson(mqtt::topics::rx::CMD_REFRESH_LED, payload, false);
 }
 
 // RAII guard: increments the burst-mode reference count on construction and
@@ -81,14 +76,14 @@ struct ReceiverOtaLedOverrideGuard {
     ReceiverOtaLedOverrideGuard() {
         constexpr uint8_t kLedBlue = 3;
         constexpr uint8_t kEffectEnergyFlow = 1;
-        ESPNow::receiver_ota_led_override_active = true;
-        ESPNow::current_led_color = kLedBlue;
-        ESPNow::current_led_effect = kEffectEnergyFlow;
+        RuntimeState::receiver_ota_led_override_active.store(true);
+        RuntimeState::current_led_color.store(kLedBlue);
+        RuntimeState::current_led_effect.store(kEffectEnergyFlow);
         LOG_INFO("OTA_RX", "Receiver self-OTA LED override enabled: BLUE + ENERGY FLOW");
     }
 
     ~ReceiverOtaLedOverrideGuard() {
-        ESPNow::receiver_ota_led_override_active = false;
+        RuntimeState::receiver_ota_led_override_active.store(false);
         const bool requested = publish_led_refresh_request();
         LOG_INFO("OTA_RX", "Receiver self-OTA LED override disabled; requested transmitter LED sync=%s",
                  requested ? "yes" : "no");

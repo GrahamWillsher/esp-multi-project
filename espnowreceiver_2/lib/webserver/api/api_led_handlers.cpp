@@ -1,4 +1,5 @@
 #include "api_led_handlers.h"
+#include <esp32common/mqtt/mqtt_topics_common.h>
 
 #include "api_response_utils.h"
 #include "../../src/mqtt/mqtt_client.h"
@@ -7,7 +8,7 @@
 #include <ArduinoJson.h>
 
 namespace {
-constexpr const char* kRefreshLedTopic = "batt-emu/mqtt-v1/rx/cmd/refresh/led";
+constexpr const char* kRefreshLedTopic = mqtt::topics::rx::CMD_REFRESH_LED;
 
 namespace LedStatusCode {
 constexpr uint8_t kUnknown = 0;
@@ -18,7 +19,7 @@ constexpr uint8_t kUpdating = 4;
 }  // namespace LedStatusCode
 }
 
-namespace ESPNow {
+namespace RuntimeState {
 extern int current_led_color;
 extern int current_led_effect;
 extern volatile uint8_t current_led_status;
@@ -54,9 +55,9 @@ static const char* led_status_name(uint8_t status) {
 }
 
 esp_err_t api_get_led_runtime_status_handler(httpd_req_t *req) {
-    const uint8_t current_color = static_cast<uint8_t>(ESPNow::current_led_color);
-    const uint8_t current_effect = static_cast<uint8_t>(ESPNow::current_led_effect);
-    const uint8_t current_status = ESPNow::current_led_status;
+    const uint8_t current_color = static_cast<uint8_t>(RuntimeState::current_led_color);
+    const uint8_t current_effect = static_cast<uint8_t>(RuntimeState::current_led_effect);
+    const uint8_t current_status = RuntimeState::current_led_status;
 
     const bool has_policy = TransmitterManager::hasBatteryEmulatorSettings();
     const uint8_t led_mode = has_policy ? TransmitterManager::getBatteryEmulatorSettings().led_mode : 0;

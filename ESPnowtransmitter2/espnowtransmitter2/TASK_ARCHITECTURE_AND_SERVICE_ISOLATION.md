@@ -1,26 +1,26 @@
-# Task Architecture & Service Isolation Analysis
+# Task Architecture & Service Isolation Analysis (MQTT Runtime)
 
-**Date**: February 19, 2026  
+**Date**: May 25, 2026  
 **Device**: Olimex ESP32-POE-ISO (Transmitter)  
-**Status**: Analysis of Current Architecture
+**Status**: Active architecture summary
+
+> **Design note:** ESP-NOW runtime transport tasks were the original inter-device delivery path. Replaced by MQTT. See `esp32common/docs/ESP-NOW_Communication_Architecture.md` for the rationale.
 
 ---
 
 ## Executive Summary
 
-✅ **YES - All connectivity/network services ARE properly isolated in separate FreeRTOS tasks**
+✅ **YES - connectivity/network services remain properly isolated in separate FreeRTOS tasks**
 
 Your architecture is **CORRECT** and follows ESP32 best practices:
 
 | Service | Runs In | Task/Core | Priority | Blocking? | Interrupt Safe? |
 |---------|---------|-----------|----------|-----------|-----------------|
 | **Main Loop** | `loop()` Core 0 | N/A | N/A | No | ✅ |
-| **ESP-NOW RX** | FreeRTOS Task | Core (auto) | Default | No | ✅ |
-| **Background TX** | FreeRTOS Task | Core 1 | Priority 2 | No | ✅ |
 | **MQTT** | FreeRTOS Task | Core (auto) | Priority 1 | No | ✅ |
 | **NTP/Connectivity** | FreeRTOS Task | Core 0 | Priority 1 | No | ✅ |
 | **CAN/Battery Data** | `loop()` Core 0 | N/A | Tight loop | No | ✅ |
-| **Discovery** | FreeRTOS Task | Core (auto) | Variable | No | ✅ |
+| **Service Supervisor** | FreeRTOS/Manager lifecycle | Core (auto) | Priority 1 | No | ✅ |
 
 ---
 
@@ -49,21 +49,11 @@ void loop() {
     
     // ⏱️ State validation (every 30 seconds)
     if (now - last_state_validation > 30000) {
-        DiscoveryTask::instance().validate_state();
+        // Runtime/service health validation (MQTT + Ethernet lifecycle)
         last_state_validation = now;
     }
     
-    // ⏱️ Recovery state machine update
-    DiscoveryTask::instance().update_recovery();
-    
-    // ⏱️ Deferred logging from timer callbacks
-    EspnowSendUtils::handle_deferred_logging();
-    
-    // ⏱️ Version beacon update (every 15s)
-    VersionBeaconManager::instance().update();
-    
-    // ⏱️ Heartbeat update (every 10s)
-    HeartbeatManager::instance().tick();
+    // ⏱️ MQTT/network status update handled by dedicated task/services
     
     // ⏱️ Metrics reporting (every 5 minutes)
     if (now - last_metrics_report > 300000) {
@@ -84,7 +74,7 @@ void loop() {
 
 ---
 
-### 2. FreeRTOS Task Separation
+### 2. FreeRTOS Task Separation (Current)
 
 #### Task 1: ESP-NOW RX Handler
 

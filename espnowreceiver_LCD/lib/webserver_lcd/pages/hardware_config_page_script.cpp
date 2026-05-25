@@ -147,14 +147,16 @@ const char* get_hardware_config_page_script() {
             }
         }
 
-        async function loadHardwareSettings(allowFollowupRefresh = true) {
+        async function loadHardwareSettings(remainingFollowupRetries = 2) {
             try {
                 const response = await fetch('/api/get_battery_settings');
                 const data = await response.json();
 
-                if (!data.success) {
-                    return;
-                }
+                const hasVersions = (Number(data.battery_version) > 0)
+                    && (Number(data.power_version) > 0)
+                    && (Number(data.can_version) > 0)
+                    && (Number(data.contactor_version) > 0);
+                const settingsReady = hasVersions;
 
                 setFieldValue('canFreq', (Number.isInteger(data.can_frequency_khz) && data.can_frequency_khz > 0) ? data.can_frequency_khz : 8);
                 setFieldValue('canFdFreq', (Number.isInteger(data.can_fd_frequency_mhz) && data.can_fd_frequency_mhz > 0) ? data.can_fd_frequency_mhz : 40);
@@ -183,12 +185,15 @@ const char* get_hardware_config_page_script() {
                 updateSaveButton();
 
                 // API may return cached values immediately and trigger refresh asynchronously.
-                // Do one delayed re-fetch to pick up the fresh retained snapshot.
-                if (allowFollowupRefresh && data.requested === true) {
-                    setTimeout(() => { loadHardwareSettings(false); }, 700);
+                // Retry a few times until all typed settings caches are known.
+                if (!settingsReady && data.requested === true && remainingFollowupRetries > 0) {
+                    setTimeout(() => { loadHardwareSettings(remainingFollowupRetries - 1); }, 700);
                 }
             } catch (error) {
                 console.error('Failed to load hardware settings:', error);
+                if (remainingFollowupRetries > 0) {
+                    setTimeout(() => { loadHardwareSettings(remainingFollowupRetries - 1); }, 700);
+                }
             }
         }
 

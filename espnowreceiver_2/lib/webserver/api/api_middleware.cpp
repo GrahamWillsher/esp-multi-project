@@ -2,8 +2,7 @@
 
 #include "api_response_utils.h"
 // NOTE: X-Radio-Pressure response header is intentionally NOT implemented here.
-// That header was designed for ESP-NOW coexistence (see
-// RECEIVER_HTTP_ESPNOW_COEXISTENCE_FULL_INVESTIGATION_2026_05_05.md) and depended
+// That header was designed for ESP-NOW coexistence and depended
 // on RadioPressureState / RxRadioArbiterFsm / EspnowTxScheduler — all of which are
 // removed in the MQTT-only architecture.  The heap-admission gate below (503 when
 // free heap < 60 KB) is the only pressure signal that remains relevant.
@@ -60,6 +59,21 @@ constexpr RateLimitPolicy kRateLimitPolicies[] = {
 };
 
 constexpr uint32_t kSlowRequestWarnMs = 250;
+constexpr uint32_t kSlowMqttAckBackedRequestWarnMs = 1500;
+
+uint32_t slow_request_warn_threshold_ms(const RouteContext* context) {
+    if (!context || !context->uri) {
+        return kSlowRequestWarnMs;
+    }
+
+    if (strcmp(context->uri, "/api/save_setting") == 0 ||
+        strcmp(context->uri, "/api/save_network_config") == 0 ||
+        strcmp(context->uri, "/api/save_mqtt_config") == 0) {
+        return kSlowMqttAckBackedRequestWarnMs;
+    }
+
+    return kSlowRequestWarnMs;
+}
 
 const char* method_to_string(int method) {
     switch (method) {
@@ -276,7 +290,8 @@ esp_err_t dispatch(httpd_req_t* req) {
 
     const esp_err_t handler_rc = context->handler(req);
     const uint32_t elapsed_ms = millis() - started_ms;
-    if (handler_rc != ESP_OK || elapsed_ms >= kSlowRequestWarnMs) {
+    const uint32_t slow_warn_threshold_ms = slow_request_warn_threshold_ms(context);
+    if (handler_rc != ESP_OK || elapsed_ms >= slow_warn_threshold_ms) {
         LOG_WARN("API", "%s %s rc=%d dur=%lu ms",
                  method_to_string(req->method),
                  context->uri ? context->uri : "<unknown>",

@@ -1,10 +1,12 @@
-# ESP-NOW Receiver: Project Architecture Master Document
+# MQTT Receiver: Project Architecture Master Document
 
-**Scope**: Receiver-side runtime architecture for ESP-NOW data ingestion, UI display, web API/control, and configuration orchestration.  
-**Version**: 1.2 (Workspace Sync Refresh)  
-**Date**: April 5, 2026  
+**Scope**: Receiver-side runtime architecture for MQTT data ingestion, UI display, web API/control, and configuration orchestration.  
+**Version**: 2.0 (MQTT migration refresh)  
+**Date**: May 25, 2026  
 **Device**: LilyGo T-Display-S3 (Receiver)  
-**Status**: Active development baseline (build passing in current workspace for `lilygo-t-display-s3_tft` and `lilygo-t-display-s3`)
+**Status**: Active development baseline (MQTT-only transport)
+
+> **Design note:** ESP-NOW was the original inter-device transport. It was replaced by MQTT. See `esp32common/docs/ESP-NOW_Communication_Architecture.md` for the rationale.
 
 ---
 
@@ -28,16 +30,16 @@
 
 Provide a resilient receiver that:
 
-- Receives and validates ESP-NOW telemetry/control packets from transmitter.
+- Receives and validates MQTT telemetry/control messages from transmitter.
 - Drives local display/UI state (TFT/LVGL paths and dashboard pages).
 - Exposes web endpoints for monitoring, configuration, and component apply orchestration.
-- Bridges data outward through MQTT subscription/client integration where required.
+- Uses MQTT as the primary inter-device data and command plane.
 
 ### Hardware
 
 - **Receiver**: LilyGo T-Display-S3
   - Variant baseline: **non-touch** T-Display-S3
-  - ESP-NOW receiver path
+  - MQTT receiver/subscriber path
   - TFT display/UI rendering
   - Physical relay actuation endpoint for transmitter-driven contactor/relay commands
   - WiFi for local web interface and integrations
@@ -46,13 +48,13 @@ Provide a resilient receiver that:
 
 | Feature | Purpose | Current Status |
 |---------|---------|----------------|
-| ESP-NOW RX state machine | Discovery/connection health + packet handling | ✅ Active |
+| MQTT data/runtime state machine | Broker/session/data health + packet handling | ✅ Active |
 | Component apply orchestration | Batched type/interface update workflow | ✅ Active |
 | Type catalog caching | Battery/inverter catalog synchronization | ✅ Active |
 | Web UI and API modularization | Segmented pages + API handlers | ✅ Active |
 | Reboot orchestration | Shared countdown/reboot UX path | ✅ Active |
 | Event logs page | Receiver-side event view and API integration | ✅ Active |
-| MQTT integration hooks | Receiver-side subscription/client services | ✅ Active |
+| MQTT transport | Receiver-side subscription/client services | ✅ Active |
 
 ---
 
@@ -61,7 +63,7 @@ Provide a resilient receiver that:
 ### High-Level Data Flow
 
 ```
-[Transmitter] --ESP-NOW--> [Receiver ESP-NOW Layer]
+[Transmitter] --MQTT--> [Receiver MQTT Layer]
                                 |
                                 +--> [State/Cache Layer]
                                 |      - battery_data_store
@@ -76,46 +78,44 @@ Provide a resilient receiver that:
                                 |      - lib/webserver/api/*
                                 |      - lib/webserver/pages/*
                                 |
-                                +--> [MQTT / external integrations]
-                                       - src/mqtt/*
+            +--> [External integrations]
+              - src/mqtt/*
 ```
 
 ### Layered View
 
-- **ESP-NOW Layer**: Receive/send helpers, callback routing, connection manager, heartbeat manager, RX state machine.
+- **MQTT Layer**: Subscribe/publish handlers, command bridge, runtime topic routing.
 - **State/Cache Layer**: Packet-derived state, settings cache, component-apply request/result tracking.
 - **Presentation Layer**: Display widgets/pages + web page generation and APIs.
-- **Integration Layer**: MQTT services, network config, system/time sync interactions.
+- **Integration Layer**: network config, system/time sync, and service interactions.
 
 ---
 
 ## Core Systems
 
-### 1) ESP-NOW Receive + Control Path
+### 1) MQTT Receive + Control Path
 
 Primary implementation files:
 
-- `src/espnow/rx_state_machine.*`
-- `src/espnow/rx_connection_handler.*`
-- `src/espnow/rx_heartbeat_manager.*`
-- `src/espnow/espnow_callbacks.*`
-- `src/espnow/espnow_tasks.*`
-- `src/espnow/espnow_send.*`
+- `src/mqtt/mqtt_client.*`
+- `src/mqtt/mqtt_task.*`
+- `src/mqtt/mqtt_command_bridge.*`
+- `src/state/*`
+- `src/runtime/*`
 
 Notes:
 
-- Receiver keeps transmitter connection state and routes message types to handlers.
+- Receiver keeps MQTT/session health state and routes message types to handlers.
 - Batched component apply is the active control path (`component_apply_request`).
-- Relay-offload integration: receiver accepts transmitter `RELAY_CMD` frames, applies mapped semantic outputs, and returns ACK/status (`NEGATIVE_CONTACTOR_PIN`→GPIO10, `PRECHARGE_PIN`→GPIO16, `POSITIVE_CONTACTOR_PIN`→GPIO21, `BMS_POWER`→GPIO43).
+- Relay-offload integration remains active through MQTT command topics and mapped receiver semantic outputs (`NEGATIVE_CONTACTOR_PIN`→GPIO10, `PRECHARGE_PIN`→GPIO16, `POSITIVE_CONTACTOR_PIN`→GPIO21, `BMS_POWER`→GPIO43).
 - Immediate relay policy support (where enabled) affects relay command path only; telemetry/config paths remain unchanged.
 
 ### 2) Component Apply + Catalog Synchronization
 
 Primary implementation files:
 
-- `src/espnow/component_apply_tracker.*`
-- `src/espnow/component_config_handler.*`
-- `src/espnow/type_catalog_cache.*`
+- `src/runtime/component_apply_tracker.*`
+- `src/runtime/type_catalog_cache.*`
 - `lib/webserver/api/api_type_selection_handlers.*`
 
 Notes:
@@ -165,15 +165,13 @@ Notes:
 Primary references:
 
 - `../esp32common/firmware_version.h`
-- `../esp32common/docs/ESP-NOW_Communication_Architecture.md`
-- `../esp32common/docs/ESPNOW_HEARTBEAT.md`
-- `src/espnow/rx_heartbeat_manager.cpp`
-- `src/espnow/handlers/system_status_handler.cpp`
+- `src/mqtt/mqtt_client.cpp`
+- `src/state_machine.cpp`
 
 Notes:
 
 - Receiver validates and consumes transmitter state/messages under the shared protocol contract.
-- Heartbeat and connection health are coordinated by the receiver RX state machine plus heartbeat manager.
+- Connection health is coordinated by MQTT/session/data-freshness checks in receiver runtime state.
 
 ---
 
@@ -192,7 +190,7 @@ Board summary:
 - Display: ST7789, 8-bit parallel interface
 - PSRAM-capable ESP32-S3 configuration enabled in `platformio.ini` (`BOARD_HAS_PSRAM`)
 - Relay outputs (offloaded architecture): `NEGATIVE_CONTACTOR_PIN` (GPIO10), `PRECHARGE_PIN` (GPIO16), `POSITIVE_CONTACTOR_PIN` (GPIO21), `BMS_POWER` (GPIO43)
-- Receiver acts as relay actuator; transmitter remains sequencing authority via ESP-NOW command contract
+- Receiver acts as relay actuator; transmitter remains sequencing authority via MQTT command contract
 
 ---
 
@@ -201,7 +199,7 @@ Board summary:
 Timing/NTP:
 
 - Receiver no longer owns a standalone SNTP manager; legacy `src/time/time_sync_manager.cpp` is obsolete by design.
-- Operational timing now follows ESP-NOW/runtime workflows and shared timing constants where needed.
+- Operational timing now follows MQTT/runtime workflows and shared timing constants where needed.
 
 NVS:
 
@@ -231,7 +229,6 @@ Top-level runtime anchors:
 - `src/main.cpp`
 - `src/state_machine.*`
 - `src/state/*`
-- `src/espnow/*`
 - `src/display/*`
 - `src/hal/*`
 - `lib/webserver/*`
@@ -338,8 +335,8 @@ Operational note:
 
 ### Shared Protocol/Infrastructure (esp32common)
 
-- [../esp32common/docs/ESP-NOW_Communication_Architecture.md](../esp32common/docs/ESP-NOW_Communication_Architecture.md)
-- [../esp32common/docs/ESPNOW_HEARTBEAT.md](../esp32common/docs/ESPNOW_HEARTBEAT.md)
+- [../esp32common/docs/ESP-NOW_Communication_Architecture.md](../esp32common/docs/ESP-NOW_Communication_Architecture.md) *(design decision record)*
+- [../esp32common/docs/ESPNOW_HEARTBEAT.md](../esp32common/docs/ESPNOW_HEARTBEAT.md) *(design decision record)*
 - [../esp32common/docs/MQTT_LOGGER_IMPLEMENTATION.md](../esp32common/docs/MQTT_LOGGER_IMPLEMENTATION.md)
 - [../esp32common/docs/systemworks/OLIMEX_POE2_TO_WAVESHARE_RS485_MODBUS_RELAY_GPIO_LAYOUT.md](../esp32common/docs/systemworks/OLIMEX_POE2_TO_WAVESHARE_RS485_MODBUS_RELAY_GPIO_LAYOUT.md)
 - [../esp32common/docs/systemworks/LILYGO_T_DISPLAY_S3_RELAY_GPIO_AVAILABILITY.md](../esp32common/docs/systemworks/LILYGO_T_DISPLAY_S3_RELAY_GPIO_AVAILABILITY.md)

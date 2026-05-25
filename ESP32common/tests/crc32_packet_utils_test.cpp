@@ -1,5 +1,5 @@
 #include <unity.h>
-#include <esp32common/espnow/packet_utils.h>
+#include <runtime_common_utils/crc_utils.h>
 
 namespace {
 
@@ -14,7 +14,7 @@ struct __attribute__((packed)) BlobWithTrailingCrc32 {
 
 void test_crc32_packet_matches_standard_vector(void) {
     static constexpr char kPayload[] = "123456789";
-    const uint32_t actual = EspnowPacketUtils::crc32_packet(kPayload, sizeof(kPayload) - 1);
+    const uint32_t actual = RuntimeCrcUtils::crc32(kPayload, sizeof(kPayload) - 1);
     TEST_ASSERT_EQUAL_HEX32(0xCBF43926u, actual);
 }
 
@@ -23,9 +23,9 @@ void test_message_crc32_zeroed_round_trip(void) {
     blob.field_a = 0x1234;
     blob.field_b = 0x56;
     blob.version = 0xABCDEF01u;
-    blob.crc32 = EspnowPacketUtils::calculate_message_crc32_zeroed(&blob);
+    blob.crc32 = RuntimeCrcUtils::calculate_message_crc32_zeroed(&blob);
 
-    TEST_ASSERT_TRUE(EspnowPacketUtils::verify_message_crc32(&blob));
+    TEST_ASSERT_TRUE(RuntimeCrcUtils::verify_message_crc32(&blob));
 }
 
 void test_message_crc32_detects_mutation(void) {
@@ -33,11 +33,11 @@ void test_message_crc32_detects_mutation(void) {
     blob.field_a = 100;
     blob.field_b = 7;
     blob.version = 42;
-    blob.crc32 = EspnowPacketUtils::calculate_message_crc32_zeroed(&blob);
+    blob.crc32 = RuntimeCrcUtils::calculate_message_crc32_zeroed(&blob);
 
     blob.field_b = 8;
 
-    TEST_ASSERT_FALSE(EspnowPacketUtils::verify_message_crc32(&blob));
+    TEST_ASSERT_FALSE(RuntimeCrcUtils::verify_message_crc32(&blob));
 }
 
 void run_crc32_packet_utils_tests(void) {

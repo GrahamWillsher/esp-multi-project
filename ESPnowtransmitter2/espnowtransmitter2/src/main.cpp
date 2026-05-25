@@ -34,13 +34,12 @@
 #include "network/ethernet_manager.h"  // Provides ETH.h transitively
 
 #include <runtime_common_utils/bootstrap_phase_runner.h>
-#include "runtime/runtime_context.h"
 #include "network/mqtt_manager.h"
 #include "network/ota_manager.h"
 #include "network/service_supervisor.h"
 #include "network/mqtt_task.h"
 #include "network/time_manager.h"
-#include <mqtt_manager.h>  // For MqttConfigManager
+#include "config/mqtt_config_manager.h"
 
 // Battery Emulator HAL (single fixed TransmitterHal for Olimex ESP32-POE2)
 #include "battery_emulator/devboard/hal/hal.h"
@@ -208,6 +207,19 @@ static void bootstrap_battery() {
     LOG_INFO("BATTERY", "Loading non-battery settings from legacy store...");
     init_stored_settings();
     
+    // Load all persisted settings (battery, power, CAN, contactor) from NVS into SettingsManager
+    // CRITICAL: Must happen before MQTT publishes static settings, so pub/sub sees current values
+    LOG_INFO("SETTINGS", "Initializing SettingsManager from NVS blobs...");
+    if (SettingsManager::instance().init()) {
+        LOG_INFO("SETTINGS", "✓ SettingsManager loaded: battery v%u, power v%u, can v%u, contactor v%u",
+                 SettingsManager::instance().get_battery_settings_version(),
+                 SettingsManager::instance().get_power_settings_version(),
+                 SettingsManager::instance().get_can_settings_version(),
+                 SettingsManager::instance().get_contactor_settings_version());
+    } else {
+        LOG_WARN("SETTINGS", "SettingsManager initialization had issues (may be first boot with no saved settings)");
+    }
+    
     // OVERRIDE battery type with SystemSettings value (source of truth)
     user_selected_battery_type = static_cast<BatteryType>(battery_profile);
     LOG_INFO("BATTERY", "Battery type set from SystemSettings: %u", static_cast<uint32_t>(user_selected_battery_type));
@@ -286,11 +298,6 @@ static void bootstrap_data_layer() {
     TestDataConfig::init();
     LOG_INFO("TEST_DATA_CONFIG", "✓ Test data configuration initialized");
 
-#if CONFIG_CAN_ENABLED
-    RuntimeContext::instance().set_tx_soc(datalayer.battery.status.reported_soc / 100);  // Convert pptt to percentage
-#else
-    RuntimeContext::instance().set_tx_soc(50);  // Start at 50% for test mode
-#endif
     randomSeed(esp_random());
 
 #if CONFIG_CAN_ENABLED

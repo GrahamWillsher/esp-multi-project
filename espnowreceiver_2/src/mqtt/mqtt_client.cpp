@@ -1,12 +1,13 @@
 #include "mqtt_client.h"
+#include <esp32common/mqtt/mqtt_topics_common.h>
 #include "../lib/webserver/utils/transmitter_manager.h"
 #include "../lib/webserver/utils/transmitter_network.h"
 #include "../lib/webserver/utils/transmitter_mqtt_specs.h"
 #include "../lib/webserver/utils/cell_data_cache.h"
 #include "../lib/webserver/utils/transmitter_event_log_cache.h"
 #include "../common.h"
-#include "../espnow/type_catalog_cache.h"
-#include "../espnow/battery_data_store.h"
+#include "../runtime/type_catalog_cache.h"
+#include "../runtime/battery_data_store.h"
 #include <ArduinoJson.h>
 #include <array>
 #include <cmath>
@@ -61,27 +62,27 @@ bool parse_mac_string(const char* s, uint8_t out[6]) {
 
 uint8_t parse_led_status_code(const char* status_text) {
     if (!status_text || status_text[0] == '\0') {
-        return static_cast<uint8_t>(ESPNow::LedStatus::Unknown);
+        return static_cast<uint8_t>(RuntimeState::LedStatus::Unknown);
     }
 
     if (strcmp(status_text, "OK") == 0) {
-        return static_cast<uint8_t>(ESPNow::LedStatus::Ok);
+        return static_cast<uint8_t>(RuntimeState::LedStatus::Ok);
     }
     if (strcmp(status_text, "WARNING") == 0) {
-        return static_cast<uint8_t>(ESPNow::LedStatus::Warning);
+        return static_cast<uint8_t>(RuntimeState::LedStatus::Warning);
     }
     if (strcmp(status_text, "ERROR") == 0) {
-        return static_cast<uint8_t>(ESPNow::LedStatus::Error);
+        return static_cast<uint8_t>(RuntimeState::LedStatus::Error);
     }
     if (strcmp(status_text, "UPDATING") == 0) {
-        return static_cast<uint8_t>(ESPNow::LedStatus::Updating);
+        return static_cast<uint8_t>(RuntimeState::LedStatus::Updating);
     }
 
-    return static_cast<uint8_t>(ESPNow::LedStatus::Unknown);
+    return static_cast<uint8_t>(RuntimeState::LedStatus::Unknown);
 }
 
-constexpr const char* MQTT_TOPIC_RX_CMD_STREAM_EVENT_LOGS = "batt-emu/mqtt-v1/rx/cmd/stream/event_logs";
-constexpr const char* MQTT_TOPIC_RX_CMD_STREAM_CELL_DATA = "batt-emu/mqtt-v1/rx/cmd/stream/cell_data";
+constexpr const char* MQTT_TOPIC_RX_CMD_STREAM_EVENT_LOGS = mqtt::topics::rx::CMD_STREAM_EVENT_LOGS;
+constexpr const char* MQTT_TOPIC_RX_CMD_STREAM_CELL_DATA = mqtt::topics::rx::CMD_STREAM_CELL_DATA;
 
 bool publish_event_logs_stream_control(bool subscribe) {
     if (!MqttClient::isEnabled() || !MqttClient::isConnected()) {
@@ -323,147 +324,147 @@ void MqttClient::messageCallback(char* topic, uint8_t* payload, unsigned int len
     // Hash-based dispatch keeps topic handling O(1)-like for small fixed route sets,
     // while retaining strcmp guards to eliminate any practical collision risk.
     switch (fnv1a_runtime(topic)) {
-        case fnv1a_const("batt-emu/mqtt-v1/tx/ack/battery"):
-        case fnv1a_const("batt-emu/mqtt-v1/tx/ack/power"):
-        case fnv1a_const("batt-emu/mqtt-v1/tx/ack/network"):
-        case fnv1a_const("batt-emu/mqtt-v1/tx/ack/mqtt"):
-        case fnv1a_const("batt-emu/mqtt-v1/tx/ack/inverter"):
-        case fnv1a_const("batt-emu/mqtt-v1/tx/ack/can"):
-        case fnv1a_const("batt-emu/mqtt-v1/tx/ack/contactor"):
-        case fnv1a_const("batt-emu/mqtt-v1/tx/ack/control"):
-        case fnv1a_const("batt-emu/mqtt-v1/tx/ack/component"):
-        case fnv1a_const("batt-emu/mqtt-v1/tx/ack/event_logs_clear"):
-        case fnv1a_const("batt-emu/mqtt-v1/tx/ack/refresh"):
+        case fnv1a_const(mqtt::topics::tx::ACK_BATTERY):
+        case fnv1a_const(mqtt::topics::tx::ACK_POWER):
+        case fnv1a_const(mqtt::topics::tx::ACK_NETWORK):
+        case fnv1a_const(mqtt::topics::tx::ACK_MQTT):
+        case fnv1a_const(mqtt::topics::tx::ACK_INVERTER):
+        case fnv1a_const(mqtt::topics::tx::ACK_CAN):
+        case fnv1a_const(mqtt::topics::tx::ACK_CONTACTOR):
+        case fnv1a_const(mqtt::topics::tx::ACK_CONTROL):
+        case fnv1a_const(mqtt::topics::tx::ACK_COMPONENT):
+        case fnv1a_const(mqtt::topics::tx::ACK_EVENT_LOGS_CLEAR):
+        case fnv1a_const(mqtt::topics::tx::ACK_REFRESH):
             if (strncmp(topic, "batt-emu/mqtt-v1/tx/ack/", 24) == 0) {
-                if (strcmp(topic, "batt-emu/mqtt-v1/tx/ack/event_logs_clear") == 0) {
+                if (strcmp(topic, mqtt::topics::tx::ACK_EVENT_LOGS_CLEAR) == 0) {
                     handleEventLogsClearAck(json_payload, length);
                 }
                 handleAckMessage(topic, json_payload, length);
                 return;
             }
             break;
-        case fnv1a_const("batt-emu/mqtt-v1/tx/state/cell_data/chunk"):
-            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/cell_data/chunk") == 0) {
+        case fnv1a_const(mqtt::topics::tx::STATE_CELL_DATA_CHUNK):
+            if (strcmp(topic, mqtt::topics::tx::STATE_CELL_DATA_CHUNK) == 0) {
                 handleCellData(json_payload, length);
                 return;
             }
             break;
-        case fnv1a_const("batt-emu/mqtt-v1/tx/state/battery_live"):
-            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/battery_live") == 0) {
+        case fnv1a_const(mqtt::topics::tx::STATE_BATTERY_LIVE):
+            if (strcmp(topic, mqtt::topics::tx::STATE_BATTERY_LIVE) == 0) {
                 handleBatteryLive(json_payload, length);
                 return;
             }
             break;
-        case fnv1a_const("batt-emu/mqtt-v1/tx/state/runtime/led"):
-            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/runtime/led") == 0) {
+        case fnv1a_const(mqtt::topics::tx::STATE_RUNTIME_LED):
+            if (strcmp(topic, mqtt::topics::tx::STATE_RUNTIME_LED) == 0) {
                 handleRuntimeLed(json_payload, length);
                 return;
             }
             break;
-        case fnv1a_const("batt-emu/mqtt-v1/tx/state/runtime/system"):
-            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/runtime/system") == 0) {
+        case fnv1a_const(mqtt::topics::tx::STATE_RUNTIME_SYSTEM):
+            if (strcmp(topic, mqtt::topics::tx::STATE_RUNTIME_SYSTEM) == 0) {
                 handleRuntimeSystem(json_payload, length);
                 return;
             }
             break;
-        case fnv1a_const("batt-emu/mqtt-v1/tx/state/runtime/charger"):
-            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/runtime/charger") == 0) {
+        case fnv1a_const(mqtt::topics::tx::STATE_RUNTIME_CHARGER):
+            if (strcmp(topic, mqtt::topics::tx::STATE_RUNTIME_CHARGER) == 0) {
                 handleRuntimeCharger(json_payload, length);
                 return;
             }
             break;
-        case fnv1a_const("batt-emu/mqtt-v1/tx/state/runtime/inverter"):
-            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/runtime/inverter") == 0) {
+        case fnv1a_const(mqtt::topics::tx::STATE_RUNTIME_INVERTER):
+            if (strcmp(topic, mqtt::topics::tx::STATE_RUNTIME_INVERTER) == 0) {
                 handleRuntimeInverter(json_payload, length);
                 return;
             }
             break;
-        case fnv1a_const("batt-emu/mqtt-v1/tx/state/summary/event_logs"):
-            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/summary/event_logs") == 0) {
+        case fnv1a_const(mqtt::topics::tx::STATE_SUMMARY_EVENT_LOGS):
+            if (strcmp(topic, mqtt::topics::tx::STATE_SUMMARY_EVENT_LOGS) == 0) {
                 handleEventLogSummary(json_payload, length);
                 return;
             }
             break;
-        case fnv1a_const("batt-emu/mqtt-v1/tx/state/event_logs/chunk"):
-            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/event_logs/chunk") == 0) {
+        case fnv1a_const(mqtt::topics::tx::STATE_EVENT_LOGS_CHUNK):
+            if (strcmp(topic, mqtt::topics::tx::STATE_EVENT_LOGS_CHUNK) == 0) {
                 handleEventLogs(json_payload, length);
                 return;
             }
             break;
-        case fnv1a_const("batt-emu/mqtt-v1/tx/state/static/battery"):
-            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/static/battery") == 0) {
+        case fnv1a_const(mqtt::topics::tx::STATE_STATIC_BATTERY):
+            if (strcmp(topic, mqtt::topics::tx::STATE_STATIC_BATTERY) == 0) {
                 handleBatterySpecs(json_payload, length);
                 return;
             }
             break;
-        case fnv1a_const("batt-emu/mqtt-v1/tx/state/static/inverter"):
-            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/static/inverter") == 0) {
+        case fnv1a_const(mqtt::topics::tx::STATE_STATIC_INVERTER):
+            if (strcmp(topic, mqtt::topics::tx::STATE_STATIC_INVERTER) == 0) {
                 handleSpecData2(json_payload, length);
                 return;
             }
             break;
-        case fnv1a_const("batt-emu/mqtt-v1/tx/state/static/catalog_battery"):
-            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/static/catalog_battery") == 0) {
+        case fnv1a_const(mqtt::topics::tx::STATE_STATIC_CATALOG_BATTERY):
+            if (strcmp(topic, mqtt::topics::tx::STATE_STATIC_CATALOG_BATTERY) == 0) {
                 handleBatteryTypeCatalog(json_payload, length);
                 return;
             }
             break;
-        case fnv1a_const("batt-emu/mqtt-v1/tx/state/static/catalog_inverter"):
-            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/static/catalog_inverter") == 0) {
+        case fnv1a_const(mqtt::topics::tx::STATE_STATIC_CATALOG_INVERTER):
+            if (strcmp(topic, mqtt::topics::tx::STATE_STATIC_CATALOG_INVERTER) == 0) {
                 handleInverterTypeCatalog(json_payload, length);
                 return;
             }
             break;
-        case fnv1a_const("batt-emu/mqtt-v1/tx/state/static/network"):
-            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/static/network") == 0) {
+        case fnv1a_const(mqtt::topics::tx::STATE_STATIC_NETWORK):
+            if (strcmp(topic, mqtt::topics::tx::STATE_STATIC_NETWORK) == 0) {
                 handleStaticNetwork(json_payload, length);
                 return;
             }
             break;
-        case fnv1a_const("batt-emu/mqtt-v1/tx/state/static/mqtt"):
-            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/static/mqtt") == 0) {
+        case fnv1a_const(mqtt::topics::tx::STATE_STATIC_MQTT):
+            if (strcmp(topic, mqtt::topics::tx::STATE_STATIC_MQTT) == 0) {
                 handleStaticMqtt(json_payload, length);
                 return;
             }
             break;
-        case fnv1a_const("batt-emu/mqtt-v1/tx/state/static/power"):
-            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/static/power") == 0) {
+        case fnv1a_const(mqtt::topics::tx::STATE_STATIC_POWER):
+            if (strcmp(topic, mqtt::topics::tx::STATE_STATIC_POWER) == 0) {
                 handleStaticPower(json_payload, length);
                 return;
             }
             break;
-        case fnv1a_const("batt-emu/mqtt-v1/tx/state/static/led"):
-            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/static/led") == 0) {
+        case fnv1a_const(mqtt::topics::tx::STATE_STATIC_LED):
+            if (strcmp(topic, mqtt::topics::tx::STATE_STATIC_LED) == 0) {
                 handleStaticLed(json_payload, length);
                 return;
             }
             break;
-        case fnv1a_const("batt-emu/mqtt-v1/tx/state/static/settings"):
-            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/static/settings") == 0) {
+        case fnv1a_const(mqtt::topics::tx::STATE_STATIC_SETTINGS):
+            if (strcmp(topic, mqtt::topics::tx::STATE_STATIC_SETTINGS) == 0) {
                 handleStaticSettings(json_payload, length);
                 return;
             }
             break;
-        case fnv1a_const("batt-emu/mqtt-v1/tx/meta/version"):
-            if (strcmp(topic, "batt-emu/mqtt-v1/tx/meta/version") == 0) {
+        case fnv1a_const(mqtt::topics::tx::META_VERSION):
+            if (strcmp(topic, mqtt::topics::tx::META_VERSION) == 0) {
                 handleMetaVersion(json_payload, length);
                 return;
             }
             break;
-        case fnv1a_const("batt-emu/mqtt-v1/tx/meta/schema_versions"):
-            if (strcmp(topic, "batt-emu/mqtt-v1/tx/meta/schema_versions") == 0) {
+        case fnv1a_const(mqtt::topics::tx::META_SCHEMA_VERSIONS):
+            if (strcmp(topic, mqtt::topics::tx::META_SCHEMA_VERSIONS) == 0) {
                 handleMetaSchemaVersions(json_payload, length);
                 return;
             }
             break;
-        case fnv1a_const("batt-emu/mqtt-v1/tx/meta/runtime"):
-            if (strcmp(topic, "batt-emu/mqtt-v1/tx/meta/runtime") == 0) {
+        case fnv1a_const(mqtt::topics::tx::META_RUNTIME):
+            if (strcmp(topic, mqtt::topics::tx::META_RUNTIME) == 0) {
                 handleMetaRuntime(json_payload, length);
                 return;
             }
             break;
-        case fnv1a_const("batt-emu/mqtt-v1/tx/state/heartbeat"):
-            if (strcmp(topic, "batt-emu/mqtt-v1/tx/state/heartbeat") == 0) {
+        case fnv1a_const(mqtt::topics::tx::STATE_HEARTBEAT):
+            if (strcmp(topic, mqtt::topics::tx::STATE_HEARTBEAT) == 0) {
                 handleHeartbeat(json_payload, length);
                 return;
             }
@@ -477,30 +478,30 @@ void MqttClient::messageCallback(char* topic, uint8_t* payload, unsigned int len
 
 void MqttClient::subscribeToTopics() {
     // MQTT-only topic namespace.
-    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/static/battery");
-    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/static/inverter");
-    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/static/catalog_battery");
-    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/static/catalog_inverter");
-    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/static/network");
-    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/static/mqtt");
-    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/static/power");
-    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/static/led");
-    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/static/settings");
-    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/meta/version");
-    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/meta/schema_versions");
-    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/meta/runtime");
-    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/battery_live");
-    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/runtime/led");
-    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/runtime/system");
-    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/runtime/charger");
-    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/runtime/inverter");
-    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/summary/event_logs");
-    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/ack/#");
-    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/heartbeat");
+    mqtt_client_.subscribe(mqtt::topics::tx::STATE_STATIC_BATTERY);
+    mqtt_client_.subscribe(mqtt::topics::tx::STATE_STATIC_INVERTER);
+    mqtt_client_.subscribe(mqtt::topics::tx::STATE_STATIC_CATALOG_BATTERY);
+    mqtt_client_.subscribe(mqtt::topics::tx::STATE_STATIC_CATALOG_INVERTER);
+    mqtt_client_.subscribe(mqtt::topics::tx::STATE_STATIC_NETWORK);
+    mqtt_client_.subscribe(mqtt::topics::tx::STATE_STATIC_MQTT);
+    mqtt_client_.subscribe(mqtt::topics::tx::STATE_STATIC_POWER);
+    mqtt_client_.subscribe(mqtt::topics::tx::STATE_STATIC_LED);
+    mqtt_client_.subscribe(mqtt::topics::tx::STATE_STATIC_SETTINGS);
+    mqtt_client_.subscribe(mqtt::topics::tx::META_VERSION);
+    mqtt_client_.subscribe(mqtt::topics::tx::META_SCHEMA_VERSIONS);
+    mqtt_client_.subscribe(mqtt::topics::tx::META_RUNTIME);
+    mqtt_client_.subscribe(mqtt::topics::tx::STATE_BATTERY_LIVE);
+    mqtt_client_.subscribe(mqtt::topics::tx::STATE_RUNTIME_LED);
+    mqtt_client_.subscribe(mqtt::topics::tx::STATE_RUNTIME_SYSTEM);
+    mqtt_client_.subscribe(mqtt::topics::tx::STATE_RUNTIME_CHARGER);
+    mqtt_client_.subscribe(mqtt::topics::tx::STATE_RUNTIME_INVERTER);
+    mqtt_client_.subscribe(mqtt::topics::tx::STATE_SUMMARY_EVENT_LOGS);
+    mqtt_client_.subscribe(mqtt::topics::tx::ACK_WILDCARD);
+    mqtt_client_.subscribe(mqtt::topics::tx::STATE_HEARTBEAT);
 
     // Only subscribe to cell_data if not paused (subscription optimization)
     if (cell_data_state_ != PAUSED) {
-        mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/cell_data/chunk");
+        mqtt_client_.subscribe(mqtt::topics::tx::STATE_CELL_DATA_CHUNK);
         LOG_INFO("SUBSCRIPTION", "Subscribed to all topics including cell_data");
 
         if (cell_data_subscribers_ > 0) {
@@ -512,7 +513,7 @@ void MqttClient::subscribeToTopics() {
     }
 
     // Always subscribe to event_logs/chunk so chunks arrive when stream is active
-    mqtt_client_.subscribe("batt-emu/mqtt-v1/tx/state/event_logs/chunk");
+    mqtt_client_.subscribe(mqtt::topics::tx::STATE_EVENT_LOGS_CHUNK);
     LOG_INFO("SUBSCRIPTION", "Subscribed to event_logs/chunk");
     if (event_log_subscribers_ > 0) {
         publish_event_logs_stream_control(true);
@@ -866,9 +867,9 @@ void MqttClient::handleRuntimeLed(const char* json_payload, size_t length) {
         return;
     }
 
-    ESPNow::current_led_color = static_cast<LEDColor>(color);
-    ESPNow::current_led_effect = static_cast<LEDEffect>(effect);
-    ESPNow::current_led_status = parse_led_status_code(status_text);
+    RuntimeState::current_led_color = static_cast<LEDColor>(color);
+    RuntimeState::current_led_effect = static_cast<LEDEffect>(effect);
+    RuntimeState::current_led_status = parse_led_status_code(status_text);
 }
 
 void MqttClient::handleRuntimeSystem(const char* json_payload, size_t length) {
@@ -1092,16 +1093,27 @@ void MqttClient::handleStaticLed(const char* json_payload, size_t length) {
 void MqttClient::handleStaticSettings(const char* json_payload, size_t length) {
     LOG_DEBUG("MQTT", "Processing batt-emu/mqtt-v1/tx/state/static/settings");
 
-    DynamicJsonDocument doc(2048);
+    const size_t doc_capacity = std::min<size_t>(4096, std::max<size_t>(1536, length * 3));
+    DynamicJsonDocument doc(doc_capacity);
     DeserializationError error = deserializeJson(doc, json_payload, length);
     if (error) {
-        LOG_ERROR("MQTT", "Failed to parse static/settings: %s", error.c_str());
+        LOG_ERROR("MQTT", "Failed to parse static/settings: %s (len=%u cap=%u)",
+                  error.c_str(),
+                  static_cast<unsigned>(length),
+                  static_cast<unsigned>(doc_capacity));
         return;
     }
 
-    if (doc.containsKey("battery") && doc["battery"].is<JsonObject>()) {
+    const JsonObject root =
+        (doc.containsKey("settings") && doc["settings"].is<JsonObject>())
+            ? doc["settings"].as<JsonObject>()
+            : doc.as<JsonObject>();
+
+    size_t sections_applied = 0;
+
+    if (root.containsKey("battery") && root["battery"].is<JsonObject>()) {
         auto battery = TransmitterManager::getBatterySettings();
-        const JsonObject b = doc["battery"].as<JsonObject>();
+        const JsonObject b = root["battery"].as<JsonObject>();
         battery.capacity_wh = b["capacity_wh"] | battery.capacity_wh;
         battery.max_voltage_mv = b["max_voltage_mv"] | battery.max_voltage_mv;
         battery.min_voltage_mv = b["min_voltage_mv"] | battery.min_voltage_mv;
@@ -1113,11 +1125,12 @@ void MqttClient::handleStaticSettings(const char* json_payload, size_t length) {
         battery.chemistry = b["chemistry"] | battery.chemistry;
         battery.version = b["version"] | battery.version;
         TransmitterManager::storeBatterySettings(battery);
+        sections_applied++;
     }
 
-    if (doc.containsKey("battery_emulator") && doc["battery_emulator"].is<JsonObject>()) {
+    if (root.containsKey("battery_emulator") && root["battery_emulator"].is<JsonObject>()) {
         auto emu = TransmitterManager::getBatteryEmulatorSettings();
-        const JsonObject e = doc["battery_emulator"].as<JsonObject>();
+        const JsonObject e = root["battery_emulator"].as<JsonObject>();
         emu.double_battery = e["double_battery"] | emu.double_battery;
         emu.pack_max_voltage_dV = e["pack_max_voltage_dV"] | emu.pack_max_voltage_dV;
         emu.pack_min_voltage_dV = e["pack_min_voltage_dV"] | emu.pack_min_voltage_dV;
@@ -1126,11 +1139,12 @@ void MqttClient::handleStaticSettings(const char* json_payload, size_t length) {
         emu.soc_estimated = e["soc_estimated"] | emu.soc_estimated;
         emu.led_mode = e["led_mode"] | emu.led_mode;
         TransmitterManager::storeBatteryEmulatorSettings(emu);
+        sections_applied++;
     }
 
-    if (doc.containsKey("power") && doc["power"].is<JsonObject>()) {
+    if (root.containsKey("power") && root["power"].is<JsonObject>()) {
         auto power = TransmitterManager::getPowerSettings();
-        const JsonObject p = doc["power"].as<JsonObject>();
+        const JsonObject p = root["power"].as<JsonObject>();
         power.charge_w = p["charge_w"] | power.charge_w;
         power.discharge_w = p["discharge_w"] | power.discharge_w;
         power.max_precharge_ms = p["max_precharge_ms"] | power.max_precharge_ms;
@@ -1138,32 +1152,43 @@ void MqttClient::handleStaticSettings(const char* json_payload, size_t length) {
         power.equipment_stop_type = p["equipment_stop_type"] | power.equipment_stop_type;
         power.external_precharge_enabled = p["external_precharge_enabled"] | power.external_precharge_enabled;
         power.no_inverter_disconnect_contactor = p["no_inverter_disconnect_contactor"] | power.no_inverter_disconnect_contactor;
+        power.version = p["version"] | power.version;
         TransmitterManager::storePowerSettings(power);
+        sections_applied++;
     }
 
-    if (doc.containsKey("can") && doc["can"].is<JsonObject>()) {
+    if (root.containsKey("can") && root["can"].is<JsonObject>()) {
         auto can = TransmitterManager::getCanSettings();
-        const JsonObject c = doc["can"].as<JsonObject>();
-        can.frequency_khz = c["frequency_khz"] | can.frequency_khz;
-        can.fd_frequency_mhz = c["fd_frequency_mhz"] | can.fd_frequency_mhz;
+        const JsonObject c = root["can"].as<JsonObject>();
+        can.frequency_khz = c["frequency_khz"] | c["can_frequency_khz"] | can.frequency_khz;
+        can.fd_frequency_mhz = c["fd_frequency_mhz"] | c["can_fd_frequency_mhz"] | can.fd_frequency_mhz;
         can.sofar_id = c["sofar_id"] | can.sofar_id;
         can.pylon_send_interval_ms = c["pylon_send_interval_ms"] | can.pylon_send_interval_ms;
         can.use_canfd_as_classic = c["use_canfd_as_classic"] | can.use_canfd_as_classic;
+        can.version = c["version"] | can.version;
         TransmitterManager::storeCanSettings(can);
+        sections_applied++;
     }
 
-    if (doc.containsKey("contactor") && doc["contactor"].is<JsonObject>()) {
+    if (root.containsKey("contactor") && root["contactor"].is<JsonObject>()) {
         auto contactor = TransmitterManager::getContactorSettings();
-        const JsonObject c = doc["contactor"].as<JsonObject>();
+        const JsonObject c = root["contactor"].as<JsonObject>();
         contactor.control_enabled = c["control_enabled"] | contactor.control_enabled;
-        contactor.nc_contactor = c["nc_contactor"] | contactor.nc_contactor;
+        contactor.nc_contactor = c["nc_contactor"] | c["nc_mode"] | contactor.nc_contactor;
         contactor.pwm_frequency_hz = c["pwm_frequency_hz"] | contactor.pwm_frequency_hz;
-        contactor.pwm_control_enabled = c["pwm_control_enabled"] | contactor.pwm_control_enabled;
+        contactor.pwm_control_enabled = c["pwm_control_enabled"] | c["pwm_enabled"] | contactor.pwm_control_enabled;
         contactor.pwm_hold_duty = c["pwm_hold_duty"] | contactor.pwm_hold_duty;
         contactor.periodic_bms_reset = c["periodic_bms_reset"] | contactor.periodic_bms_reset;
         contactor.bms_first_align_enabled = c["bms_first_align_enabled"] | contactor.bms_first_align_enabled;
-        contactor.bms_first_align_target_minutes = c["bms_first_align_target_minutes"] | contactor.bms_first_align_target_minutes;
+        contactor.bms_first_align_target_minutes = c["bms_first_align_target_minutes"] | c["bms_first_align_target_mins"] | contactor.bms_first_align_target_minutes;
+        contactor.version = c["version"] | contactor.version;
         TransmitterManager::storeContactorSettings(contactor);
+        sections_applied++;
+    }
+
+    if (sections_applied == 0) {
+        LOG_WARN("MQTT", "static/settings payload had no recognized sections");
+        return;
     }
 
     LOG_INFO("MQTT", "Updated transmitter typed settings caches from static/settings retained topic");
@@ -1183,7 +1208,11 @@ void MqttClient::handleMetaVersion(const char* json_payload, size_t length) {
     uint8_t major = 0;
     uint8_t minor = 0;
     uint8_t patch = 0;
-    (void)sscanf(firmware, "%hhu.%hhu.%hhu", &major, &minor, &patch);
+    const char* version_str = firmware;
+    if (version_str && (version_str[0] == 'v' || version_str[0] == 'V')) {
+        version_str++;
+    }
+    (void)sscanf(version_str, "%hhu.%hhu.%hhu", &major, &minor, &patch);
 
     TransmitterManager::storeMetadata(
         true,
@@ -1641,7 +1670,7 @@ void MqttClient::processDeferredSubscriptionActions() {
         return;
     }
 
-    const bool unsubscribed = mqtt_client_.unsubscribe("batt-emu/mqtt-v1/tx/state/cell_data/chunk");
+    const bool unsubscribed = mqtt_client_.unsubscribe(mqtt::topics::tx::STATE_CELL_DATA_CHUNK);
     if (unsubscribed) {
         (void)publish_cell_data_stream_control(false);
         cell_data_state_ = PAUSED;

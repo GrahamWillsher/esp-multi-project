@@ -1,7 +1,7 @@
 #ifndef PAGE_DEFINITIONS_H
 #define PAGE_DEFINITIONS_H
 
-#include <esp32common/espnow/common.h>
+#include <esp32common/contracts/shared_contracts.h>
 
 // ═══════════════════════════════════════════════════════════════════════
 // PAGE-TO-SUBTYPE MAPPING STRUCTURE

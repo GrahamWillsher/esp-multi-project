@@ -59,7 +59,7 @@ esp_err_t system_specs_page_handler(httpd_req_t *req) {
         uint8_t major, minor, patch;
         TransmitterManager::getMetadataVersion(major, minor, patch);
         char version_buf[16];
-        snprintf(version_buf, sizeof(version_buf), "%d.%d.%d", major, minor, patch);
+        snprintf(version_buf, sizeof(version_buf), "v%d.%d.%d", major, minor, patch);
         firmware_version = String(version_buf);
 
         const char* md_build = TransmitterManager::getMetadataBuildDate();

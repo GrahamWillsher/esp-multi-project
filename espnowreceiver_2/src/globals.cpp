@@ -28,16 +28,11 @@ namespace Display {
     unsigned long last_display_update = 0;
 }
 
-// ESP-NOW State (definitions)
-namespace ESPNow {
-    LEDColor current_led_color = LED_TEAL;  // Startup initializing state
+namespace RuntimeState {
+    LEDColor current_led_color = LED_TEAL;
     LEDEffect current_led_effect = LED_EFFECT_HEARTBEAT;
     volatile uint8_t current_led_status = static_cast<uint8_t>(LedStatus::Unknown);
     volatile bool receiver_ota_led_override_active = false;
-
-    int wifi_channel = 1;
-    uint8_t transmitter_mac[6] = {0};  // Will be filled when transmitter connects
-    QueueHandle_t queue = NULL;
 
     volatile uint32_t rx_callback_count = 0;
     volatile uint32_t rx_queue_drop_count = 0;
@@ -47,9 +42,7 @@ namespace ESPNow {
 // FreeRTOS Resources (definitions)
 namespace RTOS {
     TaskHandle_t task_indicator = NULL;
-    TaskHandle_t task_espnow_worker = NULL;
     TaskHandle_t task_display_renderer = NULL;
-    TaskHandle_t task_announcement = NULL;
     SemaphoreHandle_t tft_mutex = NULL;
 }
 

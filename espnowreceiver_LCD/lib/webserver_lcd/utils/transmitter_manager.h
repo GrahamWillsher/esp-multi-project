@@ -145,15 +145,24 @@ public:
 
     static void storePowerSettings(const PowerSettings& settings);
     static PowerSettings getPowerSettings();
+    static bool hasPowerSettings();
 
     static void storeInverterSettings(const InverterSettings& settings);
     static InverterSettings getInverterSettings();
 
     static void storeCanSettings(const CanSettings& settings);
     static CanSettings getCanSettings();
+    static bool hasCanSettings();
 
     static void storeContactorSettings(const ContactorSettings& settings);
     static ContactorSettings getContactorSettings();
+    static bool hasContactorSettings();
+
+    // Version getters for cache validation
+    static uint32_t getBatterySettingsVersion();
+    static uint32_t getPowerSettingsVersion();
+    static uint32_t getCanSettingsVersion();
+    static uint32_t getContactorSettingsVersion();
     
     // Time data management
     static uint64_t getUptimeMs();

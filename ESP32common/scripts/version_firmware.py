@@ -92,8 +92,8 @@ def generate_build_metadata(env):
     if env.get('__FIRMWARE_METADATA_GENERATED__'):
         return
     
-    # Generate build timestamp
-    build_date = time.strftime('%d-%m-%Y %H:%M:%S')
+    # Generate build timestamp (canonical format: DD MM YYYY HH:MM:SS)
+    build_date = time.strftime('%d %m %Y %H:%M:%S')
     
     # Extract device hardware from board setting (e.g., "esp32-poe2" -> "ESP32-POE2")
     board = env.get('BOARD', 'unknown').upper().replace('-', '_')

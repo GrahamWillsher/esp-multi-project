@@ -1,6 +1,7 @@
 #include "api_debug_handlers.h"
+#include <esp32common/mqtt/mqtt_topics_common.h>
 
-#include "../../src/espnow/espnow_send.h"
+#include "../../src/mqtt/mqtt_command_bridge.h"
 #include "../../src/mqtt/mqtt_client.h"
 #include "api_response_utils.h"
 #include "../utils/transmitter_manager.h"
@@ -11,8 +12,8 @@
 #include <esp32common/mqtt/mqtt_feature_flags.h>
 
 namespace {
-constexpr const char* MQTT_TOPIC_RX_CMD_CONTROL_DEBUG_LEVEL = "batt-emu/mqtt-v1/rx/cmd/control/debug_level";
-constexpr const char* MQTT_TOPIC_TX_ACK_CONTROL = "batt-emu/mqtt-v1/tx/ack/control";
+constexpr const char* MQTT_TOPIC_RX_CMD_CONTROL_DEBUG_LEVEL = mqtt::topics::rx::CMD_CONTROL_DEBUG_LEVEL;
+constexpr const char* MQTT_TOPIC_TX_ACK_CONTROL = mqtt::topics::tx::ACK_CONTROL;
 }
 
 esp_err_t api_get_debug_level_handler(httpd_req_t *req) {
@@ -79,6 +80,7 @@ esp_err_t api_set_debug_level_handler(httpd_req_t *req) {
 #endif
 
             if (command_sent) {
+                cache_last_debug_level(level);
                 const char* level_names[] = {"EMERG", "ALERT", "CRIT", "ERROR", "WARNING", "NOTICE", "INFO", "DEBUG"};
                 return ApiResponseUtils::send_jsonf(req,
                                                     "{\"success\":true,\"message\":\"Debug level command sent: %d (%s)\",\"level\":%d}",

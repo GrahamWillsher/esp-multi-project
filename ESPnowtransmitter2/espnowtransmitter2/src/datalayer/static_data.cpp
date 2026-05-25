@@ -381,7 +381,6 @@ size_t serialize_system_specs(char* buffer, size_t buffer_size) {
     doc["can_interface"] = system_specs.can_interface;
     doc["firmware_version"] = system_specs.firmware_version;
     doc["build_date"] = system_specs.build_date;
-    doc["build_time"] = system_specs.build_time;
     doc["can_bitrate"] = system_specs.can_bitrate;
     doc["has_contactor_control"] = system_specs.has_contactor_control;
     doc["has_precharge_control"] = system_specs.has_precharge_control;

@@ -22,9 +22,8 @@ void setupWiFi() {
         }
         
         if (WiFi.status() == WL_CONNECTED) {
-            ESPNow::wifi_channel = WiFi.channel();
             LOG_INFO("INIT", "WiFi connected! IP: %s", WiFi.localIP().toString().c_str());
-            LOG_INFO("INIT", "WiFi Channel: %d", ESPNow::wifi_channel);
+            LOG_INFO("INIT", "WiFi Channel: %d", WiFi.channel());
             LOG_INFO("INIT", "WiFi will stay connected for web server");
         } else {
             LOG_WARN("INIT", "WiFi connection failed, continuing without web server");

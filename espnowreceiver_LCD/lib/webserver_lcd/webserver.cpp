@@ -7,9 +7,7 @@
 #include "logging.h"
 #include <esp_netif.h>
 #include <ESP.h>
-#include <esp_now.h>
-#include <esp32common/espnow/common.h>
-#include <esp32common/espnow/link_recovery_coordinator.h>
+#include <esp32common/contracts/shared_contracts.h>
 #include <WiFi.h>
 #include <LittleFS.h>
 #include <cerrno>
@@ -295,12 +293,8 @@ void init_webserver() {
                   static_cast<unsigned>(config.ctrl_port),
                   static_cast<unsigned>(g_http_start_failure_streak),
                   static_cast<unsigned long>(backoff_ms));
-
-        (void)esp32common::espnow::LinkRecoveryCoordinator::instance().handle_persistent_httpd_failure(
-            now_ms,
-            g_http_start_failure_streak,
-            errno,
-            nullptr);
+        // Phase 8: LinkRecoveryCoordinator (ESPNOW stack) removed.
+        // Webserver now relies on deterministic local backoff only.
         // Defensive cleanup for partial-start edge cases.
         if (server != NULL) {
             httpd_stop(server);
@@ -315,7 +309,6 @@ void init_webserver() {
     g_http_start_failure_streak = 0;
     g_next_http_start_allowed_ms = 0;
     g_last_backoff_log_ms = 0;
-    esp32common::espnow::LinkRecoveryCoordinator::instance().recovery_succeeded_transition_to_normal(now_ms);
     g_webserver_metrics.active_requests = 0;
     g_oldest_inflight_request_ms = 0;
     g_last_request_activity_ms = millis();

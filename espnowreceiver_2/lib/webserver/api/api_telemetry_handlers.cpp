@@ -19,19 +19,16 @@
 #include <firmware_version.h>
 #include <firmware_metadata.h>
 #include <ArduinoJson.h>
-#include <esp_now.h>
-#include <esp32common/espnow/common.h>
+#include <esp32common/contracts/shared_contracts.h>
 #include <esp32common/config/event_log_config.h>
+#include <esp32common/mqtt/mqtt_topics_common.h>
 #include <runtime_common_utils/device_temperature.h>
-#include <freertos/queue.h>
-#include "../../src/espnow/espnow_send.h"
 #include "../../src/mqtt/mqtt_client.h"
 #include <esp_heap_caps.h>
 #include "../../src/memory/memory_sampler.h"
 #include <algorithm>
 
-namespace ESPNow {
-extern QueueHandle_t queue;
+namespace RuntimeState {
 extern volatile uint32_t rx_callback_count;
 extern volatile uint32_t rx_queue_drop_count;
 extern volatile uint32_t rx_queue_high_watermark;
@@ -277,7 +274,6 @@ esp_err_t api_version_handler(httpd_req_t *req) {
     String receiver_version = "Unknown";
     uint32_t receiver_version_number = 0;
     String receiver_build_date = "";
-    String receiver_build_time = "";
 
     if (receiver_metadata_valid) {
         receiver_device = String(FirmwareMetadata::metadata.env_name);
@@ -293,7 +289,6 @@ esp_err_t api_version_handler(httpd_req_t *req) {
     uint32_t transmitter_version_number = 0;
     bool version_compatible = false;
     String transmitter_build_date = "";
-    String transmitter_build_time = "";
     bool has_metadata = TransmitterManager::hasMetadata();
     bool metadata_valid = TransmitterManager::isMetadataValid();
 
@@ -311,12 +306,10 @@ esp_err_t api_version_handler(httpd_req_t *req) {
     doc["version"] = receiver_version;
     doc["version_number"] = receiver_version_number;
     doc["build_date"] = receiver_build_date;
-    doc["build_time"] = receiver_build_time;
     doc["metadata_valid"] = receiver_metadata_valid;
     doc["transmitter_version"] = transmitter_version;
     doc["transmitter_version_number"] = transmitter_version_number;
     doc["transmitter_build_date"] = transmitter_build_date;
-    doc["transmitter_build_time"] = transmitter_build_time;
     doc["transmitter_compatible"] = version_compatible;
     doc["transmitter_metadata_valid"] = metadata_valid;
     doc["uptime"] = millis() / 1000;
@@ -607,8 +600,20 @@ esp_err_t api_clear_event_logs_handler(httpd_req_t *req) {
     const auto ack_before = TransmitterManager::getEventLogClearAck();
     const auto summary_before = TransmitterManager::getEventLogSummary();
 
-    // Event log transport is ESP-NOW + MQTT only: send clear command to transmitter.
-    const bool tx_send_ok = send_event_logs_clear_request();
+    bool tx_send_ok = false;
+    if (MqttClient::isEnabled() && MqttClient::isConnected()) {
+        StaticJsonDocument<128> cmd;
+        char request_id[32];
+        snprintf(request_id, sizeof(request_id), "elog-clear-%lu", static_cast<unsigned long>(millis()));
+        cmd["request_id"] = request_id;
+        cmd["origin"] = "receiver_tft";
+        cmd["schema"] = 1;
+
+        char payload[128];
+        if (serializeJson(cmd, payload, sizeof(payload)) > 0) {
+            tx_send_ok = MqttClient::publishJson(mqtt::topics::rx::CMD_CONTROL_EVENT_LOGS_CLEAR, payload, false);
+        }
+    }
 
     // Keep receiver cache consistent with clear command.
     TransmitterManager::clearEventLogs();
@@ -655,13 +660,11 @@ esp_err_t api_system_metrics_handler(httpd_req_t *req) {
     HttpHandlerTimer handler_timer(HM_SYSTEM_METRICS);
     DynamicJsonDocument doc(2560);
 
-    const uint32_t callback_count = ESPNow::rx_callback_count;
-    const uint32_t drop_count = ESPNow::rx_queue_drop_count;
-    const uint32_t high_watermark = ESPNow::rx_queue_high_watermark;
-    const uint32_t queue_depth = (ESPNow::queue != nullptr) ? static_cast<uint32_t>(uxQueueMessagesWaiting(ESPNow::queue)) : 0;
-    const uint32_t queue_size = (ESPNow::queue != nullptr)
-                                    ? static_cast<uint32_t>(uxQueueMessagesWaiting(ESPNow::queue) + uxQueueSpacesAvailable(ESPNow::queue))
-                                    : 0;
+    const uint32_t callback_count = RuntimeState::rx_callback_count;
+    const uint32_t drop_count = RuntimeState::rx_queue_drop_count;
+    const uint32_t high_watermark = RuntimeState::rx_queue_high_watermark;
+    const uint32_t queue_depth = 0;
+    const uint32_t queue_size = 0;
 
     doc["success"] = true;
     doc["uptime_s"] = millis() / 1000;

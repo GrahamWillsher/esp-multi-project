@@ -1,4 +1,5 @@
 #include "page_definitions.h"
+#include <esp32common/contracts/shared_contracts.h>
 #include <string.h>
 
 // Central page registry - all pages defined in one place

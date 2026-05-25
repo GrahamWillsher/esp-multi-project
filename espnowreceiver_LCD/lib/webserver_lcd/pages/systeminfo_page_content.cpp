@@ -2,30 +2,33 @@
 
 const char* get_systeminfo_page_content() {
     return R"rawliteral(
-    <h1>Receiver Configuration</h1>
     <div style='margin-bottom: 20px;'>
         <a href='/' style='display: inline-block; padding: 10px 16px; background: #4CAF50; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;'>
             ← Dashboard
         </a>
     </div>
+    <h1 style='color: #4CAF50;'>📱 Receiver <span style='font-size: 0.5em; font-weight: 600;'>(<span id='receiverDeviceName'>Loading...</span>)</span></h1>
 
-    <div class='settings-card'>
-        <h3>Device Details</h3>
-        <div class='settings-row'>
-            <label>Device:</label>
-            <input type='text' id='deviceName' value='Loading...' disabled class='readonly-field' />
-        </div>
-        <div class='settings-row'>
-            <label>Chip Model:</label>
-            <input type='text' id='chipModel' value='Loading...' disabled class='readonly-field' />
-        </div>
-        <div class='settings-row'>
-            <label>Chip Revision:</label>
-            <input type='text' id='chipRevision' value='Loading...' disabled class='readonly-field' />
-        </div>
-        <div class='settings-row'>
-            <label>WiFi MAC Address:</label>
-            <input type='text' id='wifiMac' value='Loading...' disabled class='readonly-field' style='font-family: monospace;' />
+    <!-- Status Summary -->
+    <div id='receiverStatusSummary' class='info-box' style='margin: 20px 0; border-left: 5px solid #4CAF50;'>
+        <h3 style='margin: 0 0 15px 0;'>&#128202; Status Summary</h3>
+        <div style='display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px;'>
+            <div>
+                <div style='color: #888; font-size: 13px;'>Connection</div>
+                <div id='receiverConnectionText' style='font-size: 18px; font-weight: bold; color: #4CAF50; margin-top: 5px;'>Loading...</div>
+            </div>
+            <div>
+                <div style='color: #888; font-size: 13px;'>IP Address</div>
+                <div id='receiverStatusIp' style='font-size: 16px; font-weight: bold; margin-top: 5px; font-family: monospace;'>Loading...</div>
+            </div>
+            <div>
+                <div style='color: #888; font-size: 13px;'>Firmware</div>
+                <div id='receiverStatusFirmware' style='font-size: 16px; font-weight: bold; margin-top: 5px;'>Loading...</div>
+            </div>
+            <div>
+                <div style='color: #888; font-size: 13px;'>Build Date</div>
+                <div id='receiverStatusBuildDate' style='font-size: 13px; margin-top: 5px; color: #888;'>Loading...</div>
+            </div>
         </div>
     </div>
 

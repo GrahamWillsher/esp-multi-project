@@ -217,7 +217,7 @@ Validate zero transmitter timeouts under combined MQTT + HTTP + RF interference 
 ## Questions?
 
 For details on the investigation that led to this solution, see the main document:  
-[RECEIVER_HTTP_ESPNOW_COEXISTENCE_FULL_INVESTIGATION_2026_05_05.md](RECEIVER_HTTP_ESPNOW_COEXISTENCE_FULL_INVESTIGATION_2026_05_05.md)
+[MQTT_ONLY_TRANSPORT_FEASIBILITY_2026_05_14.md](MQTT_ONLY_TRANSPORT_FEASIBILITY_2026_05_14.md)
 
 ---
 

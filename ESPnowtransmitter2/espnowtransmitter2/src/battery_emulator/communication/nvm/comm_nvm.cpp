@@ -13,6 +13,10 @@
 
 namespace {
 
+constexpr const char* kComponentInterfaceNamespace = "component_if";
+constexpr const char* kBatteryInterfaceKey = "battery_if";
+constexpr const char* kInverterInterfaceKey = "inverter_if";
+
 bool is_supported_battery_type(BatteryType type) {
   const std::vector<BatteryType> supported_types = supported_battery_types();
   return std::find(supported_types.begin(), supported_types.end(), type) != supported_types.end();
@@ -135,9 +139,30 @@ void init_stored_settings() {
     return CAN_Interface::CAN_NATIVE;  //Failed to determine, return CAN native
   };
 
-  can_config.battery = readIf("BATTCOMM");
+  auto read_interface_setting = [&](const char* newKey, const char* oldKey) -> CAN_Interface {
+    Preferences interfacePrefs;
+    if (interfacePrefs.begin(kComponentInterfaceNamespace, true)) {
+      if (interfacePrefs.isKey(newKey)) {
+        const CAN_Interface stored = static_cast<CAN_Interface>(interfacePrefs.getUInt(newKey, 0));
+        interfacePrefs.end();
+        return stored;
+      }
+      interfacePrefs.end();
+    }
+
+    const CAN_Interface fallback = readIf(oldKey);
+
+    if (interfacePrefs.begin(kComponentInterfaceNamespace, false)) {
+      interfacePrefs.putUInt(newKey, static_cast<uint32_t>(fallback));
+      interfacePrefs.end();
+    }
+
+    return fallback;
+  };
+
+  can_config.battery = read_interface_setting(kBatteryInterfaceKey, "BATTCOMM");
   can_config.battery_double = readIf("BATT2COMM");
-  can_config.inverter = readIf("INVCOMM");
+  can_config.inverter = read_interface_setting(kInverterInterfaceKey, "INVCOMM");
   can_config.charger = readIf("CHGCOMM");
   can_config.shunt = readIf("SHUNTCOMM");
 
@@ -198,9 +223,6 @@ void init_stored_settings() {
   datalayer.battery.status.override_charge_power_W = settings.getUInt("CHGPOWER", 1000);
   datalayer.battery.status.override_discharge_power_W = settings.getUInt("DCHGPOWER", 1000);
 
-  // Legacy migration path: these keys were historically stored in batterySettings and
-  // consumed via devboard/wifi globals. The transmitter now uses EthernetManager's
-  // dedicated "network" namespace for static IP settings.
   const bool legacy_static_ip_enabled = settings.getBool("STATICIP", false);
   const uint8_t legacy_ip[4] = {
       static_cast<uint8_t>(settings.getUInt("LOCALIP1", 192)),
@@ -229,8 +251,6 @@ void init_stored_settings() {
       legacy_gateway[0], legacy_gateway[1], legacy_gateway[2], legacy_gateway[3],
   };
 
-  // One-time migration guard: only populate EthernetManager network namespace if
-  // no network config exists yet.
   Preferences networkPrefs;
   bool has_network_config = false;
   if (networkPrefs.begin("network", true)) {
@@ -241,9 +261,9 @@ void init_stored_settings() {
   if (!has_network_config) {
     if (EthernetManager::instance().save_network_config(legacy_static_ip_enabled, legacy_ip, legacy_gateway,
                                                         legacy_subnet, legacy_dns_primary, legacy_dns_secondary)) {
-      DEBUG_PRINTF("Migrated legacy static IP settings from batterySettings to network namespace\n");
+      DEBUG_PRINTF("Migrated static IP settings to network namespace\n");
     } else {
-      DEBUG_PRINTF("Failed to migrate legacy static IP settings to network namespace\n");
+      DEBUG_PRINTF("Failed to migrate static IP settings to network namespace\n");
     }
   }
 

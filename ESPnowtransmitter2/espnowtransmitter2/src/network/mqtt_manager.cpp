@@ -4,8 +4,8 @@
 #include "../config/event_log_config.h"
 #include "../config/logging_config.h"
 #include "../datalayer/static_data.h"
-#include "../espnow/control_handlers.h"
-#include "../espnow/component_catalog_handlers.h"
+#include "../control/control_handlers.h"
+#include "../catalog/component_catalog_handlers.h"
 #include "../datalayer/datalayer.h"
 #include "../settings/settings_manager.h"
 #include "../battery_emulator/devboard/utils/events.h"
@@ -22,13 +22,15 @@
 #include <algorithm>
 #include <vector>
 #include <firmware_version.h>
+#include <firmware_metadata.h>
 #include <mqtt_logger.h>
 #include <esp32common/config/timing_config.h>
 #include <esp32common/mqtt/mqtt_feature_flags.h>
+#include <esp32common/mqtt/mqtt_topics_common.h>
 #include <esp_wifi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
-#include <mqtt_manager.h>
+#include "../config/mqtt_config_manager.h"
 #include <ethernet_utilities.h>
 
 namespace {
@@ -131,51 +133,51 @@ static bool publish_in_chunks(PubSubClient& client,
     return true;
 }
 
-constexpr const char* MQTT_TOPIC_TX_HEARTBEAT = "batt-emu/mqtt-v1/tx/state/heartbeat";
-constexpr const char* MQTT_TOPIC_RX_CMD_UPDATE_BATTERY = "batt-emu/mqtt-v1/rx/cmd/update/battery";
-constexpr const char* MQTT_TOPIC_RX_CMD_UPDATE_NETWORK = "batt-emu/mqtt-v1/rx/cmd/update/network";
-constexpr const char* MQTT_TOPIC_RX_CMD_UPDATE_MQTT = "batt-emu/mqtt-v1/rx/cmd/update/mqtt";
-constexpr const char* MQTT_TOPIC_RX_CMD_CONTROL_DEBUG_LEVEL = "batt-emu/mqtt-v1/rx/cmd/control/debug_level";
-constexpr const char* MQTT_TOPIC_RX_CMD_CONTROL_TEST_DATA_MODE = "batt-emu/mqtt-v1/rx/cmd/control/test_data_mode";
-constexpr const char* MQTT_TOPIC_RX_CMD_CONTROL_EVENT_LOGS_CLEAR = "batt-emu/mqtt-v1/rx/cmd/control/event_logs_clear";
-constexpr const char* MQTT_TOPIC_RX_CMD_CONTROL_REBOOT = "batt-emu/mqtt-v1/rx/cmd/control/reboot";
-constexpr const char* MQTT_TOPIC_RX_CMD_CONTROL_OTA_START = "batt-emu/mqtt-v1/rx/cmd/control/ota_start";
-constexpr const char* MQTT_TOPIC_RX_CMD_CONTROL_COMPONENT_APPLY = "batt-emu/mqtt-v1/rx/cmd/control/component_apply";
-constexpr const char* MQTT_TOPIC_RX_CMD_REFRESH_POWER = "batt-emu/mqtt-v1/rx/cmd/refresh/power";
-constexpr const char* MQTT_TOPIC_RX_CMD_REFRESH_BATTERY = "batt-emu/mqtt-v1/rx/cmd/refresh/battery";
-constexpr const char* MQTT_TOPIC_RX_CMD_REFRESH_NETWORK = "batt-emu/mqtt-v1/rx/cmd/refresh/network";
-constexpr const char* MQTT_TOPIC_RX_CMD_REFRESH_MQTT = "batt-emu/mqtt-v1/rx/cmd/refresh/mqtt";
-constexpr const char* MQTT_TOPIC_RX_CMD_REFRESH_SETTINGS = "batt-emu/mqtt-v1/rx/cmd/refresh/settings";
-constexpr const char* MQTT_TOPIC_RX_CMD_REFRESH_CATALOG_BATTERY = "batt-emu/mqtt-v1/rx/cmd/refresh/catalog_battery";
-constexpr const char* MQTT_TOPIC_RX_CMD_REFRESH_CATALOG_INVERTER = "batt-emu/mqtt-v1/rx/cmd/refresh/catalog_inverter";
-constexpr const char* MQTT_TOPIC_RX_CMD_REFRESH_LED = "batt-emu/mqtt-v1/rx/cmd/refresh/led";
-constexpr const char* MQTT_TOPIC_RX_CMD_STREAM_EVENT_LOGS = "batt-emu/mqtt-v1/rx/cmd/stream/event_logs";
-constexpr const char* MQTT_TOPIC_RX_CMD_STREAM_CELL_DATA = "batt-emu/mqtt-v1/rx/cmd/stream/cell_data";
-constexpr const char* MQTT_TOPIC_TX_ACK_CONTROL = "batt-emu/mqtt-v1/tx/ack/control";
-constexpr const char* MQTT_TOPIC_TX_ACK_BATTERY = "batt-emu/mqtt-v1/tx/ack/battery";
-constexpr const char* MQTT_TOPIC_TX_ACK_NETWORK = "batt-emu/mqtt-v1/tx/ack/network";
-constexpr const char* MQTT_TOPIC_TX_ACK_MQTT = "batt-emu/mqtt-v1/tx/ack/mqtt";
-constexpr const char* MQTT_TOPIC_TX_ACK_EVENT_LOGS_CLEAR = "batt-emu/mqtt-v1/tx/ack/event_logs_clear";
-constexpr const char* MQTT_TOPIC_TX_STATE_STATIC_NETWORK = "batt-emu/mqtt-v1/tx/state/static/network";
-constexpr const char* MQTT_TOPIC_TX_STATE_STATIC_MQTT    = "batt-emu/mqtt-v1/tx/state/static/mqtt";
-constexpr const char* MQTT_TOPIC_TX_STATE_STATIC_BATTERY = "batt-emu/mqtt-v1/tx/state/static/battery";
-constexpr const char* MQTT_TOPIC_TX_STATE_STATIC_INVERTER = "batt-emu/mqtt-v1/tx/state/static/inverter";
-constexpr const char* MQTT_TOPIC_TX_STATE_STATIC_POWER = "batt-emu/mqtt-v1/tx/state/static/power";
-constexpr const char* MQTT_TOPIC_TX_STATE_STATIC_LED = "batt-emu/mqtt-v1/tx/state/static/led";
-constexpr const char* MQTT_TOPIC_TX_STATE_STATIC_SETTINGS = "batt-emu/mqtt-v1/tx/state/static/settings";
-constexpr const char* MQTT_TOPIC_TX_STATE_STATIC_CATALOG_BATTERY  = "batt-emu/mqtt-v1/tx/state/static/catalog_battery";
-constexpr const char* MQTT_TOPIC_TX_STATE_STATIC_CATALOG_INVERTER = "batt-emu/mqtt-v1/tx/state/static/catalog_inverter";
-constexpr const char* MQTT_TOPIC_TX_STATE_BATTERY_LIVE = "batt-emu/mqtt-v1/tx/state/battery_live";
-constexpr const char* MQTT_TOPIC_TX_STATE_RUNTIME_LED = "batt-emu/mqtt-v1/tx/state/runtime/led";
-constexpr const char* MQTT_TOPIC_TX_STATE_RUNTIME_SYSTEM = "batt-emu/mqtt-v1/tx/state/runtime/system";
-constexpr const char* MQTT_TOPIC_TX_STATE_RUNTIME_CHARGER = "batt-emu/mqtt-v1/tx/state/runtime/charger";
-constexpr const char* MQTT_TOPIC_TX_STATE_RUNTIME_INVERTER = "batt-emu/mqtt-v1/tx/state/runtime/inverter";
-constexpr const char* MQTT_TOPIC_TX_STATE_CELL_DATA_CHUNK = "batt-emu/mqtt-v1/tx/state/cell_data/chunk";
-constexpr const char* MQTT_TOPIC_TX_STATE_EVENT_LOG_SUMMARY = "batt-emu/mqtt-v1/tx/state/summary/event_logs";
-constexpr const char* MQTT_TOPIC_TX_STATE_EVENT_LOG_CHUNK = "batt-emu/mqtt-v1/tx/state/event_logs/chunk";
-constexpr const char* MQTT_TOPIC_TX_META_VERSION = "batt-emu/mqtt-v1/tx/meta/version";
-constexpr const char* MQTT_TOPIC_TX_META_SCHEMA_VERSIONS = "batt-emu/mqtt-v1/tx/meta/schema_versions";
-constexpr const char* MQTT_TOPIC_TX_META_RUNTIME = "batt-emu/mqtt-v1/tx/meta/runtime";
+constexpr const char* MQTT_TOPIC_TX_HEARTBEAT = mqtt::topics::tx::STATE_HEARTBEAT;
+constexpr const char* MQTT_TOPIC_RX_CMD_UPDATE_BATTERY = mqtt::topics::rx::CMD_UPDATE_BATTERY;
+constexpr const char* MQTT_TOPIC_RX_CMD_UPDATE_NETWORK = mqtt::topics::rx::CMD_UPDATE_NETWORK;
+constexpr const char* MQTT_TOPIC_RX_CMD_UPDATE_MQTT = mqtt::topics::rx::CMD_UPDATE_MQTT;
+constexpr const char* MQTT_TOPIC_RX_CMD_CONTROL_DEBUG_LEVEL = mqtt::topics::rx::CMD_CONTROL_DEBUG_LEVEL;
+constexpr const char* MQTT_TOPIC_RX_CMD_CONTROL_TEST_DATA_MODE = mqtt::topics::rx::CMD_CONTROL_TEST_DATA_MODE;
+constexpr const char* MQTT_TOPIC_RX_CMD_CONTROL_EVENT_LOGS_CLEAR = mqtt::topics::rx::CMD_CONTROL_EVENT_LOGS_CLEAR;
+constexpr const char* MQTT_TOPIC_RX_CMD_CONTROL_REBOOT = mqtt::topics::rx::CMD_CONTROL_REBOOT;
+constexpr const char* MQTT_TOPIC_RX_CMD_CONTROL_OTA_START = mqtt::topics::rx::CMD_CONTROL_OTA_START;
+constexpr const char* MQTT_TOPIC_RX_CMD_CONTROL_COMPONENT_APPLY = mqtt::topics::rx::CMD_CONTROL_COMPONENT_APPLY;
+constexpr const char* MQTT_TOPIC_RX_CMD_REFRESH_POWER = mqtt::topics::rx::CMD_REFRESH_POWER;
+constexpr const char* MQTT_TOPIC_RX_CMD_REFRESH_BATTERY = mqtt::topics::rx::CMD_REFRESH_BATTERY;
+constexpr const char* MQTT_TOPIC_RX_CMD_REFRESH_NETWORK = mqtt::topics::rx::CMD_REFRESH_NETWORK;
+constexpr const char* MQTT_TOPIC_RX_CMD_REFRESH_MQTT = mqtt::topics::rx::CMD_REFRESH_MQTT;
+constexpr const char* MQTT_TOPIC_RX_CMD_REFRESH_SETTINGS = mqtt::topics::rx::CMD_REFRESH_SETTINGS;
+constexpr const char* MQTT_TOPIC_RX_CMD_REFRESH_CATALOG_BATTERY = mqtt::topics::rx::CMD_REFRESH_CATALOG_BATTERY;
+constexpr const char* MQTT_TOPIC_RX_CMD_REFRESH_CATALOG_INVERTER = mqtt::topics::rx::CMD_REFRESH_CATALOG_INVERTER;
+constexpr const char* MQTT_TOPIC_RX_CMD_REFRESH_LED = mqtt::topics::rx::CMD_REFRESH_LED;
+constexpr const char* MQTT_TOPIC_RX_CMD_STREAM_EVENT_LOGS = mqtt::topics::rx::CMD_STREAM_EVENT_LOGS;
+constexpr const char* MQTT_TOPIC_RX_CMD_STREAM_CELL_DATA = mqtt::topics::rx::CMD_STREAM_CELL_DATA;
+constexpr const char* MQTT_TOPIC_TX_ACK_CONTROL = mqtt::topics::tx::ACK_CONTROL;
+constexpr const char* MQTT_TOPIC_TX_ACK_BATTERY = mqtt::topics::tx::ACK_BATTERY;
+constexpr const char* MQTT_TOPIC_TX_ACK_NETWORK = mqtt::topics::tx::ACK_NETWORK;
+constexpr const char* MQTT_TOPIC_TX_ACK_MQTT = mqtt::topics::tx::ACK_MQTT;
+constexpr const char* MQTT_TOPIC_TX_ACK_EVENT_LOGS_CLEAR = mqtt::topics::tx::ACK_EVENT_LOGS_CLEAR;
+constexpr const char* MQTT_TOPIC_TX_STATE_STATIC_NETWORK = mqtt::topics::tx::STATE_STATIC_NETWORK;
+constexpr const char* MQTT_TOPIC_TX_STATE_STATIC_MQTT = mqtt::topics::tx::STATE_STATIC_MQTT;
+constexpr const char* MQTT_TOPIC_TX_STATE_STATIC_BATTERY = mqtt::topics::tx::STATE_STATIC_BATTERY;
+constexpr const char* MQTT_TOPIC_TX_STATE_STATIC_INVERTER = mqtt::topics::tx::STATE_STATIC_INVERTER;
+constexpr const char* MQTT_TOPIC_TX_STATE_STATIC_POWER = mqtt::topics::tx::STATE_STATIC_POWER;
+constexpr const char* MQTT_TOPIC_TX_STATE_STATIC_LED = mqtt::topics::tx::STATE_STATIC_LED;
+constexpr const char* MQTT_TOPIC_TX_STATE_STATIC_SETTINGS = mqtt::topics::tx::STATE_STATIC_SETTINGS;
+constexpr const char* MQTT_TOPIC_TX_STATE_STATIC_CATALOG_BATTERY = mqtt::topics::tx::STATE_STATIC_CATALOG_BATTERY;
+constexpr const char* MQTT_TOPIC_TX_STATE_STATIC_CATALOG_INVERTER = mqtt::topics::tx::STATE_STATIC_CATALOG_INVERTER;
+constexpr const char* MQTT_TOPIC_TX_STATE_BATTERY_LIVE = mqtt::topics::tx::STATE_BATTERY_LIVE;
+constexpr const char* MQTT_TOPIC_TX_STATE_RUNTIME_LED = mqtt::topics::tx::STATE_RUNTIME_LED;
+constexpr const char* MQTT_TOPIC_TX_STATE_RUNTIME_SYSTEM = mqtt::topics::tx::STATE_RUNTIME_SYSTEM;
+constexpr const char* MQTT_TOPIC_TX_STATE_RUNTIME_CHARGER = mqtt::topics::tx::STATE_RUNTIME_CHARGER;
+constexpr const char* MQTT_TOPIC_TX_STATE_RUNTIME_INVERTER = mqtt::topics::tx::STATE_RUNTIME_INVERTER;
+constexpr const char* MQTT_TOPIC_TX_STATE_CELL_DATA_CHUNK = mqtt::topics::tx::STATE_CELL_DATA_CHUNK;
+constexpr const char* MQTT_TOPIC_TX_STATE_EVENT_LOG_SUMMARY = mqtt::topics::tx::STATE_SUMMARY_EVENT_LOGS;
+constexpr const char* MQTT_TOPIC_TX_STATE_EVENT_LOG_CHUNK = mqtt::topics::tx::STATE_EVENT_LOGS_CHUNK;
+constexpr const char* MQTT_TOPIC_TX_META_VERSION = mqtt::topics::tx::META_VERSION;
+constexpr const char* MQTT_TOPIC_TX_META_SCHEMA_VERSIONS = mqtt::topics::tx::META_SCHEMA_VERSIONS;
+constexpr const char* MQTT_TOPIC_TX_META_RUNTIME = mqtt::topics::tx::META_RUNTIME;
 
 bool parse_ipv4_string(const char* value, uint8_t out[4]) {
     if (value == nullptr || out == nullptr) {
@@ -1095,14 +1097,19 @@ bool MqttManager::publish_static_settings() {
 bool MqttManager::publish_meta_version() {
     if (!is_connected()) return false;
 
+    const char* build_date = FW_BUILD_DATE;
+    if (FirmwareMetadata::isValid(FirmwareMetadata::metadata) &&
+        FirmwareMetadata::metadata.build_date[0] != '\0') {
+        build_date = FirmwareMetadata::metadata.build_date;
+    }
+
     snprintf(payload_buffer_, sizeof(payload_buffer_),
-             R"({"device":"%s","firmware":"%s","firmware_number":%lu,"protocol":%u,"build_date":"%s","build_time":"%s","schema":1,"ts_ms":%lu})",
+             R"({"device":"%s","firmware":"%s","firmware_number":%lu,"protocol":%u,"build_date":"%s","schema":1,"ts_ms":%lu})",
              DEVICE_NAME,
              FW_VERSION_STRING,
              static_cast<unsigned long>(FW_VERSION_NUMBER),
              static_cast<unsigned>(PROTOCOL_VERSION),
-             FW_BUILD_DATE,
-             FW_BUILD_TIME,
+             build_date,
              static_cast<unsigned long>(millis()));
 
     const bool ok = client_.publish(MQTT_TOPIC_TX_META_VERSION, payload_buffer_, true);
@@ -2805,8 +2812,4 @@ void MqttManager::handle_ota_command(const char* url) {
     }
 }
 
-// External C linkage function for MqttConfigManager to query connection status
-// This avoids circular header dependencies between lib/mqtt_manager and src/network
-extern "C" bool mqtt_manager_is_connected() {
-    return MqttManager::instance().is_connected();
-}
+

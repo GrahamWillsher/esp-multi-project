@@ -1,8 +1,8 @@
-# Display Architecture Redesign - Start Here! 🎯
-
 # espnowreceiver_2 — Start Here
 
-ESP-NOW battery telemetry receiver for **LilyGo T-Display-S3** (ESP32-S3, 16 MB flash, 8 MB PSRAM).
+MQTT-based battery telemetry receiver for **LilyGo T-Display-S3** (ESP32-S3, 16 MB flash, 8 MB PSRAM).
+
+> **Design note:** ESP-NOW was the original inter-device transport, chosen for its broker-free simplicity during early development. It was replaced by MQTT once the Ethernet path was stable — see `esp32common/docs/ESP-NOW_Communication_Architecture.md`.
 
 This project is the **production-ready** receiver. For the 7-inch Waveshare display variant, see `espnowreceiver_LCD`.
 
@@ -18,10 +18,10 @@ This project is the **production-ready** receiver. For the 7-inch Waveshare disp
 
 ## What this firmware does
 
-- Receives battery telemetry from an ESP-NOW transmitter (ESPnowtransmitter2)
+- Receives battery telemetry from the transmitter via MQTT (ESPnowtransmitter2)
 - Renders SOC%, power, and link state on the T-Display-S3 screen
 - Hosts a web dashboard for configuration and live monitoring via SSE
-- Forwards MQTT topics to a broker when configured
+- Uses MQTT as the primary telemetry + command/control plane
 - Supports OTA firmware updates over WiFi
 
 ---
@@ -43,7 +43,7 @@ pio run --target uploadfs --environment lilygo_t_display_s3
 
 ## Key architecture constraints
 
-- **Dual-core:** ESP-NOW worker on APP_CPU; HTTP/SSE on PRO_CPU via AsyncWebServer
+- **Dual-core:** runtime tasks remain isolated; HTTP/SSE must not block MQTT/update paths
 - **Display mutex:** All LVGL/TFT access must be guarded — see `RTOS::lvgl_mutex`
 - **Transmitter caches** (`lib/webserver/utils/transmitter_*.cpp`) — all protected by `ScopedMutex` as of 2026-04-21
 - **MQTT task** — broker reconfiguration takes effect without reboot (config fingerprint, not one-shot flag)
@@ -55,7 +55,7 @@ pio run --target uploadfs --environment lilygo_t_display_s3
 
 | Area | Status |
 |---|---|
-| ESP-NOW receive + telemetry decode | ✅ Production |
+| MQTT receive + telemetry decode | ✅ Production |
 | Web dashboard + SSE | ✅ Production |
 | MQTT client | ✅ Production |
 | OTA | ✅ Production |

@@ -286,4 +286,28 @@ void update_battery_cell_count(uint16_t cell_count) {
     }
 }
 
+uint32_t get_battery_settings_version() {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
+    return settings_cache.battery_settings.version;
+}
+
+uint32_t get_power_settings_version() {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
+    return settings_cache.power_settings.version;
+}
+
+uint32_t get_can_settings_version() {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
+    return settings_cache.can_settings.version;
+}
+
+uint32_t get_contactor_settings_version() {
+    ensure_mutex();
+    ScopedMutex lock(cache_mutex);
+    return settings_cache.contactor_settings.version;
+}
+
 } // namespace TransmitterSettingsCache

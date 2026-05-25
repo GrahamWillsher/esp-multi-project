@@ -4,7 +4,7 @@
 #include <Arduino.h>
 #include <cstdint>
 
-#include "../../src/espnow/battery_data_store.h"
+#include "../../src/runtime/battery_data_store.h"
 #include "transmitter_manager.h"
 #include "cell_data_cache.h"
 

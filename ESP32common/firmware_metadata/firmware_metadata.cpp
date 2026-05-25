@@ -13,7 +13,7 @@
 
 // Default values if build flags are not provided
 #ifndef PIO_ENV_NAME
-#define PIO_ENV_NAME unknown
+#define PIO_ENV_NAME "unknown"
 #endif
 
 #ifndef TARGET_DEVICE
@@ -50,13 +50,13 @@ namespace FirmwareMetadata {
     // Use compound literal initialization for C++ compatibility
     const Metadata metadata __attribute__((section(".rodata"))) = {
         MAGIC_START,                    // magic_start
-        TOSTRING(PIO_ENV_NAME),        // env_name
+        PIO_ENV_NAME,                  // env_name
         TOSTRING(TARGET_DEVICE),       // device_type
         FW_VERSION_MAJOR,              // version_major
         FW_VERSION_MINOR,              // version_minor
         FW_VERSION_PATCH,              // version_patch
         0,                             // reserved1
-        TOSTRING(BUILD_DATE),          // build_date
+        BUILD_DATE,                    // build_date
         {0},                           // reserved
         MAGIC_END                      // magic_end
     };

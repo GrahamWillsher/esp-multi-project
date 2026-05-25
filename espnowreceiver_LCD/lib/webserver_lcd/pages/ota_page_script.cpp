@@ -777,7 +777,7 @@ const char* get_ota_page_script() {
                         const buildEl = document.getElementById('receiverBuild');
                         const name = formatEnvName(data.device || 'Receiver');
                         const v = data.version || 'Unknown';
-                        const d = (data.build_date && data.build_time) ? (data.build_date + ' ' + data.build_time) : (data.build_date || 'Build info unavailable');
+                        const d = data.build_date || 'Build info unavailable';
                         versionEl.innerHTML = formatQuotedName(name) + ' ' + formatQuotedVersion(v) + ' <span style="color: #FFD700;">*</span>';
                         buildEl.innerText = formatBuildDateTime(d);
                         receiverVersionForCompat = v;
@@ -793,9 +793,7 @@ const char* get_ota_page_script() {
                         const buildEl = document.getElementById('transmitterBuild');
                         const name = 'Transmitter';
                         const v = data.transmitter_version || 'Unknown';
-                        const d = (data.transmitter_build_date && data.transmitter_build_time)
-                            ? (data.transmitter_build_date + ' ' + data.transmitter_build_time)
-                            : (data.transmitter_build_date || 'Build info unavailable');
+                        const d = data.transmitter_build_date || 'Build info unavailable';
                         versionEl.innerHTML = formatQuotedName(name) + ' ' + formatQuotedVersion(v) + ' <span style="color: #FFD700;">*</span>';
                         buildEl.innerText = formatBuildDateTime(d);
                         transmitterVersionForCompat = (v && v !== 'Unknown') ? v : null;

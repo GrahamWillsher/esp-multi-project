@@ -1,23 +1,18 @@
 #include "api_sse_handlers.h"
 
 #include "api_response_utils.h"
-#include "../utils/transmitter_manager.h"
+#include <esp32common/mqtt/mqtt_topics_common.h>
 #include "../utils/cell_data_cache.h"
 #include "../utils/sse_notifier.h"
 #include <webserver_common_utils/http_sse_utils.h>
 #include "../utils/telemetry_snapshot_utils.h"
 #include "../logging.h"
 #include "../../src/mqtt/mqtt_client.h"
-#include "../../src/espnow/espnow_send.h"
-#include "../../src/espnow/rx_connection_handler.h"
 #include "../page_definitions.h"
 #include "../../src/memory/memory_sampler.h"
 #include <ArduinoJson.h>
 
 #include <Arduino.h>
-#include <esp_now.h>
-#include <esp32common/espnow/common.h>
-#include <esp32common/espnow/tx_scheduler.h>
 
 namespace {
 constexpr uint32_t kSseSessionMaxDurationMs = 300000; // 5 minutes
@@ -30,8 +25,7 @@ constexpr size_t kSseEventMaxBytes = 1024;
 constexpr uint32_t kCellSseRetryMs = 2000;
 
 // MQTT topics for SSE refresh commands
-static const char* kMonitorRefreshTopic = "batt-emu/mqtt-v1/rx/cmd/refresh/power";
-static const char* kMonitorUnsubscribeTopic = "batt-emu/mqtt-v1/rx/cmd/stream/monitor_unsubscribe";
+static constexpr const char* kMonitorRefreshTopic = mqtt::topics::rx::CMD_REFRESH_POWER;
 
 struct SseMetricsInternal {
     // All fields accessed exclusively under g_sse_metrics_mux (portENTER_CRITICAL).
@@ -222,9 +216,6 @@ esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
         return ESP_FAIL;
     }
 
-    msg_subtype data_subtype = get_subtype_for_uri("/transmitter/monitor2");
-
-    // Try MQTT refresh first
     bool mqtt_refresh_sent = false;
     if (MqttClient::isEnabled() && MqttClient::isConnected()) {
         StaticJsonDocument<128> refresh_cmd;
@@ -240,16 +231,8 @@ esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
         }
     }
 
-    // Fall back to ESP-NOW if MQTT not available
-    if (!mqtt_refresh_sent && TransmitterManager::isMACKnown() &&
-        !ReceiverConnectionHandler::instance().quiet_mode_active()) {
-        request_data_t req_msg = { msg_request_data, data_subtype };
-        esp_err_t result = EspnowTxScheduler::send(TransmitterManager::getMAC(), &req_msg, sizeof(req_msg), "SSE_REQ_DATA");
-        if (result == ESP_OK) {
-            LOG_DEBUG("SSE", "Sent REQUEST_DATA (subtype=%d) to transmitter via ESP-NOW", data_subtype);
-        }
-    } else if (!mqtt_refresh_sent && ReceiverConnectionHandler::instance().quiet_mode_active()) {
-        LOG_WARN("SSE", "Skipped REQUEST_DATA: no MQTT and in reconnect quiet mode");
+    if (!mqtt_refresh_sent) {
+        LOG_WARN("SSE", "Monitor refresh command skipped: MQTT command channel unavailable");
     }
 
     uint8_t last_soc = 255;
@@ -309,33 +292,6 @@ esp_err_t api_monitor_sse_handler(httpd_req_t *req) {
                 break;
             }
         }
-    }
-
-    // Try MQTT unsubscribe first
-    bool mqtt_unsub_sent = false;
-    if (MqttClient::isEnabled() && MqttClient::isConnected()) {
-        StaticJsonDocument<128> unsub_cmd;
-        unsub_cmd["request_id"] = esp_random();
-        unsub_cmd["stream"] = "power";
-        unsub_cmd["action"] = "unsubscribe";
-
-        char mqtt_payload[256];
-        if (serializeJson(unsub_cmd, mqtt_payload, sizeof(mqtt_payload)) > 0) {
-            if (MqttClient::publishJson(kMonitorUnsubscribeTopic, mqtt_payload)) {
-                mqtt_unsub_sent = true;
-                LOG_DEBUG("SSE", "Published MQTT monitor unsubscribe command");
-            }
-        }
-    }
-
-    // Fall back to ESP-NOW if MQTT not available
-    if (!mqtt_unsub_sent && TransmitterManager::isMACKnown() &&
-        !ReceiverConnectionHandler::instance().quiet_mode_active()) {
-        abort_data_t abort_msg = { msg_abort_data, data_subtype };
-        (void)EspnowTxScheduler::send(TransmitterManager::getMAC(), &abort_msg, sizeof(abort_msg), "SSE_ABORT_DATA");
-        LOG_DEBUG("SSE", "Sent ABORT_DATA (subtype=%d) to transmitter via ESP-NOW", data_subtype);
-    } else if (!mqtt_unsub_sent && ReceiverConnectionHandler::instance().quiet_mode_active()) {
-        LOG_WARN("SSE", "Skipped ABORT_DATA: no MQTT and in reconnect quiet mode");
     }
 
     HttpSseUtils::end_sse(req);

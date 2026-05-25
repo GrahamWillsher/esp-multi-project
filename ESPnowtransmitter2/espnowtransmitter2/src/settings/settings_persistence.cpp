@@ -6,7 +6,7 @@
 #include "settings_manager.h"
 #include "../config/logging_config.h"
 #include <Preferences.h>
-#include <esp32common/espnow/packet_utils.h>
+#include <runtime_common_utils/crc_utils.h>
 
 // ---------------------------------------------------------------------------
 // NVS blob schema definitions (private to this TU)
@@ -93,7 +93,7 @@ struct __attribute__((packed)) ContactorSettingsBlob {
     uint32_t crc32;
 };
 
-struct BatteryLegacyDefaults {
+struct BatteryDefaults {
     uint32_t capacity_wh;
     uint32_t max_voltage_mv;
     uint32_t min_voltage_mv;
@@ -113,7 +113,7 @@ struct BatteryLegacyDefaults {
     uint32_t version;
 };
 
-struct PowerLegacyDefaults {
+struct PowerDefaults {
     uint16_t charge_w;
     uint16_t discharge_w;
     uint16_t max_precharge_ms;
@@ -124,7 +124,7 @@ struct PowerLegacyDefaults {
     uint32_t version;
 };
 
-struct InverterLegacyDefaults {
+struct InverterDefaults {
     uint8_t cells;
     uint8_t modules;
     uint8_t cells_per_module;
@@ -134,7 +134,7 @@ struct InverterLegacyDefaults {
     uint32_t version;
 };
 
-struct CanLegacyDefaults {
+struct CanDefaults {
     uint16_t frequency_khz;
     uint16_t fd_frequency_mhz;
     uint16_t sofar_id;
@@ -143,7 +143,7 @@ struct CanLegacyDefaults {
     uint32_t version;
 };
 
-struct ContactorLegacyDefaults {
+struct ContactorDefaults {
     bool control_enabled;
     bool nc_mode;
     uint16_t pwm_frequency_hz;
@@ -157,7 +157,7 @@ struct ContactorLegacyDefaults {
 
 constexpr uint8_t kBatteryChemistryLfp = 2;
 
-constexpr BatteryLegacyDefaults kBatteryLegacyDefaults{
+constexpr BatteryDefaults kBatteryDefaults{
     30000,
     58000,
     46000,
@@ -177,7 +177,7 @@ constexpr BatteryLegacyDefaults kBatteryLegacyDefaults{
     0,
 };
 
-constexpr PowerLegacyDefaults kPowerLegacyDefaults{
+constexpr PowerDefaults kPowerDefaults{
     3000,
     3000,
     15000,
@@ -188,7 +188,7 @@ constexpr PowerLegacyDefaults kPowerLegacyDefaults{
     0,  // version
 };
 
-constexpr InverterLegacyDefaults kInverterLegacyDefaults{
+constexpr InverterDefaults kInverterDefaults{
     0,
     0,
     0,
@@ -198,7 +198,7 @@ constexpr InverterLegacyDefaults kInverterLegacyDefaults{
     0,
 };
 
-constexpr CanLegacyDefaults kCanLegacyDefaults{
+constexpr CanDefaults kCanDefaults{
     8,
     40,
     0,
@@ -207,7 +207,7 @@ constexpr CanLegacyDefaults kCanLegacyDefaults{
     0,
 };
 
-constexpr ContactorLegacyDefaults kContactorLegacyDefaults{
+constexpr ContactorDefaults kContactorDefaults{
     false,
     false,
     20000,
@@ -332,12 +332,11 @@ bool SettingsManager::load_battery_settings() {
         return false;
     }
 
-    bool loaded_from_blob = false;
     const size_t blob_size = get_blob_size_if_present(prefs);
     if (blob_size == sizeof(BatterySettingsBlob)) {
         BatterySettingsBlob blob{};
         if (read_blob_checked(prefs, "battery", &blob) &&
-            EspnowPacketUtils::verify_message_crc32(&blob) &&
+            RuntimeCrcUtils::verify_message_crc32(&blob) &&
             blob.schema_version == kBatteryBlobSchemaVersion) {
             battery_capacity_wh_              = blob.capacity_wh;
             battery_max_voltage_mv_           = blob.max_voltage_mv;
@@ -356,32 +355,10 @@ bool SettingsManager::load_battery_settings() {
             battery_soc_estimated_            = blob.soc_estimated;
             battery_led_mode_                 = blob.led_mode;
             battery_settings_version_         = blob.version;
-            loaded_from_blob = true;
         } else {
             LOG_WARN("SETTINGS",
-                     "Battery settings blob invalid/schema mismatch - falling back to legacy keys");
+                     "Battery settings blob invalid/schema mismatch - using defaults");
         }
-    }
-
-    if (!loaded_from_blob) {
-        // Legacy fallback (pre-CRC storage)
-        battery_capacity_wh_              = prefs.getUInt("capacity_wh", kBatteryLegacyDefaults.capacity_wh);
-        battery_max_voltage_mv_           = prefs.getUInt("max_volt_mv", kBatteryLegacyDefaults.max_voltage_mv);
-        battery_min_voltage_mv_           = prefs.getUInt("min_volt_mv", kBatteryLegacyDefaults.min_voltage_mv);
-        battery_max_charge_current_a_     = prefs.getFloat("max_chg_a", kBatteryLegacyDefaults.max_charge_current_a);
-        battery_max_discharge_current_a_  = prefs.getFloat("max_dis_a", kBatteryLegacyDefaults.max_discharge_current_a);
-        battery_soc_high_limit_           = prefs.getUChar("soc_high", kBatteryLegacyDefaults.soc_high_limit);
-        battery_soc_low_limit_            = prefs.getUChar("soc_low", kBatteryLegacyDefaults.soc_low_limit);
-        battery_cell_count_               = prefs.getUChar("cell_count", kBatteryLegacyDefaults.cell_count);
-        battery_chemistry_                = prefs.getUChar("chemistry", kBatteryLegacyDefaults.chemistry);
-        battery_double_enabled_           = prefs.getBool("double_enabled", kBatteryLegacyDefaults.double_enabled);
-        battery_pack_max_voltage_dV_      = prefs.getUShort("pack_max_dv", kBatteryLegacyDefaults.pack_max_voltage_dv);
-        battery_pack_min_voltage_dV_      = prefs.getUShort("pack_min_dv", kBatteryLegacyDefaults.pack_min_voltage_dv);
-        battery_cell_max_voltage_mV_      = prefs.getUShort("cell_max_mv", kBatteryLegacyDefaults.cell_max_voltage_mv);
-        battery_cell_min_voltage_mV_      = prefs.getUShort("cell_min_mv", kBatteryLegacyDefaults.cell_min_voltage_mv);
-        battery_soc_estimated_            = prefs.getBool("soc_est", kBatteryLegacyDefaults.soc_estimated);
-        battery_led_mode_                 = prefs.getUChar("led_mode", kBatteryLegacyDefaults.led_mode);
-        battery_settings_version_         = prefs.getUInt("version", kBatteryLegacyDefaults.version);
     }
 
     prefs.end();
@@ -420,24 +397,6 @@ bool SettingsManager::save_battery_settings() {
     }
 
     bool writes_ok = true;
-    writes_ok &= write_u32_checked(prefs, "battery", "capacity_wh", battery_capacity_wh_);
-    writes_ok &= write_u32_checked(prefs, "battery", "max_volt_mv", battery_max_voltage_mv_);
-    writes_ok &= write_u32_checked(prefs, "battery", "min_volt_mv", battery_min_voltage_mv_);
-    writes_ok &= write_float_checked(prefs, "battery", "max_chg_a", battery_max_charge_current_a_);
-    writes_ok &= write_float_checked(prefs, "battery", "max_dis_a", battery_max_discharge_current_a_);
-    writes_ok &= write_u8_checked(prefs, "battery", "soc_high", battery_soc_high_limit_);
-    writes_ok &= write_u8_checked(prefs, "battery", "soc_low", battery_soc_low_limit_);
-    writes_ok &= write_u8_checked(prefs, "battery", "cell_count", battery_cell_count_);
-    writes_ok &= write_u8_checked(prefs, "battery", "chemistry", battery_chemistry_);
-    writes_ok &= write_bool_checked(prefs, "battery", "double_enabled", battery_double_enabled_);
-    writes_ok &= write_u16_checked(prefs, "battery", "pack_max_dv", battery_pack_max_voltage_dV_);
-    writes_ok &= write_u16_checked(prefs, "battery", "pack_min_dv", battery_pack_min_voltage_dV_);
-    writes_ok &= write_u16_checked(prefs, "battery", "cell_max_mv", battery_cell_max_voltage_mV_);
-    writes_ok &= write_u16_checked(prefs, "battery", "cell_min_mv", battery_cell_min_voltage_mV_);
-    writes_ok &= write_bool_checked(prefs, "battery", "soc_est", battery_soc_estimated_);
-    writes_ok &= write_u8_checked(prefs, "battery", "led_mode", battery_led_mode_);
-    writes_ok &= write_u32_checked(prefs, "battery", "version", battery_settings_version_);
-
     BatterySettingsBlob blob{};
     blob.schema_version           = kBatteryBlobSchemaVersion;
     blob.capacity_wh              = battery_capacity_wh_;
@@ -457,7 +416,7 @@ bool SettingsManager::save_battery_settings() {
     blob.soc_estimated            = battery_soc_estimated_;
     blob.led_mode                 = battery_led_mode_;
     blob.version                  = battery_settings_version_;
-    blob.crc32 = EspnowPacketUtils::calculate_message_crc32_zeroed(&blob);
+    blob.crc32 = RuntimeCrcUtils::calculate_message_crc32_zeroed(&blob);
     writes_ok &= write_blob_checked(prefs, "battery", &blob, sizeof(blob));
 
     prefs.end();
@@ -479,17 +438,16 @@ bool SettingsManager::save_battery_settings() {
 bool SettingsManager::load_power_settings() {
     Preferences prefs;
     if (!prefs.begin("power", true)) {
-        LOG_WARN("SETTINGS",
-                 "Power namespace doesn't exist yet (first boot) - will use defaults");
         return false;
     }
 
     bool loaded_from_blob = false;
+    bool migrated_from_keys = false;
     const size_t blob_size = get_blob_size_if_present(prefs);
     if (blob_size == sizeof(PowerSettingsBlob)) {
         PowerSettingsBlob blob{};
         if (read_blob_checked(prefs, "power", &blob) &&
-            EspnowPacketUtils::verify_message_crc32(&blob) &&
+            RuntimeCrcUtils::verify_message_crc32(&blob) &&
             blob.schema_version == kPowerBlobSchemaVersion) {
             power_charge_w_               = blob.charge_w;
             power_discharge_w_            = blob.discharge_w;
@@ -502,36 +460,72 @@ bool SettingsManager::load_power_settings() {
             loaded_from_blob = true;
         } else {
             LOG_WARN("SETTINGS",
-                     "Power settings blob invalid/schema mismatch - falling back to legacy keys");
+                     "Power settings blob invalid/schema mismatch - will self-heal if needed");
         }
     }
 
     if (!loaded_from_blob) {
-        power_charge_w_              = prefs.getUShort("charge_w", kPowerLegacyDefaults.charge_w);
-        power_discharge_w_           = prefs.getUShort("discharge_w", kPowerLegacyDefaults.discharge_w);
-        power_max_precharge_ms_      = prefs.getUShort("max_pre_ms", kPowerLegacyDefaults.max_precharge_ms);
-        power_precharge_duration_ms_ = prefs.getUShort("precharge_ms", kPowerLegacyDefaults.precharge_duration_ms);
-        power_equipment_stop_type_   = prefs.getUChar("eq_stop_type", kPowerLegacyDefaults.equipment_stop_type);
-        power_external_precharge_enabled_ = prefs.getBool("ext_precharge", kPowerLegacyDefaults.external_precharge_enabled);
-        power_no_inverter_disconnect_contactor_ = prefs.getBool("no_inv_disc", kPowerLegacyDefaults.no_inverter_disconnect_contactor);
-        power_settings_version_      = prefs.getUInt("version", kPowerLegacyDefaults.version);
+        bool has_any_legacy_key = false;
+        if (prefs.isKey("charge_w")) {
+            power_charge_w_ = prefs.getUShort("charge_w", power_charge_w_);
+            has_any_legacy_key = true;
+        }
+        if (prefs.isKey("discharge_w")) {
+            power_discharge_w_ = prefs.getUShort("discharge_w", power_discharge_w_);
+            has_any_legacy_key = true;
+        }
+        if (prefs.isKey("max_pre_ms")) {
+            power_max_precharge_ms_ = prefs.getUShort("max_pre_ms", power_max_precharge_ms_);
+            has_any_legacy_key = true;
+        }
+        if (prefs.isKey("precharge_ms")) {
+            power_precharge_duration_ms_ = prefs.getUShort("precharge_ms", power_precharge_duration_ms_);
+            has_any_legacy_key = true;
+        }
+        if (prefs.isKey("eq_stop_type")) {
+            power_equipment_stop_type_ = prefs.getUChar("eq_stop_type", power_equipment_stop_type_);
+            has_any_legacy_key = true;
+        }
+        if (prefs.isKey("ext_precharge")) {
+            power_external_precharge_enabled_ = prefs.getBool("ext_precharge", power_external_precharge_enabled_);
+            has_any_legacy_key = true;
+        }
+        if (prefs.isKey("no_inv_disc")) {
+            power_no_inverter_disconnect_contactor_ = prefs.getBool("no_inv_disc", power_no_inverter_disconnect_contactor_);
+            has_any_legacy_key = true;
+        }
+        if (prefs.isKey("version")) {
+            power_settings_version_ = prefs.getUInt("version", power_settings_version_);
+            has_any_legacy_key = true;
+        }
+
+        if (has_any_legacy_key) {
+            migrated_from_keys = true;
+            LOG_INFO("SETTINGS", "Power settings loaded from legacy keys (blob missing/invalid)");
+        }
     }
 
     prefs.end();
+
+    if (migrated_from_keys) {
+        if (!save_power_settings()) {
+            LOG_WARN("SETTINGS", "Failed to persist migrated power settings blob");
+        }
+    }
 
     last_validation_ = validate_power_settings();
     if (!last_validation_.is_valid) {
         // Self-heal: if precharge values are invalid/zero, apply defaults
         if (power_max_precharge_ms_ == 0) {
             LOG_WARN("SETTINGS", "Power max_precharge_ms is 0 (NVS invalid) - applying default (%u)",
-                     static_cast<unsigned>(kPowerLegacyDefaults.max_precharge_ms));
-            power_max_precharge_ms_ = kPowerLegacyDefaults.max_precharge_ms;
+                     static_cast<unsigned>(kPowerDefaults.max_precharge_ms));
+            power_max_precharge_ms_ = kPowerDefaults.max_precharge_ms;
         }
         if (power_precharge_duration_ms_ == 0 || power_precharge_duration_ms_ > power_max_precharge_ms_) {
             LOG_WARN("SETTINGS", "Power precharge_duration_ms invalid (0 or > max %u) - applying default (%u)",
                      static_cast<unsigned>(power_max_precharge_ms_),
-                     static_cast<unsigned>(kPowerLegacyDefaults.precharge_duration_ms));
-            power_precharge_duration_ms_ = kPowerLegacyDefaults.precharge_duration_ms;
+                     static_cast<unsigned>(kPowerDefaults.precharge_duration_ms));
+            power_precharge_duration_ms_ = kPowerDefaults.precharge_duration_ms;
         }
         last_validation_ = validate_power_settings();
         if (!last_validation_.is_valid) {
@@ -551,13 +545,13 @@ bool SettingsManager::save_power_settings() {
     // Self-heal: if precharge values are invalid/zero, apply defaults before validation
     if (power_max_precharge_ms_ == 0) {
         LOG_WARN("SETTINGS", "save_power_settings: max_precharge_ms 0 -> applying default %u",
-                 static_cast<unsigned>(kPowerLegacyDefaults.max_precharge_ms));
-        power_max_precharge_ms_ = kPowerLegacyDefaults.max_precharge_ms;
+             static_cast<unsigned>(kPowerDefaults.max_precharge_ms));
+        power_max_precharge_ms_ = kPowerDefaults.max_precharge_ms;
     }
     if (power_precharge_duration_ms_ == 0 || power_precharge_duration_ms_ > power_max_precharge_ms_) {
         LOG_WARN("SETTINGS", "save_power_settings: precharge_duration_ms invalid -> applying default %u",
-                 static_cast<unsigned>(kPowerLegacyDefaults.precharge_duration_ms));
-        power_precharge_duration_ms_ = kPowerLegacyDefaults.precharge_duration_ms;
+             static_cast<unsigned>(kPowerDefaults.precharge_duration_ms));
+        power_precharge_duration_ms_ = kPowerDefaults.precharge_duration_ms;
     }
 
     last_validation_ = validate_power_settings();
@@ -634,7 +628,7 @@ bool SettingsManager::save_power_settings() {
     blob.external_precharge_enabled = power_external_precharge_enabled_;
     blob.no_inverter_disconnect_contactor = power_no_inverter_disconnect_contactor_;
     blob.version               = power_settings_version_;
-    blob.crc32 = EspnowPacketUtils::calculate_message_crc32_zeroed(&blob);
+    blob.crc32 = RuntimeCrcUtils::calculate_message_crc32_zeroed(&blob);
     if (!write_blob_checked(prefs, "power", &blob, sizeof(blob))) {
         set_last_apply_failure(SETTINGS_POWER,
                                POWER_EQUIPMENT_STOP_TYPE,
@@ -661,12 +655,11 @@ bool SettingsManager::load_inverter_settings() {
         return false;
     }
 
-    bool loaded_from_blob = false;
     const size_t blob_size = get_blob_size_if_present(prefs);
     if (blob_size == sizeof(InverterSettingsBlob)) {
         InverterSettingsBlob blob{};
         if (read_blob_checked(prefs, "inverter", &blob) &&
-            EspnowPacketUtils::verify_message_crc32(&blob) &&
+            RuntimeCrcUtils::verify_message_crc32(&blob) &&
             blob.schema_version == kInverterBlobSchemaVersion) {
             inverter_cells_             = blob.cells;
             inverter_modules_           = blob.modules;
@@ -675,21 +668,10 @@ bool SettingsManager::load_inverter_settings() {
             inverter_capacity_ah_       = blob.capacity_ah;
             inverter_battery_type_      = blob.battery_type;
             inverter_settings_version_  = blob.version;
-            loaded_from_blob = true;
         } else {
             LOG_WARN("SETTINGS",
-                     "Inverter settings blob invalid/schema mismatch - falling back to legacy keys");
+                     "Inverter settings blob invalid/schema mismatch - using defaults");
         }
-    }
-
-    if (!loaded_from_blob) {
-        inverter_cells_            = prefs.getUChar("cells", kInverterLegacyDefaults.cells);
-        inverter_modules_          = prefs.getUChar("modules", kInverterLegacyDefaults.modules);
-        inverter_cells_per_module_ = prefs.getUChar("cells_per_mod", kInverterLegacyDefaults.cells_per_module);
-        inverter_voltage_level_    = prefs.getUShort("voltage_level", kInverterLegacyDefaults.voltage_level);
-        inverter_capacity_ah_      = prefs.getUShort("capacity_ah", kInverterLegacyDefaults.capacity_ah);
-        inverter_battery_type_     = prefs.getUChar("battery_type", kInverterLegacyDefaults.battery_type);
-        inverter_settings_version_ = prefs.getUInt("version", kInverterLegacyDefaults.version);
     }
 
     prefs.end();
@@ -699,28 +681,28 @@ bool SettingsManager::load_inverter_settings() {
         // Self-heal: if critical fields are 0 or invalid, apply defaults
         if (inverter_cells_ == 0) {
             LOG_WARN("SETTINGS", "Inverter cells is 0 (NVS invalid) - applying default (%u)",
-                     static_cast<unsigned>(kInverterLegacyDefaults.cells));
-            inverter_cells_ = kInverterLegacyDefaults.cells;
+                     static_cast<unsigned>(kInverterDefaults.cells));
+            inverter_cells_ = kInverterDefaults.cells;
         }
         if (inverter_modules_ == 0) {
             LOG_WARN("SETTINGS", "Inverter modules is 0 (NVS invalid) - applying default (%u)",
-                     static_cast<unsigned>(kInverterLegacyDefaults.modules));
-            inverter_modules_ = kInverterLegacyDefaults.modules;
+                     static_cast<unsigned>(kInverterDefaults.modules));
+            inverter_modules_ = kInverterDefaults.modules;
         }
         if (inverter_cells_per_module_ == 0) {
             LOG_WARN("SETTINGS", "Inverter cells_per_module is 0 (NVS invalid) - applying default (%u)",
-                     static_cast<unsigned>(kInverterLegacyDefaults.cells_per_module));
-            inverter_cells_per_module_ = kInverterLegacyDefaults.cells_per_module;
+                     static_cast<unsigned>(kInverterDefaults.cells_per_module));
+            inverter_cells_per_module_ = kInverterDefaults.cells_per_module;
         }
         if (inverter_voltage_level_ == 0) {
             LOG_WARN("SETTINGS", "Inverter voltage_level is 0 (NVS invalid) - applying default (%u)",
-                     static_cast<unsigned>(kInverterLegacyDefaults.voltage_level));
-            inverter_voltage_level_ = kInverterLegacyDefaults.voltage_level;
+                     static_cast<unsigned>(kInverterDefaults.voltage_level));
+            inverter_voltage_level_ = kInverterDefaults.voltage_level;
         }
         if (inverter_capacity_ah_ == 0) {
             LOG_WARN("SETTINGS", "Inverter capacity_ah is 0 (NVS invalid) - applying default (%u)",
-                     static_cast<unsigned>(kInverterLegacyDefaults.capacity_ah));
-            inverter_capacity_ah_ = kInverterLegacyDefaults.capacity_ah;
+                     static_cast<unsigned>(kInverterDefaults.capacity_ah));
+            inverter_capacity_ah_ = kInverterDefaults.capacity_ah;
         }
         last_validation_ = validate_inverter_settings();
         if (!last_validation_.is_valid) {
@@ -740,28 +722,28 @@ bool SettingsManager::save_inverter_settings() {
     // Self-heal before validation: apply defaults if critical fields are 0
     if (inverter_cells_ == 0) {
         LOG_WARN("SETTINGS", "Inverter cells is 0 - applying default (%u)",
-                 static_cast<unsigned>(kInverterLegacyDefaults.cells));
-        inverter_cells_ = kInverterLegacyDefaults.cells;
+             static_cast<unsigned>(kInverterDefaults.cells));
+        inverter_cells_ = kInverterDefaults.cells;
     }
     if (inverter_modules_ == 0) {
         LOG_WARN("SETTINGS", "Inverter modules is 0 - applying default (%u)",
-                 static_cast<unsigned>(kInverterLegacyDefaults.modules));
-        inverter_modules_ = kInverterLegacyDefaults.modules;
+             static_cast<unsigned>(kInverterDefaults.modules));
+        inverter_modules_ = kInverterDefaults.modules;
     }
     if (inverter_cells_per_module_ == 0) {
         LOG_WARN("SETTINGS", "Inverter cells_per_module is 0 - applying default (%u)",
-                 static_cast<unsigned>(kInverterLegacyDefaults.cells_per_module));
-        inverter_cells_per_module_ = kInverterLegacyDefaults.cells_per_module;
+             static_cast<unsigned>(kInverterDefaults.cells_per_module));
+        inverter_cells_per_module_ = kInverterDefaults.cells_per_module;
     }
     if (inverter_voltage_level_ == 0) {
         LOG_WARN("SETTINGS", "Inverter voltage_level is 0 - applying default (%u)",
-                 static_cast<unsigned>(kInverterLegacyDefaults.voltage_level));
-        inverter_voltage_level_ = kInverterLegacyDefaults.voltage_level;
+             static_cast<unsigned>(kInverterDefaults.voltage_level));
+        inverter_voltage_level_ = kInverterDefaults.voltage_level;
     }
     if (inverter_capacity_ah_ == 0) {
         LOG_WARN("SETTINGS", "Inverter capacity_ah is 0 - applying default (%u)",
-                 static_cast<unsigned>(kInverterLegacyDefaults.capacity_ah));
-        inverter_capacity_ah_ = kInverterLegacyDefaults.capacity_ah;
+             static_cast<unsigned>(kInverterDefaults.capacity_ah));
+        inverter_capacity_ah_ = kInverterDefaults.capacity_ah;
     }
 
     last_validation_ = validate_inverter_settings();
@@ -787,42 +769,6 @@ bool SettingsManager::save_inverter_settings() {
         return false;
     }
 
-    if (!write_u8_checked(prefs, "inverter", "cells", inverter_cells_)) {
-        set_last_apply_failure(SETTINGS_INVERTER, INVERTER_CELLS, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing inverter key", "cells");
-        prefs.end();
-        return false;
-    }
-    if (!write_u8_checked(prefs, "inverter", "modules", inverter_modules_)) {
-        set_last_apply_failure(SETTINGS_INVERTER, INVERTER_MODULES, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing inverter key", "modules");
-        prefs.end();
-        return false;
-    }
-    if (!write_u8_checked(prefs, "inverter", "cells_per_mod", inverter_cells_per_module_)) {
-        set_last_apply_failure(SETTINGS_INVERTER, INVERTER_CELLS_PER_MODULE, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing inverter key", "cells_per_mod");
-        prefs.end();
-        return false;
-    }
-    if (!write_u16_checked(prefs, "inverter", "voltage_level", inverter_voltage_level_)) {
-        set_last_apply_failure(SETTINGS_INVERTER, INVERTER_VOLTAGE_LEVEL, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing inverter key", "voltage_level");
-        prefs.end();
-        return false;
-    }
-    if (!write_u16_checked(prefs, "inverter", "capacity_ah", inverter_capacity_ah_)) {
-        set_last_apply_failure(SETTINGS_INVERTER, INVERTER_CAPACITY_AH, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing inverter key", "capacity_ah");
-        prefs.end();
-        return false;
-    }
-    if (!write_u8_checked(prefs, "inverter", "battery_type", inverter_battery_type_)) {
-        set_last_apply_failure(SETTINGS_INVERTER, INVERTER_BATTERY_TYPE, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing inverter key", "battery_type");
-        prefs.end();
-        return false;
-    }
-    if (!write_u32_checked(prefs, "inverter", "version", inverter_settings_version_)) {
-        set_last_apply_failure(SETTINGS_INVERTER, INVERTER_BATTERY_TYPE, "NVS_WRITE_KEY", "NVS_KEY_WRITE_FAILED", "Failed writing inverter version", "version");
-        prefs.end();
-        return false;
-    }
-
     InverterSettingsBlob blob{};
     blob.schema_version   = kInverterBlobSchemaVersion;
     blob.cells            = inverter_cells_;
@@ -832,7 +778,7 @@ bool SettingsManager::save_inverter_settings() {
     blob.capacity_ah      = inverter_capacity_ah_;
     blob.battery_type     = inverter_battery_type_;
     blob.version          = inverter_settings_version_;
-    blob.crc32 = EspnowPacketUtils::calculate_message_crc32_zeroed(&blob);
+    blob.crc32 = RuntimeCrcUtils::calculate_message_crc32_zeroed(&blob);
     if (!write_blob_checked(prefs, "inverter", &blob, sizeof(blob))) {
         set_last_apply_failure(SETTINGS_INVERTER,
                                INVERTER_BATTERY_TYPE,
@@ -854,17 +800,16 @@ bool SettingsManager::save_inverter_settings() {
 bool SettingsManager::load_can_settings() {
     Preferences prefs;
     if (!prefs.begin("can", true)) {
-        LOG_WARN("SETTINGS",
-                 "CAN namespace doesn't exist yet (first boot) - will use defaults");
         return false;
     }
 
     bool loaded_from_blob = false;
+    bool migrated_from_keys = false;
     const size_t blob_size = get_blob_size_if_present(prefs);
     if (blob_size == sizeof(CanSettingsBlob)) {
         CanSettingsBlob blob{};
         if (read_blob_checked(prefs, "can", &blob) &&
-            EspnowPacketUtils::verify_message_crc32(&blob) &&
+            RuntimeCrcUtils::verify_message_crc32(&blob) &&
             blob.schema_version == kCanBlobSchemaVersion) {
             can_frequency_khz_          = blob.frequency_khz;
             can_fd_frequency_mhz_       = blob.fd_frequency_mhz;
@@ -875,33 +820,63 @@ bool SettingsManager::load_can_settings() {
             loaded_from_blob = true;
         } else {
             LOG_WARN("SETTINGS",
-                     "CAN settings blob invalid/schema mismatch - falling back to legacy keys");
+                     "CAN settings blob invalid/schema mismatch - will self-heal if needed");
         }
     }
 
     if (!loaded_from_blob) {
-        can_frequency_khz_          = prefs.getUShort("freq_khz", kCanLegacyDefaults.frequency_khz);
-        can_fd_frequency_mhz_       = prefs.getUShort("fd_freq_mhz", kCanLegacyDefaults.fd_frequency_mhz);
-        can_sofar_id_               = prefs.getUShort("sofar_id", kCanLegacyDefaults.sofar_id);
-        can_pylon_send_interval_ms_ = prefs.getUShort("pylon_send_ms", kCanLegacyDefaults.pylon_send_interval_ms);
-        can_use_canfd_as_classic_   = prefs.getBool("canfd_classic", kCanLegacyDefaults.use_canfd_as_classic);
-        can_settings_version_       = prefs.getUInt("version", kCanLegacyDefaults.version);
+        bool has_any_legacy_key = false;
+        if (prefs.isKey("freq_khz")) {
+            can_frequency_khz_ = prefs.getUShort("freq_khz", can_frequency_khz_);
+            has_any_legacy_key = true;
+        }
+        if (prefs.isKey("fd_freq_mhz")) {
+            can_fd_frequency_mhz_ = prefs.getUShort("fd_freq_mhz", can_fd_frequency_mhz_);
+            has_any_legacy_key = true;
+        }
+        if (prefs.isKey("sofar_id")) {
+            can_sofar_id_ = prefs.getUShort("sofar_id", can_sofar_id_);
+            has_any_legacy_key = true;
+        }
+        if (prefs.isKey("pylon_send_ms")) {
+            can_pylon_send_interval_ms_ = prefs.getUShort("pylon_send_ms", can_pylon_send_interval_ms_);
+            has_any_legacy_key = true;
+        }
+        if (prefs.isKey("canfd_classic")) {
+            can_use_canfd_as_classic_ = prefs.getBool("canfd_classic", can_use_canfd_as_classic_);
+            has_any_legacy_key = true;
+        }
+        if (prefs.isKey("version")) {
+            can_settings_version_ = prefs.getUInt("version", can_settings_version_);
+            has_any_legacy_key = true;
+        }
+
+        if (has_any_legacy_key) {
+            migrated_from_keys = true;
+            LOG_INFO("SETTINGS", "CAN settings loaded from legacy keys (blob missing/invalid)");
+        }
     }
 
     prefs.end();
+
+    if (migrated_from_keys) {
+        if (!save_can_settings()) {
+            LOG_WARN("SETTINGS", "Failed to persist migrated CAN settings blob");
+        }
+    }
 
     last_validation_ = validate_can_settings();
     if (!last_validation_.is_valid) {
         // Attempt self-healing: apply defaults for invalid/zero frequency values
         if (can_frequency_khz_ == 0) {
             LOG_WARN("SETTINGS", "CAN frequency is 0 (NVS invalid) - applying default (%u)",
-                     static_cast<unsigned>(kCanLegacyDefaults.frequency_khz));
-            can_frequency_khz_ = kCanLegacyDefaults.frequency_khz;
+                     static_cast<unsigned>(kCanDefaults.frequency_khz));
+            can_frequency_khz_ = kCanDefaults.frequency_khz;
         }
         if (can_fd_frequency_mhz_ == 0) {
             LOG_WARN("SETTINGS", "CAN-FD frequency is 0 (NVS invalid) - applying default (%u)",
-                     static_cast<unsigned>(kCanLegacyDefaults.fd_frequency_mhz));
-            can_fd_frequency_mhz_ = kCanLegacyDefaults.fd_frequency_mhz;
+                     static_cast<unsigned>(kCanDefaults.fd_frequency_mhz));
+            can_fd_frequency_mhz_ = kCanDefaults.fd_frequency_mhz;
         }
         last_validation_ = validate_can_settings();
         if (!last_validation_.is_valid) {
@@ -921,13 +896,13 @@ bool SettingsManager::save_can_settings() {
     // Self-heal: if frequency fields are 0 (NVS corruption / never set), apply defaults
     if (can_frequency_khz_ == 0) {
         LOG_WARN("SETTINGS", "save_can_settings: CAN frequency 0 -> applying default %u",
-                 static_cast<unsigned>(kCanLegacyDefaults.frequency_khz));
-        can_frequency_khz_ = kCanLegacyDefaults.frequency_khz;
+             static_cast<unsigned>(kCanDefaults.frequency_khz));
+        can_frequency_khz_ = kCanDefaults.frequency_khz;
     }
     if (can_fd_frequency_mhz_ == 0) {
         LOG_WARN("SETTINGS", "save_can_settings: CAN-FD frequency 0 -> applying default %u",
-                 static_cast<unsigned>(kCanLegacyDefaults.fd_frequency_mhz));
-        can_fd_frequency_mhz_ = kCanLegacyDefaults.fd_frequency_mhz;
+             static_cast<unsigned>(kCanDefaults.fd_frequency_mhz));
+        can_fd_frequency_mhz_ = kCanDefaults.fd_frequency_mhz;
     }
     last_validation_ = validate_can_settings();
     if (!last_validation_.is_valid) {
@@ -991,7 +966,7 @@ bool SettingsManager::save_can_settings() {
     blob.pylon_send_interval_ms = can_pylon_send_interval_ms_;
     blob.use_canfd_as_classic   = can_use_canfd_as_classic_;
     blob.version                = can_settings_version_;
-    blob.crc32 = EspnowPacketUtils::calculate_message_crc32_zeroed(&blob);
+    blob.crc32 = RuntimeCrcUtils::calculate_message_crc32_zeroed(&blob);
     if (!write_blob_checked(prefs, "can", &blob, sizeof(blob))) {
         set_last_apply_failure(SETTINGS_CAN,
                                CAN_USE_CANFD_AS_CLASSIC,
@@ -1013,17 +988,16 @@ bool SettingsManager::save_can_settings() {
 bool SettingsManager::load_contactor_settings() {
     Preferences prefs;
     if (!prefs.begin("contactor", true)) {
-        LOG_WARN("SETTINGS",
-                 "Contactor namespace doesn't exist yet (first boot) - will use defaults");
         return false;
     }
 
     bool loaded_from_blob = false;
+    bool migrated_from_keys = false;
     const size_t blob_size = get_blob_size_if_present(prefs);
     if (blob_size == sizeof(ContactorSettingsBlob)) {
         ContactorSettingsBlob blob{};
         if (read_blob_checked(prefs, "contactor", &blob) &&
-            EspnowPacketUtils::verify_message_crc32(&blob) &&
+            RuntimeCrcUtils::verify_message_crc32(&blob) &&
             blob.schema_version == kContactorBlobSchemaVersion) {
             contactor_control_enabled_      = blob.control_enabled;
             contactor_nc_mode_              = blob.nc_mode;
@@ -1037,23 +1011,65 @@ bool SettingsManager::load_contactor_settings() {
             loaded_from_blob = true;
         } else {
             LOG_WARN("SETTINGS",
-                     "Contactor settings blob invalid/schema mismatch - falling back to legacy keys");
+                     "Contactor settings blob invalid/schema mismatch - will self-heal if needed");
         }
     }
 
     if (!loaded_from_blob) {
-        contactor_control_enabled_      = prefs.getBool("control_enabled", kContactorLegacyDefaults.control_enabled);
-        contactor_nc_mode_              = prefs.getBool("nc_mode", kContactorLegacyDefaults.nc_mode);
-        contactor_pwm_frequency_hz_     = prefs.getUShort("pwm_hz", kContactorLegacyDefaults.pwm_frequency_hz);
-        contactor_pwm_control_enabled_  = prefs.getBool("pwm_ctrl", kContactorLegacyDefaults.pwm_control_enabled);
-        contactor_pwm_hold_duty_        = prefs.getUShort("pwm_hold", kContactorLegacyDefaults.pwm_hold_duty);
-        contactor_periodic_bms_reset_   = prefs.getBool("per_bms_reset", kContactorLegacyDefaults.periodic_bms_reset);
-        contactor_bms_first_align_enabled_ = prefs.getBool("bms1st_en", kContactorLegacyDefaults.bms_first_align_enabled);
-        contactor_bms_first_align_target_minutes_ = prefs.getUShort("bms1st_min", kContactorLegacyDefaults.bms_first_align_target_minutes);
-        contactor_settings_version_     = prefs.getUInt("version", kContactorLegacyDefaults.version);
+        bool has_any_legacy_key = false;
+        if (prefs.isKey("control_enabled")) {
+            contactor_control_enabled_ = prefs.getBool("control_enabled", contactor_control_enabled_);
+            has_any_legacy_key = true;
+        }
+        if (prefs.isKey("nc_mode")) {
+            contactor_nc_mode_ = prefs.getBool("nc_mode", contactor_nc_mode_);
+            has_any_legacy_key = true;
+        }
+        if (prefs.isKey("pwm_hz")) {
+            contactor_pwm_frequency_hz_ = prefs.getUShort("pwm_hz", contactor_pwm_frequency_hz_);
+            has_any_legacy_key = true;
+        }
+        if (prefs.isKey("pwm_ctrl")) {
+            contactor_pwm_control_enabled_ = prefs.getBool("pwm_ctrl", contactor_pwm_control_enabled_);
+            has_any_legacy_key = true;
+        }
+        if (prefs.isKey("pwm_hold")) {
+            contactor_pwm_hold_duty_ = prefs.getUShort("pwm_hold", contactor_pwm_hold_duty_);
+            has_any_legacy_key = true;
+        }
+        if (prefs.isKey("per_bms_reset")) {
+            contactor_periodic_bms_reset_ = prefs.getBool("per_bms_reset", contactor_periodic_bms_reset_);
+            has_any_legacy_key = true;
+        } else if (prefs.isKey("per_bms")) {
+            contactor_periodic_bms_reset_ = prefs.getBool("per_bms", contactor_periodic_bms_reset_);
+            has_any_legacy_key = true;
+        }
+        if (prefs.isKey("bms1st_en")) {
+            contactor_bms_first_align_enabled_ = prefs.getBool("bms1st_en", contactor_bms_first_align_enabled_);
+            has_any_legacy_key = true;
+        }
+        if (prefs.isKey("bms1st_min")) {
+            contactor_bms_first_align_target_minutes_ = prefs.getUShort("bms1st_min", contactor_bms_first_align_target_minutes_);
+            has_any_legacy_key = true;
+        }
+        if (prefs.isKey("version")) {
+            contactor_settings_version_ = prefs.getUInt("version", contactor_settings_version_);
+            has_any_legacy_key = true;
+        }
+
+        if (has_any_legacy_key) {
+            migrated_from_keys = true;
+            LOG_INFO("SETTINGS", "Contactor settings loaded from legacy keys (blob missing/invalid)");
+        }
     }
 
     prefs.end();
+
+    if (migrated_from_keys) {
+        if (!save_contactor_settings()) {
+            LOG_WARN("SETTINGS", "Failed to persist migrated contactor settings blob");
+        }
+    }
 
     last_validation_ = validate_contactor_settings();
     if (!last_validation_.is_valid) {
@@ -1061,14 +1077,14 @@ bool SettingsManager::load_contactor_settings() {
         if (contactor_pwm_frequency_hz_ == 0 || contactor_pwm_frequency_hz_ < 100) {
             LOG_WARN("SETTINGS", "Contactor PWM frequency invalid (%u) - applying default (%u)",
                      static_cast<unsigned>(contactor_pwm_frequency_hz_),
-                     static_cast<unsigned>(kContactorLegacyDefaults.pwm_frequency_hz));
-            contactor_pwm_frequency_hz_ = kContactorLegacyDefaults.pwm_frequency_hz;
+                     static_cast<unsigned>(kContactorDefaults.pwm_frequency_hz));
+            contactor_pwm_frequency_hz_ = kContactorDefaults.pwm_frequency_hz;
         }
         if (contactor_pwm_hold_duty_ == 0 || contactor_pwm_hold_duty_ < 1) {
             LOG_WARN("SETTINGS", "Contactor PWM hold duty invalid (%u) - applying default (%u)",
                      static_cast<unsigned>(contactor_pwm_hold_duty_),
-                     static_cast<unsigned>(kContactorLegacyDefaults.pwm_hold_duty));
-            contactor_pwm_hold_duty_ = kContactorLegacyDefaults.pwm_hold_duty;
+                     static_cast<unsigned>(kContactorDefaults.pwm_hold_duty));
+            contactor_pwm_hold_duty_ = kContactorDefaults.pwm_hold_duty;
         }
         last_validation_ = validate_contactor_settings();
         if (!last_validation_.is_valid) {
@@ -1088,15 +1104,15 @@ bool SettingsManager::save_contactor_settings() {
     // Self-heal: if PWM values are invalid/zero, apply defaults before validation
     if (contactor_pwm_frequency_hz_ == 0 || contactor_pwm_frequency_hz_ < 100) {
         LOG_WARN("SETTINGS", "Contactor PWM frequency invalid (%u) - applying default (%u)",
-                 static_cast<unsigned>(contactor_pwm_frequency_hz_),
-                 static_cast<unsigned>(kContactorLegacyDefaults.pwm_frequency_hz));
-        contactor_pwm_frequency_hz_ = kContactorLegacyDefaults.pwm_frequency_hz;
+             static_cast<unsigned>(contactor_pwm_frequency_hz_),
+             static_cast<unsigned>(kContactorDefaults.pwm_frequency_hz));
+        contactor_pwm_frequency_hz_ = kContactorDefaults.pwm_frequency_hz;
     }
     if (contactor_pwm_hold_duty_ == 0 || contactor_pwm_hold_duty_ < 1) {
         LOG_WARN("SETTINGS", "Contactor PWM hold duty invalid (%u) - applying default (%u)",
-                 static_cast<unsigned>(contactor_pwm_hold_duty_),
-                 static_cast<unsigned>(kContactorLegacyDefaults.pwm_hold_duty));
-        contactor_pwm_hold_duty_ = kContactorLegacyDefaults.pwm_hold_duty;
+             static_cast<unsigned>(contactor_pwm_hold_duty_),
+             static_cast<unsigned>(kContactorDefaults.pwm_hold_duty));
+        contactor_pwm_hold_duty_ = kContactorDefaults.pwm_hold_duty;
     }
 
     last_validation_ = validate_contactor_settings();
@@ -1179,7 +1195,7 @@ bool SettingsManager::save_contactor_settings() {
     blob.bms_first_align_enabled = contactor_bms_first_align_enabled_;
     blob.bms_first_align_target_minutes = contactor_bms_first_align_target_minutes_;
     blob.version              = contactor_settings_version_;
-    blob.crc32 = EspnowPacketUtils::calculate_message_crc32_zeroed(&blob);
+    blob.crc32 = RuntimeCrcUtils::calculate_message_crc32_zeroed(&blob);
     if (!write_blob_checked(prefs, "contactor", &blob, sizeof(blob))) {
         set_last_apply_failure(SETTINGS_CONTACTOR,
                                CONTACTOR_PWM_HOLD_DUTY,

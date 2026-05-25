@@ -1,1 +1,0 @@
-// Legacy local implementation removed; shared implementation lives in esp32common.

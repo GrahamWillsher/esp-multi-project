@@ -189,6 +189,10 @@ PowerSettings TransmitterManager::getPowerSettings() {
     return TransmitterSettingsCache::get_power_settings();
 }
 
+bool TransmitterManager::hasPowerSettings() {
+    return TransmitterSettingsCache::has_power_settings();
+}
+
 void TransmitterManager::storeInverterSettings(const InverterSettings& settings) {
     TransmitterSettingsCache::store_inverter_settings(settings);
     TransmitterNvsPersistence::persist();
@@ -207,6 +211,10 @@ CanSettings TransmitterManager::getCanSettings() {
     return TransmitterSettingsCache::get_can_settings();
 }
 
+bool TransmitterManager::hasCanSettings() {
+    return TransmitterSettingsCache::has_can_settings();
+}
+
 void TransmitterManager::storeContactorSettings(const ContactorSettings& settings) {
     TransmitterSettingsCache::store_contactor_settings(settings);
     TransmitterNvsPersistence::persist();
@@ -214,6 +222,26 @@ void TransmitterManager::storeContactorSettings(const ContactorSettings& setting
 
 ContactorSettings TransmitterManager::getContactorSettings() {
     return TransmitterSettingsCache::get_contactor_settings();
+}
+
+bool TransmitterManager::hasContactorSettings() {
+    return TransmitterSettingsCache::has_contactor_settings();
+}
+
+uint32_t TransmitterManager::getBatterySettingsVersion() {
+    return TransmitterSettingsCache::get_battery_settings_version();
+}
+
+uint32_t TransmitterManager::getPowerSettingsVersion() {
+    return TransmitterSettingsCache::get_power_settings_version();
+}
+
+uint32_t TransmitterManager::getCanSettingsVersion() {
+    return TransmitterSettingsCache::get_can_settings_version();
+}
+
+uint32_t TransmitterManager::getContactorSettingsVersion() {
+    return TransmitterSettingsCache::get_contactor_settings_version();
 }
 
 // ═══════════════════════════════════════════════════════════════════════

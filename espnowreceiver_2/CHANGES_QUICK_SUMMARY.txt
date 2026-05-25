@@ -203,7 +203,7 @@ Based on official LilyGo T-Display-S3 reference code:
 ## Summary
 
 Full review of espnowreceiver_LCD and espnowreceiver_2 conducted and documented in
-`esp32common/docs/systemworks/ESPNOWRECEIVER_LCD_FULL_CODEBASE_REVIEW_2026_04_21.md`.
+the archived 2026-04-21 full codebase review notes under `esp32common/docs/systemworks`.
 All phases of the resulting implementation plan completed in the same session.
 
 ## Changes made

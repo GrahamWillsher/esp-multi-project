@@ -1,21 +1,26 @@
 /*
  * State Machine and Error Handling
+ * 
+ * Phase 6 MQTT Migration (2026-05-24):
+ * This module now uses MQTT connectivity as the sole indicator of active data flow.
+ * ESP-NOW state machine checks have been replaced with MQTT connection status.
  */
 
 #include "common.h"
 #include "state_machine.h"
 #include "display/display_led.h"
-#include "display/display_core.h"
-#include "espnow/rx_heartbeat_manager.h"
-#include "espnow/rx_state_machine.h"
-#include <esp32common/espnow/connection_manager.h>
+#include "display/display.h"
+#include "mqtt/mqtt_client.h"
 
 static bool rx_has_live_data_flow() {
-    return RxStateMachine::instance().connection_state() == EspNowDeviceState::ACTIVE;
+    // MQTT-only receiver: active data flow means MQTT is connected
+    return MqttClient::isConnected();
 }
 
 static bool rx_link_traffic_is_recent() {
-    return EspNowConnectionManager::instance().ms_since_last_heartbeat() < 20000;
+    // For MQTT-only receiver, we check connection status directly
+    // (MQTT client handles reconnection internally)
+    return MqttClient::isConnected();
 }
 
 SystemStateManager& SystemStateManager::instance() {
@@ -60,12 +65,10 @@ void SystemStateManager::update() {
             break;
 
         case SystemState::NORMAL_OPERATION: {
-            // RxStateMachine is the authoritative source for ESP-NOW link/data freshness.
-            const auto rx_state = RxStateMachine::instance().connection_state();
-            if (rx_state < EspNowDeviceState::CONNECTED) {
+            // For MQTT-only receiver, check if MQTT connection is still active.
+            // If connection is lost, transition back to waiting for transmitter.
+            if (!MqttClient::isConnected()) {
                 transition_to_state(SystemState::WAITING_FOR_TRANSMITTER);
-            } else if (rx_state == EspNowDeviceState::STALE) {
-                transition_to_state(SystemState::DATA_STALE_ERROR);
             }
             break;
         }

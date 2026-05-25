@@ -1,4 +1,5 @@
-﻿#include "api_settings_handlers.h"
+#include "api_settings_handlers.h"
+#include <esp32common/mqtt/mqtt_topics_common.h>
 
 #include "api_request_utils.h"
 #include "api_response_utils.h"
@@ -9,14 +10,14 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <esp32common/config/timing_config.h>
-#include <esp32common/espnow/common.h>
+#include <esp32common/contracts/shared_contracts.h>
 #include <esp32common/mqtt/mqtt_feature_flags.h>
 #include <cstring>
 
 namespace {
-constexpr const char* MQTT_TOPIC_RX_CMD_SETTINGS_UPDATE = "batt-emu/mqtt-v1/rx/cmd/update/battery";
-constexpr const char* MQTT_TOPIC_TX_ACK_SETTINGS_UPDATE = "batt-emu/mqtt-v1/tx/ack/battery";
-constexpr const char* MQTT_TOPIC_RX_CMD_REFRESH_SETTINGS = "batt-emu/mqtt-v1/rx/cmd/refresh/settings";
+constexpr const char* MQTT_TOPIC_RX_CMD_SETTINGS_UPDATE = mqtt::topics::rx::CMD_UPDATE_BATTERY;
+constexpr const char* MQTT_TOPIC_TX_ACK_SETTINGS_UPDATE = mqtt::topics::tx::ACK_BATTERY;
+constexpr const char* MQTT_TOPIC_RX_CMD_REFRESH_SETTINGS = mqtt::topics::rx::CMD_REFRESH_SETTINGS;
 }
 
 esp_err_t api_get_battery_settings_handler(httpd_req_t *req) {
@@ -40,7 +41,30 @@ esp_err_t api_get_battery_settings_handler(httpd_req_t *req) {
     }
 #endif
 
-    const bool known = TransmitterManager::hasBatterySettings();
+    const bool battery_known = TransmitterManager::hasBatterySettings();
+    const bool power_known = TransmitterManager::hasPowerSettings();
+    const bool can_known = TransmitterManager::hasCanSettings();
+    const bool contactor_known = TransmitterManager::hasContactorSettings();
+    // PHASE 2: Check version numbers to ensure settings are initialized (not defaults)
+    const uint32_t battery_version = TransmitterManager::getBatterySettingsVersion();
+    const uint32_t power_version = TransmitterManager::getPowerSettingsVersion();
+    const uint32_t can_version = TransmitterManager::getCanSettingsVersion();
+    const uint32_t contactor_version = TransmitterManager::getContactorSettingsVersion();
+    
+    const bool battery_valid = battery_known && battery_version > 0;
+    const bool power_valid = power_known && power_version > 0;
+    const bool can_valid = can_known && can_version > 0;
+    const bool contactor_valid = contactor_known && contactor_version > 0;
+    
+    // Settings are ready only when ALL versions are valid (> 0)
+    const bool settings_ready = battery_valid && power_valid && can_valid && contactor_valid;
+
+    // Keep client-side short follow-up polling active when typed settings caches
+    // are not ready yet, even if this specific refresh publish attempt was skipped.
+    if (!settings_ready && !requested) {
+        requested = true;
+    }
+
     auto settings = TransmitterManager::getBatterySettings();
     auto power_settings = TransmitterManager::getPowerSettings();
     auto can_settings = TransmitterManager::getCanSettings();
@@ -49,9 +73,18 @@ esp_err_t api_get_battery_settings_handler(httpd_req_t *req) {
         ? TransmitterManager::getBatteryEmulatorSettings().led_mode
         : 0;
 
-    StaticJsonDocument<512> doc;
-    doc["success"]                   = known;
+    StaticJsonDocument<640> doc;
+    doc["success"]                   = settings_ready;
+    doc["settings_ready"]            = settings_ready;
+    doc["battery_known"]             = battery_known;
+    doc["power_known"]               = power_known;
+    doc["can_known"]                 = can_known;
+    doc["contactor_known"]           = contactor_known;
     doc["requested"]                 = requested;
+        doc["battery_version"]           = battery_version;
+        doc["power_version"]             = power_version;
+        doc["can_version"]               = can_version;
+        doc["contactor_version"]         = contactor_version;
     doc["capacity_wh"]               = settings.capacity_wh;
     doc["max_voltage_mv"]            = settings.max_voltage_mv;
     doc["min_voltage_mv"]            = settings.min_voltage_mv;

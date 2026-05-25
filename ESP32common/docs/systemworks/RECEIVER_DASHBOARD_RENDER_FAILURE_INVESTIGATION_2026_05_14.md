@@ -1168,9 +1168,7 @@ Root-cause synthesis for the loop:
 
 Design alignment verdict:
 1. **Section 6 (render/heap remediation):** implementation remains aligned with the current scope of this document.
-2. **Reconnect architecture intent:** current code is **not fully aligned** with the reconnect design intent documented in:
-   - `esp32common/docs/systemworks/ESPNOW_RECONNECT_ALIGNMENT_REVIEW_AND_RECOMMENDATIONS_2026_05_13.md`
-   - specifically the unresolved ACK reliability path under NO_MEM and retry semantics.
+2. **Reconnect architecture intent:** current code is **not fully aligned** with the intended reconnect behavior, specifically the unresolved ACK reliability path under NO_MEM and retry semantics.
 3. Additional mismatch identified in this field investigation:
    - shared route registration currently discards project probe-ingress callback wiring, which undermines expected reconnect state progression.
 

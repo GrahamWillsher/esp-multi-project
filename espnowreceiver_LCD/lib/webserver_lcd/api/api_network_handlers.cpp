@@ -15,7 +15,7 @@
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <esp32common/config/timing_config.h>
-#include <esp32common/espnow/common.h>
+#include <esp32common/contracts/shared_contracts.h>
 #include <cstring>
 
 namespace UI::Runtime::Backend {

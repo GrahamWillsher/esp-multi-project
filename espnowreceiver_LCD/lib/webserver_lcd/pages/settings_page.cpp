@@ -272,7 +272,7 @@ static const char kSettingsScript[] = R"rawliteral(
                     setField('txStatus', data.valid ? 'Connected' : 'Metadata received (invalid)');
                     setField('txEnvironment', formatEnv(data.env));
                     setField('txDevice', data.device || 'N/A');
-                    setField('txVersion', data.version || 'N/A');
+                    setField('txVersion', data.version ? `v${String(data.version).replace(/^v/i, '')}` : 'N/A');
                     setField('txBuildDate', data.build_date || 'N/A');
                     return true;
                 }
@@ -292,7 +292,7 @@ static const char kSettingsScript[] = R"rawliteral(
                 setField('txStatus', 'Connected (version fallback)');
                 setField('txEnvironment', 'N/A');
                 setField('txDevice', 'Transmitter');
-                setField('txVersion', v.transmitter_version || 'Unknown');
+                setField('txVersion', v.transmitter_version ? `v${String(v.transmitter_version).replace(/^v/i, '')}` : 'Unknown');
                 setField('txBuildDate', v.transmitter_build_date || 'Unknown');
                 return true;
             } catch (e2) {

@@ -32,8 +32,7 @@ const char* get_transmitter_hub_page_script() {
                 const data = await res.json();
 
                 if (data.status === 'received' && data.version) {
-                    const name = displayName(data);
-                    versionEl.textContent = name + ' v' + data.version;
+                    versionEl.textContent = 'v' + data.version;
                     const build = data.build_date || data.buildDate || data.build || '';
                     if (build) {
                         buildEl.textContent = build;
