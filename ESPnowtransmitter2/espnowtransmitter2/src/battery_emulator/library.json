@@ -1,7 +1,7 @@
 {
   "name": "battery_emulator_src",
   "version": "9.2.4",
-  "description": "Battery Emulator core sources used by ESP-NOW transmitter",
+  "description": "Battery Emulator core sources used by the transmitter runtime",
   "frameworks": ["arduino"],
   "platforms": ["espressif32"],
   "build": {

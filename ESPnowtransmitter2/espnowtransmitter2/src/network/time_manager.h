@@ -8,7 +8,7 @@
  * @brief Time Manager for Transmitter
  * 
  * Manages NTP synchronization and provides accurate time to other components.
- * Time is distributed to receivers via enhanced heartbeat messages.
+ * Time is surfaced to receivers through runtime telemetry/heartbeat publications.
  * 
  * Features:
  * - NTP synchronization with automatic retry
@@ -56,7 +56,7 @@ public:
     TimeSource get_time_source() const { return time_source_; }
     
     /**
-     * @brief Get time source as uint8_t (for ESP-NOW messages)
+     * @brief Get time source as uint8_t (for telemetry payload fields)
      */
     uint8_t get_time_source_byte() const { return static_cast<uint8_t>(time_source_); }
     

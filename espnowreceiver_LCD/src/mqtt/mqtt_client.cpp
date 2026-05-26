@@ -309,7 +309,7 @@ static const char* chunk_accumulate(const char* chunk_id,
 // Static member initialization
 WiFiClient MqttClient::wifi_client_;
 PubSubClient MqttClient::mqtt_client_(wifi_client_);
-char MqttClient::client_id_[32] = "espnow_receiver";
+char MqttClient::client_id_[32] = "battery_emulator_receiver";
 char MqttClient::username_[32] = "";
 char MqttClient::password_[32] = "";
 uint8_t MqttClient::broker_ip_[4] = {0, 0, 0, 0};

@@ -39,7 +39,7 @@ esp_err_t systeminfo_handler(httpd_req_t *req) {
     // Use streaming render with callback
     // No temporary String is built for page body or script.
     return send_rendered_page_streaming(req, 
-                                       "ESP-NOW Receiver Config", 
+                                       "Battery Emulator Receiver Config", 
                                        systeminfo_content_generator,
                                        PageRenderOptions("", script));
 }

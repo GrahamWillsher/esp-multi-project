@@ -19,8 +19,8 @@ namespace TestDataConfig {
  */
 enum class Mode : uint8_t {
     OFF = 0,              // No test data (use real CAN data only)
-    SOC_POWER_ONLY = 1,   // Generate SOC/power only (ESP-NOW, no cells)
-    FULL_BATTERY_DATA = 2 // Generate SOC/power + cells (ESP-NOW + MQTT)
+    SOC_POWER_ONLY = 1,   // Generate SOC/power only (no cell-data stream)
+    FULL_BATTERY_DATA = 2 // Generate SOC/power + cell data
 };
 
 /**

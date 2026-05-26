@@ -15,7 +15,7 @@ static esp_err_t battery_settings_handler(httpd_req_t *req) {
     };
     const char* script = get_battery_settings_page_script();
     return send_rendered_page_streaming(req,
-                                        "ESP-NOW Receiver - Battery Settings",
+                                        "Battery Emulator Receiver - Battery Settings",
                                         content_generator,
                                         PageRenderOptions("", script));
 }

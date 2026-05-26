@@ -122,6 +122,7 @@ esp_err_t api_get_receiver_network_handler(httpd_req_t *req) {
     const uint8_t* dns_secondary = ReceiverNetworkConfig::getDNSSecondary();
 
     bool mqtt_enabled = ReceiverNetworkConfig::isMqttEnabled();
+    bool mqtt_connected = MqttClient::isConnected();
     const uint8_t* mqtt_server = ReceiverNetworkConfig::getMqttServer();
     uint16_t mqtt_port = ReceiverNetworkConfig::getMqttPort();
     const char* mqtt_username = ReceiverNetworkConfig::getMqttUsername();
@@ -151,6 +152,7 @@ esp_err_t api_get_receiver_network_handler(httpd_req_t *req) {
     doc["dns_primary"]    = dns1_str;
     doc["dns_secondary"]  = dns2_str;
     doc["mqtt_enabled"]   = mqtt_enabled;
+    doc["mqtt_connected"] = mqtt_connected;
     doc["mqtt_server"]    = mqtt_str;
     doc["mqtt_port"]      = mqtt_port;
     doc["mqtt_username"]  = mqtt_username;
@@ -474,7 +476,7 @@ esp_err_t api_save_mqtt_config_handler(httpd_req_t *req) {
 
     const char* username = doc["username"] | "";
     const char* password = doc["password"] | "";
-    const char* client_id = doc["client_id"] | "espnow_transmitter";
+    const char* client_id = doc["client_id"] | "battery_emulator_transmitter";
 
     strncpy(msg.username, username, sizeof(msg.username) - 1);
     strncpy(msg.password, password, sizeof(msg.password) - 1);

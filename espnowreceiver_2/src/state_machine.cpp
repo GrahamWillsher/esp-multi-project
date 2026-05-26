@@ -2,8 +2,7 @@
  * State Machine and Error Handling
  * 
  * Phase 6 MQTT Migration (2026-05-24):
- * This module now uses MQTT connectivity as the sole indicator of active data flow.
- * ESP-NOW state machine checks have been replaced with MQTT connection status.
+ * This module uses MQTT connectivity as the sole indicator of active data flow.
  */
 
 #include "common.h"

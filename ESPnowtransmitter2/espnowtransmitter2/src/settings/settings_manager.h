@@ -3,11 +3,10 @@
 #include <Arduino.h>
 #include <Preferences.h>
 #include <esp32common/contracts/shared_contracts.h>
-#include <esp32common/contracts/incoming_message.h>
 #include <runtime_common_utils/version_utils.h>
 
 /**
- * @brief Settings Manager - Handles settings storage and ESP-NOW updates
+ * @brief Settings Manager - Handles settings storage and transport-neutral updates
  * 
  * Manages all persistent settings in NVS, handles settings update messages
  * from the receiver, and sends acknowledgments.
@@ -40,12 +39,6 @@ public:
      */
     bool init();
     
-    /**
-    * @brief Handle settings update message from receiver
-    * @param msg Incoming message envelope containing settings update
-     */
-    void handle_settings_update(const incoming_msg_t& msg);
-
     /**
      * @brief Apply a single settings field update (transport-agnostic)
      * @param category Settings category
@@ -160,17 +153,6 @@ private:
     // Prevent copying
     SettingsManager(const SettingsManager&) = delete;
     SettingsManager& operator=(const SettingsManager&) = delete;
-    
-    /**
-     * @brief Send settings update acknowledgment
-     * @param mac Receiver MAC address
-     * @param category Settings category
-     * @param field_id Field ID
-     * @param success Success status
-     * @param new_version New version number
-     * @param error_msg Error message (if any)
-     */
-    void send_settings_ack(const uint8_t* mac, uint8_t category, uint8_t field_id, bool success, uint32_t new_version, const char* error_msg);
     
     /**
      * @brief Send settings changed notification to receiver

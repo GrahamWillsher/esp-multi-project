@@ -239,56 +239,11 @@ static esp_err_t root_handler(httpd_req_t *req) {
             });
         }
 
-        function formatEnv(env) {
-            if (!env) return 'N/A';
-            const spaced = String(env).replace(/[-_]+/g, ' ').trim();
-            return spaced.replace(/\b\w/g, c => c.toUpperCase());
-        }
-
         function updateMqttIndicator(connected) {
             const dot = document.getElementById('mqttStatusDot');
             if (!dot) return;
             dot.className = 'status-dot ' + (connected ? 'connected' : 'disconnected');
             dot.title = connected ? 'MQTT Connected' : 'MQTT Disconnected';
-        }
-
-        async function loadTransmitterMetadata() {
-            try {
-                const res = await fetch('/api/transmitter_metadata');
-                const data = await res.json();
-
-                if (data.status === 'received') {
-                    setField('txStatus', data.valid ? 'Connected' : 'Metadata received (invalid)');
-                    setField('txEnvironment', formatEnv(data.env));
-                    setField('txDevice', data.device || 'N/A');
-                    setField('txVersion', data.version ? `v${String(data.version).replace(/^v/i, '')}` : 'N/A');
-                    setField('txBuildDate', data.build_date || 'N/A');
-                    return true;
-                }
-
-                setField('txStatus', 'Waiting for transmitter metadata');
-                setField('txEnvironment', 'N/A');
-                setField('txDevice', 'N/A');
-                setField('txVersion', 'N/A');
-                setField('txBuildDate', 'N/A');
-            } catch (e) {
-                console.error('Failed to load transmitter metadata:', e);
-            }
-
-            try {
-                const fallback = await fetch('/api/version');
-                const v = await fallback.json();
-                setField('txStatus', 'Connected (version fallback)');
-                setField('txEnvironment', 'N/A');
-                setField('txDevice', 'Transmitter');
-                setField('txVersion', v.transmitter_version ? `v${String(v.transmitter_version).replace(/^v/i, '')}` : 'Unknown');
-                setField('txBuildDate', v.transmitter_build_date || 'Unknown');
-                return true;
-            } catch (e2) {
-                console.error('Failed to load transmitter version fallback:', e2);
-                setField('txStatus', 'Disconnected / unavailable');
-                return false;
-            }
         }
 
         async function loadNetworkConfig() {
@@ -367,12 +322,11 @@ static esp_err_t root_handler(httpd_req_t *req) {
         }
 
         async function loadAll() {
-            const [metaOk, netOk, mqttOk] = await Promise.all([
-                loadTransmitterMetadata(),
+            const [netOk, mqttOk] = await Promise.all([
                 loadNetworkConfig(),
                 loadMqttConfig()
             ]);
-            return (metaOk || netOk || mqttOk);
+            return (netOk || mqttOk);
         }
 
         async function saveTransmitterConfig() {
@@ -468,7 +422,7 @@ static esp_err_t root_handler(httpd_req_t *req) {
     )rawliteral";
 
     return send_rendered_page(req,
-                              "ESP-NOW Receiver - Transmitter Config",
+                              "Battery Emulator Receiver - Transmitter Config",
                               content,
                               PageRenderOptions("", script),
                               "text/html");

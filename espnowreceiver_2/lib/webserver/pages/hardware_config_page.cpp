@@ -8,7 +8,7 @@
  * @brief Handler for the /transmitter/hardware page
  *
  * Hardware-adjacent transmitter controls (Status LED pattern) synchronized
- * from the receiver cache and saved back via ESP-NOW settings updates.
+ * from the receiver cache and saved back via MQTT settings updates.
  */
 static esp_err_t hardware_config_handler(httpd_req_t *req) {
     const String content = get_hardware_config_page_content();

@@ -77,7 +77,7 @@ const char* get_monitor2_page_script() {
             eventSource.onmessage = function(event) {
                 try {
                     const data = JSON.parse(event.data);
-                    document.getElementById('mode').innerText = 'Mode: ' + (data.mode === 'simulated' ? 'Simulated Data' : 'Live ESP-NOW Data');
+                    document.getElementById('mode').innerText = 'Mode: ' + (data.mode === 'simulated' ? 'Simulated Data' : 'Live Telemetry Data');
                     document.getElementById('soc').innerText = data.soc + ' %';
                     document.getElementById('power').innerText = data.power + ' W';
                     document.getElementById('voltage').innerText = (data.voltage_v || 0).toFixed(1) + ' V';

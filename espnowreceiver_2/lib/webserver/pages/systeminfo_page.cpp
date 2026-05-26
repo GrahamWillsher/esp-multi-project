@@ -9,7 +9,7 @@ esp_err_t systeminfo_handler(httpd_req_t *req) {
     String content = get_systeminfo_page_content();
     String script = get_systeminfo_page_script();
 
-    return send_rendered_page(req, "ESP-NOW Receiver Config", content, PageRenderOptions("", script));
+    return send_rendered_page(req, "Battery Emulator Receiver Config", content, PageRenderOptions("", script));
 }
 
 /**

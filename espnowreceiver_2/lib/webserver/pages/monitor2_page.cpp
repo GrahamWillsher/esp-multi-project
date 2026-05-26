@@ -4,7 +4,7 @@
 #include "../common/page_generator.h"
 
 esp_err_t monitor2_handler(httpd_req_t *req) {
-    return send_rendered_page(req, "ESP-NOW Receiver - Battery Monitor (SSE)",
+    return send_rendered_page(req, "Battery Emulator Receiver - Battery Monitor (SSE)",
                               get_monitor2_page_content(),
                               PageRenderOptions(get_monitor2_page_styles(), get_monitor2_page_script()));
 }

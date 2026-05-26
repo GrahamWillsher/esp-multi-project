@@ -9,9 +9,8 @@ namespace config {
     // Use common NTP configuration from esp32common/ethernet_config.h
     namespace ntp = EthernetConfig::NTP;
     
-    // ESP-NOW/WiFi configuration
+    // Time/network defaults
     namespace network {
-        constexpr uint8_t ESPNOW_WIFI_CHANNEL = 1;   // WiFi channel for ESP-NOW
         constexpr const char* NTP_SERVER_1 = "pool.ntp.org";
         constexpr const char* NTP_SERVER_2 = "time.nist.gov";
         constexpr long NTP_GMT_OFFSET_SEC = 0;
@@ -24,12 +23,12 @@ namespace config {
         uint16_t port{1883};                        // MQTT broker port
         const char* username{"Aintree34"};          // Username (empty for none)
         const char* password{"Shanghai17"};      // Password (empty for none)
-        const char* client_id{"espnow_transmitter"};
+        const char* client_id{"battery_emulator_transmitter"};
         
         struct Topics {
-            const char* data{"espnow/transmitter/data"};      // Topic for battery data
-            const char* status{"espnow/transmitter/status"};  // Topic for status
-            const char* ota{"espnow/transmitter/ota"};        // Topic for OTA commands
+            const char* data{"batt-emu/mqtt-v1/tx/state/battery_live"};      // Topic for battery data
+            const char* status{"batt-emu/mqtt-v1/tx/state/presence"};         // Topic for status
+            const char* ota{"batt-emu/mqtt-v1/rx/cmd/control/ota_start"};     // Topic for OTA commands
         } topics;
     };
 

@@ -39,7 +39,7 @@ void task_mqtt_client(void* parameter) {
 
                 if (config_changed) {
                     LOG_INFO("MQTT_TASK", "MQTT config changed — (re)initialising client");
-                    MqttClient::init(mqtt_server, mqtt_port, "espnow_receiver");
+                    MqttClient::init(mqtt_server, mqtt_port, "battery_emulator_receiver");
 
                     const char* username = ReceiverNetworkConfig::getMqttUsername();
                     const bool has_auth = (username && username[0] != '\0');

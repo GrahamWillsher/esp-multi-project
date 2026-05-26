@@ -35,7 +35,7 @@ public:
     bool is_ota_ready_for_reboot() const { return ota_ready_for_reboot_; }
 
     /**
-     * @brief Arm a fresh OTA auth session from trusted ESP-NOW control plane
+    * @brief Arm a fresh OTA auth session from MQTT control plane
      * @param requester_mac MAC of requester (receiver)
      * @return true if session armed
      */

@@ -16,7 +16,7 @@ static esp_err_t monitor_handler(httpd_req_t *req) {
     };
 
     return send_rendered_page_streaming(req,
-                                        "ESP-NOW Receiver - Battery Monitor",
+                                        "Battery Emulator Receiver - Battery Monitor",
                                         content_generator,
                                         PageRenderOptions(get_monitor_page_styles(), get_monitor_page_script()));
 }

@@ -53,9 +53,12 @@ esp_err_t api_set_test_data_mode_handler(httpd_req_t *req) {
         }
     }
 
-    // Apply local preview mode immediately so web display can be validated
-    // even if the transmitter is disconnected.
-    if (mode == 0) {
+    const bool sent = send_test_data_mode_control(mode);
+
+    // Use live animated MQTT data when transmitter acknowledged the command.
+    // Fall back to static seed preview only when transmitter is unreachable,
+    // so the web display can be validated while disconnected.
+    if (mode == 0 || sent) {
         test_mode_enabled = false;
         g_test_soc = 0;
         g_test_power = 0;
@@ -73,7 +76,6 @@ esp_err_t api_set_test_data_mode_handler(httpd_req_t *req) {
         }
     }
 
-    const bool sent = send_test_data_mode_control(mode);
     static const char* mode_names[] = {"OFF", "SOC_POWER_ONLY", "FULL_BATTERY_DATA"};
     StaticJsonDocument<192> response;
     response["success"] = true;

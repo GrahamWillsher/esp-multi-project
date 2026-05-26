@@ -20,9 +20,8 @@ void TimeManager::init(const char* ntp_server, long tz_offset) {
     
     LOG_INFO("TIME", "Time manager initialized (using system time from ethernet_utilities NTP)");
     
-    // NOTE: DO NOT initialize SNTP here - ethernet_utilities already handles NTP
-    // Initializing SNTP here would interfere with WiFi channel locking for ESP-NOW
-    // We simply read the system time that's already being synchronized
+    // NOTE: DO NOT initialize SNTP here - ethernet_utilities already handles NTP.
+    // We simply read the system time that is already being synchronized.
     
     ntp_initialized_ = true;
 }

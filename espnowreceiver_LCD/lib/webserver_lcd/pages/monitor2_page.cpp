@@ -10,7 +10,7 @@ static esp_err_t monitor2_content_generator(httpd_req_t* req) {
 }
 
 esp_err_t monitor2_handler(httpd_req_t *req) {
-    const char* title = "ESP-NOW Receiver - Battery Monitor (SSE)";
+    const char* title = "Battery Emulator Receiver - Battery Monitor (SSE)";
     PageRenderOptions options(get_monitor2_page_styles(), get_monitor2_page_script());
     
     return send_rendered_page_streaming(req, title, monitor2_content_generator, options);

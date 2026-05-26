@@ -10,12 +10,12 @@ static bool initialized = false;
 static bool enabled = false;  // Runtime control (replaces compile-time flag)
 static bool cell_generation_enabled = true;  // Control cell voltage generation
 static uint32_t last_update_ms = 0;
-static const uint32_t UPDATE_INTERVAL_MS = 100;
+static const uint32_t UPDATE_INTERVAL_MS = 10000;  // Align with MQTT publish interval so 1 step = 1 visible change
 
 // Simulation state
 static float soc_target = 65.0;
 static bool soc_increasing = true;
-static float power_cycle = 0.0;
+static float power_phase = 0.0;    // radians, accumulates each update
 static uint32_t cycle_count = 0;
 
 void init() {
@@ -111,13 +111,13 @@ void update() {
     
     // ===== SOC Simulation (slow cycling 20-95%) =====
     if (soc_increasing) {
-        soc_target += 0.02;  // ~0.02% per update = ~12% per minute
+        soc_target += 2.0;  // 2% per 10s step = ~12% per minute
         if (soc_target >= 95.0) {
             soc_target = 95.0;
             soc_increasing = false;
         }
     } else {
-        soc_target -= 0.03;  // Discharge slightly faster
+        soc_target -= 3.0;  // Discharge slightly faster (~18%/min)
         if (soc_target <= 20.0) {
             soc_target = 20.0;
             soc_increasing = true;
@@ -132,17 +132,11 @@ void update() {
     float voltage_v = 300.0 + (soc_target * 1.2);
     datalayer.battery.status.voltage_dV = (uint16_t)(voltage_v * 10);
     
-    // ===== Power Simulation (sine wave: -5kW to +3kW) =====
-    power_cycle += 0.02;  // Slow oscillation
-    float power_normalized = sin(power_cycle);  // -1 to +1
-    
-    // Map to charging (-5kW) to discharging (+3kW) range
-    int32_t power_w;
-    if (power_normalized < 0) {
-        power_w = (int32_t)(power_normalized * 5000);  // Charging up to -5000W
-    } else {
-        power_w = (int32_t)(power_normalized * 3000);  // Discharging up to +3000W
-    }
+    // ===== Power Simulation (sine wave: -5000W to +5000W) =====
+    // 0.04 rad per 2s step → max change ~200W at zero crossing, ~full cycle ~5 min.
+    // Small phase increment keeps every visible step gradual with no jumps.
+    power_phase += 0.04f;
+    const int32_t power_w = (int32_t)(sinf(power_phase) * 5000.0f);
     datalayer.battery.status.active_power_W = power_w;
     
     // Current calculation: I = P / V
@@ -150,8 +144,8 @@ void update() {
     datalayer.battery.status.current_dA = (int16_t)(current_a * 10);
     
     // ===== Temperature Simulation (18-28°C with small variations) =====
-    float temp_min_c = 18.0 + (sin(power_cycle * 0.3) * 2.0);  // 16-20°C
-    float temp_max_c = 22.0 + (sin(power_cycle * 0.5) * 3.0);  // 19-25°C
+    float temp_min_c = 18.0f + (sinf(power_phase * 0.015f) * 2.0f);  // 16-20°C
+    float temp_max_c = 22.0f + (sinf(power_phase * 0.025f) * 3.0f);  // 19-25°C
     datalayer.battery.status.temperature_min_dC = (int16_t)(temp_min_c * 10);
     datalayer.battery.status.temperature_max_dC = (int16_t)(temp_max_c * 10);
     
@@ -178,7 +172,7 @@ void update() {
         (uint32_t)((soc_target / 100.0) * datalayer.battery.info.total_capacity_Wh);
     
     // ===== Log every 10 seconds =====
-    if (cycle_count % 100 == 0) {
+    if (cycle_count % 5 == 0) {  // ~every 50 seconds
         LOG_DEBUG("TEST_DATA", "SOC=%.1f%%, V=%.1fV, I=%.1fA, P=%dW, T=%.1f-%.1f°C",
                  soc_target, voltage_v, current_a, power_w,
                  temp_min_c, temp_max_c);

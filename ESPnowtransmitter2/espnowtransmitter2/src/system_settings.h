@@ -8,7 +8,7 @@
  * Settings are:
  * - Loaded from NVS on startup (or defaults if not yet configured)
  * - Saved to NVS when changed
- * - Transmitted to receiver via ESP-NOW in every snapshot
+ * - Published to receiver MQTT topics in every snapshot
  * - Displayed on receiver's UI
  * 
  * This enables complete runtime configuration of:
@@ -45,7 +45,7 @@
 #define NVS_MAX_CURRENT_KEY "max_curr"
 #define NVS_MAX_TEMP_KEY "max_temp"
 #define NVS_MIN_TEMP_KEY "min_temp"
-#define NVS_UPDATE_RATE_KEY "upd_rate"
+#define NVS_SNAPSHOT_RATE_KEY "upd_rate"  // Keep stored key for backward compatibility
 #define NVS_CONFIG_VERSION_KEY "cfg_ver"
 
 // Configuration version for migrations
@@ -88,7 +88,7 @@ namespace defaults {
   constexpr int16_t DEFAULT_MIN_TEMP_DC = -50;                    // -5.0°C minimum operating temperature
 
   // Update rates (milliseconds)
-  constexpr uint16_t DEFAULT_ESPNOW_UPDATE_RATE_MS = 100;         // Snapshot every 100ms to receiver
+  constexpr uint16_t DEFAULT_SNAPSHOT_PUBLISH_RATE_MS = 100;      // Snapshot publish cadence
   constexpr uint16_t DEFAULT_DISPLAY_REFRESH_RATE_MS = 500;       // Receiver display update every 500ms
   constexpr uint16_t DEFAULT_MQTT_PUBLISH_RATE_MS = 5000;         // MQTT publish every 5 seconds (if enabled)
   constexpr uint16_t DEFAULT_BMS_PROCESS_RATE_MS = 100;           // Process BMS data every 100ms
@@ -276,10 +276,10 @@ class SystemSettings {
   // ========== UPDATE RATES ==========
   
   /**
-   * @brief Set ESP-NOW snapshot rate (milliseconds)
+   * @brief Set snapshot publish cadence (milliseconds)
    */
-  bool set_espnow_update_rate_ms(uint16_t ms);
-  uint16_t get_espnow_update_rate_ms() const { return espnow_update_rate_ms_; }
+  bool set_snapshot_publish_rate_ms(uint16_t ms);
+  uint16_t get_snapshot_publish_rate_ms() const { return snapshot_publish_rate_ms_; }
   
   /**
    * @brief Get display refresh rate
@@ -336,7 +336,7 @@ class SystemSettings {
   int16_t min_temp_dc_ = defaults::DEFAULT_MIN_TEMP_DC;
   
   // Update rates
-  uint16_t espnow_update_rate_ms_ = defaults::DEFAULT_ESPNOW_UPDATE_RATE_MS;
+  uint16_t snapshot_publish_rate_ms_ = defaults::DEFAULT_SNAPSHOT_PUBLISH_RATE_MS;
   uint16_t display_refresh_rate_ms_ = defaults::DEFAULT_DISPLAY_REFRESH_RATE_MS;
   uint16_t mqtt_publish_rate_ms_ = defaults::DEFAULT_MQTT_PUBLISH_RATE_MS;
   uint16_t bms_process_rate_ms_ = defaults::DEFAULT_BMS_PROCESS_RATE_MS;

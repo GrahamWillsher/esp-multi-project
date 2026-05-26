@@ -7,7 +7,7 @@
 // PAGE-TO-SUBTYPE MAPPING STRUCTURE
 // ═══════════════════════════════════════════════════════════════════════
 // Centralized page definition structure - enforces relationship between
-// pages, buttons, and ESP-NOW subtypes. All pages MUST be defined here.
+// pages, buttons, and command subtypes. All pages MUST be defined here.
 // 
 // ─────────────────────────────────────────────────────────────────────
 // HOW TO ADD A NEW PAGE WITH BUTTON:
@@ -35,7 +35,7 @@
 struct PageInfo {
     const char* uri;           // Page URI (e.g., "/", "/monitor")
     const char* name;          // Display name for button
-    msg_subtype subtype;       // ESP-NOW subtype for REQUEST_DATA/ABORT_DATA
+    msg_subtype subtype;       // Command subtype for REQUEST_DATA/ABORT_DATA
     bool needs_sse;            // True if page uses Server-Sent Events
     bool hide_from_nav;        // True if page should not appear in navigation buttons
 };

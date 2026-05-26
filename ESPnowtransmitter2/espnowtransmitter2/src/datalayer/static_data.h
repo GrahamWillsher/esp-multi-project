@@ -7,7 +7,7 @@
 /**
  * @brief Static configuration data that doesn't change during runtime
  * This data is published once on startup to MQTT BE/spec_data topics
- * and can be requested by receiver via ESP-NOW
+ * and can be requested by the receiver via the MQTT demand-refresh mechanism.
  */
 
 namespace StaticData {
@@ -82,7 +82,7 @@ struct SystemSpecs {
     bool has_cooling_control = false;                   // Battery cooling control
     bool has_sd_logging = false;                        // SD card data logging
     bool has_ethernet = true;                           // Ethernet connectivity
-    bool has_wifi = true;                               // WiFi connectivity (ESP-NOW only)
+    bool has_wifi = true;                               // WiFi connectivity (receiver only)
     uint8_t number_of_can_buses = 1;                   // Number of CAN interfaces
 };
 

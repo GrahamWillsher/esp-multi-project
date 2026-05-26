@@ -1,13 +1,9 @@
 #include "api_middleware.h"
 
 #include "api_response_utils.h"
-// NOTE: X-Radio-Pressure response header is intentionally NOT implemented here.
-// That header was designed for ESP-NOW coexistence and depended
-// on RadioPressureState / RxRadioArbiterFsm / EspnowTxScheduler — all of which are
-// removed in the MQTT-only architecture.  The heap-admission gate below (503 when
-// free heap < 60 KB) is the only pressure signal that remains relevant.
-// See MQTT_ONLY_TRANSPORT_FEASIBILITY_2026_05_14.md Section 10.C.4 for the
-// formal deprecation rationale.
+// NOTE: X-Radio-Pressure response header is not implemented.
+// The heap-admission gate below (503 when free heap < 60 KB) is the only
+// pressure signal that remains relevant.
 #include "../logging.h"
 #include "../webserver.h"
 

@@ -107,8 +107,8 @@ bool SystemSettings::load_from_nvs() {
   nvs_read_i16(NVS_MAX_TEMP_KEY, max_temp_dc_, defaults::DEFAULT_MAX_TEMP_DC);
   nvs_read_i16(NVS_MIN_TEMP_KEY, min_temp_dc_, defaults::DEFAULT_MIN_TEMP_DC);
   
-  // Load update rate
-  nvs_read_u16(NVS_UPDATE_RATE_KEY, espnow_update_rate_ms_, defaults::DEFAULT_ESPNOW_UPDATE_RATE_MS);
+  // Load snapshot publish rate
+  nvs_read_u16(NVS_SNAPSHOT_RATE_KEY, snapshot_publish_rate_ms_, defaults::DEFAULT_SNAPSHOT_PUBLISH_RATE_MS);
 
   bool corrected_invalid_selection = false;
   if (!contains_battery_type(bms_type_)) {
@@ -195,8 +195,8 @@ bool SystemSettings::save_to_nvs() {
   if (!nvs_write_i16(NVS_MAX_TEMP_KEY, max_temp_dc_)) return false;
   if (!nvs_write_i16(NVS_MIN_TEMP_KEY, min_temp_dc_)) return false;
   
-  // Save update rate
-  if (!nvs_write_u16(NVS_UPDATE_RATE_KEY, espnow_update_rate_ms_)) return false;
+  // Save snapshot publish rate
+  if (!nvs_write_u16(NVS_SNAPSHOT_RATE_KEY, snapshot_publish_rate_ms_)) return false;
   
   // Commit changes
   esp_err_t err = nvs_commit(nvs_handle_);
@@ -227,7 +227,7 @@ bool SystemSettings::reset_to_defaults() {
   max_temp_dc_ = defaults::DEFAULT_MAX_TEMP_DC;
   min_temp_dc_ = defaults::DEFAULT_MIN_TEMP_DC;
   
-  espnow_update_rate_ms_ = defaults::DEFAULT_ESPNOW_UPDATE_RATE_MS;
+  snapshot_publish_rate_ms_ = defaults::DEFAULT_SNAPSHOT_PUBLISH_RATE_MS;
   display_refresh_rate_ms_ = defaults::DEFAULT_DISPLAY_REFRESH_RATE_MS;
   mqtt_publish_rate_ms_ = defaults::DEFAULT_MQTT_PUBLISH_RATE_MS;
   bms_process_rate_ms_ = defaults::DEFAULT_BMS_PROCESS_RATE_MS;
@@ -342,9 +342,9 @@ bool SystemSettings::set_min_temp_dc(int16_t dc) {
   return save_to_nvs();
 }
 
-bool SystemSettings::set_espnow_update_rate_ms(uint16_t ms) {
-  espnow_update_rate_ms_ = ms;
-  LOG_INFO("SETTINGS", "ESP-NOW update rate changed to: %u ms", ms);
+bool SystemSettings::set_snapshot_publish_rate_ms(uint16_t ms) {
+  snapshot_publish_rate_ms_ = ms;
+  LOG_INFO("SETTINGS", "Snapshot publish rate changed to: %u ms", ms);
   return save_to_nvs();
 }
 
@@ -376,7 +376,7 @@ void SystemSettings::print_settings() {
   LOG_INFO("SETTINGS", "  Min: %d dC (%.1f °C)", min_temp_dc_, min_temp_dc_ / 10.0f);
   LOG_INFO("SETTINGS", "");
   LOG_INFO("SETTINGS", "Update Rates:");
-  LOG_INFO("SETTINGS", "  ESP-NOW: %u ms", espnow_update_rate_ms_);
+  LOG_INFO("SETTINGS", "  Snapshot Publish: %u ms", snapshot_publish_rate_ms_);
   LOG_INFO("SETTINGS", "  Display: %u ms", display_refresh_rate_ms_);
   LOG_INFO("SETTINGS", "  MQTT: %u ms", mqtt_publish_rate_ms_);
   LOG_INFO("SETTINGS", "  BMS Process: %u ms", bms_process_rate_ms_);

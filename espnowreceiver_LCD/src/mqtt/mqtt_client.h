@@ -12,8 +12,8 @@
  * Ownership boundary (Phase 3 cleanup):
  * - This class tracks RECEIVER↔BROKER runtime connection state only.
  * - Transmitter-reported MQTT state/config shown in the web UI is cached in
- *   `TransmitterMqttSpecs` / `TransmitterManager` and updated from ESP-NOW
- *   version-beacon/config messages.
+ *   `TransmitterMqttSpecs` / `TransmitterManager` and updated from MQTT
+ *   retained state/metadata streams.
  *
  * This module subscribes to topics published by the transmitter's battery emulator:
  * - BE/spec_data: Combined battery/inverter/charger/system specs
@@ -28,10 +28,10 @@ public:
      * @brief Initialize MQTT client with broker configuration
      * @param mqtt_server MQTT broker IP address
      * @param mqtt_port MQTT broker port (default 1883)
-     * @param client_id MQTT client identifier (default "espnow_receiver")
+    * @param client_id MQTT client identifier (default "battery_emulator_receiver")
      */
     static void init(const uint8_t* mqtt_server, uint16_t mqtt_port = 1883, 
-                    const char* client_id = "espnow_receiver");
+                const char* client_id = "battery_emulator_receiver");
     
     /**
      * @brief Set authentication credentials

@@ -12,7 +12,7 @@ R"rawliteral(
 
 <div class='debug-control'>
         <h3>📊 Transmitter Debug Level Control</h3>
-        <p>Control the debug logging level of the ESP-NOW transmitter. Messages are published to MQTT topic: <code>espnow/transmitter/debug/{level}</code></p>
+        <p>Control the transmitter debug logging level. Commands are sent on MQTT topic: <code>batt-emu/mqtt-v1/rx/cmd/control/debug_level</code></p>
 
         <div class='current-level-box'>
                 <strong class='current-level-label'>Current Debug Level:</strong>

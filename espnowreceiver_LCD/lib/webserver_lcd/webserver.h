@@ -40,7 +40,7 @@ struct WebserverRuntimeMetrics {
 bool is_webserver_backoff_active();
 
 /**
- * @brief Initialize webserver for ESP-NOW receiver
+ * @brief Initialize webserver for Battery Emulator receiver
  * Sets up modular page handlers, API endpoints, and utilities
  * Note: Caller (main watchdog) is responsible for checking is_webserver_backoff_active() first
  * @return void

@@ -129,7 +129,7 @@ void EthernetManager::event_handler(WiFiEvent_t event) {
     switch (event) {
         case ARDUINO_EVENT_ETH_START:
             LOG_INFO("ETH_EVENT", "Ethernet driver started");
-            ETH.setHostname("espnow-transmitter");
+            ETH.setHostname("battery-emulator-tx");
             break;
             
         case ARDUINO_EVENT_ETH_CONNECTED:

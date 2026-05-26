@@ -84,7 +84,7 @@ esp_err_t OtaManager::root_handler(httpd_req_t *req) {
     }
     httpd_resp_set_type(req, "text/plain");
     return (send_response_str_checked(req,
-                                      "ESP-NOW Transmitter - Ready for OTA",
+                                      "Battery Emulator Transmitter - Ready for OTA",
                                       "root_handler") == ESP_OK)
                ? ESP_OK
                : ESP_FAIL;

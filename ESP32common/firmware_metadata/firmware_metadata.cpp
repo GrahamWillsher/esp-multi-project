@@ -2,6 +2,12 @@
 #include <stdio.h>
 #include <string.h>
 
+#if defined(__GNUC__)
+#define FM_RODATA_ATTR __attribute__((section(".rodata")))
+#else
+#define FM_RODATA_ATTR
+#endif
+
 // Helper macro to stringify build flags
 #ifndef STRINGIFY
 #define STRINGIFY(x) #x
@@ -48,7 +54,7 @@
  */
 namespace FirmwareMetadata {
     // Use compound literal initialization for C++ compatibility
-    const Metadata metadata __attribute__((section(".rodata"))) = {
+    const Metadata metadata FM_RODATA_ATTR = {
         MAGIC_START,                    // magic_start
         PIO_ENV_NAME,                  // env_name
         TOSTRING(TARGET_DEVICE),       // device_type

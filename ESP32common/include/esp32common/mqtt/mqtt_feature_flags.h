@@ -104,16 +104,6 @@
  */
 #define MQTT_FEATURE_COMMANDS 1
 
-/**
- * @brief ESP-NOW coexistence gate in receiver MQTT task
- *
- * 1: receiver MQTT task can be blocked/paused by ESP-NOW connection + radio pressure.
- * 0: receiver MQTT task runs independently from ESP-NOW transport state.
- *
- * Phase M1 requires this to be disabled.
- */
-#define MQTT_FEATURE_ESPNOW_COEXISTENCE_GATES 0
-
 // ============================================================================
 // RUNTIME CONFIGURATION PARAMETERS (NOT FEATURE FLAGS)
 // ============================================================================

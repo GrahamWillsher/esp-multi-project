@@ -22,7 +22,7 @@ void initialize_mqtt_logger_if_needed(MqttManager& mqtt,
         return;
     }
 
-    MqttLogger::instance().init(mqtt.get_client(), "espnow/transmitter");
+    MqttLogger::instance().init(mqtt.get_client(), "batt-emu/mqtt-v1/tx");
     MqttLogger::instance().set_level(MQTT_LOG_INFO);
     logger_initialized = true;
 

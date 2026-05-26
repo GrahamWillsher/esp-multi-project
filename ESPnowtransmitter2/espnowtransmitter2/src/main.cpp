@@ -266,7 +266,7 @@ static void bootstrap_connectivity() {
     // state immediately if the link is already up.
     ServiceSupervisor::instance().attach_to_ethernet();
 
-    LOG_INFO("NETWORK", "MQTT transport mode active (no ESP-NOW bootstrap)");
+    LOG_INFO("NETWORK", "MQTT transport mode active");
 }
 
 // --- Phase 5: Data layer preparation ----------------------------------------
@@ -381,7 +381,10 @@ void loop() {
 #if CONFIG_CAN_ENABLED
     // Phase 4a: Process CAN messages (high priority)
     CANDriver::instance().update();
-    
+
+    // Phase 4a: Advance test data generator (internal 100ms guard, no-op when disabled)
+    TestDataGenerator::update();
+
     // Phase 4a: Update periodic BMS transmitters (battery data publishing)
     BatteryManager::instance().update_transmitters(millis());
 

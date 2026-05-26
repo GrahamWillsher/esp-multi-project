@@ -36,11 +36,11 @@ struct HeartbeatTiming {
     uint32_t interval_ms;
     uint32_t timeout_ms;
     uint32_t tx_timeout_ms;
-    uint32_t espnow_connecting_timeout_ms;
+    uint32_t connecting_timeout_ms;
     uint32_t ack_timeout_ms;
 };
 
-struct ReceiverEspnowTiming {
+struct ReceiverRxTiming {
     uint32_t queue_receive_timeout_ms;
     uint32_t stale_timeout_ms;
     uint32_t config_update_grace_ms;
@@ -49,7 +49,7 @@ struct ReceiverEspnowTiming {
 
 struct DataTransmissionTiming {
     uint32_t data_transmit_interval_ms;
-    uint32_t espnow_send_interval_ms;
+    uint32_t data_send_interval_ms;
     uint32_t send_timeout_ms;
 };
 
@@ -137,11 +137,11 @@ constexpr HeartbeatTiming HEARTBEAT{
     10000,
     30000,
     35000,
-    45000,   // espnow_connecting_timeout_ms — full scan (~26 s) + 2 confirm retries (4 s) + margin
+    45000,   // connecting_timeout_ms — WiFi connect window + MQTT broker handshake + margin
     1000,
 };
 
-constexpr ReceiverEspnowTiming RECEIVER_ESPNOW{
+constexpr ReceiverRxTiming RECEIVER_RX{
     1000,
     90000,
     5000,
@@ -245,22 +245,22 @@ constexpr uint32_t RECOVERY_TIMEOUT_MS = DISCOVERY.recovery_timeout_ms;
 constexpr uint32_t HEARTBEAT_INTERVAL_MS = HEARTBEAT.interval_ms;
 constexpr uint32_t HEARTBEAT_TIMEOUT_MS = HEARTBEAT.timeout_ms;
 constexpr uint32_t TX_HEARTBEAT_TIMEOUT_MS = HEARTBEAT.tx_timeout_ms;
-constexpr uint32_t ESPNOW_CONNECTING_TIMEOUT_MS = HEARTBEAT.espnow_connecting_timeout_ms;
+constexpr uint32_t CONNECTING_TIMEOUT_MS = HEARTBEAT.connecting_timeout_ms;
 constexpr uint32_t HEARTBEAT_ACK_TIMEOUT_MS = HEARTBEAT.ack_timeout_ms;
 
 // ============================================================================
-// RECEIVER ESP-NOW TASKS
+// RECEIVER RX TASKS
 // ============================================================================
-constexpr uint32_t RX_ESPNOW_QUEUE_RECEIVE_TIMEOUT_MS = RECEIVER_ESPNOW.queue_receive_timeout_ms;
-constexpr uint32_t RX_ESPNOW_STALE_TIMEOUT_MS = RECEIVER_ESPNOW.stale_timeout_ms;
-constexpr uint32_t RX_ESPNOW_CONFIG_UPDATE_GRACE_MS = RECEIVER_ESPNOW.config_update_grace_ms;
-constexpr uint32_t RX_ESPNOW_QUEUE_STATS_LOG_INTERVAL_MS = RECEIVER_ESPNOW.queue_stats_log_interval_ms;
+constexpr uint32_t RX_INGRESS_QUEUE_RECEIVE_TIMEOUT_MS = RECEIVER_RX.queue_receive_timeout_ms;
+constexpr uint32_t RX_INGRESS_STALE_TIMEOUT_MS = RECEIVER_RX.stale_timeout_ms;
+constexpr uint32_t RX_INGRESS_CONFIG_UPDATE_GRACE_MS = RECEIVER_RX.config_update_grace_ms;
+constexpr uint32_t RX_INGRESS_QUEUE_STATS_LOG_INTERVAL_MS = RECEIVER_RX.queue_stats_log_interval_ms;
 
 // ============================================================================
 // DATA TRANSMISSION
 // ============================================================================
 constexpr uint32_t DATA_TRANSMIT_INTERVAL_MS = DATA_TRANSMISSION.data_transmit_interval_ms;
-constexpr uint32_t ESPNOW_SEND_INTERVAL_MS = DATA_TRANSMISSION.espnow_send_interval_ms;
+constexpr uint32_t DATA_SEND_INTERVAL_MS = DATA_TRANSMISSION.data_send_interval_ms;
 constexpr uint32_t DATA_SEND_TIMEOUT_MS = DATA_TRANSMISSION.send_timeout_ms;
 
 // ============================================================================

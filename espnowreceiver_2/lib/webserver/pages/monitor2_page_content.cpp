@@ -3,7 +3,7 @@
 
 String get_monitor2_page_content() {
     String content = R"rawliteral(
-    <h1>ESP-NOW Receiver</h1>
+    <h1>Battery Emulator Receiver</h1>
     <h2>Battery Monitor (SSE - Real-time)</h2>
     <div style='margin-bottom: 20px;'>
         <a href='/' style='display: inline-block; padding: 10px 16px; background: #4CAF50; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;'>

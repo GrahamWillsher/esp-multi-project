@@ -5,9 +5,8 @@
 /**
  * @brief Process-wide runtime context for shared telemetry values.
  *
- * This context is transport-neutral and no longer mirrors ESP-NOW queue/payload
- * globals. MQTT/runtime code can use this API for lightweight cross-module
- * telemetry access when needed.
+ * Transport-neutral. MQTT/runtime code can use this API for lightweight
+ * cross-module telemetry access when needed.
  */
 class RuntimeContext {
 public:

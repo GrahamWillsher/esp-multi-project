@@ -79,7 +79,7 @@ const char* get_monitor_page_script() {
                 }
 
                 const data = await response.json();
-                document.getElementById('mode').innerText = 'Mode: ' + (data.mode === 'simulated' ? 'Simulated Data' : 'Live ESP-NOW Data');
+                document.getElementById('mode').innerText = 'Mode: ' + (data.mode === 'simulated' ? 'Simulated Data' : 'Live Telemetry Data');
                 document.getElementById('soc').innerText = data.soc + ' %';
                 document.getElementById('power').innerText = data.power + ' W';
                 document.getElementById('voltage').innerText = (data.voltage_v || 0).toFixed(1) + ' V';

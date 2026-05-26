@@ -11,7 +11,7 @@ Usage:
 Example:
     python3 generate_type_mappings.py \
         ../ESPnowtransmitter2/espnowtransmitter2/src/battery_emulator/battery/BATTERIES.cpp \
-        ../espnowreciever_2/lib/webserver/api/type_mappings_generated.h
+        ../espnowreceiver_2/lib/webserver/api/type_mappings_generated.h
 """
 
 import re
@@ -179,7 +179,7 @@ static const struct {
 def main():
     if len(sys.argv) < 3:
         print("Usage: python3 generate_type_mappings.py <battery_emulator_path> <output_path>")
-        print("Example: python3 generate_type_mappings.py ../ESPnowtransmitter2/.../BATTERIES.cpp ../espnowreciever_2/.../type_mappings_generated.h")
+        print("Example: python3 generate_type_mappings.py ../ESPnowtransmitter2/.../BATTERIES.cpp ../espnowreceiver_2/.../type_mappings_generated.h")
         sys.exit(1)
     
     batteries_cpp = Path(sys.argv[1])

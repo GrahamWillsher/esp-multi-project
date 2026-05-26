@@ -95,6 +95,51 @@ def generate_build_metadata(env):
     # Generate build timestamp (canonical format: DD MM YYYY HH:MM:SS)
     build_date = time.strftime('%d %m %Y %H:%M:%S')
     
+    # Touch firmware_metadata.cpp to force SCons to recompile it every build.
+    # Without this, SCons sees the source file unchanged and uses the cached .o,
+    # so the BUILD_DATE define added dynamically here never makes it into the binary.
+    # Note: __file__ is not available in PlatformIO's exec() context, so we resolve
+    # the path via LIBSOURCE_DIRS (which maps to lib_extra_dirs in platformio.ini).
+    metadata_src = None
+
+    # 1) Try library source dirs advertised by SCons/PlatformIO
+    for lib_dir in env.get('LIBSOURCE_DIRS', []):
+        candidate = os.path.normpath(os.path.join(str(lib_dir), 'firmware_metadata', 'firmware_metadata.cpp'))
+        if os.path.exists(candidate):
+            metadata_src = candidate
+            break
+
+    # 2) Fallback: discover esp32common as a sibling/ancestor relative to PROJECT_DIR
+    #    Handles layouts like:
+    #      <root>/espnowreceiver_LCD + <root>/esp32common
+    #      <root>/ESPnowtransmitter2/espnowtransmitter2 + <root>/esp32common
+    if not metadata_src:
+        project_dir = os.path.normpath(str(env.get('PROJECT_DIR', '')))
+        if project_dir:
+            probe = project_dir
+            for _ in range(6):
+                candidate = os.path.join(probe, 'esp32common', 'firmware_metadata', 'firmware_metadata.cpp')
+                candidate = os.path.normpath(candidate)
+                if os.path.exists(candidate):
+                    metadata_src = candidate
+                    break
+
+                candidate_alt = os.path.join(probe, 'ESP32 Common', 'firmware_metadata', 'firmware_metadata.cpp')
+                candidate_alt = os.path.normpath(candidate_alt)
+                if os.path.exists(candidate_alt):
+                    metadata_src = candidate_alt
+                    break
+
+                parent = os.path.dirname(probe)
+                if parent == probe:
+                    break
+                probe = parent
+    if metadata_src:
+        os.utime(metadata_src, None)  # update mtime to now
+        print(f"  Touched firmware_metadata.cpp to force recompile: {metadata_src}")
+    else:
+        print("  Warning: Could not find firmware_metadata.cpp to touch - BUILD_DATE may be stale")
+    
     # Extract device hardware from board setting (e.g., "esp32-poe2" -> "ESP32-POE2")
     board = env.get('BOARD', 'unknown').upper().replace('-', '_')
     

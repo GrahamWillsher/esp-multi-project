@@ -53,7 +53,7 @@ bool has_registered_mac();
 /**
  * Get the active MAC address with resolution priority:
  * 1. Registered MAC (from probe packet) - takes precedence
- * 2. Runtime MAC from ESP-NOW (transmitter_mac global)
+ * 2. Runtime MAC from transmitter telemetry state (transmitter_mac global)
  * 3. nullptr if no MAC available
  */
 const uint8_t* get_active_mac();

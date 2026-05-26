@@ -1,5 +1,5 @@
 /*
- * ESP32 T-Display-S3 - ESP-NOW Receiver with Display
+ * ESP32 T-Display-S3 - MQTT Receiver with Display
  * Using official TFT_eSPI library as used in LilyGo examples
  * 
  * *** PHASE 2: File split into modular structure ***
@@ -79,7 +79,7 @@ static void log_timing_policy() {
     LOG_INFO("TIMING", "Heartbeat: interval=%lu timeout=%lu connect=%lu ack=%lu",
              static_cast<unsigned long>(TimingConfig::HEARTBEAT.interval_ms),
              static_cast<unsigned long>(TimingConfig::HEARTBEAT.timeout_ms),
-             static_cast<unsigned long>(TimingConfig::HEARTBEAT.espnow_connecting_timeout_ms),
+             static_cast<unsigned long>(TimingConfig::HEARTBEAT.connecting_timeout_ms),
              static_cast<unsigned long>(TimingConfig::HEARTBEAT.ack_timeout_ms));
     LOG_INFO("TIMING", "MQTT: startup=%lu poll=%lu reconnect=%lu publish=%lu max_retry=%lu",
              static_cast<unsigned long>(TimingConfig::MQTT.task_startup_delay_ms),
@@ -284,7 +284,7 @@ static void bootstrap_hardware() {
     Serial.begin(115200);
     smart_delay(TimingConfig::SERIAL_INIT_DELAY_MS);
     LOG_INFO("MAIN", "\n========================================");
-    LOG_INFO("MAIN", "ESP32 T-Display-S3 ESP-NOW Receiver");
+    LOG_INFO("MAIN", "ESP32 T-Display-S3 MQTT Receiver");
 
     char fwInfo[128];
     FirmwareMetadata::getInfoString(fwInfo, sizeof(fwInfo), false);

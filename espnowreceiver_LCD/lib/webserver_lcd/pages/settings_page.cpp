@@ -19,15 +19,6 @@ static const char kSettingsContent[] = R"rawliteral(
     </div>
 
     <div class='settings-card'>
-        <h3>Transmitter Details</h3>
-        <div class='settings-row'><label>Status:</label><input type='text' id='txStatus' value='Loading...' disabled class='readonly-field' /></div>
-        <div class='settings-row'><label>Environment:</label><input type='text' id='txEnvironment' value='Loading...' disabled class='readonly-field' /></div>
-        <div class='settings-row'><label>Device:</label><input type='text' id='txDevice' value='Loading...' disabled class='readonly-field' /></div>
-        <div class='settings-row'><label>Firmware Version:</label><input type='text' id='txVersion' value='Loading...' disabled class='readonly-field' /></div>
-        <div class='settings-row'><label>Build Date:</label><input type='text' id='txBuildDate' value='Loading...' disabled class='readonly-field' /></div>
-    </div>
-
-    <div class='settings-card'>
         <h3>IP Configuration <span id='networkModeBadge' class='network-mode-badge badge-dhcp'>Loading...</span></h3>
         <div class='settings-row'>
             <label>Use Static IP:</label>
@@ -250,56 +241,11 @@ static const char kSettingsScript[] = R"rawliteral(
             });
         }
 
-        function formatEnv(env) {
-            if (!env) return 'N/A';
-            const spaced = String(env).replace(/[-_]+/g, ' ').trim();
-            return spaced.replace(/\b\w/g, c => c.toUpperCase());
-        }
-
         function updateMqttIndicator(connected) {
             const dot = document.getElementById('mqttStatusDot');
             if (!dot) return;
             dot.className = 'status-dot ' + (connected ? 'connected' : 'disconnected');
             dot.title = connected ? 'MQTT Connected' : 'MQTT Disconnected';
-        }
-
-        async function loadTransmitterMetadata() {
-            try {
-                const res = await fetch('/api/transmitter_metadata');
-                const data = await res.json();
-
-                if (data.status === 'received') {
-                    setField('txStatus', data.valid ? 'Connected' : 'Metadata received (invalid)');
-                    setField('txEnvironment', formatEnv(data.env));
-                    setField('txDevice', data.device || 'N/A');
-                    setField('txVersion', data.version ? `v${String(data.version).replace(/^v/i, '')}` : 'N/A');
-                    setField('txBuildDate', data.build_date || 'N/A');
-                    return true;
-                }
-
-                setField('txStatus', 'Waiting for transmitter metadata');
-                setField('txEnvironment', 'N/A');
-                setField('txDevice', 'N/A');
-                setField('txVersion', 'N/A');
-                setField('txBuildDate', 'N/A');
-            } catch (e) {
-                console.error('Failed to load transmitter metadata:', e);
-            }
-
-            try {
-                const fallback = await fetch('/api/version');
-                const v = await fallback.json();
-                setField('txStatus', 'Connected (version fallback)');
-                setField('txEnvironment', 'N/A');
-                setField('txDevice', 'Transmitter');
-                setField('txVersion', v.transmitter_version ? `v${String(v.transmitter_version).replace(/^v/i, '')}` : 'Unknown');
-                setField('txBuildDate', v.transmitter_build_date || 'Unknown');
-                return true;
-            } catch (e2) {
-                console.error('Failed to load transmitter version fallback:', e2);
-                setField('txStatus', 'Disconnected / unavailable');
-                return false;
-            }
         }
 
         async function loadNetworkConfig() {
@@ -378,12 +324,11 @@ static const char kSettingsScript[] = R"rawliteral(
         }
 
         async function loadAll() {
-            const [metaOk, netOk, mqttOk] = await Promise.all([
-                loadTransmitterMetadata(),
+            const [netOk, mqttOk] = await Promise.all([
                 loadNetworkConfig(),
                 loadMqttConfig()
             ]);
-            return (metaOk || netOk || mqttOk);
+            return (netOk || mqttOk);
         }
 
         async function saveTransmitterConfig() {
@@ -487,7 +432,7 @@ esp_err_t settings_content_generator(httpd_req_t* req) {
 
 static esp_err_t root_handler(httpd_req_t *req) {
     return send_rendered_page_streaming(req,
-                                        "ESP-NOW Receiver - Transmitter Config",
+                                        "Battery Emulator Receiver - Transmitter Config",
                                         settings_content_generator,
                                         PageRenderOptions(nullptr, kSettingsScript),
                                         "text/html");

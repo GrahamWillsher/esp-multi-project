@@ -8,7 +8,7 @@
 // Companion translation units:
 //   settings_persistence.cpp  – NVS blob save/load (all categories)
 //   settings_field_setters.cpp – per-field value validation and dispatch
-//   settings_espnow.cpp       – handle_settings_update / send_settings_ack / send_settings_changed_notification
+//   settings_apply.cpp        – transport-neutral apply + publish notification bridge
 
 SettingsManager& SettingsManager::instance() {
     static SettingsManager instance;

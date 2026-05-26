@@ -2,7 +2,7 @@
 // Implements the five per-field setter dispatch functions for SettingsManager.
 // Each function validates a single incoming field value, updates the
 // corresponding member, increments the category version, persists to NVS, and
-// broadcasts a settings-changed notification via ESP-NOW.
+// publishes a settings-changed notification through the active transport.
 //
 // Extracted from settings_manager.cpp to reduce file size.
 

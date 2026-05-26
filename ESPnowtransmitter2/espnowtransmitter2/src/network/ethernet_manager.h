@@ -365,8 +365,6 @@ private:
     void check_state_timeout();
     void handle_timeout();
     bool apply_network_config();
-    
-    friend class EspNowTransmitter;
 };
 
 /**

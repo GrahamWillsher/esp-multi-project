@@ -31,7 +31,7 @@
     #define FW_BUILD_TIME __TIME__
 #endif
 
-// Protocol version (increment when ESP-NOW protocol changes)
+// Protocol version (increment when wire protocol changes)
 #define PROTOCOL_VERSION 1
 
 // Minimum compatible version (refuse to run with older incompatible firmware on other device)

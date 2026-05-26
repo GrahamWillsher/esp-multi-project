@@ -233,12 +233,11 @@ void init_webserver() {
     
     // Configure HTTP server
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    // Lower priority than ESP-NOW/WiFi driver tasks (+5) to prevent HTTP
-    // from starving ESP-NOW ACK processing windows.
+    // Keep HTTP below network-driver critical work to avoid starving ingress/ACK paths.
     config.task_priority = tskIDLE_PRIORITY + 2;
     config.stack_size = 12288;
     // Conservative socket cap: fewer sockets means fewer simultaneous TCP
-    // send-buffer allocations competing with ESP-NOW internal heap usage.
+    // send-buffer allocations competing with telemetry/runtime buffers.
     config.max_open_sockets = 6;
     config.max_uri_handlers = 80;  // Increased to accommodate 61 handlers with headroom
     config.uri_match_fn = httpd_uri_match_wildcard;
@@ -248,7 +247,7 @@ void init_webserver() {
     // Keep HTTP listener fixed at port 80.
     config.ctrl_port = kHttpCtrlPortBase;
     config.recv_wait_timeout = 10;  // Receive timeout for battery data uploads
-    // 15 s: enough headroom for TCP socket sends under ESP-NOW radio contention
+    // 15 s: enough headroom for TCP socket sends under network load
     // while preventing stalled sockets from holding internal heap indefinitely.
     config.send_wait_timeout = 15;
     config.lru_purge_enable = true;
@@ -293,7 +292,7 @@ void init_webserver() {
                   static_cast<unsigned>(config.ctrl_port),
                   static_cast<unsigned>(g_http_start_failure_streak),
                   static_cast<unsigned long>(backoff_ms));
-        // Phase 8: LinkRecoveryCoordinator (ESPNOW stack) removed.
+        // Phase 8: LinkRecoveryCoordinator stack removed.
         // Webserver now relies on deterministic local backoff only.
         // Defensive cleanup for partial-start edge cases.
         if (server != NULL) {
@@ -464,7 +463,7 @@ bool webserver_should_recycle(uint32_t now_ms, uint32_t& out_oldest_inflight_ms)
 // ═══════════════════════════════════════════════════════════════════════
 
 // Notify SSE clients that battery monitor data has been updated
-// Call this from ESP-NOW worker task or test data generator when data changes
+// Call this from the data-ingress path or test data generator when data changes.
 void notify_sse_data_updated() {
     SSENotifier::notifyDataUpdated();
 }

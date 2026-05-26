@@ -210,7 +210,7 @@ bool get_config_json(char* buffer, size_t buffer_size) {
     
     // Add transport info
     JsonObject transport = doc.createNestedObject("transport");
-    transport["soc_power_via"] = "ESP_NOW";
+    transport["soc_power_via"] = "MQTT";
     transport["cells_via"] = "MQTT";
     
     size_t len = serializeJson(doc, buffer, buffer_size);

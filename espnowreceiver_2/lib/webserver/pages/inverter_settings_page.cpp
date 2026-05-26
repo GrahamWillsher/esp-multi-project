@@ -13,7 +13,7 @@
 static esp_err_t inverter_settings_handler(httpd_req_t *req) {
     const String content = get_inverter_settings_page_content();
     const String script  = get_inverter_settings_page_script();
-    return send_rendered_page(req, "ESP-NOW Receiver - Inverter Settings", content, PageRenderOptions("", script));
+    return send_rendered_page(req, "Battery Emulator Receiver - Inverter Settings", content, PageRenderOptions("", script));
 }
 
 /**

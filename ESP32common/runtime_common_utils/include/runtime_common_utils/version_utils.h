@@ -7,9 +7,9 @@
  * @brief Transport-neutral firmware version comparison utilities
  * 
  * Provides monotonic version comparison with wraparound detection.
- * Supports 32-bit version numbers used across MQTT, ESP-NOW, and other transports.
+ * Supports 32-bit version numbers used across MQTT and other transports.
  * 
- * Phase 8: Extracted from deleted espnow_common_utils as transport-neutral utility.
+ * Extracted from deleted espnow_common_utils as transport-neutral utility.
  */
 
 /**

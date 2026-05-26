@@ -1,10 +1,5 @@
-// settings_espnow.cpp
-// Legacy transport glue for SettingsManager.
-//
-// NOTE (Phase 7 MQTT-only cleanup):
-// - ESP-NOW settings transport is disabled.
-// - `send_settings_changed_notification()` now republishes MQTT retained state.
-// - Legacy ESP-NOW entry points remain as no-op compatibility shims.
+// settings_apply.cpp
+// Transport-neutral settings apply and retained-state publication bridge.
 
 #include "settings_manager.h"
 #include "../network/mqtt_manager.h"
@@ -126,27 +121,6 @@ bool SettingsManager::apply_settings_update(uint8_t category,
     clear_apply_context();
 
     return success;
-}
-
-void SettingsManager::handle_settings_update(const incoming_msg_t& msg) {
-    (void)msg;
-    LOG_WARN("SETTINGS", "ESP-NOW settings update ignored (MQTT transport mode)");
-}
-
-void SettingsManager::send_settings_ack(const uint8_t* mac,
-                                        uint8_t category,
-                                        uint8_t field_id,
-                                        bool success,
-                                        uint32_t new_version,
-                                        const char* error_msg) {
-    (void)mac;
-    LOG_DEBUG("SETTINGS",
-              "ESP-NOW settings ACK suppressed (cat=%u field=%u success=%d ver=%lu err=%s)",
-              static_cast<unsigned>(category),
-              static_cast<unsigned>(field_id),
-              success ? 1 : 0,
-              static_cast<unsigned long>(new_version),
-              error_msg ? error_msg : "");
 }
 
 void SettingsManager::send_settings_changed_notification(uint8_t category,

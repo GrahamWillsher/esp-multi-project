@@ -4,7 +4,7 @@
 namespace {
 esp_err_t reboot_content_generator(httpd_req_t* req) {
     static const char kRebootContent[] = R"rawliteral(
-    <h1>ESP-NOW Receiver</h1>
+    <h1>Battery Emulator Receiver</h1>
     <h2>Reboot Transmitter</h2>
     <div style='margin-bottom: 20px;'>
         <a href='/' style='display: inline-block; padding: 10px 16px; background: #4CAF50; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;'>
@@ -74,7 +74,7 @@ esp_err_t reboot_handler(httpd_req_t *req) {
     )rawliteral";
 
     return send_rendered_page_streaming(req,
-                                        "ESP-NOW Receiver - Reboot Transmitter",
+                                        "Battery Emulator Receiver - Reboot Transmitter",
                                         reboot_content_generator,
                                         PageRenderOptions("", kRebootScript));
 }

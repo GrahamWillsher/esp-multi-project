@@ -2484,7 +2484,7 @@ void MqttManager::handle_mqtt_command(const char* topic, const char* payload) {
     const uint16_t port = doc["port"] | 1883;
     const char* username = doc["username"] | "";
     const char* password = doc["password"] | "";
-    const char* client_id = doc["client_id"] | "espnow_transmitter";
+    const char* client_id = doc["client_id"] | "battery_emulator_transmitter";
 
     uint8_t server_bytes[4] = {0, 0, 0, 0};
     if (enabled) {

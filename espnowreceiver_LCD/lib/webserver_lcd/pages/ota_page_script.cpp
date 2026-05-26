@@ -865,7 +865,7 @@ const char* get_ota_page_script() {
                 handleSuccess: handleTransmitterUploadSuccess
             });
             
-            // Fetch transmitter metadata from ESP-NOW data (simpler approach)
+            // Fetch transmitter metadata from receiver telemetry cache
             function fetchTransmitterMetadata() {
                 fetch('/api/transmitter_metadata')
                     .then(response => response.json())

@@ -197,7 +197,7 @@ void get_webserver_runtime_metrics(WebserverRuntimeMetrics& out_metrics) {
 // ═══════════════════════════════════════════════════════════════════════
 
 // Notify SSE clients that battery monitor data has been updated
-// Call this from ESP-NOW worker task or test data generator when data changes
+// Call this from the data-ingress path or test data generator when data changes.
 void notify_sse_data_updated() {
     SSENotifier::notifyDataUpdated();
 }

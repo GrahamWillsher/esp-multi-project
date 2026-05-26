@@ -64,6 +64,13 @@ const char* get_systeminfo_page_script() {
             return value.replace(/-/g, ' ');
         }
 
+        function updateMqttIndicator(connected) {
+            const dot = document.getElementById('mqttStatusDot');
+            if (!dot) return;
+            dot.className = 'status-dot ' + (connected ? 'connected' : 'disconnected');
+            dot.title = connected ? 'MQTT Connected' : 'MQTT Disconnected';
+        }
+
         // Load receiver network info
         fetch('/api/get_receiver_network')
             .then(response => response.json())
@@ -108,6 +115,7 @@ const char* get_systeminfo_page_script() {
 
                 // Load MQTT configuration
                 document.getElementById('mqttEnabled').checked = data.mqtt_enabled || false;
+                updateMqttIndicator(!!(data.mqtt_enabled && data.mqtt_connected));
                 ReceiverNetworkFormController.setOctets('mqtt', data.mqtt_server);
                 document.getElementById('mqttPort').value = data.mqtt_port || '1883';
                 document.getElementById('mqttUsername').value = data.mqtt_username || '';
@@ -144,6 +152,8 @@ const char* get_systeminfo_page_script() {
                                 ReceiverNetworkFormController.updateNetworkModeBadge(useStatic, 'networkModeBadge');
                                 ReceiverNetworkFormController.toggleStaticIpFields(useStatic,
                                     ['localIpRow', 'gatewayRow', 'subnetRow', 'dns1Row', 'dns2Row']);
+                            } else if (fieldId === 'mqttEnabled') {
+                                updateMqttIndicator(element.checked);
                             }
                         });
                     }
@@ -153,6 +163,7 @@ const char* get_systeminfo_page_script() {
             })
             .catch(err => {
                 console.error('Failed to load receiver network info:', err);
+                updateMqttIndicator(false);
             });
 
         // Load receiver firmware metadata for header + status summary

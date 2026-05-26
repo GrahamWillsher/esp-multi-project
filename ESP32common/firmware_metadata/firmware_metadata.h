@@ -3,6 +3,12 @@
 #include <stdint.h>
 #include <cstddef>
 
+#if defined(__GNUC__)
+#define FM_PACKED __attribute__((packed))
+#else
+#define FM_PACKED
+#endif
+
 /**
  * Firmware Metadata Structure
  * 
@@ -21,7 +27,7 @@ namespace FirmwareMetadata {
      * Metadata structure - MUST be 128 bytes total
      * Packed to ensure consistent layout across compilers
      */
-    struct __attribute__((packed)) Metadata {
+    struct Metadata {
         uint32_t magic_start;       // Offset 0: Magic marker 0x464D5441
         char env_name[32];          // Offset 4: Environment name (e.g., "lilygo-t-display-s3")
         char device_type[16];       // Offset 36: Device type ("RECEIVER" or "TRANSMITTER")
@@ -32,7 +38,7 @@ namespace FirmwareMetadata {
         char build_date[48];        // Offset 56: Human-readable build date
         uint8_t reserved[20];       // Offset 104: Reserved for future use
         uint32_t magic_end;         // Offset 124: Magic marker 0x454E4446
-    };                              // Total: 128 bytes
+    } FM_PACKED;                    // Total: 128 bytes
     
     // Global metadata instance - defined in firmware_metadata.cpp
     extern const Metadata metadata;

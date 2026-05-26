@@ -26,7 +26,7 @@ struct WebserverRuntimeMetrics {
 };
 
 /**
- * @brief Initialize webserver for ESP-NOW receiver
+ * @brief Initialize webserver for Battery Emulator receiver
  * Sets up modular page handlers, API endpoints, and utilities
  * @return void
  */

@@ -127,15 +127,12 @@ String get_systeminfo_page_content() {
 
     <div class='settings-card'>
         <h3>MQTT Settings <span id='mqttStatusDot' class='status-dot' style='display: inline-block;' title='MQTT Status'></span></h3>
-        <p style='color: #666; font-size: 14px; margin-bottom: 15px;'>
-            Configure the receiver's MQTT client to subscribe to battery emulator specs
-        </p>
         <div class='settings-row'>
-            <label>MQTT Enabled:</label>
+            <label>Enabled:</label>
             <input type='checkbox' id='mqttEnabled' />
         </div>
         <div class='settings-row'>
-            <label>MQTT Server:</label>
+            <label>Server:</label>
             <div class='ip-row'>
                 <input class='octet' id='mqtt0' type='text' maxlength='3' />
                 <span class='dot'>.</span>
@@ -147,15 +144,15 @@ String get_systeminfo_page_content() {
             </div>
         </div>
         <div class='settings-row'>
-            <label>MQTT Port:</label>
+            <label>Port:</label>
             <input type='text' id='mqttPort' value='1883' class='editable-field' />
         </div>
         <div class='settings-row'>
-            <label>MQTT Username:</label>
+            <label>Username:</label>
             <input type='text' id='mqttUsername' value='' class='editable-field' placeholder='(optional)' />
         </div>
         <div class='settings-row'>
-            <label>MQTT Password:</label>
+            <label>Password:</label>
             <input type='password' id='mqttPassword' value='' class='editable-field' placeholder='(optional)' />
         </div>
     </div>

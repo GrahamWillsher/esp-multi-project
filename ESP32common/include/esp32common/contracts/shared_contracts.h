@@ -5,18 +5,8 @@
 
 // Transport-neutral contracts facade.
 //
-// Phase 1 safety note:
-// We intentionally re-export canonical shared wire/data contracts from the
-// existing public protocol header to avoid symbol drift and keep all projects
-// compiling while MQTT callers migrate away from direct espnow include paths.
-//
-// This file is the stable include for MQTT/runtime code:
+// Stable include for all MQTT/runtime code:
 //   <esp32common/contracts/shared_contracts.h>
-//
-// Phase 8 cleanup: espnow_transmitter library was deleted after decoupling
-// transmitter source from ESPNOW internals. Wire protocol contracts are now
-// defined locally in this file instead of being forwarded from
-// espnow_transmitter/espnow_common.h.
 
 #ifdef BMS_FAULT
 #pragma push_macro("BMS_FAULT")
@@ -25,13 +15,13 @@
 #endif
 
 // Transport-neutral wire protocol contracts (formerly in espnow_common.h)
-// Phase 8 cleanup: enabled locally after deleting espnow_transmitter library
+// Wire protocol contracts defined locally in this file.
 
 // ============================================================================
 // Message Type IDs (shared across all transports)
 // ============================================================================
 // Note: These are NOT radio-specific; they represent the logical message
-// types that can be sent via MQTT, ESPNOW, HTTP, or any other transport.
+// types that can be sent via MQTT, HTTP, or any other transport.
 
 enum msg_type : uint8_t {
     // ========== Battery Data Messages ==========
@@ -569,7 +559,7 @@ typedef struct __attribute__((packed)) {
 typedef struct __attribute__((packed)) {
     uint8_t type;                   // msg_version_announce
     uint32_t firmware_version;      // Version number (e.g., 10000 for 1.0.0)
-    uint8_t protocol_version;       // ESP-NOW protocol version
+    uint8_t protocol_version;       // Wire protocol version
     uint32_t min_compatible_version; // Minimum compatible firmware version
     char device_type[16];           // "RECEIVER" or "TRANSMITTER"
     char build_date[12];            // Build date string
@@ -586,7 +576,7 @@ typedef struct __attribute__((packed)) {
     uint8_t type;                   // msg_version_response
     uint32_t request_id;            // Echoed from request
     uint32_t firmware_version;      // Version number
-    uint8_t protocol_version;       // ESP-NOW protocol version
+    uint8_t protocol_version;       // Wire protocol version
     uint32_t min_compatible_version; // Minimum compatible version
     char device_type[16];           // Device type string
     char build_date[12];            // Build date
