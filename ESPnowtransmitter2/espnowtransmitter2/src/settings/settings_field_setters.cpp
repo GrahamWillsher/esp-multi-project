@@ -10,6 +10,7 @@
 #include "../config/logging_config.h"
 #include "../datalayer/datalayer.h"
 #include "../battery_emulator/devboard/utils/led_handler.h"
+#include "../battery_emulator/communication/contactorcontrol/comm_contactorcontrol.h"
 
 namespace {
 
@@ -664,6 +665,7 @@ bool SettingsManager::save_can_setting(uint8_t field_id,
 bool SettingsManager::save_contactor_setting(uint8_t field_id,
                                              uint32_t value_uint32) {
     bool changed = false;
+    bool alignment_setting_changed = false;
 
     switch (field_id) {
         case CONTACTOR_CONTROL_ENABLED:
@@ -705,12 +707,14 @@ bool SettingsManager::save_contactor_setting(uint8_t field_id,
         case CONTACTOR_PERIODIC_BMS_RESET:
             contactor_periodic_bms_reset_ = value_uint32 ? true : false;
             changed = true;
+            alignment_setting_changed = true;
             LOG_INFO("SETTINGS", "Periodic BMS reset updated: %s",
                      contactor_periodic_bms_reset_ ? "ENABLED" : "DISABLED");
             break;
         case CONTACTOR_BMS_FIRST_ALIGN_ENABLED:
             contactor_bms_first_align_enabled_ = value_uint32 ? true : false;
             changed = true;
+            alignment_setting_changed = true;
             LOG_INFO("SETTINGS", "BMS first-align updated: %s",
                      contactor_bms_first_align_enabled_ ? "ENABLED" : "DISABLED");
             break;
@@ -720,6 +724,7 @@ bool SettingsManager::save_contactor_setting(uint8_t field_id,
             }
             contactor_bms_first_align_target_minutes_ = static_cast<uint16_t>(value_uint32);
             changed = true;
+            alignment_setting_changed = true;
             LOG_INFO("SETTINGS", "BMS first-align target updated: %02u:%02u",
                      static_cast<unsigned>(contactor_bms_first_align_target_minutes_ / 60),
                      static_cast<unsigned>(contactor_bms_first_align_target_minutes_ % 60));
@@ -746,6 +751,9 @@ bool SettingsManager::save_contactor_setting(uint8_t field_id,
         }
         if (saved) {
             apply_runtime_static_settings();
+            if (alignment_setting_changed) {
+                on_bms_reset_alignment_settings_changed();
+            }
             send_settings_changed_notification(SETTINGS_CONTACTOR,
                                                contactor_settings_version_);
         }

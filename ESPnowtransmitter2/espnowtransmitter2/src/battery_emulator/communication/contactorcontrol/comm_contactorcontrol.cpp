@@ -48,6 +48,7 @@ unsigned long lastPowerRemovalTime = 0;
 unsigned long bmsPowerOnTime = 0;
 const unsigned long powerRemovalInterval = 24 * 60 * 60 * 1000;  // 24 hours in milliseconds
 const unsigned long bmsWarmupDuration = 3000;
+const unsigned long kAlignmentMoveSafetyThresholdMs = 5UL * 60UL * 1000UL;  // 5 minutes
 
 static bool firstAlignArmed = false;
 static bool firstAlignConsumeOnSuccess = false;
@@ -60,13 +61,25 @@ static AlignArmReason alignArmReason = AlignArmReason::NONE;
 
 static bool offset_monitor_initialized = false;
 static int16_t last_seen_utc_offset_min = 0;
+static bool defer_realign_after_current_cycle = false;
 
-static bool arm_alignment_to_target_from_ntp(unsigned long now_ms, AlignArmReason reason, const char* log_prefix) {
-  if (!periodic_bms_reset || firstAlignArmed) {
+static void clear_alignment_arm_state(bool clear_initial_align_boot_state = false) {
+  firstAlignArmed = false;
+  firstAlignDelayMs = 0;
+  firstAlignAnchorMs = 0;
+  firstAlignConsumeOnSuccess = false;
+  alignArmReason = AlignArmReason::NONE;
+  defer_realign_after_current_cycle = false;
+  if (clear_initial_align_boot_state) {
+    initialAlignCompletedThisBoot = false;
+  }
+}
+
+static bool compute_arm_delay_seconds(uint32_t target_minutes, int* out_delta_seconds) {
+  if (!out_delta_seconds) {
     return false;
   }
-
-  if (bms_first_align_target_minutes > 1439) {
+  if (target_minutes > 1439) {
     return false;
   }
 
@@ -80,11 +93,32 @@ static bool arm_alignment_to_target_from_ntp(unsigned long now_ms, AlignArmReaso
   localtime_r(&current_epoch, &local_tm);
 
   const int current_seconds = (local_tm.tm_hour * 3600) + (local_tm.tm_min * 60) + local_tm.tm_sec;
-  const int target_seconds = static_cast<int>(bms_first_align_target_minutes) * 60;
+  const int target_seconds = static_cast<int>(target_minutes) * 60;
 
   int delta_seconds = target_seconds - current_seconds;
   if (delta_seconds <= 0) {
     delta_seconds += 24 * 3600;
+  }
+
+  *out_delta_seconds = delta_seconds;
+  return true;
+}
+
+static bool arm_alignment_to_target_from_ntp_internal(unsigned long now_ms,
+                                                      AlignArmReason reason,
+                                                      const char* log_prefix,
+                                                      bool allow_override_existing_arm) {
+  if (!periodic_bms_reset || !bms_first_align_enabled) {
+    return false;
+  }
+
+  if (!allow_override_existing_arm && firstAlignArmed) {
+    return false;
+  }
+
+  int delta_seconds = 0;
+  if (!compute_arm_delay_seconds(bms_first_align_target_minutes, &delta_seconds)) {
+    return false;
   }
 
   firstAlignDelayMs = static_cast<unsigned long>(delta_seconds) * 1000UL;
@@ -100,8 +134,29 @@ static bool arm_alignment_to_target_from_ntp(unsigned long now_ms, AlignArmReaso
   return true;
 }
 
+static bool force_rearm_alignment_to_target_from_ntp(unsigned long now_ms,
+                                                     AlignArmReason reason,
+                                                     const char* log_prefix) {
+  return arm_alignment_to_target_from_ntp_internal(now_ms, reason, log_prefix, true);
+}
+
+static unsigned long get_remaining_alignment_ms(unsigned long now_ms) {
+  if (!firstAlignArmed) {
+    return 0;
+  }
+  const unsigned long elapsed = now_ms - firstAlignAnchorMs;
+  if (elapsed >= firstAlignDelayMs) {
+    return 0;
+  }
+  return firstAlignDelayMs - elapsed;
+}
+
+static bool arm_alignment_to_target_from_ntp(unsigned long now_ms, AlignArmReason reason, const char* log_prefix) {
+  return arm_alignment_to_target_from_ntp_internal(now_ms, reason, log_prefix, false);
+}
+
 static void maybe_arm_initial_alignment_from_ntp(unsigned long now_ms) {
-  if (!periodic_bms_reset || firstAlignArmed || initialAlignCompletedThisBoot) {
+  if (!periodic_bms_reset || !bms_first_align_enabled || firstAlignArmed || initialAlignCompletedThisBoot) {
     return;
   }
 
@@ -109,7 +164,7 @@ static void maybe_arm_initial_alignment_from_ntp(unsigned long now_ms) {
 }
 
 static void maybe_arm_offset_change_realign(unsigned long now_ms) {
-  if (!periodic_bms_reset) {
+  if (!periodic_bms_reset || !bms_first_align_enabled) {
     return;
   }
 
@@ -146,6 +201,46 @@ static void emit_bms_alignment_snapshot_event() {
   const uint8_t snapshot_data = encode_bms_alignment_snapshot_data(now_epoch);
   set_event(EVENT_BMS_RESET_ALIGNMENT_STATUS, snapshot_data);
   clear_event(EVENT_BMS_RESET_ALIGNMENT_STATUS);
+}
+
+void on_bms_reset_alignment_settings_changed() {
+  const unsigned long now_ms = millis();
+
+  if (!periodic_bms_reset) {
+    clear_alignment_arm_state();
+    return;
+  }
+
+  if (!bms_first_align_enabled) {
+    clear_alignment_arm_state();
+    return;
+  }
+
+  if (datalayer.system.status.bms_reset_status != BMS_RESET_IDLE) {
+    defer_realign_after_current_cycle = true;
+    logging.println("BMS reset alignment: settings changed during active reset, deferring re-arm");
+    return;
+  }
+
+  if (!firstAlignArmed) {
+    if (!force_rearm_alignment_to_target_from_ntp(now_ms, AlignArmReason::INITIAL, "settings-change")) {
+      logging.println("BMS reset alignment: settings changed but time not available yet, waiting for NTP");
+    }
+    return;
+  }
+
+  const unsigned long remaining_ms = get_remaining_alignment_ms(now_ms);
+  if (remaining_ms >= kAlignmentMoveSafetyThresholdMs) {
+    if (force_rearm_alignment_to_target_from_ntp(now_ms, AlignArmReason::INITIAL, "settings-change-move")) {
+      defer_realign_after_current_cycle = false;
+    }
+    return;
+  }
+
+  defer_realign_after_current_cycle = true;
+  logging.printf("BMS reset alignment: pending arm within safety threshold (%lu ms < %lu ms), applying new target next cycle\n",
+                 static_cast<unsigned long>(remaining_ms),
+                 static_cast<unsigned long>(kAlignmentMoveSafetyThresholdMs));
 }
 
 void set(uint8_t pin, bool direction, uint32_t pwm_freq = 0xFFFF) {
@@ -383,11 +478,11 @@ void handle_BMSpower() {
     const uint64_t unix_time = TimeManager::instance().get_unix_time();
 
     if (!periodic_bms_reset && firstAlignArmed) {
-      firstAlignArmed = false;
-      firstAlignDelayMs = 0;
-      firstAlignAnchorMs = 0;
-      firstAlignConsumeOnSuccess = false;
-      alignArmReason = AlignArmReason::NONE;
+      clear_alignment_arm_state();
+    }
+
+    if (periodic_bms_reset && !bms_first_align_enabled && firstAlignArmed) {
+      clear_alignment_arm_state();
     }
 
     if (periodic_bms_reset) {
@@ -473,6 +568,14 @@ void handle_BMSpower() {
           }
 
           alignArmReason = AlignArmReason::NONE;
+        }
+
+        if (defer_realign_after_current_cycle && periodic_bms_reset && bms_first_align_enabled) {
+          if (force_rearm_alignment_to_target_from_ntp(currentTime,
+                                                       AlignArmReason::INITIAL,
+                                                       "settings-change-next-cycle")) {
+            defer_realign_after_current_cycle = false;
+          }
         }
 
         datalayer.system.status.bms_reset_status = BMS_RESET_IDLE;

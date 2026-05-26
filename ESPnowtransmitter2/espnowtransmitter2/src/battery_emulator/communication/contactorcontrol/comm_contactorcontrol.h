@@ -62,4 +62,12 @@ void handle_contactors();
  */
 void handle_contactors_battery2();
 
+/**
+ * @brief React to runtime changes of BMS reset alignment settings.
+ *
+ * Called from settings apply path (event-driven) when hardware settings change.
+ * Enforces move-or-next behavior for a single active next-reset schedule.
+ */
+void on_bms_reset_alignment_settings_changed();
+
 #endif
