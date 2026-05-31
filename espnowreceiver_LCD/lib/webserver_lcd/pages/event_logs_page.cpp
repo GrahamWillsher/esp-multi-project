@@ -19,7 +19,7 @@ static esp_err_t event_logs_page_handler(httpd_req_t *req) {
 // Register event logs page
 esp_err_t register_event_logs_page(httpd_handle_t server) {
     httpd_uri_t events_uri = {
-        .uri = "/events",
+        .uri = "/systemtools/events",
         .method = HTTP_GET,
         .handler = event_logs_page_handler,
         .user_ctx = NULL

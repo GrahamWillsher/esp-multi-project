@@ -8,7 +8,7 @@ const char* get_event_logs_page_styles() {
 .event-error { color: #ff6b35; }
 
 .events-table-wrap {
-    height: calc(100vh - 220px);
+    max-height: 570px;
     overflow-x: auto;
     overflow-y: auto;
     border-radius: 8px;
@@ -31,7 +31,10 @@ const char* get_event_logs_page_styles() {
 }
 
 .events-table th {
-    background: rgba(255,255,255,0.08);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: #2e3d45;
     color: #f1f1f1;
     font-weight: 600;
 }
@@ -504,7 +507,7 @@ window.addEventListener('load', () => {
             }
         }
 
-        // Keep subscription active for the lifetime of the /events page.
+        // Keep subscription active for the lifetime of the /systemtools/events page.
         // Unsubscribe only on unload/navigation.
     })();
 });

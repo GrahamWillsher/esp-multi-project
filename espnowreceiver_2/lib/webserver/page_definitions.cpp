@@ -7,6 +7,8 @@ const PageInfo PAGE_DEFINITIONS[] = {
     // Landing + hub
     { "/",                          "Dashboard",                   subtype_none,            false, false },
     { "/transmitter",               "Transmitter Hub",             subtype_none,            false, false },
+    { "/receiver",                  "Receiver Hub",                subtype_none,            false, false },
+    { "/systemtools",               "System Tools",                subtype_none,            false, false },
 
     // Transmitter configuration pages
     { "/transmitter/config",        "TX Config",                   subtype_none,            false, true  },
@@ -20,12 +22,13 @@ const PageInfo PAGE_DEFINITIONS[] = {
     // Receiver pages
     { "/receiver/config",           "Receiver Info",               subtype_systeminfo,      false, true  },
     { "/receiver/network",          "Receiver Network",            subtype_network_config,  false, false },
+    { "/receiver/memoryhealth",     "Memory Health",               subtype_none,            false, true  },
     { "/cellmonitor",               "Cell Monitor",                subtype_cell_info,       true,  false },
 
     // Tooling pages
-    { "/ota",                       "OTA",                         subtype_none,            false, false },
-    { "/debug",                     "Debug",                       subtype_none,            false, false },
-    { "/events",                    "Event Logs",                  subtype_events,          false, false },
+    { "/systemtools/ota",           "OTA",                         subtype_none,            false, true  },
+    { "/systemtools/debug",         "Debug",                       subtype_none,            false, true  },
+    { "/systemtools/events",        "Event Logs",                  subtype_events,          false, true  },
 
     // Spec/display pages
     { "/battery_settings.html",     "Battery Specs",               subtype_none,            false, false },

@@ -8,14 +8,6 @@ static esp_err_t root_handler(httpd_req_t *req) {
     )rawliteral";
 
     content += R"rawliteral(
-    <div style='margin-bottom: 20px;'>
-        <a href='/' style='display: inline-block; padding: 10px 16px; background: #4CAF50; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;'>
-            ← Dashboard
-        </a>
-    </div>
-    )rawliteral";
-
-    content += R"rawliteral(
     <div class='settings-card'>
         <h3>IP Configuration <span id='networkModeBadge' class='network-mode-badge badge-dhcp'>Loading...</span></h3>
         <div class='settings-row'>
@@ -163,7 +155,7 @@ static esp_err_t root_handler(httpd_req_t *req) {
                 saveButton.disabled = true;
             } else {
                 saveButton.textContent = `Save ${changedCount} Changed Setting${changedCount > 1 ? 's' : ''}`;
-                saveButton.style.backgroundColor = '#4CAF50';
+                saveButton.style.backgroundColor = '#2196F3';
                 saveButton.disabled = false;
             }
         }

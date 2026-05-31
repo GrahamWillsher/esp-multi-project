@@ -6,6 +6,8 @@
 // V2: New landing and hub pages
 #include "dashboard_page.h"
 #include "transmitter_hub_page.h"
+#include "receiver_hub_page.h"
+#include "systemtools_hub_page.h"
 
 // Transmitter pages (renamed/moved)
 #include "settings_page.h"           // Now at /transmitter/config
@@ -19,6 +21,7 @@
 // Receiver pages
 #include "systeminfo_page.h"         // Now at /receiver/config
 #include "network_config_page.h"     // Now at /receiver/network
+#include "memoryhealth_page.h"       // Now at /receiver/memoryhealth
 
 // Battery Emulator Spec Pages (Phase 3)
 #include "battery_specs_display_page.h"    // Battery specs from MQTT

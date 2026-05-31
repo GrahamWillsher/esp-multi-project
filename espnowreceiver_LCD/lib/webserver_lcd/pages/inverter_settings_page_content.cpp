@@ -3,11 +3,6 @@
 const char* get_inverter_settings_page_content() {
     static const char kInverterSettingsPageContent[] = R"rawliteral(
     <h1>Inverter Settings</h1>
-    <div style='margin-bottom: 20px;'>
-        <a href='/' style='display: inline-block; padding: 10px 16px; background: #4CAF50; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;'>
-            ← Dashboard
-        </a>
-    </div>
 
 
     <div class='settings-card'>

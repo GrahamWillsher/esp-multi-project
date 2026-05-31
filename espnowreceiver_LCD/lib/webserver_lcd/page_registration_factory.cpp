@@ -22,6 +22,8 @@ const PageHandlerDescriptor PAGE_HANDLERS[] = {
     // Landing + hub
     { "/",                      ::register_dashboard_page },
     { "/transmitter",           ::register_transmitter_hub_page },
+    { "/receiver",              ::register_receiver_hub_page },
+    { "/systemtools",           ::register_systemtools_hub_page },
 
     // Phase 2: static JS asset — cacheable COMMON_SCRIPT_HELPERS
     { "/static/helpers.js",     ::register_static_helpers_js },
@@ -38,12 +40,13 @@ const PageHandlerDescriptor PAGE_HANDLERS[] = {
     // Receiver pages
     { "/receiver/config",       ::register_systeminfo_page },
     { "/receiver/network",      ::register_network_config_page },
+    { "/receiver/memoryhealth", ::register_memoryhealth_page },
     { "/cellmonitor",           ::register_cellmonitor_page },
 
     // Tooling pages
-    { "/ota",                   ::register_ota_page },
-    { "/debug",                 ::register_debug_page },
-    { "/events",                ::register_event_logs_page },
+    { "/systemtools/ota",       ::register_ota_page },
+    { "/systemtools/debug",     ::register_debug_page },
+    { "/systemtools/events",    ::register_event_logs_page },
 
     // Spec/display pages
     { "/battery_settings.html", ::register_battery_specs_page },

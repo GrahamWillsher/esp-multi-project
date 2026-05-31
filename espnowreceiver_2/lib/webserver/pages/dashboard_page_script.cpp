@@ -76,7 +76,7 @@ const char* get_dashboard_page_script() {
             
             // Change color based on staleness
             if (secondsSinceUpdate < 2) {
-                lastUpdateEl.style.color = '#4CAF50';  // Green - fresh
+                lastUpdateEl.style.color = '#2196F3';  // Theme primary - fresh
             } else if (secondsSinceUpdate < 5) {
                 lastUpdateEl.style.color = '#FFD700';  // Yellow - slightly stale
             } else if (secondsSinceUpdate < 10) {
@@ -99,7 +99,7 @@ const char* get_dashboard_page_script() {
         function getTimeSourceColor(source) {
             switch(source) {
                 case 0: return '#ff6b35';  // Red - unsynced
-                case 1: return '#4CAF50';  // Green - NTP
+                case 1: return '#2196F3';  // Theme primary - NTP
                 case 2: return '#FF9800';  // Orange - Manual
                 case 3: return '#2196F3';  // Blue - GPS
                 default: return '#999';
@@ -193,9 +193,9 @@ const char* get_dashboard_page_script() {
                     
                     if (ethernetConnected) {
                         statusEl.textContent = 'Connected';
-                        statusEl.style.color = '#4CAF50';
+                        statusEl.style.color = '#2196F3';
                         if (statusDotEl) {
-                            statusDotEl.style.background = '#4CAF50';
+                            statusDotEl.style.background = '#2196F3';
                         }
                     } else {
                         statusEl.textContent = 'Disconnected';
@@ -234,7 +234,7 @@ const char* get_dashboard_page_script() {
                     if (geoEl) {
                         if (healthData.geolocation_valid) {
                             geoEl.textContent = '🌍 Geolocation confirmed';
-                            geoEl.style.color = '#4CAF50';
+                            geoEl.style.color = '#2196F3';
                             geoEl.title = 'Timezone has been confirmed by geolocation service.';
                         } else {
                             geoEl.textContent = '⚠ Default (UTC) - geolocation pending';
@@ -283,7 +283,7 @@ const char* get_dashboard_page_script() {
                     statusEl.textContent = statusText;
                     statusEl.style.color = (errors > 0)
                         ? '#ff6b35'
-                        : (total > 0 ? '#4CAF50' : '#888');
+                        : (total > 0 ? '#2196F3' : '#888');
                     cardEl.classList.remove('disabled');
                     linkEl.style.pointerEvents = 'auto';
                     cardEl.style.opacity = '1';
@@ -296,7 +296,7 @@ const char* get_dashboard_page_script() {
                     statusEl.style.color = '#888';
                 }
             } catch (e) {
-                // Connection error - keep card clickable so user can still open /events.
+                // Connection error - keep card clickable so user can still open /systemtools/events.
                 cardEl.classList.remove('disabled');
                 linkEl.style.pointerEvents = 'auto';
                 cardEl.style.opacity = '1';

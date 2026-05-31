@@ -75,7 +75,7 @@ const char* get_transmitter_hub_page_script() {
                     modeColor = '#FF9800';
                 } else if (data.mode === 2 || data.mode === 'FULL_BATTERY_DATA') {
                     modeText = 'FULL_BATTERY_DATA (All Test Data)';
-                    modeColor = '#4CAF50';
+                    modeColor = '#2196F3';
                 }
 
                 modeEl.textContent = modeText;
@@ -107,7 +107,7 @@ const char* get_transmitter_hub_page_script() {
 
                 if (res.ok) {
                     statusEl.textContent = '✓ Mode changed successfully';
-                    statusEl.style.color = '#4CAF50';
+                    statusEl.style.color = '#2196F3';
                     // Refresh the display after a short delay
                     setTimeout(updateTestDataMode, 500);
                 } else {

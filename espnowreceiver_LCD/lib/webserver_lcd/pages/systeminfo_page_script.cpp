@@ -247,7 +247,7 @@ const char* get_systeminfo_page_script() {
                 if (result.success) {
                     btn.disabled = false;
                     btn.textContent = 'Saved OK';
-                    btn.style.backgroundColor = '#2196F3';
+                    btn.style.backgroundColor = '#4CAF50';
                     return;
                 } else {
                     alert(result.message || 'Failed to save configuration');

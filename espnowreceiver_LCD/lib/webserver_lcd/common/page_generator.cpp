@@ -14,6 +14,29 @@ constexpr uint32_t kHttpLongResponseWarnMs = 2000;
 constexpr uint32_t kMinInternalHeapMidRenderBytesCritical = 4U * 1024U;
 constexpr uint32_t kMinInternalHeapMidRenderBytesNormalWarn = 8U * 1024U;
 
+const char* resolve_theme_body_class(const char* uri) {
+    if (uri && std::strncmp(uri, "/systemtools", 12) == 0) {
+        return "theme-systemtools";
+    }
+    if (uri && std::strncmp(uri, "/receiver", 9) == 0) {
+        return "theme-receiver";
+    }
+    return "theme-transmitter";
+}
+
+bool should_inject_dashboard_nav(const char* uri, const PageRenderOptions& options) {
+    if (!options.include_template_dashboard_nav) {
+        return false;
+    }
+
+    // Do not show a dashboard button on the dashboard itself.
+    return !(uri && std::strcmp(uri, "/") == 0);
+}
+
+const char* dashboard_nav_html() {
+    return "<div class='template-top-nav'><a href='/' class='button dashboard-link'>← Dashboard</a></div>";
+}
+
 struct ChunkSendPolicy {
     size_t chunk_bytes = 512;
     uint32_t inter_chunk_delay_ms = 1;
@@ -1015,8 +1038,17 @@ esp_err_t send_rendered_page_streaming(httpd_req_t* req,
     const size_t script_len = options.script_static ? strlen(options.script_static) : options.script.length();
     if (!send_chunk("script", script_data, script_len)) return ESP_FAIL;
 
-    static const char kBodyOpen[] = "</script></head><body>";
-    if (!send_chunk("body_open", kBodyOpen, sizeof(kBodyOpen) - 1)) return ESP_FAIL;
+    static const char kBodyOpenPrefix[] = "</script></head><body class='";
+    if (!send_chunk("body_open_prefix", kBodyOpenPrefix, sizeof(kBodyOpenPrefix) - 1)) return ESP_FAIL;
+    const char* theme_class = resolve_theme_body_class(req->uri);
+    if (!send_chunk("body_open_class", theme_class, strlen(theme_class))) return ESP_FAIL;
+    static const char kBodyOpenSuffix[] = "'>";
+    if (!send_chunk("body_open_suffix", kBodyOpenSuffix, sizeof(kBodyOpenSuffix) - 1)) return ESP_FAIL;
+
+    if (should_inject_dashboard_nav(req->uri, options)) {
+        const char* nav_html = dashboard_nav_html();
+        if (!send_chunk("template_dashboard_nav", nav_html, strlen(nav_html))) return ESP_FAIL;
+    }
 
     // Invoke the callback to emit page content incrementally
     // The callback should use the same send_chunk_stage path for safety checks and abort protection

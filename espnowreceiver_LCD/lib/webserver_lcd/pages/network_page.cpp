@@ -203,27 +203,11 @@ esp_err_t handle_get(httpd_req_t* req) {
   return rc;
 }
 
-esp_err_t handle_root(httpd_req_t* req) {
-    httpd_resp_set_status(req, "302 Found");
-    httpd_resp_set_hdr(req, "Location", "/config");
-    return httpd_resp_send(req, nullptr, 0);
-}
-
 esp_err_t register_handler(httpd_handle_t server) {
     httpd_uri_t uri = {
         .uri      = "/config",
         .method   = HTTP_GET,
         .handler  = handle_get,
-        .user_ctx = nullptr,
-    };
-    return httpd_register_uri_handler(server, &uri);
-}
-
-esp_err_t register_root(httpd_handle_t server) {
-    httpd_uri_t uri = {
-        .uri      = "/",
-        .method   = HTTP_GET,
-        .handler  = handle_root,
         .user_ctx = nullptr,
     };
     return httpd_register_uri_handler(server, &uri);

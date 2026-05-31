@@ -4,12 +4,54 @@
 // Common CSS styles for all pages
 static constexpr char COMMON_STYLES[] = R"rawliteral(
     html { font-family: Arial, Helvetica, sans-serif; display: inline-block; text-align: center; }
-    body { max-width: 800px; margin: 0px auto; padding: 20px; background-color: #303841; color: white; }
-    h1 { color: white; }
-    h2 { color: #FFD700; margin-top: 5px; }
+    body {
+        --theme-primary: #2d7dff;
+        --theme-primary-strong: #1b5fcc;
+        --theme-primary-soft: #274a66;
+        --theme-primary-glow: rgba(45, 125, 255, 0.25);
+        max-width: 800px;
+        margin: 0px auto;
+        padding: 20px;
+        background-color: #303841;
+        color: white;
+    }
+    body.theme-transmitter {
+        --theme-primary: #2d7dff;
+        --theme-primary-strong: #1b5fcc;
+        --theme-primary-soft: #274a66;
+        --theme-primary-glow: rgba(45, 125, 255, 0.25);
+    }
+    body.theme-receiver {
+        --theme-primary: #33a35f;
+        --theme-primary-strong: #2a864f;
+        --theme-primary-soft: #274a3a;
+        --theme-primary-glow: rgba(51, 163, 95, 0.25);
+    }
+    body.theme-systemtools {
+        --theme-primary: #FF9800;
+        --theme-primary-strong: #ef6c00;
+        --theme-primary-soft: #5c3d10;
+        --theme-primary-glow: rgba(255, 152, 0, 0.30);
+    }
+    h1 { color: var(--theme-primary); }
+    h2 { color: var(--theme-primary); margin-top: 5px; }
     h3 { color: white; margin-top: 20px; }
+    .page-title { color: var(--theme-primary); }
+    .section-frame {
+        border-top: 2px solid var(--theme-primary);
+        box-shadow: 0 0 0 1px var(--theme-primary-glow) inset;
+    }
+    .template-top-nav {
+        display: flex;
+        justify-content: center;
+        margin: 0 0 16px 0;
+    }
+    .dashboard-link {
+        margin: 0;
+        font-weight: bold;
+    }
     .button {
-        background-color: #505E67;
+        background-color: var(--theme-primary-soft);
         border: none;
         color: white;
         padding: 12px 24px;
@@ -19,14 +61,16 @@ static constexpr char COMMON_STYLES[] = R"rawliteral(
         cursor: pointer;
         border-radius: 10px;
         display: inline-block;
+        box-shadow: 0 0 0 1px var(--theme-primary-glow) inset;
     }
-    .button:hover { background-color: #3A4A52; }
+    .button:hover { background-color: var(--theme-primary-strong); }
     .info-box {
         background-color: #3a4b54;
         padding: 20px;
         border-radius: 20px;
         margin: 15px 0;
         box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+        border-top: 2px solid var(--theme-primary);
     }
     .info-box h3 {
         color: #fff;
@@ -42,7 +86,7 @@ static constexpr char COMMON_STYLES[] = R"rawliteral(
         border-bottom: 1px solid #505E67;
     }
     .info-row:last-child { border-bottom: none; }
-    .info-label { font-weight: bold; color: #FFD700; }
+    .info-label { font-weight: bold; color: var(--theme-primary); }
     .info-value { color: white; }
     .settings-card {
         background-color: #3a4b54;
@@ -51,6 +95,7 @@ static constexpr char COMMON_STYLES[] = R"rawliteral(
         border-radius: 20px;
         box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
         text-align: left;
+        border-top: 2px solid var(--theme-primary);
     }
     .settings-card h3 {
         color: #fff;
@@ -66,7 +111,7 @@ static constexpr char COMMON_STYLES[] = R"rawliteral(
         align-items: center;
         padding: 8px 0;
     }
-    label { font-weight: bold; color: #FFD700; }
+    label { font-weight: bold; color: var(--theme-primary); }
     input, select {
         max-width: 250px;
         padding: 8px;

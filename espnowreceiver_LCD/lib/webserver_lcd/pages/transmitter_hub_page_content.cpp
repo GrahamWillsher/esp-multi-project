@@ -22,13 +22,7 @@ esp_err_t emit_transmitter_hub_page_content(
     const char* build_date
 ) {
     _SEND_LIT(req, R"rawliteral(
-    <div style='margin-bottom: 20px;'>
-        <a href='/' style='display: inline-block; padding: 10px 16px; background: #4CAF50; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;'>
-            ← Dashboard
-        </a>
-    </div>
-
-    <h1 style='color: #2196F3;'>📡 Transmitter <span style='font-size: 0.5em; font-weight: 600;'>()rawliteral");
+    <h1>📡 Transmitter <span style='font-size: 0.5em; font-weight: 600;'>()rawliteral");
     _SEND_STR(req, device_subtitle);
 
     _SEND_LIT(req, R"rawliteral()</span></h1>
@@ -75,8 +69,8 @@ esp_err_t emit_transmitter_hub_page_content(
     </div>
 
     <!-- Test Data Mode Control -->
-    <div class='info-box' style='margin: 20px 0; background: rgba(76,175,80,0.1); border-left: 5px solid #4CAF50;'>
-        <h3 style='margin: 0 0 15px 0; color: #4CAF50;'>🧪 Test Data Mode Control</h3>
+    <div class='info-box' style='margin: 20px 0; background: rgba(33,150,243,0.1); border-left: 5px solid #2196F3;'>
+        <h3 style='margin: 0 0 15px 0; color: #2196F3;'>🧪 Test Data Mode Control</h3>
         <div style='display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px;'>
             <div>
                 <div style='color: #888; font-size: 13px; margin-bottom: 8px;'>Current Mode</div>
@@ -93,7 +87,7 @@ esp_err_t emit_transmitter_hub_page_content(
                 <div style='display: flex; gap: 8px; flex-wrap: wrap;'>
                     <button onclick='setTestDataMode(0)' style='flex: 1; min-width: 80px; padding: 8px; background: #f44336; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;' id='btnModeOff'>OFF</button>
                     <button onclick='setTestDataMode(1)' style='flex: 1; min-width: 80px; padding: 8px; background: #FF9800; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;' id='btnModeSoc'>SOC_POWER</button>
-                    <button onclick='setTestDataMode(2)' style='flex: 1; min-width: 80px; padding: 8px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;' id='btnModeFull'>FULL</button>
+                    <button onclick='setTestDataMode(2)' style='flex: 1; min-width: 80px; padding: 8px; background: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;' id='btnModeFull'>FULL</button>
                 </div>
                 <div id='modeStatus' style='color: #888; font-size: 12px; margin-top: 10px; min-height: 30px;'></div>
             </div>

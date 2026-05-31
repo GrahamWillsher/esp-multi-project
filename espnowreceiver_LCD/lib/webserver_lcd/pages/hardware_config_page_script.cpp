@@ -137,7 +137,7 @@ const char* get_hardware_config_page_script() {
                 const syncEl = document.getElementById('ledSyncStatus');
                 if (data.effect_synced) {
                     syncEl.textContent = 'Synced';
-                    syncEl.style.color = '#4CAF50';
+                    syncEl.style.color = '#2196F3';
                 } else {
                     syncEl.textContent = data.has_led_policy ? 'Sync Pending' : 'No LED policy cached';
                     syncEl.style.color = '#FF9800';
@@ -280,7 +280,7 @@ const char* get_hardware_config_page_script() {
 
                 if (data.success) {
                     statusEl.textContent = '&#10003; LED resync requested';
-                    statusEl.style.color = '#4CAF50';
+                    statusEl.style.color = '#2196F3';
                     setTimeout(loadLiveLedStatus, 500);
                 } else {
                     statusEl.textContent = '&#10007; ' + (data.message || 'Resync failed');

@@ -6,11 +6,6 @@ esp_err_t reboot_content_generator(httpd_req_t* req) {
     static const char kRebootContent[] = R"rawliteral(
     <h1>Battery Emulator Receiver</h1>
     <h2>Reboot Transmitter</h2>
-    <div style='margin-bottom: 20px;'>
-        <a href='/' style='display: inline-block; padding: 10px 16px; background: #4CAF50; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;'>
-            ← Dashboard
-        </a>
-    </div>
 
     <div class='info-box' style='text-align: center;'>
         <h3>Reboot Control</h3>

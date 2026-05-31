@@ -12,11 +12,6 @@ namespace {
 
 static const char kSettingsContent[] = R"rawliteral(
     <h1>Transmitter Configuration</h1>
-    <div style='margin-bottom: 20px;'>
-        <a href='/' style='display: inline-block; padding: 10px 16px; background: #4CAF50; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;'>
-            ← Dashboard
-        </a>
-    </div>
 
     <div class='settings-card'>
         <h3>IP Configuration <span id='networkModeBadge' class='network-mode-badge badge-dhcp'>Loading...</span></h3>
@@ -165,7 +160,7 @@ static const char kSettingsScript[] = R"rawliteral(
                 saveButton.disabled = true;
             } else {
                 saveButton.textContent = `Save ${changedCount} Changed Setting${changedCount > 1 ? 's' : ''}`;
-                saveButton.style.backgroundColor = '#4CAF50';
+                saveButton.style.backgroundColor = '#2196F3';
                 saveButton.disabled = false;
             }
         }

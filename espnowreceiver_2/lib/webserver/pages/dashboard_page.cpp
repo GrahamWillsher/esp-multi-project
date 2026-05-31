@@ -49,7 +49,7 @@ static esp_err_t dashboard_handler(httpd_req_t *req) {
 
     if (tx_connected) {
         tx_status = "Connected";
-        tx_status_color = "#4CAF50"; // Green
+        tx_status_color = "#4CAF50"; // Green when connected
     }
 
     if (TransmitterManager::hasMetadata()) {

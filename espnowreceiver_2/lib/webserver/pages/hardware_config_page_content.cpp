@@ -2,12 +2,6 @@
 
 String get_hardware_config_page_content() {
     String content = R"rawliteral(
-    <div style='margin-bottom: 20px;'>
-        <a href='/' style='display: inline-block; padding: 10px 16px; background: #4CAF50; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;'>
-            ← Dashboard
-        </a>
-    </div>
-
     <h1>Hardware Config</h1>
     )rawliteral";
 

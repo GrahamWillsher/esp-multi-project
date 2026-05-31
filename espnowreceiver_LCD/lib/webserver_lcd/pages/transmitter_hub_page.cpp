@@ -42,7 +42,7 @@ esp_err_t transmitter_hub_content_generator(httpd_req_t* req) {
 static esp_err_t transmitter_hub_handler(httpd_req_t *req) {
     // Populate g_hub fields from tiny stack computation — no String heap alloc.
     const bool connected = TransmitterManager::isMACKnown();
-    strlcpy(g_hub.status_color, connected ? "#4CAF50" : "#ff6b35", sizeof(g_hub.status_color));
+    strlcpy(g_hub.status_color, connected ? "#2196F3" : "#ff6b35", sizeof(g_hub.status_color));
     strlcpy(g_hub.status_text,  connected ? "Connected" : "Disconnected", sizeof(g_hub.status_text));
 
     {

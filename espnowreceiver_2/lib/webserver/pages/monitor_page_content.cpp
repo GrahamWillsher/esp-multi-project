@@ -5,11 +5,6 @@ String get_monitor_page_content() {
     String content = R"rawliteral(
     <h1>Battery Emulator Receiver</h1>
     <h2>Battery Monitor</h2>
-    <div style='margin-bottom: 20px;'>
-        <a href='/' style='display: inline-block; padding: 10px 16px; background: #4CAF50; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;'>
-            ← Dashboard
-        </a>
-    </div>
     )rawliteral";
 
     content += R"rawliteral(

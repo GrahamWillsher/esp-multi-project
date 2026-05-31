@@ -3,11 +3,6 @@
 const char* get_ota_page_content() {
     static const char kContent[] = R"rawliteral(
     <h1>OTA Firmware Update</h1>
-    <div style='margin-bottom: 20px;'>
-        <a href='/' style='display: inline-block; padding: 10px 16px; background: #4CAF50; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;'>
-            ← Dashboard
-        </a>
-    </div>
     
     <div class='info-box' style='margin-bottom: 20px;'>
         <h3 style='display: flex; align-items: center; justify-content: space-between; gap: 12px;'>

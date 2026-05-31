@@ -13,7 +13,7 @@
 static esp_err_t transmitter_hub_handler(httpd_req_t *req) {
     // Get transmitter status
     bool connected = TransmitterManager::isMACKnown();
-    String status_color = connected ? "#4CAF50" : "#ff6b35";
+    String status_color = connected ? "#2196F3" : "#ff6b35";
     String status_text = connected ? "Connected" : "Disconnected";
     String ip_text = TransmitterManager::getIPString();
     if (ip_text == "0.0.0.0") ip_text = "Not available";

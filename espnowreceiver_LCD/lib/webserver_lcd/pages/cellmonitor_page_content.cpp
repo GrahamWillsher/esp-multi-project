@@ -9,7 +9,6 @@ const char* get_cellmonitor_page_content() {
                 <strong>Data Source:</strong>
                 <span id='cellMode' style='color: #FFD700; font-weight: bold;'>Loading...</span>
             </div>
-            <a href='/' style='color: #4CAF50; text-decoration: none; font-weight: bold;'>← Back to Dashboard</a>
         </div>
         <p id='cellStatus' style='color: #888; margin-top: 8px;'>Fetching cell data...</p>
         <div style='display: flex; justify-content: center; gap: 30px; margin-top: 8px; color: #ddd;'>

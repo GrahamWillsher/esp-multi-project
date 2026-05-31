@@ -1,7 +1,237 @@
 #include "page_generator.h"
 #include "common_styles.h"
+#include "../logging.h"
 
+#include <Arduino.h>
+#include <WiFi.h>
 #include <cstring>
+#include <esp_heap_caps.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+
+namespace {
+const char* resolve_theme_body_class(const char* uri) {
+    if (uri && std::strncmp(uri, "/systemtools", 12) == 0) {
+        return "theme-systemtools";
+    }
+    if (uri && std::strncmp(uri, "/receiver", 9) == 0) {
+        return "theme-receiver";
+    }
+    return "theme-transmitter";
+}
+
+bool should_inject_dashboard_nav(const char* uri, const PageRenderOptions& options) {
+    if (!options.include_template_dashboard_nav) {
+        return false;
+    }
+
+    // Do not show a dashboard button on the dashboard itself.
+    return !(uri && std::strcmp(uri, "/") == 0);
+}
+
+const char* dashboard_nav_html() {
+    return "<div class='template-top-nav'><a href='/' class='button dashboard-link'>← Dashboard</a></div>";
+}
+
+constexpr uint32_t kHttpLongResponseWarnMs = 2000;
+constexpr uint32_t kMinInternalHeapPreflightBytes = 20U * 1024U;
+constexpr uint32_t kMinInternalHeapMidRenderBytesCritical = 4U * 1024U;
+constexpr uint32_t kMinInternalHeapMidRenderBytesNormalWarn = 8U * 1024U;
+
+struct ChunkSendPolicy {
+    size_t chunk_bytes = 512;
+    uint32_t inter_chunk_delay_ms = 1;
+};
+
+ChunkSendPolicy policy_for_sample(uint32_t free_heap, uint32_t largest_block) {
+    ChunkSendPolicy policy{};
+    policy.chunk_bytes = 512;
+    policy.inter_chunk_delay_ms = 1;
+    if ((free_heap < 16U * 1024U) || (largest_block < 4U * 1024U)) {
+        if (policy.chunk_bytes > 192) policy.chunk_bytes = 192;
+        if (policy.inter_chunk_delay_ms < 5) policy.inter_chunk_delay_ms = 5;
+    }
+    return policy;
+}
+
+const char* method_to_string(int method) {
+    switch (method) {
+        case HTTP_GET:    return "GET";
+        case HTTP_POST:   return "POST";
+        case HTTP_PUT:    return "PUT";
+        case HTTP_PATCH:  return "PATCH";
+        case HTTP_DELETE: return "DELETE";
+        case HTTP_HEAD:   return "HEAD";
+        default:          return "UNKNOWN";
+    }
+}
+
+const char* wifi_mode_to_string(wifi_mode_t mode) {
+    switch (mode) {
+        case WIFI_MODE_STA:   return "STA";
+        case WIFI_MODE_AP:    return "AP";
+        case WIFI_MODE_APSTA: return "APSTA";
+        case WIFI_MODE_NULL:  return "NULL";
+        default:              return "UNKNOWN";
+    }
+}
+
+void log_page_send_summary(httpd_req_t* req,
+                           const char* title,
+                           size_t total_bytes,
+                           size_t total_chunks,
+                           uint32_t started_ms,
+                           esp_err_t final_rc,
+                           const char* failure_stage,
+                           size_t failed_chunk_index,
+                           size_t failed_chunk_offset,
+                           size_t failed_chunk_len) {
+    const uint32_t elapsed_ms = millis() - started_ms;
+    const uint32_t free_heap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    const uint32_t min_heap = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    const uint32_t largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    const wifi_mode_t wifi_mode = WiFi.getMode();
+    const int wifi_channel = static_cast<int>(WiFi.channel());
+
+    if (final_rc == ESP_OK) {
+        if (elapsed_ms >= kHttpLongResponseWarnMs) {
+            LOG_WARN("HTTP_PAGE",
+                     "render slow uri=%s method=%s title=%s dur=%lu ms bytes=%lu chunks=%lu wifi_mode=%s sta=%s ch=%d heap=%lu min_heap=%lu largest=%lu",
+                     req && req->uri ? req->uri : "<unknown>",
+                     req ? method_to_string(req->method) : "UNKNOWN",
+                     title ? title : "<unknown>",
+                     static_cast<unsigned long>(elapsed_ms),
+                     static_cast<unsigned long>(total_bytes),
+                     static_cast<unsigned long>(total_chunks),
+                     wifi_mode_to_string(wifi_mode),
+                     (WiFi.status() == WL_CONNECTED) ? "up" : "down",
+                     wifi_channel,
+                     static_cast<unsigned long>(free_heap),
+                     static_cast<unsigned long>(min_heap),
+                     static_cast<unsigned long>(largest_block));
+        } else {
+            LOG_INFO("HTTP_PAGE",
+                     "render ok uri=%s method=%s title=%s dur=%lu ms bytes=%lu chunks=%lu wifi_mode=%s sta=%s ch=%d heap=%lu min_heap=%lu largest=%lu",
+                     req && req->uri ? req->uri : "<unknown>",
+                     req ? method_to_string(req->method) : "UNKNOWN",
+                     title ? title : "<unknown>",
+                     static_cast<unsigned long>(elapsed_ms),
+                     static_cast<unsigned long>(total_bytes),
+                     static_cast<unsigned long>(total_chunks),
+                     wifi_mode_to_string(wifi_mode),
+                     (WiFi.status() == WL_CONNECTED) ? "up" : "down",
+                     wifi_channel,
+                     static_cast<unsigned long>(free_heap),
+                     static_cast<unsigned long>(min_heap),
+                     static_cast<unsigned long>(largest_block));
+        }
+        return;
+    }
+
+    LOG_ERROR("HTTP_PAGE",
+              "render fail uri=%s method=%s title=%s rc=%d (%s) stage=%s chunk=%lu off=%lu len=%lu dur=%lu ms bytes=%lu chunks=%lu wifi_mode=%s sta=%s ch=%d heap=%lu min_heap=%lu largest=%lu",
+              req && req->uri ? req->uri : "<unknown>",
+              req ? method_to_string(req->method) : "UNKNOWN",
+              title ? title : "<unknown>",
+              static_cast<int>(final_rc),
+              esp_err_to_name(final_rc),
+              failure_stage ? failure_stage : "<none>",
+              static_cast<unsigned long>(failed_chunk_index),
+              static_cast<unsigned long>(failed_chunk_offset),
+              static_cast<unsigned long>(failed_chunk_len),
+              static_cast<unsigned long>(elapsed_ms),
+              static_cast<unsigned long>(total_bytes),
+              static_cast<unsigned long>(total_chunks),
+              wifi_mode_to_string(wifi_mode),
+              (WiFi.status() == WL_CONNECTED) ? "up" : "down",
+              wifi_channel,
+              static_cast<unsigned long>(free_heap),
+              static_cast<unsigned long>(min_heap),
+              static_cast<unsigned long>(largest_block));
+}
+
+esp_err_t send_chunk_stage(httpd_req_t* req,
+                           const char* title,
+                           const char* stage,
+                           const char* data,
+                           size_t len,
+                           uint32_t started_ms,
+                           size_t& total_bytes_sent,
+                           size_t& total_chunks_sent,
+                           const char*& failure_stage,
+                           size_t& failed_chunk_index,
+                           size_t& failed_chunk_offset,
+                           size_t& failed_chunk_len) {
+    if (len == 0) return ESP_OK;
+
+    size_t offset = 0;
+    size_t chunk_index = 0;
+    while (offset < len) {
+        const uint32_t free_heap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        const uint32_t min_heap = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        const uint32_t largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        const bool critically_low = free_heap < kMinInternalHeapMidRenderBytesCritical;
+
+        if (free_heap < kMinInternalHeapMidRenderBytesNormalWarn) {
+            LOG_WARN("HTTP_PAGE",
+                     "render low heap sample uri=%s title=%s stage=%s heap=%lu min_heap=%lu largest=%lu floor_warn_normal=%lu",
+                     req && req->uri ? req->uri : "<unknown>",
+                     title ? title : "<unknown>",
+                     stage ? stage : "<unknown>",
+                     static_cast<unsigned long>(free_heap),
+                     static_cast<unsigned long>(min_heap),
+                     static_cast<unsigned long>(largest_block),
+                     static_cast<unsigned long>(kMinInternalHeapMidRenderBytesNormalWarn));
+        }
+
+        if (critically_low) {
+            failure_stage = stage;
+            failed_chunk_index = chunk_index;
+            failed_chunk_offset = offset;
+            failed_chunk_len = 0;
+            LOG_WARN("HTTP_PAGE",
+                     "render abort uri=%s title=%s stage=%s reason=low_internal_heap heap=%lu min_heap=%lu largest=%lu floor_critical=%lu",
+                     req && req->uri ? req->uri : "<unknown>",
+                     title ? title : "<unknown>",
+                     stage ? stage : "<unknown>",
+                     static_cast<unsigned long>(free_heap),
+                     static_cast<unsigned long>(min_heap),
+                     static_cast<unsigned long>(largest_block),
+                     static_cast<unsigned long>(kMinInternalHeapMidRenderBytesCritical));
+            if (total_chunks_sent == 0) {
+                httpd_resp_set_status(req, "503 Service Unavailable");
+                (void)httpd_resp_sendstr(req, "Server busy");
+            }
+            log_page_send_summary(req, title, total_bytes_sent, total_chunks_sent, started_ms,
+                                  ESP_ERR_NO_MEM, failure_stage, failed_chunk_index,
+                                  failed_chunk_offset, failed_chunk_len);
+            return ESP_ERR_NO_MEM;
+        }
+
+        const ChunkSendPolicy policy = policy_for_sample(free_heap, largest_block);
+        const size_t part_len = (len - offset > policy.chunk_bytes) ? policy.chunk_bytes : (len - offset);
+        if (policy.inter_chunk_delay_ms > 0) {
+            vTaskDelay(pdMS_TO_TICKS(policy.inter_chunk_delay_ms));
+        }
+        const esp_err_t rc = httpd_resp_send_chunk(req, data + offset, part_len);
+        if (rc != ESP_OK) {
+            failure_stage = stage;
+            failed_chunk_index = chunk_index;
+            failed_chunk_offset = offset;
+            failed_chunk_len = part_len;
+            log_page_send_summary(req, title, total_bytes_sent, total_chunks_sent, started_ms,
+                                  rc, failure_stage, failed_chunk_index,
+                                  failed_chunk_offset, failed_chunk_len);
+            return rc;
+        }
+        offset += part_len;
+        ++chunk_index;
+        ++total_chunks_sent;
+        total_bytes_sent += part_len;
+    }
+    return ESP_OK;
+}
+}
 
 static const char* COMMON_SCRIPT_HELPERS = R"rawliteral(
 window.TransmitterReboot = window.TransmitterReboot || {
@@ -615,26 +845,6 @@ window.ReceiverNetworkFormController = window.ReceiverNetworkFormController || {
 };
 )rawliteral";
 
-// Generate standard HTML page with common template
-String renderPage(const String& title, const String& content, const PageRenderOptions& options) {
-    String html = "<!DOCTYPE html><html><head>";
-    html += "<meta charset='utf-8'>";
-    html += "<title>" + title + "</title>";
-    html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
-    // Prevent browser favicon.ico request/404 noise by using an inline empty icon.
-    html += "<link rel='icon' href='data:,'>";
-    html += "<style>" + String(COMMON_STYLES) + options.extra_styles + "</style>";
-    if (options.include_common_script_helpers) {
-        html += "<script>" + String(COMMON_SCRIPT_HELPERS) + options.script + "</script>";
-    } else {
-        html += "<script>" + options.script + "</script>";
-    }
-    html += "</head><body>";
-    html += content;
-    html += "</body></html>";
-    return html;
-}
-
 esp_err_t send_rendered_page(httpd_req_t* req,
                              const String& title,
                              const String& content,
@@ -644,52 +854,90 @@ esp_err_t send_rendered_page(httpd_req_t* req,
         return ESP_ERR_INVALID_ARG;
     }
 
+    // Heap preflight: refuse before sending anything if heap is critically low.
+    {
+        const uint32_t pre_heap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (pre_heap < kMinInternalHeapPreflightBytes) {
+            LOG_WARN("HTTP_PAGE",
+                     "render refused uri=%s title=%s reason=preflight_low_heap heap=%lu floor=%lu",
+                     req->uri ? req->uri : "<unknown>",
+                     title.c_str(),
+                     static_cast<unsigned long>(pre_heap),
+                     static_cast<unsigned long>(kMinInternalHeapPreflightBytes));
+            httpd_resp_set_status(req, "503 Service Unavailable");
+            return httpd_resp_sendstr(req, "Server busy");
+        }
+    }
+
     httpd_resp_set_type(req, content_type ? content_type : "text/html");
     // Section 10.D: Cache static pages aggressively — browser avoids re-download on revisit.
     httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=86400");
 
-    const auto send_chunk = [&](const char* data, size_t len) -> bool {
-        return len == 0 || (httpd_resp_send_chunk(req, data, len) == ESP_OK);
+    const uint32_t started_ms = millis();
+    size_t total_bytes_sent = 0;
+    size_t total_chunks_sent = 0;
+    const char* failure_stage = nullptr;
+    size_t failed_chunk_index = 0;
+    size_t failed_chunk_offset = 0;
+    size_t failed_chunk_len = 0;
+    const char* title_cstr = title.c_str();
+
+    const auto chunk = [&](const char* stage, const char* data, size_t len) -> esp_err_t {
+        return send_chunk_stage(req, title_cstr, stage, data, len, started_ms,
+                                total_bytes_sent, total_chunks_sent, failure_stage,
+                                failed_chunk_index, failed_chunk_offset, failed_chunk_len);
     };
 
     static const char kDocHeadStart[] =
         "<!DOCTYPE html><html><head>"
         "<meta charset='utf-8'>"
         "<title>";
-    if (!send_chunk(kDocHeadStart, sizeof(kDocHeadStart) - 1)) return ESP_FAIL;
-    if (!send_chunk(title.c_str(), title.length())) return ESP_FAIL;
+    esp_err_t rc;
+    if ((rc = chunk("head-start", kDocHeadStart, sizeof(kDocHeadStart) - 1)) != ESP_OK) return rc;
+    if ((rc = chunk("title", title.c_str(), title.length())) != ESP_OK) return rc;
 
     static const char kDocHeadMiddle[] =
         "</title>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
         "<link rel='icon' href='data:,'>"
         "<style>";
-    if (!send_chunk(kDocHeadMiddle, sizeof(kDocHeadMiddle) - 1)) return ESP_FAIL;
-    if (!send_chunk(COMMON_STYLES, sizeof(COMMON_STYLES) - 1)) return ESP_FAIL;
+    if ((rc = chunk("head-middle", kDocHeadMiddle, sizeof(kDocHeadMiddle) - 1)) != ESP_OK) return rc;
+    if ((rc = chunk("common-styles", COMMON_STYLES, sizeof(COMMON_STYLES) - 1)) != ESP_OK) return rc;
 
     const char* extra_styles_data = options.extra_styles_static ? options.extra_styles_static : options.extra_styles.c_str();
     const size_t extra_styles_len = options.extra_styles_static ? strlen(options.extra_styles_static) : options.extra_styles.length();
-    if (!send_chunk(extra_styles_data, extra_styles_len)) return ESP_FAIL;
+    if ((rc = chunk("extra-styles", extra_styles_data, extra_styles_len)) != ESP_OK) return rc;
 
     static const char kStyleCloseScriptOpen[] = "</style><script>";
-    if (!send_chunk(kStyleCloseScriptOpen, sizeof(kStyleCloseScriptOpen) - 1)) return ESP_FAIL;
+    if ((rc = chunk("style-close", kStyleCloseScriptOpen, sizeof(kStyleCloseScriptOpen) - 1)) != ESP_OK) return rc;
 
     if (options.include_common_script_helpers) {
-        if (!send_chunk(COMMON_SCRIPT_HELPERS, strlen(COMMON_SCRIPT_HELPERS))) return ESP_FAIL;
+        if ((rc = chunk("script-helpers", COMMON_SCRIPT_HELPERS, strlen(COMMON_SCRIPT_HELPERS))) != ESP_OK) return rc;
     }
 
     const char* script_data = options.script_static ? options.script_static : options.script.c_str();
     const size_t script_len = options.script_static ? strlen(options.script_static) : options.script.length();
-    if (!send_chunk(script_data, script_len)) return ESP_FAIL;
+    if ((rc = chunk("script", script_data, script_len)) != ESP_OK) return rc;
 
-    static const char kBodyOpen[] = "</script></head><body>";
-    if (!send_chunk(kBodyOpen, sizeof(kBodyOpen) - 1)) return ESP_FAIL;
-    if (!send_chunk(content.c_str(), content.length())) return ESP_FAIL;
+    static const char kBodyOpenPrefix[] = "</script></head><body class='";
+    if ((rc = chunk("body-open", kBodyOpenPrefix, sizeof(kBodyOpenPrefix) - 1)) != ESP_OK) return rc;
+    const char* theme_class = resolve_theme_body_class(req->uri);
+    if ((rc = chunk("theme-class", theme_class, strlen(theme_class))) != ESP_OK) return rc;
+    static const char kBodyOpenSuffix[] = "'>";
+    if ((rc = chunk("body-open-suffix", kBodyOpenSuffix, sizeof(kBodyOpenSuffix) - 1)) != ESP_OK) return rc;
+    if (should_inject_dashboard_nav(req->uri, options)) {
+        const char* nav_html = dashboard_nav_html();
+        if ((rc = chunk("nav", nav_html, strlen(nav_html))) != ESP_OK) return rc;
+    }
+    if ((rc = chunk("content", content.c_str(), content.length())) != ESP_OK) return rc;
 
     static const char kDocClose[] = "</body></html>";
-    if (!send_chunk(kDocClose, sizeof(kDocClose) - 1)) return ESP_FAIL;
+    if ((rc = chunk("doc-close", kDocClose, sizeof(kDocClose) - 1)) != ESP_OK) return rc;
 
-    return httpd_resp_send_chunk(req, nullptr, 0);
+    rc = httpd_resp_send_chunk(req, nullptr, 0);
+    log_page_send_summary(req, title_cstr, total_bytes_sent, total_chunks_sent, started_ms,
+                          rc, failure_stage, failed_chunk_index, failed_chunk_offset, failed_chunk_len);
+    return rc;
 }
 // Non-allocating overload — const char* title and content avoid String heap allocation
 // for fully-static page bodies (e.g. cellmonitor, event logs static content).
@@ -702,50 +950,87 @@ esp_err_t send_rendered_page(httpd_req_t* req,
         return ESP_ERR_INVALID_ARG;
     }
 
+    // Heap preflight: refuse before sending anything if heap is critically low.
+    {
+        const uint32_t pre_heap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (pre_heap < kMinInternalHeapPreflightBytes) {
+            LOG_WARN("HTTP_PAGE",
+                     "render refused uri=%s title=%s reason=preflight_low_heap heap=%lu floor=%lu",
+                     req->uri ? req->uri : "<unknown>",
+                     title ? title : "<unknown>",
+                     static_cast<unsigned long>(pre_heap),
+                     static_cast<unsigned long>(kMinInternalHeapPreflightBytes));
+            httpd_resp_set_status(req, "503 Service Unavailable");
+            return httpd_resp_sendstr(req, "Server busy");
+        }
+    }
+
     httpd_resp_set_type(req, content_type ? content_type : "text/html");
     // Section 10.D: Cache static pages aggressively — browser avoids re-download on revisit.
     httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=86400");
 
-    const auto send_chunk = [&](const char* data, size_t len) -> bool {
-        return len == 0 || (httpd_resp_send_chunk(req, data, len) == ESP_OK);
+    const uint32_t started_ms = millis();
+    size_t total_bytes_sent = 0;
+    size_t total_chunks_sent = 0;
+    const char* failure_stage = nullptr;
+    size_t failed_chunk_index = 0;
+    size_t failed_chunk_offset = 0;
+    size_t failed_chunk_len = 0;
+
+    const auto chunk = [&](const char* stage, const char* data, size_t len) -> esp_err_t {
+        return send_chunk_stage(req, title, stage, data, len, started_ms,
+                                total_bytes_sent, total_chunks_sent, failure_stage,
+                                failed_chunk_index, failed_chunk_offset, failed_chunk_len);
     };
 
     static const char kDocHeadStart[] =
         "<!DOCTYPE html><html><head>"
         "<meta charset='utf-8'>"
         "<title>";
-    if (!send_chunk(kDocHeadStart, sizeof(kDocHeadStart) - 1)) return ESP_FAIL;
-    if (!send_chunk(title, strlen(title))) return ESP_FAIL;
+    esp_err_t rc;
+    if ((rc = chunk("head-start", kDocHeadStart, sizeof(kDocHeadStart) - 1)) != ESP_OK) return rc;
+    if ((rc = chunk("title", title, title ? strlen(title) : 0)) != ESP_OK) return rc;
 
     static const char kDocHeadMiddle[] =
         "</title>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
         "<link rel='icon' href='data:,'>"
         "<style>";
-    if (!send_chunk(kDocHeadMiddle, sizeof(kDocHeadMiddle) - 1)) return ESP_FAIL;
-    if (!send_chunk(COMMON_STYLES, sizeof(COMMON_STYLES) - 1)) return ESP_FAIL;
+    if ((rc = chunk("head-middle", kDocHeadMiddle, sizeof(kDocHeadMiddle) - 1)) != ESP_OK) return rc;
+    if ((rc = chunk("common-styles", COMMON_STYLES, sizeof(COMMON_STYLES) - 1)) != ESP_OK) return rc;
 
     const char* extra_styles_data = options.extra_styles_static ? options.extra_styles_static : options.extra_styles.c_str();
     const size_t extra_styles_len = options.extra_styles_static ? strlen(options.extra_styles_static) : options.extra_styles.length();
-    if (!send_chunk(extra_styles_data, extra_styles_len)) return ESP_FAIL;
+    if ((rc = chunk("extra-styles", extra_styles_data, extra_styles_len)) != ESP_OK) return rc;
 
     static const char kStyleCloseScriptOpen[] = "</style><script>";
-    if (!send_chunk(kStyleCloseScriptOpen, sizeof(kStyleCloseScriptOpen) - 1)) return ESP_FAIL;
+    if ((rc = chunk("style-close", kStyleCloseScriptOpen, sizeof(kStyleCloseScriptOpen) - 1)) != ESP_OK) return rc;
 
     if (options.include_common_script_helpers) {
-        if (!send_chunk(COMMON_SCRIPT_HELPERS, strlen(COMMON_SCRIPT_HELPERS))) return ESP_FAIL;
+        if ((rc = chunk("script-helpers", COMMON_SCRIPT_HELPERS, strlen(COMMON_SCRIPT_HELPERS))) != ESP_OK) return rc;
     }
 
     const char* script_data = options.script_static ? options.script_static : options.script.c_str();
     const size_t script_len = options.script_static ? strlen(options.script_static) : options.script.length();
-    if (!send_chunk(script_data, script_len)) return ESP_FAIL;
+    if ((rc = chunk("script", script_data, script_len)) != ESP_OK) return rc;
 
-    static const char kBodyOpen[] = "</script></head><body>";
-    if (!send_chunk(kBodyOpen, sizeof(kBodyOpen) - 1)) return ESP_FAIL;
-    if (!send_chunk(content, strlen(content))) return ESP_FAIL;
+    static const char kBodyOpenPrefix[] = "</script></head><body class='";
+    if ((rc = chunk("body-open", kBodyOpenPrefix, sizeof(kBodyOpenPrefix) - 1)) != ESP_OK) return rc;
+    const char* theme_class = resolve_theme_body_class(req->uri);
+    if ((rc = chunk("theme-class", theme_class, strlen(theme_class))) != ESP_OK) return rc;
+    static const char kBodyOpenSuffix[] = "'>";
+    if ((rc = chunk("body-open-suffix", kBodyOpenSuffix, sizeof(kBodyOpenSuffix) - 1)) != ESP_OK) return rc;
+    if (should_inject_dashboard_nav(req->uri, options)) {
+        const char* nav_html = dashboard_nav_html();
+        if ((rc = chunk("nav", nav_html, strlen(nav_html))) != ESP_OK) return rc;
+    }
+    if ((rc = chunk("content", content, content ? strlen(content) : 0)) != ESP_OK) return rc;
 
     static const char kDocClose[] = "</body></html>";
-    if (!send_chunk(kDocClose, sizeof(kDocClose) - 1)) return ESP_FAIL;
+    if ((rc = chunk("doc-close", kDocClose, sizeof(kDocClose) - 1)) != ESP_OK) return rc;
 
-    return httpd_resp_send_chunk(req, nullptr, 0);
+    rc = httpd_resp_send_chunk(req, nullptr, 0);
+    log_page_send_summary(req, title, total_bytes_sent, total_chunks_sent, started_ms,
+                          rc, failure_stage, failed_chunk_index, failed_chunk_offset, failed_chunk_len);
+    return rc;
 }
